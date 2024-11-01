@@ -49,9 +49,9 @@
   <div class="controls">
     <input type="file" id="upload" accept="image/*">
     <div class="radio-group">
-      <label><input type="radio" name="blurLevel" value="2" > 낮음</label>
-      <label><input type="radio" name="blurLevel" value="5"> 중간</label>
-      <label><input type="radio" name="blurLevel" value="10" checked > 높음</label>
+      <label><input type="radio" name="blurLevel" value="5"> 낮음</label>
+      <label><input type="radio" name="blurLevel" value="10"> 중간</label>
+      <label><input type="radio" name="blurLevel" value="30" checked> 높음</label>
     </div>
     <div class="button-group">
       <button id="blurBtn">블러 처리</button>
@@ -75,9 +75,10 @@
     const resetBtn = document.getElementById('resetBtn');
     const rotateBtn = document.getElementById('rotateBtn');
     let img = new Image();
-    let blurLevel = 2;
+    let blurLevel = parseInt(document.querySelector('input[name="blurLevel"]:checked').value);
+    let accumulatedBlurLevel = 0; // 누적된 블러 레벨
     let originalImageData = null;
-    let rotationAngle = 0; // 현재 회전 각도 저장
+    let rotationAngle = 0;
 
     // 사진 선택 이벤트
     upload.addEventListener('change', (event) => {
@@ -91,6 +92,7 @@
               const orientation = EXIF.getTag(this, "Orientation") || 1;
               drawImageWithOrientation(img, orientation);
               originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              accumulatedBlurLevel = 0; // 이미지 업로드 시 초기화
             });
           };
         };
@@ -109,8 +111,9 @@
             reader.onload = (e) => {
               img.src = e.target.result;
               img.onload = () => {
-                drawImageWithOrientation(img, 1); // 기본 방향으로 설정
+                drawImageWithOrientation(img, 1);
                 originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                accumulatedBlurLevel = 0; // 이미지 붙여넣기 시 초기화
               };
             };
             reader.readAsDataURL(blob);
@@ -123,24 +126,30 @@
     // 블러 강도 선택 이벤트
     document.querySelectorAll('input[name="blurLevel"]').forEach((radio) => {
       radio.addEventListener('change', (event) => {
-        const selectedValue = parseInt(event.target.value);
-        blurLevel = selectedValue === 10 ? 30 : selectedValue;
+        blurLevel = parseInt(event.target.value);
       });
     });
 
-    // 블러 처리 함수
-    function applyBlur(blurLevel) {
+    // 블러 처리 함수 (회전된 상태에서 누적 블러 적용)
+    function applyBlur() {
       if (!originalImageData) return;
-      ctx.drawImage(canvas, 0, 0);
-      ctx.filter = `blur(${blurLevel}px)`;
-      ctx.drawImage(canvas, 0, 0);
+
+      // 누적된 블러 강도를 업데이트
+      accumulatedBlurLevel += blurLevel;
+
+      // 회전된 상태에서 누적 블러 처리
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((rotationAngle * Math.PI) / 180);
+      ctx.filter = `blur(${accumulatedBlurLevel}px)`;
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
       ctx.filter = 'none';
+      ctx.restore();
     }
 
     // 블러 버튼 클릭 이벤트
-    blurBtn.addEventListener('click', () => {
-      applyBlur(blurLevel);
-    });
+    blurBtn.addEventListener('click', applyBlur);
 
     // 다운로드 버튼 클릭 이벤트
     downloadBtn.addEventListener('click', () => {
@@ -158,37 +167,23 @@
     // 원복 버튼 클릭 이벤트
     resetBtn.addEventListener('click', () => {
       if (originalImageData) {
-        rotationAngle = 0; // 회전 각도 초기화
-rotateCanvas(rotationAngle);
+        rotationAngle = 0;
+        accumulatedBlurLevel = 0; // 누적 블러 레벨 초기화
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.putImageData(originalImageData, 0, 0);
       }
     });
 
     // 90도 회전 버튼 클릭 이벤트
     rotateBtn.addEventListener('click', () => {
-      rotationAngle = (rotationAngle + 90) % 360; // 90도씩 증가하고 360도에서 초기화
+      rotationAngle = (rotationAngle + 90) % 360;
       rotateCanvas(rotationAngle);
     });
 
-    // 방향에 맞춰 이미지를 그리는 함수
-    function drawImageWithOrientation(image, orientation) {
-      canvas.width = orientation > 4 ? image.height : image.width;
-      canvas.height = orientation > 4 ? image.width : image.height;
-
-      ctx.save();
-      if (orientation === 1) {
-        ctx.drawImage(image, 0, 0);
-      } else {
-        ctx.translate(canvas.width / 2, canvas.height / 2);
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(image, -image.width / 2, -image.height / 2);
-      }
-      ctx.restore();
-    }
-
     // 캔버스 회전 함수
     function rotateCanvas(angle) {
-      // 회전할 때마다 캔버스 크기 조정
       if (angle === 90 || angle === 270) {
         canvas.width = img.height;
         canvas.height = img.width;
@@ -197,11 +192,38 @@ rotateCanvas(rotationAngle);
         canvas.height = img.height;
       }
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height); // 캔버스 초기화
       ctx.save();
-      ctx.translate(canvas.width / 2, canvas.height / 2); // 중심으로 이동
-      ctx.rotate((angle * Math.PI) / 180); // 라디안으로 변환 후 회전
-      ctx.drawImage(img, -img.width / 2, -img.height / 2); // 회전 후 중앙에 이미지 그리기
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((angle * Math.PI) / 180);
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      ctx.restore();
+
+      // 회전 후 현재 누적 블러 적용
+      if (accumulatedBlurLevel > 0) {
+        ctx.filter = `blur(${accumulatedBlurLevel}px)`;
+        ctx.drawImage(canvas, 0, 0);
+        ctx.filter = 'none';
+      }
+    }
+
+    // 방향에 맞춰 이미지를 그리는 함수
+    function drawImageWithOrientation(image, orientation) {
+      canvas.width = orientation > 4 ? image.height : image.width;
+      canvas.height = orientation > 4 ? image.width : image.height;
+
+      ctx.save();
+      if (orientation === 3) {
+        ctx.translate(canvas.width, canvas.height);
+        ctx.rotate(Math.PI);
+      } else if (orientation === 6) {
+        ctx.translate(canvas.width, 0);
+        ctx.rotate(Math.PI / 2);
+      } else if (orientation === 8) {
+        ctx.translate(0, canvas.height);
+        ctx.rotate(-Math.PI / 2);
+      }
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
       ctx.restore();
     }
   </script>
