@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>아파트 가격 구별 게임</title>
+  <title>서울 시세 얼마나 알고 계신가요</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -24,45 +24,68 @@
       padding: 10px;
       border: 1px solid #ccc;
       cursor: pointer;
-      width: 80%;
+      width: 400px; /* 넉넉히 설정 */
     }
     .correct {
       border: 2px solid green;
     }
-    .wrong {
-      border: 2px solid red;
+
+.wrong {
+  border: 2px solid red;
+  pointer-events: none;
+}
+
     }
     #result {
       margin-top: 20px;
       font-size: 18px;
     }
-    #nextButton, #pauseButton, #startButton, #restartButton {
+	#nextButton {
       margin-top: 20px;
       padding: 10px 20px;
 	  margin: 20px auto; /* 가운데 정렬 */
     }
-    .filters {
-      margin-bottom: 20px;
+    #buttonContainer {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    button {
+      padding: 10px 20px;
+    }
+.filters {
       display: flex;
       flex-wrap: wrap;
       justify-content: center;
       gap: 10px;
+      margin-top: 20px;
     }
     .filter-group {
       display: flex;
       flex-direction: column;
+      gap: 5px;
+    }
+    .filter-group label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .hidden {
+      display: none;
     }
   </style>
 </head>
 <body>
-  <h1>아파트 가격 구별 게임</h1>
-  <p>20초 안에 다른 금액대의 아파트를 찾아 클릭하세요!</p>
-  <p id="timer">남은 시간: 20초</p>
+  <h1>서울 시세 얼마나 알고 계신가요</h1>
+  <p>30초 안에 다른 금액대의 아파트를 찾아 클릭하세요!</p>
+  <p id="timer">남은 시간: 30초</p>
   <div class="filters" id="filters"></div>
 <div id="buttonContainer">
+	<button id="toggleFiltersButton" onclick="toggleFilters()">지역 보기/숨기기</button>
     <button id="startButton" onclick="startGame()" disabled>시작</button>
     <button id="pauseButton" onclick="pauseTimer()" style="display: none;">일시정지</button>
-    <button id="restartButton" onclick="restartGame()" style="display: block;">처음부터</button>
+    <button id="restartButton" onclick="startGame()" style="display: block;">처음부터</button>
   </div>
   <div class="options" id="options"></div>
   <p id="result"></p>
@@ -71,7 +94,7 @@
   <script>
     let apartments = [];
     let filteredApartments = [];
-    let timer = 20;
+    let timer = 30;
     let attempts = 0;
     const maxAttempts = 2;
     const timerElement = document.getElementById("timer");
@@ -100,12 +123,12 @@
       }
     }
 
-    function setupFilters() {
+   function setupFilters() {
       const regions = [...new Set(apartments.map(apt => apt.region))].sort();
       let group = document.createElement("div");
       group.classList.add("filter-group");
 
-      regions.forEach((region, index) => {
+      regions.forEach(region => {
         const label = document.createElement("label");
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
@@ -115,17 +138,13 @@
         label.appendChild(checkbox);
         label.appendChild(document.createTextNode(region));
         group.appendChild(label);
-
-        if ((index + 1) % 5 === 0 || index === regions.length - 1) {
-          filtersContainer.appendChild(group);
-          group = document.createElement("div");
-          group.classList.add("filter-group");
-        }
       });
+      filtersContainer.appendChild(group);
       startButton.disabled = true;
     }
 
     function startGame() {
+	  toggleFilters();
       filterApartments();
       startButton.style.display = "none";
       pauseButton.style.display = "inline-block";
@@ -148,26 +167,42 @@
       const sameCategory = shuffled.filter(apt => apt.category === baseCategory);
       const diffCategory = shuffled.filter(apt => Math.abs(apt.category - baseCategory) >= 1 && Math.abs(apt.category - baseCategory) <= 2);
 
-      const options = [];
-      for (let i = 0; i < 3; i++) {
-        options.push(sameCategory[i]);
-      }
-      options.push(diffCategory[0]);
 
-      shuffle(options).forEach((apt) => {
-        const button = document.createElement("div");
-        button.classList.add("option");
+	  // 보충 데이터 추가
+	  while (sameCategory.length < 3) {
+		const extra = filteredApartments.find(apt => !sameCategory.includes(apt));
+		if (extra) sameCategory.push(extra);
+		else break; // 더 이상 추가할 데이터가 없을 때
+	  }
 
-        const text = document.createElement("div");
-        text.textContent = `${apt.name}`;
-        button.appendChild(text);
+	  while (diffCategory.length < 1) {
+		const extra = filteredApartments.find(apt => !diffCategory.includes(apt));
+		if (extra) diffCategory.push(extra);
+		else break; // 더 이상 추가할 데이터가 없을 때
+	  }
 
-        button.dataset.price = apt.price;
-        button.dataset.category = apt.category;
-        button.onclick = () => checkAnswer(apt, button);
-        optionsContainer.appendChild(button);
-      });
+	  // 최종 데이터 검증
+	  if (sameCategory.length < 3 || diffCategory.length < 1) {
+		resetGame();
+		return;
+	  }
+
+      const options = [...sameCategory.slice(0, 3), diffCategory[0]];
+		  shuffle(options).forEach((apt) => {
+			const button = document.createElement("div");
+			button.classList.add("option");
+
+			const text = document.createElement("div");
+			text.textContent = `${apt.name}`;
+			button.appendChild(text);
+
+			button.dataset.price = apt.price;
+			button.dataset.category = apt.category;
+			button.onclick = () => checkAnswer(apt, button);
+			optionsContainer.appendChild(button);
+		  });
     }
+
 
     function checkAnswer(selected, button) {
       const categories = [...optionsContainer.children].map(btn => parseInt(btn.dataset.category));
@@ -181,6 +216,7 @@
         showAllPrices();
         nextButton.style.display = "block";
         clearInterval(interval);
+disableAllOptions();
       } else {
         button.classList.add("wrong");
         attempts++;
@@ -189,6 +225,7 @@
           showAllPrices();
           nextButton.style.display = "block";
           clearInterval(interval);
+disableAllOptions();
         } else {
           resultElement.textContent = "오답입니다. 다시 시도하세요.";
         }
@@ -196,12 +233,17 @@
     }
 
     function showAllPrices() {
-      const buttons = [...optionsContainer.children];
-      buttons.forEach(btn => {
-        const price = parseInt(btn.dataset.price);
-        btn.innerHTML += `<div>${price.toLocaleString()}원</div>`;
-      });
+  const buttons = [...optionsContainer.children];
+  buttons.forEach(btn => {
+    if (!btn.querySelector('.price-display')) { // 가격이 이미 추가된 경우 중복 방지
+      const price = parseInt(btn.dataset.price);
+      const priceDisplay = document.createElement('div');
+      priceDisplay.textContent = `${price.toLocaleString()}원`;
+      priceDisplay.classList.add('price-display');
+      btn.appendChild(priceDisplay);
     }
+  });
+}
 
     function startTimer() {
       clearInterval(interval);
@@ -236,7 +278,15 @@
       generateOptions();
       startTimer();
     }
-
+	function toggleFilters() {
+      filtersContainer.classList.toggle('hidden');
+    }
+function disableAllOptions() {
+  const buttons = [...optionsContainer.children];
+  buttons.forEach(btn => {
+    btn.style.pointerEvents = 'none';
+  });
+}
     loadApartments();
   </script>
 </body>
