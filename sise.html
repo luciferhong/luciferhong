@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>아파트 가격 구별 게임</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin-top: 50px;
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    .options {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .option {
+      padding: 10px;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      width: 80%;
+    }
+    .correct {
+      border: 2px solid green;
+    }
+    .wrong {
+      border: 2px solid red;
+    }
+    #result {
+      margin-top: 20px;
+      font-size: 18px;
+    }
+    #nextButton, #pauseButton, #startButton, #restartButton {
+      margin-top: 20px;
+      padding: 10px 20px;
+	  margin: 20px auto; /* 가운데 정렬 */
+    }
+    .filters {
+      margin-bottom: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+    }
+  </style>
+</head>
+<body>
+  <h1>아파트 가격 구별 게임</h1>
+  <p>20초 안에 다른 금액대의 아파트를 찾아 클릭하세요!</p>
+  <p id="timer">남은 시간: 20초</p>
+  <div class="filters" id="filters"></div>
+<div id="buttonContainer">
+    <button id="startButton" onclick="startGame()" disabled>시작</button>
+    <button id="pauseButton" onclick="pauseTimer()" style="display: none;">일시정지</button>
+    <button id="restartButton" onclick="restartGame()" style="display: block;">처음부터</button>
+  </div>
+  <div class="options" id="options"></div>
+  <p id="result"></p>
+  <button id="nextButton" onclick="resetGame()" style="display: none;">다음</button>
+
+  <script>
+    let apartments = [];
+    let filteredApartments = [];
+    let timer = 20;
+    let attempts = 0;
+    const maxAttempts = 2;
+    const timerElement = document.getElementById("timer");
+    const optionsContainer = document.getElementById("options");
+    const resultElement = document.getElementById("result");
+    const nextButton = document.getElementById("nextButton");
+    const pauseButton = document.getElementById("pauseButton");
+    const startButton = document.getElementById("startButton");
+    const filtersContainer = document.getElementById("filters");
+    let interval;
+    let isPaused = false;
+    let gameStarted = false;
+
+    async function loadApartments() {
+      try {
+        const response = await fetch("data.txt");
+        const text = await response.text();
+        const lines = text.trim().split("\n");
+        apartments = lines.slice(1).map(line => {
+          const [region, name, category, price] = line.split("\t");
+          return { region, name, price: parseInt(price), category: parseInt(category) };
+        });
+        setupFilters();
+      } catch (error) {
+        console.error("Failed to load apartments data:", error);
+      }
+    }
+
+    function setupFilters() {
+      const regions = [...new Set(apartments.map(apt => apt.region))].sort();
+      let group = document.createElement("div");
+      group.classList.add("filter-group");
+
+      regions.forEach((region, index) => {
+        const label = document.createElement("label");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = region;
+        checkbox.checked = false;
+        checkbox.onchange = () => startButton.disabled = !filtersContainer.querySelector('input:checked');
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(region));
+        group.appendChild(label);
+
+        if ((index + 1) % 5 === 0 || index === regions.length - 1) {
+          filtersContainer.appendChild(group);
+          group = document.createElement("div");
+          group.classList.add("filter-group");
+        }
+      });
+      startButton.disabled = true;
+    }
+
+    function startGame() {
+      filterApartments();
+      startButton.style.display = "none";
+      pauseButton.style.display = "inline-block";
+      gameStarted = true;
+      resetGame();
+    }
+
+    function filterApartments() {
+      const selectedRegions = [...filtersContainer.querySelectorAll('input:checked')].map(input => input.value);
+      filteredApartments = apartments.filter(apt => selectedRegions.includes(apt.region));
+    }
+
+    function shuffle(array) {
+      return array.sort(() => Math.random() - 0.5);
+    }
+
+    function generateOptions() {
+      const shuffled = shuffle(filteredApartments);
+      const baseCategory = shuffled[0].category;
+      const sameCategory = shuffled.filter(apt => apt.category === baseCategory);
+      const diffCategory = shuffled.filter(apt => Math.abs(apt.category - baseCategory) >= 1 && Math.abs(apt.category - baseCategory) <= 2);
+
+      const options = [];
+      for (let i = 0; i < 3; i++) {
+        options.push(sameCategory[i]);
+      }
+      options.push(diffCategory[0]);
+
+      shuffle(options).forEach((apt) => {
+        const button = document.createElement("div");
+        button.classList.add("option");
+
+        const text = document.createElement("div");
+        text.textContent = `${apt.name}`;
+        button.appendChild(text);
+
+        button.dataset.price = apt.price;
+        button.dataset.category = apt.category;
+        button.onclick = () => checkAnswer(apt, button);
+        optionsContainer.appendChild(button);
+      });
+    }
+
+    function checkAnswer(selected, button) {
+      const categories = [...optionsContainer.children].map(btn => parseInt(btn.dataset.category));
+      const mainCategory = categories.sort((a, b) => 
+        categories.filter(v => v === a).length - categories.filter(v => v === b).length
+      ).pop();
+
+      if (selected.category !== mainCategory) {
+        button.classList.add("correct");
+        resultElement.innerHTML = `정답입니다! 가격: ${selected.price.toLocaleString()}원`;
+        showAllPrices();
+        nextButton.style.display = "block";
+        clearInterval(interval);
+      } else {
+        button.classList.add("wrong");
+        attempts++;
+        if (attempts >= maxAttempts) {
+          resultElement.textContent = "실패했습니다. 다음 문제로 넘어갑니다.";
+          showAllPrices();
+          nextButton.style.display = "block";
+          clearInterval(interval);
+        } else {
+          resultElement.textContent = "오답입니다. 다시 시도하세요.";
+        }
+      }
+    }
+
+    function showAllPrices() {
+      const buttons = [...optionsContainer.children];
+      buttons.forEach(btn => {
+        const price = parseInt(btn.dataset.price);
+        btn.innerHTML += `<div>${price.toLocaleString()}원</div>`;
+      });
+    }
+
+    function startTimer() {
+      clearInterval(interval);
+      interval = setInterval(() => {
+        if (!isPaused) {
+          timer--;
+          timerElement.textContent = `남은 시간: ${timer}초`;
+          if (timer <= 0) {
+            clearInterval(interval);
+            resultElement.textContent = "시간 초과! 다시 시도하세요.";
+            resetGame();
+          }
+        }
+      }, 1000);
+    }
+
+    function pauseTimer() {
+      isPaused = !isPaused;
+      pauseButton.textContent = isPaused ? "재시작" : "일시정지";
+    }
+
+    function resetGame() {
+      clearInterval(interval);
+      timer = 30;
+      attempts = 0;
+      isPaused = false;
+      pauseButton.textContent = "일시정지";
+      timerElement.textContent = `남은 시간: 30초`;
+      optionsContainer.innerHTML = "";
+      resultElement.textContent = "";
+      nextButton.style.display = "none";
+      generateOptions();
+      startTimer();
+    }
+
+    loadApartments();
+  </script>
+</body>
+</html>
