@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>아파트 가격 구별 게임</title>
+  <title>수도권 가격감 잡기</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -77,7 +77,7 @@
   </style>
 </head>
 <body>
-  <h1>서울 시세 얼마나 알고 계신가요</h1>
+  <h1>시세 얼마나 알고 계신가요</h1>
   <p>30초 안에 다른 금액대의 아파트를 찾아 클릭하세요!</p>
   <p id="timer">남은 시간: 30초</p>
   <div class="filters" id="filters"></div>
@@ -108,14 +108,15 @@
     let isPaused = false;
     let gameStarted = false;
 
-    async function loadApartments() {
+
+ async function loadApartments() {
       try {
         const response = await fetch("data.txt");
         const text = await response.text();
         const lines = text.trim().split("\n");
         apartments = lines.slice(1).map(line => {
-          const [region, name, category, price] = line.split("\t");
-          return { region, name, price: parseFloat(price), category: parseFloat(category) };
+          const [city, region, name, category, price] = line.split("\t");
+          return { city, region, name, price: parseFloat(price), category: parseFloat(category) };
         });
         setupFilters();
       } catch (error) {
@@ -123,25 +124,52 @@
       }
     }
 
-   function setupFilters() {
-      const regions = [...new Set(apartments.map(apt => apt.region))].sort();
-      let group = document.createElement("div");
-      group.classList.add("filter-group");
+function setupFilters() {
+  // 시도별 데이터 그룹화
+  const groupedByCity = apartments.reduce((acc, apt) => {
+    if (!acc[apt.city]) acc[apt.city] = new Set();
+    acc[apt.city].add(apt.region);
+    return acc;
+  }, {});
 
-      regions.forEach(region => {
-        const label = document.createElement("label");
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.value = region;
-        checkbox.checked = false;
-        checkbox.onchange = () => startButton.disabled = !filtersContainer.querySelector('input:checked');
-        label.appendChild(checkbox);
-        label.appendChild(document.createTextNode(region));
-        group.appendChild(label);
-      });
-      filtersContainer.appendChild(group);
-      startButton.disabled = true;
-    }
+  // 기존 필터 제거
+  filtersContainer.innerHTML = "";
+
+  // 각 시도별 필터 그룹 생성
+  for (const city in groupedByCity) {
+    const cityGroup = document.createElement("div");
+    cityGroup.classList.add("filter-group");
+
+    // 시도 헤더 추가
+    const cityHeader = document.createElement("h3");
+    cityHeader.textContent = city;
+    cityGroup.appendChild(cityHeader);
+
+    // 시군구 가나다순 정렬 후 체크박스 추가
+    const sortedRegions = [...groupedByCity[city]].sort((a, b) => a.localeCompare(b, "ko")); // 가나다 순 정렬
+    sortedRegions.forEach(region => {
+      const label = document.createElement("label");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = region;
+      checkbox.checked = false;
+      checkbox.onchange = () => {
+        startButton.disabled = !filtersContainer.querySelector('input:checked');
+      };
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(region));
+      cityGroup.appendChild(label);
+    });
+
+    filtersContainer.appendChild(cityGroup);
+  }
+
+  // 게임 시작 버튼 비활성화
+  startButton.disabled = true;
+}
+
+
+   
 
     function startGame() {
 	  toggleFilters();
@@ -178,22 +206,6 @@ console.log(sameCategory);
 console.log("diffCategory");
 console.log(diffCategory);
 
-/*
-	  // 보충 데이터 추가
-	  while (sameCategory.length < 3) {
-console.log("sameCategory.length < 3");
-		const extra = filteredApartments.find(apt => !sameCategory.includes(apt));
-		if (extra) sameCategory.push(extra);
-		else break; // 더 이상 추가할 데이터가 없을 때
-	  }
-
-	  while (diffCategory.length < 1) {
-console.log("diffCategory.length < 1");
-		const extra = filteredApartments.find(apt => !diffCategory.includes(apt));
-		if (extra) diffCategory.push(extra);
-		else break; // 더 이상 추가할 데이터가 없을 때
-	  }
-*/
 	  // 최종 데이터 검증
 	  if (sameCategory.length < 3 || diffCategory.length < 1) {
 		resetGame();
