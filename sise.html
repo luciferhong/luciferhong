@@ -226,16 +226,85 @@ function setupFilters() {
 }
 
 
-   
+let categoryQueue = []; // 카테고리 큐 관리 변수
 
+// 카테고리 큐 준비 함수
+function prepareCategoryQueue() {
+  // 1. 카테고리 중복 제거 및 정렬
+  const uniqueCategories = Array.from(
+    new Set(filteredApartments.map(apt => apt.category))
+  ).sort((a, b) => a - b); // 카테고리 오름차순 정렬
+
+  console.log("유일한 카테고리 목록:", uniqueCategories);
+
+  // 2. 랜덤하게 섞기
+  categoryQueue = shuffle(uniqueCategories);
+  console.log("섞인 카테고리 큐:", categoryQueue);
+}
+
+// 옵션 생성 함수
+function generateOptions() {
+  // 1. 카테고리 큐가 비었으면 새로 준비
+  if (categoryQueue.length === 0) {
+    prepareCategoryQueue(); // 큐 재생성
+  }
+
+  // 2. 큐에서 기준 카테고리 하나 꺼내기
+  const baseCategory = categoryQueue.shift(); // 큐에서 하나 추출
+  console.log("기준 카테고리:", baseCategory);
+  console.log("남은 카테고리:", categoryQueue);
+
+  // 3. 기준 카테고리를 중심으로 옵션 필터링 (±2억 범위)
+  const sameCategory = filteredApartments.filter(apt => apt.category === baseCategory);
+  const diffCategory = filteredApartments.filter(
+    apt => Math.abs(apt.category - baseCategory) >= 1 && Math.abs(apt.category - baseCategory) <= 2
+  );
+
+  console.log("같은 카테고리:", sameCategory);
+  console.log("다른 카테고리:", diffCategory);
+
+  // 4. 최종 데이터 검증
+  if (sameCategory.length < 3 || diffCategory.length < 1) {
+    // 데이터 부족 시 큐 재생성 및 재시도
+    if (categoryQueue.length === 0) prepareCategoryQueue();
+    resetGame();
+    return;
+  }
+
+  // 5. 랜덤하게 3개와 1개 선택
+  const options = [
+    ...shuffle(sameCategory).slice(0, 3),
+    shuffle(diffCategory)[0],
+  ];
+
+  // 6. 옵션 화면에 표시
+  optionsContainer.innerHTML = ""; // 기존 옵션 초기화
+  shuffle(options).forEach(apt => {
+    const button = document.createElement("div");
+    button.classList.add("option");
+
+    const text = document.createElement("div");
+    text.textContent = `${apt.name}`;
+    button.appendChild(text);
+
+    button.dataset.price = apt.price;
+    button.dataset.category = apt.category;
+    button.onclick = () => checkAnswer(apt, button);
+    optionsContainer.appendChild(button);
+  });
+}
+
+// 게임 시작 함수
 function startGame() {
   toggleFilters();
-  filterApartments();
+  filterApartments(); // 필터링된 아파트 준비
+  prepareCategoryQueue(); // 카테고리 큐 초기화
   startButton.style.display = "none";
   pauseButton.style.display = "inline-block";
   gameStarted = true;
   resetGame();
 }
+
 
 function filterApartments() {
   const selectedRegions = [...filtersContainer.querySelectorAll('input:checked')].map(input => input.value);
@@ -245,46 +314,6 @@ function filterApartments() {
 function shuffle(array) {
   return array.sort(() => Math.random() - 0.5);
 }
-
-function generateOptions() {
-	const shuffled = shuffle(filteredApartments);
-	const baseCategory = shuffled[0].category;
-	let sameCategory = shuffled.filter(apt => apt.category === baseCategory);
-	console.log("셔플전 sameCategory");
-	console.log(sameCategory);
-	sameCategory = shuffle([...sameCategory]);
-	console.log("셔플후 sameCategory");
-	console.log(sameCategory);
-	const diffCategory = shuffled.filter(apt => ((Math.abs(apt.category - baseCategory) >= -2 && Math.abs(apt.category - baseCategory) <= -1) || (Math.abs(apt.category - baseCategory) >= 1 && Math.abs(apt.category - baseCategory) <= 2)));
-	console.log("baseCategory");
-	console.log(baseCategory);
-	console.log("sameCategory");
-	console.log(sameCategory);
-	console.log("diffCategory");
-	console.log(diffCategory);
-
-	// 최종 데이터 검증
-	if (sameCategory.length < 3 || diffCategory.length < 1) {
-		resetGame();
-		return;
-	}
-
-	const options = [...sameCategory.slice(0, 3), diffCategory[0]];
-	shuffle(options).forEach((apt) => {
-	const button = document.createElement("div");
-	button.classList.add("option");
-
-	const text = document.createElement("div");
-	text.textContent = `${apt.name}`;
-	button.appendChild(text);
-
-	button.dataset.price = apt.price;
-	button.dataset.category = apt.category;
-	button.onclick = () => checkAnswer(apt, button);
-	optionsContainer.appendChild(button);
-  });
-}
-
 
 function checkAnswer(selected, button) {
   const categories = [...optionsContainer.children].map(btn => parseFloat(btn.dataset.category));
