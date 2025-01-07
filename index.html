@@ -3,8 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="lock.png" type="image/png" />
-
     <title>임보 결론 파트 가리기</title>
     <style>
         body {
@@ -25,22 +23,14 @@
     <div id="controls">
         <label for="file-input">결론 파트 이미지:</label>
         <input type="file" id="file-input" multiple accept="image/*"><br><br>
-
         <input type="radio" id="mask-image" name="mask-type" value="image" checked>
         <label for="mask-image">이미지로 가리기</label>
         <input type="radio" id="mask-color" name="mask-type" value="color">
         <label for="mask-color">단색으로 가리기</label><br><br>
-
-        <div id="mask-controls">
-            <label for="mask-input">가릴 이미지(ex 조대문이미지):</label>
-            <input type="file" id="mask-input" accept="image/*"><br><br>
-        </div>
-
-        <div id="color-controls" style="display:none;">
-            <label for="color-input">단색 선택:</label>
-            <input type="color" id="color-input" value="#000000"><br><br>
-        </div>
-
+        <label for="mask-input">가릴 이미지(ex 조대문이미지):</label>
+        <input type="file" id="mask-input" accept="image/*"><br><br>
+        <label for="color-input">단색 선택:</label>
+        <input type="color" id="color-input" value="#000000"><br><br>
         <button id="preview-process">미리보기</button>
         <button id="download-all" disabled>다운로드</button><br>
         <label for="mask-input">( 다운로드 경로는 브라우저 다운로드 경로에 저장됩니다 )</label>
@@ -52,28 +42,31 @@
     <script>
         let processedImages = [];
 
-        document.querySelectorAll('input[name="mask-type"]').forEach(radio => {
-            radio.addEventListener('change', () => {
-                document.getElementById('mask-controls').style.display = radio.value === 'image' ? 'block' : 'none';
-                document.getElementById('color-controls').style.display = radio.value === 'color' ? 'block' : 'none';
-            });
-        });
-
         document.getElementById('preview-process').addEventListener('click', async () => {
             const files = Array.from(document.getElementById('file-input').files);
             const maskType = document.querySelector('input[name="mask-type"]:checked').value;
             const maskFile = document.getElementById('mask-input').files[0];
-            const color = document.getElementById('color-input').value;
+            const maskColor = document.getElementById('color-input').value;
             const output = document.getElementById('output');
             output.innerHTML = '';
             processedImages = [];
 
+            if (maskType === 'image' && !maskFile) {
+                alert('Please select a mask image.');
+                return;
+            }
+
+            const maskImg = maskFile ? await loadImage(await readFileAsDataURL(maskFile)) : null;
+
+            const cmToPx = (cm) => cm * (96 / 2.54); // Convert cm to pixels (assuming 96 DPI)
+            const marginSize = cmToPx(0.3);
+
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                await processFile(file, maskType, maskFile, color, output);
-                console.log(`Processed file ${i + 1}/${files.length}: ${file.name}`);
-                if (i % 10 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 100));
+                await processFile(file, maskType, maskImg, maskColor, marginSize, output);
+                //console.log(Processed file ${i + 1}/${files.length}: ${file.name});
+                if (i % 10 === 0) { // Introducing a delay every 10 files
+                    await new Promise(resolve => setTimeout(resolve, 100)); // 500ms delay
                 }
             }
 
@@ -83,29 +76,41 @@
             }
         });
 
-        async function processFile(file, maskType, maskFile, color, output) {
+        document.getElementById('download-all').addEventListener('click', async () => {
+            const zip = new JSZip();
+            for (let i = 0; i < processedImages.length; i++) {
+                const { blob, name } = processedImages[i];
+                zip.file(name, blob);
+                //console.log(Added file ${i + 1}/${processedImages.length}: ${name} to zip);
+            }
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            saveAs(zipBlob, '임보 결론 파트 가리기.zip');
+            console.log('All files zipped and download initiated.');
+        });
+
+        async function processFile(file, maskType, maskImg, maskColor, marginSize, output) {
             const dataURL = await readFileAsDataURL(file);
             const img = await loadImage(dataURL);
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-			const cmToPx = (cm) => cm * (96 / 2.54); // Convert cm to pixels (assuming 96 DPI)
-            const marginSize = cmToPx(0.3);
             canvas.width = img.width;
             canvas.height = img.height;
-			maskX = marginSize;
-			const maskY = marginSize;
-			const maskWidth = canvas.width - 2 * marginSize; // 좌우 여백 2배 반영
-			const maskHeight = canvas.height - 2 * marginSize; // 상하 여백 2배 반영
-			
 
-            if (maskType === 'image' && maskFile) {
-                const maskDataURL = await readFileAsDataURL(maskFile);
-                const maskImg = await loadImage(maskDataURL);
-	
-				ctx.drawImage(maskImg, maskX, maskY, maskWidth, maskHeight);
+            // Draw the original image
+            ctx.drawImage(img, 0, 0);
 
-            } else {
-                ctx.fillStyle = color;
+            // Calculate the center area to mask
+            const maskX = marginSize;
+            const maskY = marginSize;
+            const maskWidth = canvas.width - 2 * marginSize;
+            const maskHeight = canvas.height - 2 * marginSize;
+
+            if (maskType === 'image' && maskImg) {
+                // Draw the mask image over the center area
+                ctx.drawImage(maskImg, maskX, maskY, maskWidth, maskHeight);
+            } else if (maskType === 'color') {
+                // Fill the mask area with color
+                ctx.fillStyle = maskColor;
                 ctx.fillRect(maskX, maskY, maskWidth, maskHeight);
             }
 
@@ -113,6 +118,7 @@
             imgElement.src = canvas.toDataURL('image/png');
             output.appendChild(imgElement);
 
+            // Store the processed image data
             const blob = await canvasToBlob(canvas);
             processedImages.push({ blob, name: file.name });
         }
