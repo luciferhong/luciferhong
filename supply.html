@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>[루시퍼홍] 홍급지도</title>
+    <script type="text/javascript" src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=hcuap73kdc"></script>
+    <style>
+    #map {
+		width: 100%;
+		height: calc(100vh - 160px); /* 🔥 화면 높이에서 필터 컨테이너를 제외한 영역을 계산 */
+		min-height: 500px; /* 📌 최소 높이 설정 (가로가 좁아질 때 대비) */
+		max-height: 90vh; /* 📌 너무 커지지 않도록 최대 높이 설정 */
+	}
+
+    .custom-infowindow {
+        padding: 6px 10px;
+        border-radius: 5px;
+        border: 1px solid #333;
+        font-size: 12px;
+        font-weight: normal;
+        text-align: left;
+        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+        color: white;
+        position: absolute;
+        z-index: 10;
+        white-space: nowrap;
+        cursor: grab;
+        transition: border 0.2s;
+    }
+    .selected {
+        border: 2px solid red !important;
+    }
+    #filterContainer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        background-color: #f9f9f9;
+    }
+
+    #yearFilter {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    #yearFilter label {
+        display: flex;
+        align-items: center;
+        padding: 4px 6px;
+        border-radius: 5px;
+        background: #ffffff;
+        border: 1px solid #ccc;
+        cursor: pointer;
+    }
+
+    #yearFilter input[type="checkbox"] {
+        margin-right: 4px;
+    }
+
+    /* ✅ 기본 체크박스 (라벨 표시, 텍스트 줄바꿈) → 주황색 */
+    #filterContainer input[type="checkbox"] {
+        accent-color: orange;
+    }
+
+    /* ✅ 입주시기 체크박스 (년도 필터) → 파란색 */
+    #yearFilter input[type="checkbox"] {
+        accent-color: initial;
+    }
+</style>
+
+
+</head>
+<body>
+
+<h1>[루시퍼홍] 홍급지도</h1>
+<div id="filterContainer">
+    <label>시도: <select id="sidoFilter" style="width: 100px;"></select></label>
+    <label>시군구: 
+        <select id="sigunguFilter" style="width: 100px;" disabled>
+            <option value="">전체</option>
+        </select>
+    </label>
+    <label><input type="checkbox" id="toggleTextBox" checked> 라벨 표시</label>
+    <label><input type="checkbox" id="toggleTextWrap" checked> 라벨 텍스트 줄바꿈</label>
+       &nbsp;&nbsp;&nbsp; 입주시기
+    <div id="yearFilter"></div>
+</div>
+
+
+<div id="map"></div>
+
+<script>
+    var map = new naver.maps.Map("map", {
+        center: new naver.maps.LatLng(37.5665, 126.9780),
+        zoom: 12
+    });
+
+    var markers = [];
+    var showTextBoxes = true;
+    var enableTextWrap = true;
+    var selectedYears = new Set();
+    var currentYear = new Date().getFullYear();
+    var activeTextBox = null;
+    var moveStep = 5;
+	var selectedSido = "";
+    var selectedSigungu = "";
+    var sidoData = {};
+
+    function getBackgroundColor(apprYear) {
+        apprYear = parseInt(apprYear);
+        if (isNaN(apprYear)) return "#FFFFFF";
+
+        const yearDiff = apprYear - currentYear;
+        if (yearDiff === 0) return "#FC2C2C";
+        if (yearDiff === 1) return "#F25E04";
+        if (yearDiff === 2) return "#F79905";
+        if (yearDiff === 3) return "#EEA362";
+        return "#DDC40D";
+    }
+
+    function getMarkerSize(households) {
+        households = parseInt(households);
+        if (isNaN(households)) return { width: 24, height: 34, textOffsetX: 30, textOffsetY: -5 };
+
+        if (households >= 1000) return { width: 60, height: 84, textOffsetX: 50, textOffsetY: 15 };
+        if (households >= 500) return { width: 50, height: 64, textOffsetX: 40, textOffsetY: 7 };
+        return { width: 40, height: 44, textOffsetX: 30, textOffsetY: -5 };
+    }
+
+    async function loadMarkers() {
+        console.log("loadMarkers");
+        const response = await fetch("markers.txt");
+        const text = await response.text();
+        const rows = text.trim().split("\n");
+
+        let yearSet = new Set();
+        let tempMarkers = [];
+
+        rows.forEach((row, index) => {
+            if (index === 0) return;
+            const cols = row.split("\t");
+
+            const lat = parseFloat(cols[cols.length - 1]);
+            const lon = parseFloat(cols[cols.length - 2]);
+            const sido = cols[0];
+            const sigungu = cols[1];
+            const name = cols[4];
+            const appr_dt = cols[6].substring(0, 4);
+            const households = cols[7];
+
+            if (!isNaN(lat) && !isNaN(lon)) {
+                yearSet.add(appr_dt);
+                if (!sidoData[sido]) sidoData[sido] = new Set();
+                sidoData[sido].add(sigungu);
+
+                let bgColor = getBackgroundColor(appr_dt);
+				let markerSize = getMarkerSize(households);
+
+				let marker = new naver.maps.Marker({
+					position: new naver.maps.LatLng(lat, lon),
+					map: null,
+					data: { sido, sigungu, appr_dt, name, households, bgColor, markerSize }
+				});
+
+
+                tempMarkers.push(marker);
+            }
+        });
+		updateYearFilters(yearSet);
+        updateSidoFilters();
+        markers = tempMarkers;
+        updateMarkers();
+    }
+
+
+	function updateSidoFilters() {
+        const sidoFilter = document.getElementById("sidoFilter");
+        sidoFilter.innerHTML = '<option value="">전체</option>';
+        Object.keys(sidoData).forEach(sido => {
+            let option = document.createElement("option");
+            option.value = sido;
+            option.textContent = sido;
+            sidoFilter.appendChild(option);
+        });
+    }
+
+    function updateSigunguFilters() {
+        const sigunguFilter = document.getElementById("sigunguFilter");
+        sigunguFilter.innerHTML = '<option value="">전체</option>';
+        if (selectedSido && sidoData[selectedSido]) {
+            sigunguFilter.disabled = false;
+            sidoData[selectedSido].forEach(sigungu => {
+                let option = document.createElement("option");
+                option.value = sigungu;
+                option.textContent = sigungu;
+                sigunguFilter.appendChild(option);
+            });
+        } else {
+            sigunguFilter.disabled = true;
+        }
+    }
+/*
+	function updateSelectedYears() {
+    selectedYears.clear();
+    document.querySelectorAll(".year-checkbox").forEach(cb => {
+        if (cb.checked) selectedYears.add(cb.value);
+    });
+
+    if (selectedYears.size === 0) {
+        document.getElementById("selectAllYears").checked = true; // 모든 개별 체크박스가 해제되면 "전체" 체크
+        selectedYears.add("전체");
+        markers.forEach(marker => {
+            selectedYears.add(marker.data.appr_dt); // 모든 연도 추가
+        });
+    }
+
+    updateMarkers();
+}
+*/
+function handleYearCheckboxChange() {
+    selectedYears.clear();
+    
+    document.querySelectorAll(".year-checkbox:checked").forEach(cb => {
+        selectedYears.add(cb.value);
+    });
+
+    // ✅ 모든 체크박스가 해제된 경우, 마커 숨기고 함수 종료
+    if (selectedYears.size === 0) {
+        markers.forEach(marker => marker.setMap(null));
+        return;
+    }
+
+    updateMarkers();
+}
+
+
+
+
+
+
+
+    function updateYearFilters(yearSet) {
+    const yearFilterDiv = document.getElementById("yearFilter");
+    yearFilterDiv.innerHTML = "";
+
+    selectedYears.clear();
+
+    // 년도 정렬 (오름차순)
+    const sortedYears = Array.from(yearSet).sort();
+
+    sortedYears.forEach(year => {
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = year;
+        checkbox.checked = true; // ✅ 초기 로드시 모든 년도 체크
+        checkbox.classList.add("year-checkbox");
+        checkbox.addEventListener("change", handleYearCheckboxChange);
+
+        const label = document.createElement("label");
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(` ${year}년 `));
+
+        yearFilterDiv.appendChild(label);
+
+        selectedYears.add(year); // ✅ 초기 로드시 모든 연도를 선택
+    });
+
+    updateMarkers();
+}
+
+
+
+
+var activeMarker = null; // 🔥 현재 선택된 마커
+var activeMarkerElement = null; // 🔥 현재 선택된 마커의 요소 (테두리 변경용)
+
+// ✅ 🔥 마커 스타일 업데이트 함수 (선택된 경우 강조)
+function updateMarkerSelection(markerElement, isSelected) {
+    if (markerElement) {
+        if (isSelected) {
+            markerElement.classList.add("selected"); // 🔥 빨간 테두리 추가
+        } else {
+            markerElement.classList.remove("selected"); // 🔥 원래대로 복귀
+        }
+    }
+}
+
+function updateMarkers() {
+    selectedYears.clear();
+    document.querySelectorAll("#yearFilter input[type='checkbox']:checked").forEach(cb => {
+        selectedYears.add(cb.value);
+    });
+
+    const bounds = map.getBounds();
+
+    markers.forEach((marker, index) => {
+        const { sido, sigungu, appr_dt, name, households, bgColor, markerSize } = marker.data;
+        const inBounds = bounds.hasLatLng(marker.getPosition());
+
+        const isYearSelected = selectedYears.has(appr_dt);
+        const isSidoSelected = !selectedSido || marker.data.sido === selectedSido;
+        const isSigunguSelected = !selectedSigungu || marker.data.sigungu === selectedSigungu;
+        const visible = isYearSelected && isSidoSelected && isSigunguSelected;
+
+        if (visible && inBounds) {
+            let textContent = enableTextWrap 
+                ? `${name} <br> ${appr_dt} (${households}세대)` 
+                : `${name} ${appr_dt} (${households}세대)`;
+
+            let newContent = `
+                <div class="marker-container" style="display: flex; align-items: center; position: relative;">
+                    <img src="icon.png" style="width:${markerSize.width}px; height:${markerSize.height}px;">
+                    <div class="custom-infowindow" 
+                        data-marker-index="${index}" 
+                        style="background:${bgColor}; 
+                               left: ${markerSize.textOffsetX}px; 
+                               top: ${markerSize.textOffsetY}px;
+                               display: ${showTextBoxes ? 'block' : 'none'};">
+                        ${textContent}
+                    </div>
+                </div>
+            `;
+
+            marker.setIcon({ content: newContent, anchor: new naver.maps.Point(markerSize.width / 2, markerSize.height) });
+            marker.setMap(map);
+        } else {
+            marker.setMap(null);
+        }
+    });
+
+    // ✅ 🔥 "우클릭" 이벤트 추가 (마커 선택)
+    setTimeout(() => {
+        document.querySelectorAll(".custom-infowindow").forEach(infoWindow => {
+            infoWindow.addEventListener("contextmenu", function (event) {
+                event.preventDefault(); // 기본 우클릭 메뉴 제거
+                const markerIndex = parseInt(this.getAttribute("data-marker-index"));
+
+                // 🔥 이전 선택된 마커의 테두리 제거
+                if (activeMarkerElement) {
+                    updateMarkerSelection(activeMarkerElement, false);
+                }
+
+                activeMarker = markers[markerIndex]; // 🔥 선택한 마커 저장
+                activeMarkerElement = this; // 🔥 선택한 마커 요소 저장
+                updateMarkerSelection(activeMarkerElement, true); // 🔥 테두리 추가
+                console.log("🔹 선택된 마커:", activeMarker);
+            });
+        });
+    }, 500);
+}
+
+// ✅ 🔥 WASD 키 입력 시 선택된 마커 이동
+document.addEventListener("keydown", function (event) {
+    if (!activeMarker) return; // 선택된 마커가 없으면 무시
+
+    let position = activeMarker.getPosition();
+    let lat = position.lat();
+    let lng = position.lng();
+    let step = 0.001; // 이동 거리
+
+    switch (event.key) {
+        case "w":
+        case "ㅈ":
+            lat += step; // 위로 이동
+            break;
+        case "s":
+        case "ㄴ":
+            lat -= step; // 아래로 이동
+            break;
+        case "a":
+        case "ㅁ":
+            lng -= step; // 왼쪽 이동
+            break;
+        case "d":
+        case "ㅇ":
+            lng += step; // 오른쪽 이동
+            break;
+        case "Escape":
+            if (activeMarkerElement) {
+                updateMarkerSelection(activeMarkerElement, false); // 🔥 테두리 제거
+            }
+            activeMarker = null; // 🔥 선택 해제
+            activeMarkerElement = null;
+            console.log("❌ 마커 선택 해제");
+            return;
+    }
+
+    let newPosition = new naver.maps.LatLng(lat, lng);
+    activeMarker.setPosition(newPosition);
+    console.log("➡️ 이동한 마커:", newPosition);
+});
+
+
+
+
+    document.getElementById("toggleTextBox").addEventListener("change", function () {
+        showTextBoxes = this.checked;
+        updateMarkers();
+    });
+
+    document.getElementById("toggleTextWrap").addEventListener("change", function () {
+        enableTextWrap = this.checked;
+        updateMarkers();
+    });
+
+
+	naver.maps.Event.addListener(map, 'idle', updateMarkers);
+
+    window.onload = function () {
+        loadMarkers();
+    };
+
+
+	document.getElementById("sidoFilter").addEventListener("change", function() {
+		selectedSido = this.value;
+		selectedSigungu = ""; // 시도를 변경하면 시군구 초기화
+		updateSigunguFilters();
+		updateMarkers(); // 시도 변경 시 마커 업데이트
+	});
+
+	document.getElementById("sigunguFilter").addEventListener("change", function() {
+		selectedSigungu = this.value;
+		updateMarkers(); // 시군구 변경 시 마커 업데이트
+	});
+
+</script>
+
+</body>
+</html>
