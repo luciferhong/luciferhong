@@ -5,73 +5,83 @@
     <title>[루시퍼홍] 홍급지도</title>
     <script type="text/javascript" src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=hcuap73kdc"></script>
     <style>
-    #map {
-		width: 100%;
-		height: calc(100vh - 160px); /* 🔥 화면 높이에서 필터 컨테이너를 제외한 영역을 계산 */
-		min-height: 500px; /* 📌 최소 높이 설정 (가로가 좁아질 때 대비) */
-		max-height: 90vh; /* 📌 너무 커지지 않도록 최대 높이 설정 */
-	}
+        #map {
+            width: 100%;
+            height: calc(100vh - 260px);
+            min-height: 500px;
+            max-height: 90vh;
+        }
 
-    .custom-infowindow {
-        padding: 6px 10px;
-        border-radius: 5px;
-        border: 1px solid #333;
-        font-size: 12px;
-        font-weight: normal;
-        text-align: left;
-        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
-        color: white;
-        position: absolute;
-        z-index: 10;
-        white-space: nowrap;
-        cursor: grab;
-        transition: border 0.2s;
-    }
-    .selected {
-        border: 2px solid red !important;
-    }
-    #filterContainer {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 10px;
-        padding: 10px;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        background-color: #f9f9f9;
-    }
+        .custom-infowindow {
+            padding: 6px 10px;
+            border-radius: 5px;
+            border: 1px solid #333;
+            font-size: 12px;
+            text-align: left;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.2);
+            color: white;
+            position: absolute;
+            z-index: 10;
+            white-space: nowrap;
+            cursor: grab;
+            transition: border 0.2s;
+        }
 
-    #yearFilter {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-    }
+        .selected {
+            border: 2px solid red !important;
+        }
 
-    #yearFilter label {
-        display: flex;
-        align-items: center;
-        padding: 4px 6px;
-        border-radius: 5px;
-        background: #ffffff;
-        border: 1px solid #ccc;
-        cursor: pointer;
-    }
+        #filterContainer {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+        }
 
-    #yearFilter input[type="checkbox"] {
-        margin-right: 4px;
-    }
+        #dataTableContainer {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            max-height: 300px;
+            overflow-y: auto;
+        }
 
-    /* ✅ 기본 체크박스 (라벨 표시, 텍스트 줄바꿈) → 주황색 */
-    #filterContainer input[type="checkbox"] {
-        accent-color: orange;
-    }
+        #dataTable {
+            width: 100%;
+            border-collapse: collapse;
+        }
 
-    /* ✅ 입주시기 체크박스 (년도 필터) → 파란색 */
-    #yearFilter input[type="checkbox"] {
-        accent-color: initial;
-    }
-</style>
+        #dataTable th, #dataTable td {
+            padding: 8px;
+            border: 1px solid #ccc;
+            text-align: center;
+        }
+
+        #dataTable th {
+            background-color: #f2f2f2;
+        }
+
+        .highlighted {
+            background-color: yellow !important;
+        }
+
+		/* ✅ 기본 체크박스 (라벨 표시, 텍스트 줄바꿈) → 주황색 */
+		#filterContainer input[type="checkbox"] {
+			accent-color: orange;
+		}
+
+		/* ✅ 입주시기 체크박스 (년도 필터) → 파란색 */
+		#yearFilter input[type="checkbox"] {
+			accent-color: initial;
+		}
+    </style>
 
 
 </head>
@@ -87,13 +97,27 @@
     </label>
     <label><input type="checkbox" id="toggleTextBox" checked> 라벨 표시</label>
     <label><input type="checkbox" id="toggleTextWrap" checked> 라벨 텍스트 줄바꿈</label>
-       &nbsp;&nbsp;&nbsp; 입주시기
+    <label>&nbsp;&nbsp;&nbsp;입주시기</label>
     <div id="yearFilter"></div>
 </div>
 
-
 <div id="map"></div>
 
+<div id="dataTableContainer">
+    <h2>📊 필터링된 데이터</h2>
+    <table id="dataTable">
+        <thead>
+            <tr>
+                <th>아파트명</th>
+                <th>입주시기</th>
+                <th>세대수</th>
+                <th>주소</th>
+                <th>분양가</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
 <script>
     var map = new naver.maps.Map("map", {
         center: new naver.maps.LatLng(37.5665, 126.9780),
@@ -110,6 +134,72 @@
 	var selectedSido = "";
     var selectedSigungu = "";
     var sidoData = {};
+
+	let sortConfig = { column: null, order: 'asc' }; // 현재 정렬 기준 저장
+
+function updateTable() {
+    const tableBody = document.querySelector("#dataTable tbody");
+    tableBody.innerHTML = ""; // 기존 데이터 초기화
+
+    let filteredMarkers = markers.filter(marker => {
+        const { sido, sigungu, appr_dt, appr_dt_full } = marker.data;
+
+        // ✅ 연도(입주시기) 필터링 추가
+        const isYearSelected = selectedYears.has(appr_dt);
+        const isSidoSelected = !selectedSido || marker.data.sido === selectedSido;
+        const isSigunguSelected = !selectedSigungu || marker.data.sigungu === selectedSigungu;
+
+        return isYearSelected && isSidoSelected && isSigunguSelected;
+    });
+
+    // ✅ 정렬 적용
+    if (sortConfig.column) {
+        filteredMarkers.sort((a, b) => {
+            let valA = a.data[sortConfig.column];
+            let valB = b.data[sortConfig.column];
+
+            if (!isNaN(valA) && !isNaN(valB)) { // 숫자 정렬
+                valA = parseFloat(valA);
+                valB = parseFloat(valB);
+            } else { // 문자열 정렬
+                valA = valA.toString().toLowerCase();
+                valB = valB.toString().toLowerCase();
+            }
+
+            return sortConfig.order === 'asc' ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
+        });
+    }
+
+    // ✅ 필터링된 데이터 표에 추가
+    filteredMarkers.forEach((marker, index) => {
+        const { name, appr_dt, appr_dt_full, households, address, price } = marker.data;
+
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>${name}</td>
+            <td>${appr_dt_full}</td> <!-- 🔥 년도(입주시기) 추가 -->
+            <td>${households}</td>
+            <td>${address}</td>
+            <td>${price}</td>
+        `;
+
+        row.addEventListener("click", () => {
+            if (activeMarkerElement) {
+                updateMarkerSelection(activeMarkerElement, false);
+            }
+            activeMarker = marker;
+            activeMarkerElement = document.querySelector(`[data-marker-index="${index}"]`);
+            updateMarkerSelection(activeMarkerElement, true);
+
+            map.setCenter(marker.getPosition()); // 클릭 시 지도 이동
+        });
+
+        tableBody.appendChild(row);
+    });
+}
+
+
+
 
     function getBackgroundColor(apprYear) {
         apprYear = parseInt(apprYear);
@@ -153,6 +243,8 @@
             const appr_dt = cols[6].substring(0, 4);
 			const appr_dt_full = cols[6];
             const households = cols[7];
+			const address = cols[5];
+			const price = cols[9];
 
             if (!isNaN(lat) && !isNaN(lon)) {
                 yearSet.add(appr_dt);
@@ -165,7 +257,7 @@
 				let marker = new naver.maps.Marker({
 					position: new naver.maps.LatLng(lat, lon),
 					map: null,
-					data: { sido, sigungu, appr_dt, appr_dt_full, name, households, bgColor, markerSize }
+					data: { sido, sigungu, appr_dt, appr_dt_full, name, households, bgColor, markerSize, address, price }
 				});
 
 
@@ -205,24 +297,7 @@
             sigunguFilter.disabled = true;
         }
     }
-/*
-	function updateSelectedYears() {
-    selectedYears.clear();
-    document.querySelectorAll(".year-checkbox").forEach(cb => {
-        if (cb.checked) selectedYears.add(cb.value);
-    });
 
-    if (selectedYears.size === 0) {
-        document.getElementById("selectAllYears").checked = true; // 모든 개별 체크박스가 해제되면 "전체" 체크
-        selectedYears.add("전체");
-        markers.forEach(marker => {
-            selectedYears.add(marker.data.appr_dt); // 모든 연도 추가
-        });
-    }
-
-    updateMarkers();
-}
-*/
 function handleYearCheckboxChange() {
     selectedYears.clear();
     
@@ -353,6 +428,7 @@ function updateMarkers() {
             });
         });
     }, 500);
+	updateTable(); // 🔥 필터링된 데이터를 테이블로 업데이트
 }
 
 // ✅ 🔥 WASD 키 입력 시 선택된 마커 이동
@@ -428,6 +504,22 @@ document.addEventListener("keydown", function (event) {
 		selectedSigungu = this.value;
 		updateMarkers(); // 시군구 변경 시 마커 업데이트
 	});
+
+	document.querySelectorAll("#dataTable th").forEach((th, index) => {
+    th.addEventListener("click", () => {
+        const columnMap = ["name", "appr_dt_full", "households", "address", "price"]; // 🔥 데이터 속성 매핑
+        const columnKey = columnMap[index];
+
+        if (sortConfig.column === columnKey) {
+            sortConfig.order = sortConfig.order === 'asc' ? 'desc' : 'asc'; // 🔄 기존 정렬 반전
+        } else {
+            sortConfig.column = columnKey;
+            sortConfig.order = 'asc';
+        }
+
+        updateTable(); // 🔥 정렬 후 테이블 업데이트
+    });
+});
 
 </script>
 
