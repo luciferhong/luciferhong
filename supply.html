@@ -498,153 +498,164 @@ function updateMarkerSelection(markerElement, isSelected) {
     }
 }
 
-function updateMarkers() {
-    selectedYears.clear();
-    document.querySelectorAll("#yearFilter input[type='checkbox']:checked").forEach(cb => {
-        selectedYears.add(cb.value);
-    });
 
-    const bounds = map.getBounds();
+    function updateMarkers() {
+        selectedYears.clear();
+        document.querySelectorAll("#yearFilter input[type='checkbox']:checked").forEach(cb => {
+            selectedYears.add(cb.value);
+        });
 
-	markers.forEach((marker, index) => {
-        const { sido, sigungu, appr_dt, appr_dt_full, name, households, bgColor, markerSize } = marker.data; // 🔥 'YYYY-MM' 형식 (예: 2025-03)
+        const bounds = map.getBounds();
 
-        // ✅ 날짜 비교 (From-To 필터링)
-        const isWithinDateRange =
-            (!selectedFromDate || appr_dt_full >= selectedFromDate) &&
-            (!selectedToDate || appr_dt_full <= selectedToDate);
+        markers.forEach((marker, index) => {
+            const { sido, sigungu, appr_dt_full, name, households, bgColor, markerSize } = marker.data;
+            const isWithinDateRange =
+                (!selectedFromDate || appr_dt_full >= selectedFromDate) &&
+                (!selectedToDate || appr_dt_full <= selectedToDate);
 
-        // ✅ 시도 및 시군구 필터링
-        const isSidoSelected = !selectedSido || sido === selectedSido;
-        const isSigunguSelected = !selectedSigungu || sigungu === selectedSigungu;
+            const isSidoSelected = !selectedSido || sido === selectedSido;
+            const isSigunguSelected = !selectedSigungu || sigungu === selectedSigungu;
 
-        const visible = isWithinDateRange && isSidoSelected && isSigunguSelected;
+            const visible = isWithinDateRange && isSidoSelected && isSigunguSelected;
 
-        if (visible && bounds.hasLatLng(marker.getPosition())) {
-            let textContent = enableTextWrap 
-                ? `${name} <br> ${appr_dt_full} (${households}세대)` 
-                : `${name} ${appr_dt_full} (${households}세대)`;
+            if (visible && bounds.hasLatLng(marker.getPosition())) {
+                let textContent = enableTextWrap
+                    ? `${name} <br> ${appr_dt_full} (${households}세대)`
+                    : `${name} ${appr_dt_full} (${households}세대)`;
 
-            let newContent = `
-                <div class="marker-container" style="display: flex; align-items: center; position: relative;">
-                    <img src="icon.png" style="width:${markerSize.width}px; height:${markerSize.height}px;">
-                    <div class="custom-infowindow" 
-                        data-marker-index="${index}" 
-                        style="background:${bgColor}; 
-                               left: ${markerSize.textOffsetX}px; 
-                               top: ${markerSize.textOffsetY}px;
-                               display: ${showTextBoxes ? 'block' : 'none'};">
-                        ${textContent}
+                let newContent = `
+                    <div class="marker-container" style="display: flex; align-items: center; position: relative;">
+                        <img src="icon.png" style="width:${markerSize.width}px; height:${markerSize.height}px;">
+                        <div class="custom-infowindow" 
+                            data-marker-index="${index}" 
+                            style="background:${bgColor}; 
+                                   left: ${markerSize.textOffsetX}px; 
+                                   top: ${markerSize.textOffsetY}px;
+                                   display: ${showTextBoxes ? 'block' : 'none'};">
+                            ${textContent}
+                        </div>
                     </div>
-                </div>
-            `;
+                `;
 
-            marker.setIcon({ content: newContent, anchor: new naver.maps.Point(markerSize.width / 2, markerSize.height) });
-            marker.setMap(map);
-        } else {
-            marker.setMap(null);
-        }
-    });
+                marker.setIcon({ content: newContent, anchor: new naver.maps.Point(markerSize.width / 2, markerSize.height) });
+                marker.setMap(map);
 
-
-    // ✅ 🔥 "우클릭" 이벤트 추가 (마커 선택)
-    setTimeout(() => {
-		document.querySelectorAll(".custom-infowindow").forEach(infoWindow => {
-			// ✅ 기존 이벤트 제거 (중복 방지)
-			infoWindow.removeEventListener("contextmenu", handleContextMenu);
-
-			// ✅ 새로운 이벤트 리스너 추가
-			infoWindow.addEventListener("contextmenu", handleContextMenu);
-		});
-	}, 500);
-
-	function handleContextMenu(event) {
-		event.preventDefault(); // 기본 우클릭 메뉴 제거
-		const markerIndex = parseInt(this.getAttribute("data-marker-index"));
-
-		// 🔥 이전 선택된 마커의 테두리 제거
-		if (activeMarkerElement) {
-			updateMarkerSelection(activeMarkerElement, false);
-		}
-
-		activeMarker = markers[markerIndex]; // 🔥 선택한 마커 저장
-		activeMarkerElement = this; // 🔥 선택한 마커 요소 저장
-		console.log(activeMarkerElement);
-
-		updateMarkerSelection(activeMarkerElement, true); // 🔥 테두리 추가
-	}
-
-	updateTable(); // 🔥 필터링된 데이터를 테이블로 업데이트
-}
-
-// ✅ 🔥 WASD 키 입력 시 선택된 마커 이동
-document.addEventListener("keydown", function (event) {
-    if (!activeMarker) {
-        console.warn("⚠️ 이동할 마커가 선택되지 않았습니다.");
-        return;
-    }
-
-    console.log("🔹 현재 선택된 마커 (이동 전):", activeMarker.getPosition());
-
-    let position = activeMarker.getPosition();
-    let lat = position.lat();
-    let lng = position.lng();
-    let step = 0.001;
-
-    switch (event.key) {
-        case "w":
-        case "ㅈ":
-            lat += step;
-            break;
-        case "s":
-        case "ㄴ":
-            lat -= step;
-            break;
-        case "a":
-        case "ㅁ":
-            lng -= step;
-            break;
-        case "d":
-        case "ㅇ":
-            lng += step;
-            break;
-        case "Escape":
-            if (activeMarkerElement) {
-                updateMarkerSelection(activeMarkerElement, false);
+                // ✅ 기존 마커에는 우클릭 이벤트를 추가하지 않음
+                if (!marker.hasContextMenu) {
+                    addContextMenuEvent(marker, index);
+                    marker.hasContextMenu = true;
+                }
+            } else {
+                marker.setMap(null);
             }
-            activeMarker = null;
-            activeMarkerElement = null;
-            console.log("❌ 마커 선택 해제");
-            return;
+        });
+
+        // ✅ 마커 업데이트 후, 우클릭 이벤트 재설정
+        setTimeout(updateContextMenuEvents, 500);
+
+        updateTable();
     }
 
-    let newPosition = new naver.maps.LatLng(lat, lng);
-    activeMarker.setPosition(newPosition);
-    
-    // ✅ 강제로 지도에 갱신
-    activeMarker.setMap(null);
-    activeMarker.setMap(map);
+    // ✅ 마커 라벨이 갱신될 때, 모든 custom-infowindow 요소에 contextmenu 이벤트 다시 부여
+    function updateContextMenuEvents() {
+        document.querySelectorAll(".custom-infowindow").forEach(infoWindow => {
+            infoWindow.removeEventListener("contextmenu", handleContextMenu);
+            infoWindow.addEventListener("contextmenu", handleContextMenu);
+        });
+    }
 
-    console.log("➡️ 이동한 마커 (변경 직후):", activeMarker.getPosition());
+    function addContextMenuEvent(marker, index) {
+        setTimeout(() => {
+            const infoWindow = document.querySelector(`.custom-infowindow[data-marker-index="${index}"]`);
+            if (infoWindow) {
+                infoWindow.addEventListener("contextmenu", handleContextMenu);
+            }
+        }, 500);
+    }
 
-    // ✅ markers 배열에서도 위치 업데이트
-    markers.forEach(marker => {
-        if (marker === activeMarker) {
-            marker.setPosition(newPosition);
-            marker.data.lat = lat;
-            marker.data.lng = lng;
+    function handleContextMenu(event) {
+        event.preventDefault();
+        const markerIndex = parseInt(this.getAttribute("data-marker-index"));
+
+        if (!markers[markerIndex]) return;
+
+        if (activeMarkerElement) {
+            updateMarkerSelection(activeMarkerElement, false);
         }
+
+        activeMarker = markers[markerIndex];
+        activeMarkerElement = this;
+        updateMarkerSelection(activeMarkerElement, true);
+    }
+
+    // ✅ WASD 키 입력으로 마커 이동
+    function handleKeyDown(event) {
+        if (!activeMarker) {
+            console.warn("⚠️ 이동할 마커가 선택되지 않았습니다.");
+            return;
+        }
+
+        let position = activeMarker.getPosition();
+        let lat = position.lat();
+        let lng = position.lng();
+        let step = 0.001;
+
+        switch (event.key) {
+            case "w":
+            case "ㅈ":
+                lat += step;
+                break;
+            case "s":
+            case "ㄴ":
+                lat -= step;
+                break;
+            case "a":
+            case "ㅁ":
+                lng -= step;
+                break;
+            case "d":
+            case "ㅇ":
+                lng += step;
+                break;
+            case "Escape":
+                if (activeMarkerElement) {
+                    updateMarkerSelection(activeMarkerElement, false);
+                }
+                activeMarker = null;
+                activeMarkerElement = null;
+                console.log("❌ 마커 선택 해제");
+                return;
+        }
+
+        let newPosition = new naver.maps.LatLng(lat, lng);
+        activeMarker.setPosition(newPosition);
+
+        // ✅ markers 배열에서도 위치 업데이트 (추후 이동 유지)
+        markers.forEach(marker => {
+            if (marker === activeMarker) {
+                marker.setPosition(newPosition);
+                marker.data.lat = lat;
+                marker.data.lng = lng;
+            }
+        });
+
+        console.log("➡️ 이동한 마커:", activeMarker.getPosition());
+    }
+
+    // ✅ 키보드 이벤트 중복 방지
+    document.removeEventListener("keydown", handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    // ✅ 라벨 텍스트 줄바꿈 체크박스 이벤트 리스너
+    document.getElementById("toggleTextWrap").addEventListener("change", function () {
+        enableTextWrap = this.checked;
+        updateMarkers(); // 🔥 마커 갱신 시 우클릭 이벤트 유지
     });
 
-    setTimeout(() => {
-        console.log("🔄 이동한 마커 (1초 후 확인):", activeMarker.getPosition());
-    }, 1000);
-});
-
-
-
-
-
+    document.getElementById("toggleTextBox").addEventListener("change", function () {
+        showTextBoxes = this.checked;
+        updateMarkers(); // 🔥 마커 갱신 시 우클릭 이벤트 유지
+    });
 
 
     document.getElementById("toggleTextBox").addEventListener("change", function () {
