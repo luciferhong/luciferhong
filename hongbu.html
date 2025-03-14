@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="route.png" type="image/png">
-    <title>[루시퍼홍] 홍루트</title>
+    <title>[루시퍼홍] 홍부가 기가막혀</title>
 <script src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=hcuap73kdc"></script>
 <script type="text/javascript" src="MarkerClustering.js"></script>
 
@@ -68,7 +68,10 @@
 <div id="controls">
     <label for="unitFilter">최소 세대수: </label>
     <input type="number" id="unitFilter" min="0" value="190">
+    <label><input type="checkbox" id="toggleApartments" checked> 아파트 표시</label>
+    <label><input type="checkbox" id="toggleSchools" checked> 초등학교 표시</label>
 </div>
+
 
     <div id="map"></div>
     <div id="controls">
@@ -410,7 +413,7 @@
 document.addEventListener("DOMContentLoaded", async () => {
     window.map = new naver.maps.Map("map", {
         center: new naver.maps.LatLng(37.5665, 126.9780),
-        zoom: 14
+        zoom: 16
     });
 
     // ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
@@ -620,6 +623,7 @@ if (cachedData.length > 0) {
 //console.log("apartmentData : ");
 //console.log(apartmentData);
         console.log("✅ 아파트 데이터 fetch 완료");
+updateMarkers(window.map.getBounds())
     } catch (error) {
         console.error("❌ 아파트 데이터 불러오기 실패:", error);
     }
@@ -629,16 +633,28 @@ if (cachedData.length > 0) {
 function updateMarkers(bounds) {
 
 	const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
+	const showApartments = document.getElementById("toggleApartments").checked;
 
-    // ✅ 기존 마커 모두 제거
+	
+
+   // ✅ 기존 마커 모두 제거
     apartmentMarkers.forEach(marker => {
-		if (marker instanceof naver.maps.Marker) {
-			marker.setMap(null);
-		}
-	});
-	apartmentMarkers.length = 0;  // ✅ 배열을 완전히 초기화
+        if (marker instanceof naver.maps.Marker) {
+            marker.setMap(null);
+        }
+    });
 
-    apartmentMarkers = [];
+    // ✅ 마커 배열 초기화 (마커가 여전히 남아있는 경우 대비)
+    apartmentMarkers.length = 0;
+
+    // ✅ 마커 클러스터링을 사용 중이라면 기존 마커 초기화
+     if (markerCluster) {
+        markerCluster.setMarkers([]); // 기존 마커를 제거
+    }
+
+ 
+
+    if (!showApartments) return; // 아파트 표시 체크 해제 시 종료
 
     // ✅ 현재 지도 범위에 있는 아파트 필터링
     let filteredApartments = apartmentData.filter(apartment => {
@@ -680,15 +696,15 @@ const nameElement = document.createElement("div");
 nameElement.style = `
     background: white;
     color: black;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: bold;
     display: flex; /* ✅ Flexbox 사용 */
     align-items: center;
     justify-content: center;
     padding: 2px 5px; /* ✅ 최소 패딩 유지 */
     border-radius: 3px;
-    min-width: 90px; /* ✅ 최소 너비 고정 */
-    max-width: 90px; /* ✅ 최대 너비 고정 */
+    min-width: 85px; /* ✅ 최소 너비 고정 */
+    max-width: 85px; /* ✅ 최대 너비 고정 */
     overflow: hidden;
     text-overflow: ellipsis;
 `;
@@ -697,8 +713,8 @@ const detailsElement = document.createElement("div");
 detailsElement.style = `
     font-size: 12px;
     padding: 2px 5px;
-    min-width: 90px; /* ✅ 세부 정보도 최소 크기 동일 */
-    max-width: 90px;
+    min-width: 85px; /* ✅ 세부 정보도 최소 크기 동일 */
+    max-width: 85px;
     display: flex;
     justify-content: center;
 `;
@@ -778,54 +794,31 @@ async function loadSchools() {
     }
 }
 
-// ✅ 바운더리 내 학교만 표시
-function updateSchoolMarkers(bounds) {
-    // ✅ 기존 마커 제거
-    schoolMarkers.forEach(marker => {
-        if (marker instanceof naver.maps.Marker) {
-            marker.setMap(null);
-        }
-    });
-    schoolMarkers = []; // ✅ 배열 초기화
+function updateSchoolMarkers() {
+    const showSchools = document.getElementById("toggleSchools").checked;
 
-    // ✅ 현재 지도 범위에 있는 학교 필터링
-    let filteredSchools = window.schoolData.filter(school => {
-        return bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude));
-    });
+    // ✅ 기존 학교 마커 제거
+    schoolMarkers.forEach(marker => marker.setMap(null));
+    schoolMarkers = [];
 
-    console.log("📌 현재 지도 범위 내 학교:", filteredSchools.length, "개");
+    if (!showSchools) return; // 초등학교 표시 체크 해제 시 종료
+
+    let bounds = window.map.getBounds();
+    let filteredSchools = window.schoolData.filter(school =>
+        bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude))
+    );
 
     filteredSchools.forEach(school => {
-        const cleanSchoolName = school.schoolName.replace(/등학교/g, ""); // ✅ "등학교" 제거
-
-        // ✅ 마커 컨테이너
         const markerContainer = document.createElement("div");
-        markerContainer.style = `
-            text-align: center;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        `;
+        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
 
-        // ✅ 마커 아이콘
         const markerIcon = document.createElement("img");
         markerIcon.src = "school.png";
         markerIcon.style = "width: 32px; height: 32px;";
 
-        // ✅ 정보 박스 (학교명 + 학급당 학생 수)
         const infoBox = document.createElement("div");
-        infoBox.style = `
-            background: white;
-            border: 1px solid gray;
-            border-radius: 6px;
-            padding: 3px 8px;
-            font-size: 12px;
-            font-weight: bold;
-            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-            white-space: nowrap;
-            margin-top: 4px;
-        `;
-        infoBox.textContent = `${cleanSchoolName} (${school.studentCountPerClassroom})`;
+        infoBox.style = "background: white; border: 1px solid gray; border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: bold;";
+        infoBox.textContent = `${school.schoolName.replace(/등학교/g, "")} (${school.studentCountPerClassroom})`;
 
         markerContainer.appendChild(markerIcon);
         markerContainer.appendChild(infoBox);
@@ -833,19 +826,25 @@ function updateSchoolMarkers(bounds) {
         const marker = new naver.maps.Marker({
             position: new naver.maps.LatLng(school.latitude, school.longitude),
             map: window.map,
-            icon: {
-                content: markerContainer,
-                anchor: new naver.maps.Point(16, 32)
-            }
+            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
         });
 
         schoolMarkers.push(marker);
     });
 }
 
+
 // ✅ 페이지 로드 시 실행
 document.addEventListener("DOMContentLoaded", async () => {
+	await loadApartments();
     await loadSchools();
+});
+document.getElementById("toggleApartments").addEventListener("change", () => {
+    updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
+});
+
+document.getElementById("toggleSchools").addEventListener("change", () => {
+    updateSchoolMarkers(); // ✅ 즉시 업데이트
 });
 
 
