@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="route.png" type="image/png">
+    <title>[루시퍼홍] 홍루트</title>
+<script src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=hcuap73kdc"></script>
+<script type="text/javascript" src="MarkerClustering.js"></script>
+
+
+
+    <style>
+        #map { width: 100%; height: calc(100vh - 260px); resize: both; }
+        #controls { margin: 10px; }
+        button { margin: 5px; padding: 10px; cursor: pointer; }
+
+        /* 현재 위치 버튼 스타일 */
+        #locationButton {
+            position: absolute;
+            bottom: 15px;
+            right: 15px;
+            background-color: white;
+            border: 2px solid gray;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+            text-align: center;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+        }
+
+        /* 위치 추적 종료 버튼 */
+        #stopTrackingButton {
+            position: absolute;
+            bottom: 15px;
+            right: 70px;
+            background-color: white;
+            border: 2px solid gray;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 14px;
+            text-align: center;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+        }
+
+		#unitFilter {
+			width: 60px; /* 숫자 3자리(최대 999) 입력 가능 */
+			height: 10px;
+			font-size: 16px;
+			text-align: center;
+			border: 2px solid #4A90E2; /* 파란색 테두리 */
+			border-radius: 8px;
+			padding: 5px;
+			outline: none;
+			transition: all 0.3s ease-in-out;
+		}
+
+		#unitFilter:focus {
+			border-color: #2D5DA7; /* 포커스 시 더 진한 파란색 */
+			box-shadow: 0px 0px 5px rgba(74, 144, 226, 0.5);
+		}
+    </style>
+</head>
+<body>
+    <h1>[루시퍼홍] 홍루트(GPX)</h1>
+<div id="controls">
+    <label for="unitFilter">최소 세대수: </label>
+    <input type="number" id="unitFilter" min="0" value="190">
+</div>
+
+    <div id="map"></div>
+    <div id="controls">
+        <button id="startPolyline">경로 그리기</button>
+		<button id="undoLastPointButton">직전 취소</button>
+        <button id="completePolyline">경로 그리기 완료</button>
+        <button id="downloadGPX">GPX 다운로드</button>
+        <button id="uploadGPX">GPX 불러오기</button>
+        <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
+        <button id="clearMap">초기화</button>
+    </div>
+    <div id="locationButton" title="현재 위치">📍</div> <!-- ✅ 현재 위치 버튼 -->
+    <div id="stopTrackingButton" title="위치 추적 중지">🛑</div> <!-- ✅ 위치 추적 중지 버튼 -->
+    <span style="font-size: 14px; color: gray;">
+        백스페이스 : 직전 취소<br>
+        ESC, 마우스 우클릭, [경로 그리기 완료] 버튼 클릭 : 그리기 종료<br>
+        모바일에서도 경로그리기, 다운로드 가능합니다
+    </span>
+
+<script>
+ class MapHandler {
+
+		
+
+            constructor(map) {
+                this.map = map;
+                this.shapes = [];
+                this.currentPath = [];
+                this.currentPolyline = null;
+                this.markers = [];
+                this.initUI();
+            }
+				
+            initUI() {
+				document.getElementById("startPolyline").addEventListener("click", () => this.startPolylineMode());
+				document.getElementById("undoLastPointButton").addEventListener("click", () => this.undoLastPoint());
+				document.getElementById("completePolyline").addEventListener("click", () => this.completePolyline()); // ✅ 추가됨*				
+				document.getElementById("downloadGPX").addEventListener("click", () => this.downloadGPX());
+				document.getElementById("uploadGPX").addEventListener("click", () => document.getElementById("gpxFileInput").click());
+
+				// 🔹 `this`를 `MapHandler` 인스턴스로 유지
+				document.getElementById("gpxFileInput").addEventListener("change", this.handleFileChange.bind(this));
+
+				document.getElementById("clearMap").addEventListener("click", () => this.clearMap());
+				
+				document.addEventListener("keydown", (e) => {
+					if (e.key === "Escape") {
+						this.completePolyline();
+					} else if (e.key === "Backspace") {
+						this.undoLastPoint();
+					}
+				});
+
+				naver.maps.Event.addListener(this.map, "click", (e) => {
+					this.currentPath.push(e.coord);
+					this.currentPolyline.setPath(this.currentPath);
+					this.addMilestoneMarker(e.coord);
+				});
+
+				naver.maps.Event.addListener(this.map, "rightclick", () => {
+					this.completePolyline();
+				});
+
+			
+			}
+
+			handleFileChange(event) {
+				const file = event.target.files[0];
+				if (!file) return; // 선택된 파일이 없으면 종료
+
+				this.loadGPX(file);
+
+				// 🔹 동일한 파일 다시 선택 가능하도록 input 값 초기화
+				event.target.value = ""; 
+			}
+
+
+			startPolylineMode() {
+				if (this.shapes.length > 0) {
+					const userConfirmed = confirm("이전에 그린 경로가 삭제됩니다. 계속하시겠습니까?");
+					if (!userConfirmed) return;
+
+					this.clearMap(); // 기존 경로 초기화
+				}
+
+				this.currentPath = [];
+				this.markers = [];
+				this.currentPolyline = new naver.maps.Polyline({
+					map: this.map,
+					path: this.currentPath,
+					strokeColor: "#FF0000",
+					strokeWeight: 3.33,
+					strokeOpacity: 0.8
+				});	
+			}
+		
+			downloadGPX() {
+				if (this.shapes.length === 0) {
+					alert("다운로드할 경로가 없습니다.");
+					return;
+				}
+
+				let gpxData = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="MapHandler">\n  <trk>\n    <trkseg>\n`;
+				
+				this.shapes.forEach(({ polyline }) => {
+					polyline.getPath().forEach((coord) => {
+						gpxData += `      <trkpt lat="${coord.y}" lon="${coord.x}"></trkpt>\n`;
+					});
+				});
+
+				gpxData += `    </trkseg>\n  </trk>\n</gpx>`;
+				
+				const blob = new Blob([gpxData], { type: "application/gpx+xml" });
+				const a = document.createElement("a");
+				a.href = URL.createObjectURL(blob);
+				a.download = "route.gpx";
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+			}
+
+            completePolyline() {
+                if (this.currentPolyline && this.currentPath.length > 1) {
+                    this.addStartEndMarkers();
+                    this.shapes.push({ polyline: this.currentPolyline, markers: [...this.markers] });
+                    this.currentPolyline = null;
+                }
+            }
+
+            addMilestoneMarker(coord) {
+                const marker = new naver.maps.Marker({
+                    position: coord,
+                    map: this.map,
+                    icon: {
+                        content: `<div style="width: 8px; height: 8px; background-color: #FF0000; border-radius: 50%; border: 2px solid #FFF;"></div>`,
+                        anchor: new naver.maps.Point(4, 4)
+                    }
+                });
+                this.markers.push(marker);
+            }
+
+            addStartEndMarkers() {
+                if (this.currentPath.length < 2) return;
+                this.createLabeledMarker(this.currentPath[0], "출발");
+                this.createEndMarker(this.currentPath[this.currentPath.length - 1]);
+            }
+
+            createLabeledMarker(coord, label) {
+                const marker = new naver.maps.Marker({
+                    position: coord,
+                    map: this.map,
+                    icon: {
+                        content: `<div style="padding:5px; background-color:#fff; border:1px solid #000; text-align:center;">
+                                    <span style="font-size:12px; font-weight:bold; color:#f00;">${label}</span>
+                                  </div>`
+                    }
+                });
+                this.markers.push(marker);
+            }
+			clearMap() {
+				if (!Array.isArray(this.shapes)) {
+					this.shapes = []; // shapes가 배열이 아니면 초기화
+				}
+
+				// 기존 경로 및 마커 제거
+				this.shapes.forEach(({ polyline, markers }) => {
+					if (polyline) polyline.setMap(null);
+					if (Array.isArray(markers)) {
+						markers.forEach(marker => marker.setMap(null));
+					}
+				});
+
+				// 🔹 출발 & 도착 마커 삭제
+				if (Array.isArray(this.markers)) {
+					this.markers.forEach(marker => marker.setMap(null));
+				}
+
+				// 🔹 도착 마커 삭제 추가
+				if (this.endMarker) {
+					this.endMarker.setMap(null);
+					this.endMarker = null; // 도착 마커 변수 초기화
+				}
+
+				// 데이터 초기화
+				this.shapes = [];
+				this.markers = [];
+				this.currentPath = [];
+				this.currentPolyline = null;
+			}
+
+		loadGPX(file) {
+
+			this.clearMap();
+			const reader = new FileReader();
+			reader.onload = (event) => {
+				const parser = new DOMParser();
+				const xmlDoc = parser.parseFromString(event.target.result, "text/xml");
+
+				const trkpts = xmlDoc.getElementsByTagName("trkpt");
+				if (trkpts.length === 0) {
+					alert("유효한 GPX 파일이 아닙니다.");
+					return;
+				}
+
+				let path = [];
+				for (let i = 0; i < trkpts.length; i++) {
+					const lat = parseFloat(trkpts[i].getAttribute("lat"));
+					const lon = parseFloat(trkpts[i].getAttribute("lon"));
+					path.push(new naver.maps.LatLng(lat, lon));
+				}
+
+				this.drawGPXPath(path);
+				this.updateEndMarker(path); // 🔹 GPX 로드 후 도착 마커 업데이트
+			};
+			reader.readAsText(file);
+		}
+
+		updateEndMarker(path) {
+			if (path.length < 2) return; // 유효한 경로가 없으면 종료
+
+			const totalDistance = this.calculateTotalDistance(path); // 거리 재계산
+			const formattedDistance = totalDistance >= 1000 
+				? (totalDistance / 1000).toFixed(2) + "km" 
+				: totalDistance.toFixed(0) + "m";
+
+			const estimatedTime = this.calculateWalkingTime(totalDistance / 1000); // 예상 시간 계산
+			const label = `도착<br>${formattedDistance}<br>${estimatedTime}<br>(시속 4km 기준)`;
+
+			// 기존 도착 마커 삭제
+			if (this.endMarker) this.endMarker.setMap(null);
+
+			// 새 도착 마커 추가
+			this.endMarker = new naver.maps.Marker({
+				position: path[path.length - 1],
+				map: this.map,
+				icon: {
+					content: `<div style="padding:5px; background-color:#fff; border:1px solid #000; text-align:center;">
+								<span style="font-size:12px; font-weight:bold; color:#f00;">${label}</span>
+							  </div>`
+				}
+			});
+		}
+
+
+
+		drawGPXPath(path) {
+			if (path.length < 2) {
+				alert("경로 데이터가 충분하지 않습니다.");
+				return;
+			}
+
+			const polyline = new naver.maps.Polyline({
+				map: this.map,
+				path: path,
+				strokeColor: "#0000FF", // GPX 경로 색상 (파란색)
+				strokeWeight: 3.33,
+				strokeOpacity: 0.8
+			});
+
+			this.shapes.push({ polyline });
+
+			this.createLabeledMarker(path[0], "출발");
+			this.createEndMarker(path[path.length - 1]);
+		}
+
+					createEndMarker(coord) {
+			const totalDistance = this.calculateTotalDistance(); // m 단위로 가져옴
+			const formattedDistance = totalDistance >= 1000 
+				? (totalDistance / 1000).toFixed(2) + "km" 
+				: totalDistance.toFixed(0) + "m";
+
+			const estimatedTime = this.calculateWalkingTime(totalDistance / 1000); // km 단위로 변환
+			const label = `도착<br>${formattedDistance}<br>${estimatedTime}<br>(시속 4km 기준)`;
+
+			const marker = new naver.maps.Marker({
+				position: coord,
+				map: this.map,
+				icon: {
+					content: `<div style="padding:5px; background-color:#fff; border:1px solid #000; text-align:center;">
+								<span style="font-size:12px; font-weight:bold; color:#f00;">${label}</span>
+							  </div>`
+				}
+			});
+			this.markers.push(marker);
+		}
+
+
+		calculateTotalDistance(path = this.currentPath) {
+			if (!Array.isArray(path) || path.length < 2) {
+				return 0; // 🔹 경로가 없으면 거리 0 반환
+			}
+
+			let total = 0;
+			for (let i = 1; i < path.length; i++) {
+				total += this.computeDistance(path[i - 1], path[i]);
+			}
+			return total; // 거리 반환 (m 단위)
+		}
+
+
+
+
+		computeDistance(coord1, coord2) {
+			const R = 6371000;
+			const lat1 = coord1.y * Math.PI / 180;
+			const lat2 = coord2.y * Math.PI / 180;
+			const deltaLat = (coord2.y - coord1.y) * Math.PI / 180;
+			const deltaLng = (coord2.x - coord1.x) * Math.PI / 180;
+
+			const a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+					  Math.cos(lat1) * Math.cos(lat2) *
+					  Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+			const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+			return R * c;
+		}
+
+        calculateWalkingTime(distanceKm) { 
+			const speed = 4; // 시속 4km
+			const hours = Math.floor(distanceKm / speed);
+			const minutes = Math.round((distanceKm % speed) * 60 / speed);
+			return (hours > 0 ? `${hours}시간 ${minutes}분` : `${minutes}분`);
+		}
+
+
+        undoLastPoint() {
+			if (this.currentPath.length > 0) {
+				this.currentPath.pop(); // 마지막 좌표 삭제
+				this.currentPolyline.setPath(this.currentPath); // 반영
+
+				// 마지막 마커 삭제
+				const lastMarker = this.markers.pop();
+				if (lastMarker) lastMarker.setMap(null);
+			}
+		}
+
+    }
+
+
+document.addEventListener("DOMContentLoaded", async () => {
+    window.map = new naver.maps.Map("map", {
+        center: new naver.maps.LatLng(37.5665, 126.9780),
+        zoom: 14
+    });
+
+    // ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
+    new MapHandler(window.map);
+
+    // ✅ 아파트 데이터 불러오기
+    await loadApartments();
+
+    // ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
+    naver.maps.Event.addListener(window.map, "idle", () => {
+        const bounds = window.map.getBounds();
+        updateMarkers(bounds);
+    });
+
+    console.log("✅ 네이버 지도 초기화 완료.");
+});
+
+
+
+	const mapElement = document.getElementById('map');
+
+	function getMapSize() {
+		return new naver.maps.Size(mapElement.offsetWidth, mapElement.offsetHeight);
+	}
+
+
+    // ✅ 현재 위치 버튼 클릭 시 실행
+    document.getElementById("locationButton").addEventListener("click", () => {
+        if (!window.map || !(window.map instanceof naver.maps.Map)) {
+            console.error("네이버 지도 객체가 올바르게 초기화되지 않았습니다.");
+            return;
+        }
+
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    updateUserLocation(position);
+                    startTracking(); // ✅ 위치 추적 시작
+                },
+                (error) => {
+                    alert("현재 위치를 찾을 수 없습니다. 위치 권한을 확인하세요.");
+                }
+            );
+        } else {
+            alert("이 브라우저에서는 위치 정보를 지원하지 않습니다.");
+        }
+    });
+
+    // ✅ 위치가 변경될 때마다 자동 업데이트 (watchPosition 사용)
+    function startTracking() {
+        if (navigator.geolocation) {
+            window.watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    updateUserLocation(position);
+                },
+                (error) => {
+                    alert("실시간 위치 추적에 실패했습니다.");
+                },
+                { enableHighAccuracy: true }
+            );
+            console.log("위치 추적 시작 (watchId):", window.watchId);
+        }
+    }
+
+    // ✅ 위치 추적 중지
+    function stopTracking() {
+        if (window.watchId !== null) {
+            navigator.geolocation.clearWatch(window.watchId);
+            console.log("위치 추적이 중지되었습니다. watchId:", window.watchId);
+            window.watchId = null;
+
+            // ✅ 마커 및 반경 원(circle) 제거
+            if (window.currentLocationMarker) {
+                window.currentLocationMarker.setMap(null);
+                window.currentLocationMarker = null;
+            }
+            if (window.locationCircle) {
+                window.locationCircle.setMap(null);
+                window.locationCircle = null;
+            }
+        } else {
+            console.warn("위치 추적이 이미 중지된 상태입니다.");
+        }
+    }
+
+    // ✅ "위치 추적 중지" 버튼 이벤트
+    document.getElementById("stopTrackingButton").addEventListener("click", stopTracking);
+
+    // ✅ 현재 위치 업데이트 함수 (위치 변경 시 실행)
+    function updateUserLocation(position) {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        const currentLocation = new naver.maps.LatLng(lat, lon);
+
+        console.log("현재 위치 업데이트:", currentLocation);
+
+        // ✅ 지도 중심 이동
+        window.map.setCenter(currentLocation);
+        window.map.setZoom(16);
+
+        // ✅ 기존 마커 삭제
+        if (window.currentLocationMarker) {
+            window.currentLocationMarker.setMap(null);
+        }
+
+        // ✅ 현재 위치 마커 추가
+        window.currentLocationMarker = new naver.maps.Marker({
+            position: currentLocation,
+            map: window.map,
+            icon: {
+                content: `<div style="width: 14px; height: 14px; background-color: red; border-radius: 50%; border: 3px solid white;"></div>`,
+                anchor: new naver.maps.Point(7, 7)
+            }
+        });
+
+    }
+/*
+    // ✅ 지도 크기 자동 조정
+    const mapElement = document.getElementById("map");
+
+    function updateMapSize() {
+        if (window.map) {
+            mapElement.style.width = "100%";
+            mapElement.style.height = `calc(100vh - 260px)`;
+            window.map.refresh(); // ✅ 지도 크기 강제 업데이트
+        }
+    }
+
+    new ResizeObserver(updateMapSize).observe(mapElement);
+    window.addEventListener("resize", updateMapSize);
+*/
+
+	let map; // ✅ 전역 변수 설정
+			let watchId = null; // ✅ 위치 추적 ID 저장 (위치 추적 시작 시 값이 설정됨)
+			let locationCircle = null; // ✅ 반경 500m 원 객체 저장
+			let currentLocationMarker = null; // ✅ 현재 위치 마커 저장
+
+let apartmentData = []; // ✅ 전체 아파트 데이터 저장
+let apartmentMarkers = []; // ✅ 지도에 표시된 마커 저장
+let markerCluster = null; // ✅ 마커 클러스터링 객체
+
+// ✅ 1. IndexedDB에 데이터 저장 및 불러오기 (로컬 캐싱)
+/*
+async function getCachedApartments() {
+    return new Promise((resolve) => {
+        const request = indexedDB.open("ApartmentDB", 1);
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains("apartments")) {
+                db.createObjectStore("apartments", { keyPath: "id" });
+            }
+        };
+        request.onsuccess = (event) => {
+            const db = event.target.result;
+            const transaction = db.transaction("apartments", "readonly");
+            const store = transaction.objectStore("apartments");
+            const getRequest = store.getAll();
+            getRequest.onsuccess = () => resolve(getRequest.result);
+            getRequest.onerror = () => resolve([]);
+        };
+        request.onerror = () => resolve([]);
+    });
+}
+
+async function cacheApartments(data) {
+    const request = indexedDB.open("ApartmentDB", 1);
+    request.onsuccess = (event) => {
+        const db = event.target.result;
+        const transaction = db.transaction("apartments", "readwrite");
+        const store = transaction.objectStore("apartments");
+        data.forEach((apartment, index) => {
+            store.put({ id: index, ...apartment });
+        });
+    };
+}
+*/
+// ✅ 2. 아파트 데이터를 fetch()로 가져오기
+async function loadApartments() {
+    //let cachedData = await getCachedApartments();
+/*    
+if (cachedData.length > 0) {
+        apartmentData = cachedData;
+        console.log("✅ 캐시된 아파트 데이터 로드 완료");
+        return;
+    }
+*/
+    try {
+        //const response = await fetch("https://your-github-username.github.io/data/apt.json"); // ✅ JSON 파일 사용
+		const response = await fetch("apt.json");
+        const data = await response.json();
+//console.log("data : ");
+//console.log(data);
+
+
+        apartmentData = data.map((apt, index) => ({
+    id: index,
+    name: apt.name, // ✅ 올바른 속성 접근
+    year: apt.year, // ✅ 올바른 속성 접근
+    units: parseInt(apt.units, 10), // ✅ 올바른 속성 접근
+    lat: parseFloat(apt.lat), // ✅ 올바른 속성 접근
+    lng: parseFloat(apt.lng) // ✅ 올바른 속성 접근
+}));
+
+
+        // ✅ 데이터 캐싱
+        //cacheApartments(apartmentData);
+//console.log("apartmentData : ");
+//console.log(apartmentData);
+        console.log("✅ 아파트 데이터 fetch 완료");
+    } catch (error) {
+        console.error("❌ 아파트 데이터 불러오기 실패:", error);
+    }
+}
+
+// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
+function updateMarkers(bounds) {
+
+	const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
+
+    // ✅ 기존 마커 모두 제거
+    apartmentMarkers.forEach(marker => {
+		if (marker instanceof naver.maps.Marker) {
+			marker.setMap(null);
+		}
+	});
+	apartmentMarkers.length = 0;  // ✅ 배열을 완전히 초기화
+
+    apartmentMarkers = [];
+
+    // ✅ 현재 지도 범위에 있는 아파트 필터링
+    let filteredApartments = apartmentData.filter(apartment => {
+        return bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) && apartment.units >= minUnits;
+    });
+
+    //console.log("📌 현재 지도 범위 내 아파트:", filteredApartments.length, "개");
+
+    // ✅ 새로운 HTML 마커 추가
+    filteredApartments.forEach(apartment => {
+    let yearValue = parseInt(apartment.year.slice(2), 10); // 뒤 2자리 숫자로 변환
+    let bgColor = "#E96A2B"; // 기본값 (00보다 큰 경우)
+
+    if (yearValue > 50) {
+        bgColor = "#5C6267";
+    } else if (yearValue > 20) {
+        bgColor = "#3E24D7";
+    } else if (yearValue > 10) {
+        bgColor = "#EE1A24";
+    } 
+
+    const shortName = apartment.name.length > 6 ? apartment.name.slice(0, 6) + "..." : apartment.name; // ✅ 6글자까지만 표시
+const markerElement = document.createElement("div");
+markerElement.style = `
+    background-color: ${bgColor};
+    color: white;
+    border-radius: 6px;
+    padding: 0px;
+	border: 3px  black;  /* ✅ 테두리 두께 2px, 검정색 */
+    text-align: center;
+    font-size: 12px;
+    font-weight: bold;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+    white-space: nowrap;
+    display: inline-block;
+`;
+
+const nameElement = document.createElement("div");
+nameElement.style = `
+    background: white;
+    color: black;
+    font-size: 14px;
+    font-weight: bold;
+    display: flex; /* ✅ Flexbox 사용 */
+    align-items: center;
+    justify-content: center;
+    padding: 2px 5px; /* ✅ 최소 패딩 유지 */
+    border-radius: 3px;
+    min-width: 90px; /* ✅ 최소 너비 고정 */
+    max-width: 90px; /* ✅ 최대 너비 고정 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+`;
+
+const detailsElement = document.createElement("div");
+detailsElement.style = `
+    font-size: 12px;
+    padding: 2px 5px;
+    min-width: 90px; /* ✅ 세부 정보도 최소 크기 동일 */
+    max-width: 90px;
+    display: flex;
+    justify-content: center;
+`;
+
+nameElement.textContent = apartment.name.length > 6 ? apartment.name.slice(0, 6) + "..." : apartment.name;
+detailsElement.textContent = `${apartment.year.slice(-5)} ${apartment.units}세대`;
+
+markerElement.appendChild(nameElement);
+markerElement.appendChild(detailsElement);
+
+const marker = new naver.maps.Marker({
+    position: new naver.maps.LatLng(apartment.lat, apartment.lng),
+    map: window.map,
+    icon: {
+        content: markerElement,
+        anchor: new naver.maps.Point(10, 30)
+    }
+});
+
+
+    // ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
+    naver.maps.Event.addListener(marker, "click", function() {
+        nameElement.style.maxWidth = "500px"; // ✅ 전체 이름이 보이도록 확장
+        nameElement.textContent = apartment.name; // ✅ 전체 이름 표시
+
+        setTimeout(() => {
+            nameElement.style.maxWidth = "70px"; // ✅ 3초 후 다시 축소
+            nameElement.textContent = shortName; // ✅ 다시 축약된 이름으로 변경
+        }, 1500);
+    });
+
+    apartmentMarkers.push(marker);
+});
+
+
+    // ✅ 마커 클러스터링 적용 (기존 마커는 클러스터링 대상에서 제외)
+  if (markerCluster) {
+    markerCluster.setMarkers([]); // ✅ 클러스터 초기화
+    markerCluster.setMarkers(apartmentMarkers);
+} else {
+    markerCluster = new MarkerClustering({
+        minClusterSize: 2,
+        maxZoom: 14,
+        map: window.map,
+        markers: apartmentMarkers,
+        disableClickZoom: true, // ✅ 클러스터 클릭 시 기본 마커가 표시되지 않도록 설정
+        icons: [{
+            content: `<div style="display:none;"></div>`,  // ✅ 기본 마커를 안 보이게 설정
+            size: new naver.maps.Size(1, 1),
+            anchor: new naver.maps.Point(0, 0)
+        }]
+    });
+}
+}
+let schoolMarkers = []; // ✅ 지도에 표시된 학교 마커 저장
+
+async function loadSchools() {
+    try {
+        const response = await fetch("school.json");
+        const schools = await response.json();
+        
+        console.log("✅ 학교 데이터 로드 완료", schools);
+
+        window.schoolData = schools; // ✅ 전체 학교 데이터 저장
+
+        // ✅ 초기 마커 업데이트
+        updateSchoolMarkers(window.map.getBounds());
+
+        // ✅ 지도 이동 시 현재 범위 내 학교 마커 업데이트
+        naver.maps.Event.addListener(window.map, "idle", function () {
+            const bounds = window.map.getBounds();
+            updateSchoolMarkers(bounds);
+        });
+
+    } catch (error) {
+        console.error("❌ 학교 데이터 로드 실패:", error);
+    }
+}
+
+// ✅ 바운더리 내 학교만 표시
+function updateSchoolMarkers(bounds) {
+    // ✅ 기존 마커 제거
+    schoolMarkers.forEach(marker => {
+        if (marker instanceof naver.maps.Marker) {
+            marker.setMap(null);
+        }
+    });
+    schoolMarkers = []; // ✅ 배열 초기화
+
+    // ✅ 현재 지도 범위에 있는 학교 필터링
+    let filteredSchools = window.schoolData.filter(school => {
+        return bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude));
+    });
+
+    console.log("📌 현재 지도 범위 내 학교:", filteredSchools.length, "개");
+
+    filteredSchools.forEach(school => {
+        const cleanSchoolName = school.schoolName.replace(/등학교/g, ""); // ✅ "등학교" 제거
+
+        // ✅ 마커 컨테이너
+        const markerContainer = document.createElement("div");
+        markerContainer.style = `
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        `;
+
+        // ✅ 마커 아이콘
+        const markerIcon = document.createElement("img");
+        markerIcon.src = "school.png";
+        markerIcon.style = "width: 32px; height: 32px;";
+
+        // ✅ 정보 박스 (학교명 + 학급당 학생 수)
+        const infoBox = document.createElement("div");
+        infoBox.style = `
+            background: white;
+            border: 1px solid gray;
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 12px;
+            font-weight: bold;
+            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+            white-space: nowrap;
+            margin-top: 4px;
+        `;
+        infoBox.textContent = `${cleanSchoolName} (${school.studentCountPerClassroom})`;
+
+        markerContainer.appendChild(markerIcon);
+        markerContainer.appendChild(infoBox);
+
+        const marker = new naver.maps.Marker({
+            position: new naver.maps.LatLng(school.latitude, school.longitude),
+            map: window.map,
+            icon: {
+                content: markerContainer,
+                anchor: new naver.maps.Point(16, 32)
+            }
+        });
+
+        schoolMarkers.push(marker);
+    });
+}
+
+// ✅ 페이지 로드 시 실행
+document.addEventListener("DOMContentLoaded", async () => {
+    await loadSchools();
+});
+
+
+</script>
+
+
+
+
+
+</body>
+</html>
