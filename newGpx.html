@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="route.png" type="image/png">
+    <title>[루시퍼홍] 홍루트</title>
+<script src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=hcuap73kdc"></script>
+<script type="text/javascript" src="MarkerClustering.js"></script>
+
+
+
+    <style>
+        #map { width: 100%; height: calc(100vh - 260px); resize: both; }
+        #controls { margin: 10px; }
+        button { margin: 5px; padding: 10px; cursor: pointer; }
+
+        /* 현재 위치 버튼 스타일 */
+        #locationButton {
+            position: absolute;
+            bottom: 15px;
+            right: 15px;
+            background-color: white;
+            border: 2px solid gray;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+            text-align: center;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+        }
+
+        /* 위치 추적 종료 버튼 */
+        #stopTrackingButton {
+            position: absolute;
+            bottom: 15px;
+            right: 70px;
+            background-color: white;
+            border: 2px solid gray;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 14px;
+            text-align: center;
+            box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
+        }
+    </style>
+</head>
+<body>
+    <h1>[루시퍼홍] 홍루트(GPX)</h1>
+    <div id="map"></div>
+    <div id="controls">
+        <button id="startPolyline">경로 그리기</button>
+        <button id="completePolyline">경로 그리기 완료</button>
+        <button id="downloadGPX">GPX 다운로드</button>
+        <button id="uploadGPX">GPX 불러오기</button>
+        <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
+        <button id="clearMap">초기화</button>
+    </div>
+    <div id="locationButton" title="현재 위치">📍</div> <!-- ✅ 현재 위치 버튼 -->
+    <div id="stopTrackingButton" title="위치 추적 중지">🛑</div> <!-- ✅ 위치 추적 중지 버튼 -->
+    <span style="font-size: 14px; color: gray;">
+        백스페이스 : 직전 취소<br>
+        ESC, 마우스 우클릭, [경로 그리기 완료] 버튼 클릭 : 그리기 종료<br>
+        모바일에서도 경로그리기, 다운로드 가능합니다
+    </span>
+
+    <script>
+    let map; // ✅ 전역 변수 설정
+    let watchId = null; // ✅ 위치 추적 ID 저장 (위치 추적 시작 시 값이 설정됨)
+    let locationCircle = null; // ✅ 반경 500m 원 객체 저장
+    let currentLocationMarker = null; // ✅ 현재 위치 마커 저장
+
+window.onload = async function () {
+    // ✅ 지도 객체 생성 (전역 변수 설정)
+    window.map = new naver.maps.Map("map", {
+        center: new naver.maps.LatLng(37.484809, 127.057097), // 초기 중심 좌표
+        zoom: 14
+    });
+
+    // ✅ 아파트 데이터 불러오기
+    await loadApartments();
+
+    // ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
+    naver.maps.Event.addListener(window.map, "idle", function() {
+        const bounds = window.map.getBounds();
+        updateMarkers(bounds);
+    });
+
+    console.log("✅ 네이버 지도 초기화 완료.");
+};
+
+    // ✅ 현재 위치 버튼 클릭 시 실행
+    document.getElementById("locationButton").addEventListener("click", () => {
+        if (!window.map || !(window.map instanceof naver.maps.Map)) {
+            console.error("네이버 지도 객체가 올바르게 초기화되지 않았습니다.");
+            return;
+        }
+
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    updateUserLocation(position);
+                    startTracking(); // ✅ 위치 추적 시작
+                },
+                (error) => {
+                    alert("현재 위치를 찾을 수 없습니다. 위치 권한을 확인하세요.");
+                }
+            );
+        } else {
+            alert("이 브라우저에서는 위치 정보를 지원하지 않습니다.");
+        }
+    });
+
+    // ✅ 위치가 변경될 때마다 자동 업데이트 (watchPosition 사용)
+    function startTracking() {
+        if (navigator.geolocation) {
+            window.watchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    updateUserLocation(position);
+                },
+                (error) => {
+                    alert("실시간 위치 추적에 실패했습니다.");
+                },
+                { enableHighAccuracy: true }
+            );
+            console.log("위치 추적 시작 (watchId):", window.watchId);
+        }
+    }
+
+    // ✅ 위치 추적 중지
+    function stopTracking() {
+        if (window.watchId !== null) {
+            navigator.geolocation.clearWatch(window.watchId);
+            console.log("위치 추적이 중지되었습니다. watchId:", window.watchId);
+            window.watchId = null;
+
+            // ✅ 마커 및 반경 원(circle) 제거
+            if (window.currentLocationMarker) {
+                window.currentLocationMarker.setMap(null);
+                window.currentLocationMarker = null;
+            }
+            if (window.locationCircle) {
+                window.locationCircle.setMap(null);
+                window.locationCircle = null;
+            }
+        } else {
+            console.warn("위치 추적이 이미 중지된 상태입니다.");
+        }
+    }
+
+    // ✅ "위치 추적 중지" 버튼 이벤트
+    document.getElementById("stopTrackingButton").addEventListener("click", stopTracking);
+
+    // ✅ 현재 위치 업데이트 함수 (위치 변경 시 실행)
+    function updateUserLocation(position) {
+        const lat = position.coords.latitude;
+        const lon = position.coords.longitude;
+        const currentLocation = new naver.maps.LatLng(lat, lon);
+
+        console.log("현재 위치 업데이트:", currentLocation);
+
+        // ✅ 지도 중심 이동
+        window.map.setCenter(currentLocation);
+        window.map.setZoom(16);
+
+        // ✅ 기존 마커 삭제
+        if (window.currentLocationMarker) {
+            window.currentLocationMarker.setMap(null);
+        }
+
+        // ✅ 현재 위치 마커 추가
+        window.currentLocationMarker = new naver.maps.Marker({
+            position: currentLocation,
+            map: window.map,
+            icon: {
+                content: `<div style="width: 14px; height: 14px; background-color: red; border-radius: 50%; border: 3px solid white;"></div>`,
+                anchor: new naver.maps.Point(7, 7)
+            }
+        });
+
+    }
+/*
+    // ✅ 지도 크기 자동 조정
+    const mapElement = document.getElementById("map");
+
+    function updateMapSize() {
+        if (window.map) {
+            mapElement.style.width = "100%";
+            mapElement.style.height = `calc(100vh - 260px)`;
+            window.map.refresh(); // ✅ 지도 크기 강제 업데이트
+        }
+    }
+
+    new ResizeObserver(updateMapSize).observe(mapElement);
+    window.addEventListener("resize", updateMapSize);
+*/
+
+
+let apartmentData = []; // ✅ 전체 아파트 데이터 저장
+let apartmentMarkers = []; // ✅ 지도에 표시된 마커 저장
+let markerCluster = null; // ✅ 마커 클러스터링 객체
+
+// ✅ 1. IndexedDB에 데이터 저장 및 불러오기 (로컬 캐싱)
+async function getCachedApartments() {
+    return new Promise((resolve) => {
+        const request = indexedDB.open("ApartmentDB", 1);
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains("apartments")) {
+                db.createObjectStore("apartments", { keyPath: "id" });
+            }
+        };
+        request.onsuccess = (event) => {
+            const db = event.target.result;
+            const transaction = db.transaction("apartments", "readonly");
+            const store = transaction.objectStore("apartments");
+            const getRequest = store.getAll();
+            getRequest.onsuccess = () => resolve(getRequest.result);
+            getRequest.onerror = () => resolve([]);
+        };
+        request.onerror = () => resolve([]);
+    });
+}
+
+async function cacheApartments(data) {
+    const request = indexedDB.open("ApartmentDB", 1);
+    request.onsuccess = (event) => {
+        const db = event.target.result;
+        const transaction = db.transaction("apartments", "readwrite");
+        const store = transaction.objectStore("apartments");
+        data.forEach((apartment, index) => {
+            store.put({ id: index, ...apartment });
+        });
+    };
+}
+
+// ✅ 2. 아파트 데이터를 fetch()로 가져오기
+async function loadApartments() {
+    let cachedData = await getCachedApartments();
+    if (cachedData.length > 0) {
+        apartmentData = cachedData;
+        console.log("✅ 캐시된 아파트 데이터 로드 완료");
+        return;
+    }
+
+    try {
+        //const response = await fetch("https://your-github-username.github.io/data/apt.json"); // ✅ JSON 파일 사용
+		const response = await fetch("apt.json");
+        const data = await response.json();
+console.log(data);
+        apartmentData = data.map((apt, index) => ({
+            id: index,
+            name: apt[0], // 아파트 이름
+            year: apt[1], // 건축년도
+            units: parseInt(apt[2], 10), // 세대수
+            lat: parseFloat(apt[3]), // 위도
+            lng: parseFloat(apt[4]) // 경도
+        }));
+
+        // ✅ 데이터 캐싱
+        cacheApartments(apartmentData);
+        console.log("✅ 아파트 데이터 fetch 완료");
+    } catch (error) {
+        console.error("❌ 아파트 데이터 불러오기 실패:", error);
+    }
+}
+
+// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
+function updateMarkers(bounds) {
+    // ✅ 기존 마커 제거
+console.log(bounds);
+    apartmentMarkers.forEach(marker => marker.setMap(null));
+    apartmentMarkers = [];
+
+    // ✅ 현재 지도 범위에 있는 아파트 필터링
+    let filteredApartments = apartmentData.filter(apartment => {
+        return bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng));
+    });
+
+    console.log("📌 현재 지도 범위 내 아파트:", filteredApartments.length, "개");
+
+    // ✅ 새로운 마커 추가
+    filteredApartments.forEach(apartment => {
+        const marker = new naver.maps.Marker({
+            position: new naver.maps.LatLng(apartment.lat, apartment.lng),
+            title: `${apartment.name} (${apartment.year}, ${apartment.units}세대)`
+        });
+        apartmentMarkers.push(marker);
+    });
+
+  // ✅ 마커 클러스터링 적용 (올바른 방식)
+
+console.log("네이버 지도 객체:", window.naver.maps);
+//console.log("MarkerClustering 객체:", naver.maps.visualization);
+
+            if (markerCluster) {
+                markerCluster.setMarkers(apartmentMarkers);
+            } else {
+                markerCluster = new MarkerClustering({
+                    minClusterSize: 2,
+                    maxZoom: 16,
+                    map: window.map,
+                    markers: apartmentMarkers
+                });
+            }
+}
+
+
+</script>
+
+</body>
+</html>
