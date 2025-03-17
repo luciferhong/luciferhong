@@ -179,6 +179,9 @@
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label><input type="checkbox" id="toggleSchools" >초</label>
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
+	<label><input type="checkbox" id="toggleFacilities">환경</label>
+	<label><input type="checkbox" id="toggleStarbucks">스벅</label>
+
 
 
     <!-- ✅ 스케일 조정 버튼을 '초등학교' 체크박스 옆으로 이동 
@@ -929,7 +932,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadSchools();
     await loadMiddleSchools();
 	await loadApartmentsDetail();
-
+    await loadFacilities();
+    await loadStarbucks();
 
     const metaViewport = document.querySelector("meta[name='viewport']");
 
@@ -1341,6 +1345,169 @@ function updateMiddleSchoolMarkers() {
 document.getElementById("toggleMiddleSchools").addEventListener("change", () => {
     updateMiddleSchoolMarkers(); // ✅ 즉시 업데이트
 });
+
+let facilityMarkers = []; // ✅ 지도에 표시된 시설 마커 저장
+
+async function loadFacilities() {
+    try {
+        const response = await fetch("facility.json");
+        const facilities = await response.json();
+
+        console.log("✅ 시설 데이터 로드 완료", facilities);
+        window.facilityData = facilities; // ✅ 전체 시설 데이터 저장
+
+        // ✅ 초기 마커 업데이트
+        updateFacilityMarkers(window.map.getBounds());
+
+        // ✅ 지도 이동 시 현재 범위 내 시설 마커 업데이트
+        naver.maps.Event.addListener(window.map, "idle", function () {
+            const bounds = window.map.getBounds();
+            updateFacilityMarkers(bounds);
+        });
+
+    } catch (error) {
+        console.error("❌ 시설 데이터 로드 실패:", error);
+    }
+}
+
+function updateFacilityMarkers() {
+    const showFacilities = document.getElementById("toggleFacilities").checked;
+
+    // ✅ 기존 시설 마커 제거
+    facilityMarkers.forEach(marker => marker.setMap(null));
+    facilityMarkers = [];
+
+    if (!showFacilities) return; // 체크 해제 시 종료
+    if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+
+    let bounds = window.map.getBounds();
+    let filteredFacilities = window.facilityData.filter(facility =>
+        bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng))
+    );
+
+    filteredFacilities.forEach(facility => {
+        let iconSrc = "default.png"; // 기본 아이콘 (예외처리)
+        if (facility.category === 10) {
+            iconSrc = facility.description.includes("백화점") ? "depart.png" : "mart.png";
+        } else if (facility.category === 9) {
+            iconSrc = "hospital.png";
+        }
+
+        const markerContainer = document.createElement("div");
+        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+
+        const markerIcon = document.createElement("img");
+        markerIcon.src = iconSrc;
+        markerIcon.style = "width: 32px; height: 32px;";
+
+        const infoBox = document.createElement("div");
+        infoBox.style = `
+            background: white;
+            border: 1px solid gray;
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+            white-space: nowrap;
+            display: inline-block;
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-align: center;
+        `;
+
+		if (facility.category === 10) {
+			infoBox.textContent = `${facility.description} (${facility.name})`;
+		} else if (facility.category === 9) {
+			infoBox.textContent = `${facility.name}`;
+		}
+        //infoBox.textContent = `${facility.description} (${facility.name})`;
+
+        markerContainer.appendChild(markerIcon);
+        markerContainer.appendChild(infoBox);
+
+        const marker = new naver.maps.Marker({
+            position: new naver.maps.LatLng(facility.lat, facility.lng),
+            map: window.map,
+            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
+        });
+
+        facilityMarkers.push(marker);
+    });
+}
+
+// ✅ 시설 체크박스 변경 시 마커 업데이트
+document.getElementById("toggleFacilities").addEventListener("change", () => {
+    updateFacilityMarkers(); // ✅ 즉시 업데이트
+});
+
+let starbucksMarkers = []; // ✅ 지도에 표시된 스타벅스 마커 저장
+
+async function loadStarbucks() {
+    try {
+        const response = await fetch("starbucks.json");
+        const starbucks = await response.json();
+
+        console.log("✅ 스타벅스 데이터 로드 완료", starbucks);
+        window.starbucksData = starbucks; // ✅ 전체 스타벅스 데이터 저장
+
+        // ✅ 초기 마커 업데이트
+        updateStarbucksMarkers(window.map.getBounds());
+
+        // ✅ 지도 이동 시 현재 범위 내 스타벅스 마커 업데이트
+        naver.maps.Event.addListener(window.map, "idle", function () {
+            const bounds = window.map.getBounds();
+            updateStarbucksMarkers(bounds);
+        });
+
+    } catch (error) {
+        console.error("❌ 스타벅스 데이터 로드 실패:", error);
+    }
+}
+
+function updateStarbucksMarkers() {
+    const showStarbucks = document.getElementById("toggleStarbucks").checked;
+
+    // ✅ 기존 스타벅스 마커 제거
+    starbucksMarkers.forEach(marker => marker.setMap(null));
+    starbucksMarkers = [];
+
+    if (!showStarbucks) return; // 체크 해제 시 종료
+    if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+
+    let bounds = window.map.getBounds();
+    let filteredStarbucks = window.starbucksData.filter(store =>
+        bounds.hasLatLng(new naver.maps.LatLng(store.lat, store.lot))
+    );
+
+    filteredStarbucks.forEach(store => {
+        let iconSrc = store.s_name.includes("R") ? "starbucksReserve.png" : "starbucks.png";
+
+        const markerContainer = document.createElement("div");
+        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+
+        const markerIcon = document.createElement("img");
+        markerIcon.src = iconSrc;
+        markerIcon.style = "width: 32px; height: 32px;";
+
+        markerContainer.appendChild(markerIcon);
+
+        const marker = new naver.maps.Marker({
+            position: new naver.maps.LatLng(store.lat, store.lot),
+            map: window.map,
+            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
+        });
+
+        starbucksMarkers.push(marker);
+    });
+}
+
+// ✅ 스타벅스 체크박스 변경 시 마커 업데이트
+document.getElementById("toggleStarbucks").addEventListener("change", () => {
+    updateStarbucksMarkers(); // ✅ 즉시 업데이트
+});
+
 
 
 
