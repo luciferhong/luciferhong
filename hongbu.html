@@ -177,7 +177,9 @@
     <label for="unitFilter">최소세대수: </label>
     <input type="number" id="unitFilter" min="0" value="190">
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
-    <label><input type="checkbox" id="toggleSchools" checked>초교</label>
+    <label><input type="checkbox" id="toggleSchools" >초</label>
+	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
+
 
     <!-- ✅ 스케일 조정 버튼을 '초등학교' 체크박스 옆으로 이동 
     <div id="scaleControls">
@@ -713,7 +715,9 @@
 	 
 
 		if (!showApartments) return; // 아파트 표시 체크 해제 시 종료
-
+if (window.map.getZoom() < 14) { 
+        return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+    }
 		// ✅ 현재 지도 범위에 있는 아파트 필터링
 		let filteredApartments = apartmentData.filter(apartment => {
 			return bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) && apartment.units >= minUnits;
@@ -842,7 +846,7 @@ let schoolMarkers = []; // ✅ 지도에 표시된 학교 마커 저장
 
 async function loadSchools() {
     try {
-        const response = await fetch("school.json");
+        const response = await fetch("eliSchools.json");
         const schools = await response.json();
         
         //console.log("✅ 학교 데이터 로드 완료", schools);
@@ -871,7 +875,9 @@ function updateSchoolMarkers() {
     schoolMarkers = [];
 
     if (!showSchools) return; // 초등학교 표시 체크 해제 시 종료
-
+	if (window.map.getZoom() < 14) { 
+			return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+	}
     let bounds = window.map.getBounds();
     let filteredSchools = window.schoolData.filter(school =>
         bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude))
@@ -882,7 +888,7 @@ function updateSchoolMarkers() {
         markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
 
         const markerIcon = document.createElement("img");
-        markerIcon.src = "school.png";
+        markerIcon.src = "eliSchool.png";
         markerIcon.style = "width: 32px; height: 32px;";
 
         const infoBox = document.createElement("div");
@@ -921,6 +927,7 @@ function updateSchoolMarkers() {
 document.addEventListener("DOMContentLoaded", async () => {
 	await loadApartments();
     await loadSchools();
+    await loadMiddleSchools();
 	await loadApartmentsDetail();
 
 
@@ -1246,6 +1253,95 @@ document.addEventListener("touchmove", function(event) {
         }
     }
 }, { passive: false });
+
+let middleSchoolMarkers = []; // ✅ 지도에 표시된 중학교 마커 저장
+
+async function loadMiddleSchools() {
+    try {
+        const response = await fetch("middleSchools.json");
+        const middleSchools = await response.json();
+        
+        console.log("✅ 중학교 데이터 로드 완료", middleSchools);
+
+        window.middleSchoolData = middleSchools; // ✅ 전체 중학교 데이터 저장
+
+        // ✅ 초기 마커 업데이트
+        updateMiddleSchoolMarkers(window.map.getBounds());
+
+        // ✅ 지도 이동 시 현재 범위 내 중학교 마커 업데이트
+        naver.maps.Event.addListener(window.map, "idle", function () {
+            const bounds = window.map.getBounds();
+            updateMiddleSchoolMarkers(bounds);
+        });
+
+    } catch (error) {
+        console.error("❌ 중학교 데이터 로드 실패:", error);
+    }
+}
+
+function updateMiddleSchoolMarkers() {
+    const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
+	
+    // ✅ 기존 중학교 마커 제거
+    middleSchoolMarkers.forEach(marker => marker.setMap(null));
+    middleSchoolMarkers = [];
+
+    if (!showMiddleSchools) return; // 중학교 표시 체크 해제 시 종료
+	
+	if (window.map.getZoom() < 14) { 
+        return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+    }
+
+    let bounds = window.map.getBounds();
+    let filteredSchools = window.middleSchoolData.filter(school =>
+        bounds.hasLatLng(new naver.maps.LatLng(school["위도"], school["경도"]))
+    );
+
+    filteredSchools.forEach(school => {
+        const markerContainer = document.createElement("div");
+        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+
+        const markerIcon = document.createElement("img");
+        markerIcon.src = "midSchool.png";
+        markerIcon.style = "width: 32px; height: 32px;";
+
+        const infoBox = document.createElement("div");
+        infoBox.style = `
+            background: white;
+            border: 1px solid gray;
+            border-radius: 6px;
+            padding: 5px 10px;
+            font-size: 14px;
+            font-weight: bold;
+            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+            white-space: nowrap;
+            display: inline-block;
+            max-width: 140px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-align: center;
+        `;
+        infoBox.textContent = `${school["학교명"]} (${school["학업성취도"]})`;
+
+        markerContainer.appendChild(markerIcon);
+        markerContainer.appendChild(infoBox);
+
+        const marker = new naver.maps.Marker({
+            position: new naver.maps.LatLng(school["위도"], school["경도"]),
+            map: window.map,
+            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
+        });
+
+        middleSchoolMarkers.push(marker);
+    });
+}
+
+
+// ✅ 중학교 체크박스 변경 시 마커 업데이트
+document.getElementById("toggleMiddleSchools").addEventListener("change", () => {
+    updateMiddleSchoolMarkers(); // ✅ 즉시 업데이트
+});
+
 
 
 </script>
