@@ -821,7 +821,7 @@ if (window.map.getZoom() < 14) {
         });
 	});
 
-
+	addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
     apartmentMarkers.push(marker);
 });
 
@@ -920,7 +920,7 @@ function updateSchoolMarkers() {
             map: window.map,
             icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
         });
-
+		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
         schoolMarkers.push(marker);
     });
 }
@@ -1259,7 +1259,7 @@ document.addEventListener("touchmove", function(event) {
 }, { passive: false });
 
 let middleSchoolMarkers = []; // ✅ 지도에 표시된 중학교 마커 저장
-
+/*
 async function loadMiddleSchools() {
     try {
         const response = await fetch("middleSchools.json");
@@ -1282,6 +1282,42 @@ async function loadMiddleSchools() {
         console.error("❌ 중학교 데이터 로드 실패:", error);
     }
 }
+*/
+
+async function loadMiddleSchools() {
+    try {
+        const response = await fetch("middleSchools.json");
+        let middleSchools = await response.json();
+
+        // ✅ 중복 제거: 학교 ID를 기준으로 첫 번째 값만 유지
+        const uniqueSchools = [];
+        const seenIds = new Set();
+
+        middleSchools.forEach(school => {
+            if (!seenIds.has(school["학교 ID"])) {
+                seenIds.add(school["학교 ID"]);
+                uniqueSchools.push(school);
+            }
+        });
+
+        //console.log("✅ 중복 제거 완료: 총", uniqueSchools.length, "개 학교 로드됨");
+
+        window.middleSchoolData = uniqueSchools; // ✅ 중복 제거된 데이터 저장
+
+        // ✅ 마커 업데이트
+        updateMiddleSchoolMarkers();
+
+        // ✅ 지도 이동 시 현재 범위 내 중학교 마커 업데이트
+        naver.maps.Event.addListener(window.map, "idle", function () {
+            updateMiddleSchoolMarkers();
+        });
+
+    } catch (error) {
+        console.error("❌ 중학교 데이터 로드 실패:", error);
+    }
+}
+
+
 
 function updateMiddleSchoolMarkers() {
     const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
@@ -1335,7 +1371,7 @@ function updateMiddleSchoolMarkers() {
             map: window.map,
             icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
         });
-
+		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
         middleSchoolMarkers.push(marker);
     });
 }
@@ -1432,7 +1468,7 @@ function updateFacilityMarkers() {
             map: window.map,
             icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
         });
-
+		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
         facilityMarkers.push(marker);
     });
 }
@@ -1498,7 +1534,7 @@ function updateStarbucksMarkers() {
             map: window.map,
             icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
         });
-
+		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
         starbucksMarkers.push(marker);
     });
 }
@@ -1509,7 +1545,82 @@ document.getElementById("toggleStarbucks").addEventListener("change", () => {
 });
 
 
+////////////////////////// 이동 이벤트 //////////////////////////
+var activeMarker = null; // ✅ 현재 선택된 마커
+var activeMarkerElement = null; // ✅ 현재 선택된 마커의 요소 (테두리 변경용)
 
+// ✅ 🔥 마커 스타일 업데이트 함수 (선택된 경우 강조)
+function updateMarkerSelection(markerElement, isSelected) {
+    if (markerElement) {
+        if (isSelected) {
+            markerElement.style.border = "2px solid red"; // 🔥 빨간 테두리 추가
+        } else {
+            markerElement.style.border = ""; // 🔥 원래대로 복귀
+        }
+    }
+}
+
+// ✅ 마커 우클릭 시 선택 이벤트 추가 (마커 생성 시 적용)
+// ✅ 마커 우클릭 시 선택 이벤트 추가 (마커 생성 시 적용)
+function addMarkerRightClickEvent(marker) {
+    naver.maps.Event.addListener(marker, "rightclick", (e) => {
+        if (!e || !e.domEvent || typeof e.domEvent.preventDefault !== "function") {
+            console.warn("⚠️ 이벤트 객체가 올바르지 않음:", e);
+            return;
+        }
+
+        e.domEvent.preventDefault(); // ✅ 기본 우클릭 메뉴 방지
+        e.domEvent.stopPropagation();
+
+        if (!e.overlay) return; // ✅ 마커가 클릭되지 않은 경우 종료
+
+        if (activeMarkerElement) {
+            updateMarkerSelection(activeMarkerElement, false);
+        }
+
+        activeMarker = marker;
+        activeMarkerElement = marker.getElement(); // ✅ 마커의 HTML 요소 가져오기
+        updateMarkerSelection(activeMarkerElement, true);
+
+        //console.log("📌 선택된 마커:", marker);
+    });
+}
+
+
+
+// ✅ WASD 키 입력으로 마커 이동
+function handleKeyDown(event) {
+    if (!activeMarker) {
+        console.warn("⚠️ 이동할 마커가 선택되지 않았습니다.");
+        return;
+    }
+
+    let position = activeMarker.getPosition();
+    let lat = position.lat();
+    let lng = position.lng();
+    let step = 0.0004; // 🔥 이동 거리 조절 (기본 0.0008°)
+
+    switch (event.key) {
+        case "w": case "ㅈ": lat += step; break;
+        case "s": case "ㄴ": lat -= step; break;
+        case "a": case "ㅁ": lng -= step; break;
+        case "d": case "ㅇ": lng += step; break;
+        case "Escape":
+            updateMarkerSelection(activeMarkerElement, false);
+            activeMarker = null;
+            activeMarkerElement = null;
+            //console.log("❌ 마커 선택 해제");
+            return;
+    }
+
+    let newPosition = new naver.maps.LatLng(lat, lng);
+    activeMarker.setPosition(newPosition);
+    //console.log("➡️ 이동한 마커:", newPosition);
+}
+
+// ✅ 키보드 이벤트 등록
+document.removeEventListener("keydown", handleKeyDown);
+document.addEventListener("keydown", handleKeyDown);
 
 </script>
 
