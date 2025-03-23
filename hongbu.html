@@ -164,7 +164,23 @@
     cursor: pointer;
     border-radius: 3px;
 }
+table {
+    border-collapse: collapse; /* ✅ 테두리 중복 제거 */
+    width: 100%; /* ✅ 테이블 크기 조정 */
+}
 
+td, th {
+    border: 1px solid black; /* ✅ 테두리 스타일 확인 */
+    padding: 5px; /* ✅ 내부 여백 조정 */
+    text-align: center;
+    white-space: nowrap; /* ✅ 줄바꿈 방지 */
+}
+buttonContainer {
+    display: flex;
+    justify-content: center; /* ✅ 버튼들을 중앙 정렬 */
+    gap: 10px; /* ✅ 버튼 간격 조정 */
+    margin-top: 10px;
+}
 
     </style>
 </head>
@@ -181,6 +197,8 @@
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
 	<label><input type="checkbox" id="toggleFacilities">환경</label>
 	<label><input type="checkbox" id="toggleStarbucks">스벅</label>
+	<label><input type="checkbox" id="toggleSiseMap" >시세지도</label>
+
 
 
 
@@ -203,7 +221,12 @@
         <button id="downloadGPX">GPX 다운로드</button>
         <button id="uploadGPX">GPX 불러오기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
-        <button id="clearMap">초기화</button>
+        <button id="clearMap">경로 초기화</button>
+<button id="siseExportBtn" style="display: none;">시세지도 백업</button>
+<button id="siseImportBtn" style="display: none;">시세지도 복원</button>
+<button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
+
+
 
     </div>
     <div id="locationButton" title="현재 위치">📍</div> <!-- ✅ 현재 위치 버튼 -->
@@ -237,6 +260,53 @@
 				document.getElementById("undoLastPointButton").addEventListener("click", () => this.undoLastPoint());
 				document.getElementById("completePolyline").addEventListener("click", () => this.completePolyline()); // ✅ 추가됨*				
 				document.getElementById("downloadGPX").addEventListener("click", () => this.downloadGPX());
+				 // ✅ 시세지도 백업 (익스포트)
+				document.getElementById("siseExportBtn").addEventListener("click", () => {
+					exportToJSON();
+				});
+
+				// ✅ 시세지도 복원 (임포트)
+				document.getElementById("siseImportBtn").addEventListener("click", () => {
+					const input = document.createElement('input');
+					input.type = 'file';
+					input.accept = 'application/json';
+					input.onchange = function (event) {
+						const file = event.target.files[0];
+						if (file) {
+							importFromJSON(file);
+						}
+					};
+					input.click();
+				});
+
+				document.getElementById("siseResetBtn").addEventListener("click", () => {
+				const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
+				if (!confirmReset) return;
+
+				const request = indexedDB.open("hongbu", 1);
+				request.onsuccess = function(event) {
+					const db = event.target.result;
+					const transaction = db.transaction(["apartments"], "readwrite");
+					const store = transaction.objectStore("apartments");
+
+					const clearRequest = store.clear(); // ✅ 전체 삭제
+
+					clearRequest.onsuccess = function() {
+						alert("✅ 시세지도 데이터가 초기화되었습니다.");
+						// 🔁 마커 업데이트
+						prevSiseMapState = "초기화";
+						updateMarkers(window.map.getBounds());
+					};
+
+					clearRequest.onerror = function(event) {
+						console.error("❌ 시세지도 초기화 실패:", event.target.error);
+						alert("❌ 초기화 중 오류가 발생했습니다.");
+					};
+				};
+			});
+
+
+
 				document.getElementById("uploadGPX").addEventListener("click", () => document.getElementById("gpxFileInput").click());
 
 				// 🔹 `this`를 `MapHandler` 인스턴스로 유지
@@ -606,14 +676,14 @@
 				},
 				{ enableHighAccuracy: true }
 			);
-			console.log("위치 추적 시작 (watchId):", window.watchId);
+			//console.log("위치 추적 시작 (watchId):", window.watchId);
 		}
 	}
 
 	function stopTracking() {
 		if (window.watchId !== null) {
 			navigator.geolocation.clearWatch(window.watchId);
-			console.log("위치 추적이 중지되었습니다. watchId:", window.watchId);
+			//console.log("위치 추적이 중지되었습니다. watchId:", window.watchId);
 			window.watchId = null;
 			isTracking = false; // ✅ 위치 추적 비활성화
 
@@ -689,69 +759,161 @@
 			}));
 
 			
-			console.log("✅ 아파트 데이터 fetch 완료");
+			//console.log("✅ 아파트 데이터 fetch 완료");
 			updateMarkers(window.map.getBounds())
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
 		}
 	}
 
-	// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
-	function updateMarkers(bounds) {
 
-		const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
-		const showApartments = document.getElementById("toggleApartments").checked;
 
-		
+function closePopup() {
+  //console.log("호출")
+    isPopupOpen = false;
+    if (activeMarkerSet) {
 
-	   // ✅ 기존 마커 모두 제거
-		apartmentMarkers.forEach(marker => {
-			if (marker instanceof naver.maps.Marker) {
-				marker.setMap(null);
-			}
-		});
-
-		// ✅ 마커 배열 초기화 (마커가 여전히 남아있는 경우 대비)
-		apartmentMarkers.length = 0;
-
-		// ✅ 마커 클러스터링을 사용 중이라면 기존 마커 초기화
-		 if (markerCluster) {
-			markerCluster.setMarkers([]); // 기존 마커를 제거
-		}
-
-	 
-
-		if (!showApartments) return; // 아파트 표시 체크 해제 시 종료
-if (window.map.getZoom() < 14) { 
-        return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+        activeMarkerSet = null;
     }
-		// ✅ 현재 지도 범위에 있는 아파트 필터링
-		let filteredApartments = apartmentData.filter(apartment => {
-			return bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) && apartment.units >= minUnits;
-		});
+    //console.log("❌ 이동 모드 종료");
+}
 
-		//console.log("📌 현재 지도 범위 내 아파트:", filteredApartments.length, "개");
+function makeModalDraggable(modal) {
+        let isDragging = false;
+        let offsetX, offsetY;
 
-		// ✅ 새로운 HTML 마커 추가
-		filteredApartments.forEach(apartment => {
-		let yearValue = parseInt(apartment.year.slice(2), 10); // 뒤 2자리 숫자로 변환
-		let bgColor = "#FFFA00"; // yellow
-		let fongColor = "white";
+        const header = document.createElement('div');
+        header.className = 'draggable';
+        header.style.padding = '10px';
+        header.style.cursor = 'move';
+        header.style.backgroundColor = '#f1f1f1';
+        header.style.borderBottom = '1px solid #ccc';
+        header.textContent = 'Drag me';
 
-		if (yearValue > 50) {
-			bgColor = "#5C6267";
-		} else if (yearValue >= 20) {
-			bgColor = "#3E24D7";
-		} else if (yearValue >= 10) {
-			bgColor = "#EE1A24";
-		}
+        modal.insertBefore(header, modal.firstChild);
 
-		if (yearValue >= 00 && yearValue < 10) {
-			fongColor = "black"; 
-		}
+        header.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            offsetX = e.clientX - modal.offsetLeft;
+            offsetY = e.clientY - modal.offsetTop;
+            document.addEventListener('mousemove', moveModal);
+            document.addEventListener('mouseup', stopDragging);
+        });
 
-    const shortName = apartment.name.length > 6 ? apartment.name.slice(0, 6) + "..." : apartment.name; // ✅ 6글자까지만 표시
-	const markerElement = document.createElement("div");
+        function moveModal(e) {
+            if (isDragging) {
+                modal.style.left = `${e.clientX - offsetX}px`;
+                modal.style.top = `${e.clientY - offsetY}px`;
+            }
+        }
+
+        function stopDragging() {
+            isDragging = false;
+            document.removeEventListener('mousemove', moveModal);
+            document.removeEventListener('mouseup', stopDragging);
+        }
+    }
+
+
+// ✅ 시세 마커에서 테이블이 아닌 영역을 우클릭하면 색상 선택 모달 표시
+function addSiseMapMarkerLeftClickEvent(marker, markerElement) {
+//console.log("addSiseMapMarkerLeftClickEvent 실행됨");
+    naver.maps.Event.addListener(marker, "click", (e) => {
+        e.domEvent.preventDefault(); // 기본 우클릭 메뉴 방지
+        e.domEvent.stopPropagation();
+
+        const tableContainer = markerElement.querySelector(".tableContainer");
+
+        // ✅ 테이블 영역을 클릭한 경우 색상 선택 모달을 띄우지 않음
+        if (e.domEvent.target.closest(".tableContainer")) {
+            return;
+        }
+
+        //console.log("🚀 마커 우클릭 감지:", markerElement.dataset);
+
+        let apartmentId = markerElement.dataset.apartmentId;
+        if (!apartmentId) {
+            console.error("❌ apartmentId 찾을 수 없음!");
+            return;
+        }
+
+        showColorPickerModal(apartmentId, markerElement.style.backgroundColor, markerElement.style.color, markerElement.style.fontSize, 
+			(selectedColor, textColor, fontSize) => {
+				markerElement.style.backgroundColor = selectedColor;
+				markerElement.style.color = textColor;
+				markerElement.style.fontSize = fontSize;
+
+				updateMarkerStyleAndSave(apartmentId, selectedColor, textColor, fontSize); // ✅ apartmentId가 정상적으로 전달됨
+			});
+
+
+
+    });
+}
+
+function updateMarkerStyleAndSave(id, selectedColor, textColor, fontSize) {
+    getFromIndexedDB(id, "시세1").then(existingData => {
+        let existingText = existingData?.text || generateDefaultTable();
+
+        // ✅ 기본값 강제 적용
+        selectedColor = selectedColor?.trim() || '#9F9F9F';
+        textColor = textColor?.trim() || '#FFFFFF';
+        fontSize = fontSize?.trim() || '12px';
+
+        //console.log(`🎨 마커 스타일 업데이트 시도 (ID: ${id})`, { selectedColor, textColor, fontSize });
+
+        // ✅ IndexedDB 저장
+        saveToIndexedDB(id, "시세1", existingText, selectedColor, textColor, fontSize);
+
+        // ✅ 마커 스타일 즉시 업데이트
+        let markerElement = document.querySelector(`[data-apartment-id='${id}']`);
+        if (!markerElement) {
+            console.error(`❌ 마커를 찾을 수 없습니다. ID: ${id}`);
+            return;
+        }
+
+        // ✅ 💡 중요: 글자 색상 및 크기 즉시 반영
+        markerElement.style.backgroundColor = selectedColor;
+        markerElement.style.color = textColor;
+        markerElement.style.setProperty("color", textColor, "important"); // ✅ 즉시 적용 (중요도 높이기)
+        markerElement.style.setProperty("font-size", fontSize, "important");
+
+        markerElement.style.setProperty("font-size", fontSize, "important"); // ✅ 즉시 적용 (중요도 높이기)
+
+
+        // ✅ 내부 테이블의 글자색 & 크기 즉시 반영
+        let tableContainer = markerElement.querySelector(".tableContainer");
+        if (tableContainer) {
+            tableContainer.style.color = textColor;
+            tableContainer.style.fontSize = fontSize;
+            tableContainer.style.setProperty("font-size", fontSize, "important");
+        }
+
+    }).catch(error => {
+        console.error("❌ IndexedDB 불러오기 실패:", error);
+    });
+}
+
+
+
+
+
+
+
+
+// ✅ 기본 마커 생성 (시세지도 체크 해제 시)
+function createDefaultMarker(apartment) {
+    let yearValue = parseInt(apartment.year.slice(2), 10);
+    let bgColor = "#FFFA00"; // yellow
+    let fongColor = "white";
+
+    if (yearValue > 50) bgColor = "#5C6267";
+    else if (yearValue >= 20) bgColor = "#3E24D7";
+    else if (yearValue >= 10) bgColor = "#EE1A24";
+
+    if (yearValue >= 00 && yearValue < 10) fongColor = "black"; 
+
+    const markerElement = document.createElement("div");
 	markerElement.style = `
 		background-color: ${bgColor};
 		color: ${fongColor};
@@ -793,68 +955,145 @@ if (window.map.getZoom() < 14) {
 		justify-content: center;
 	`;
 
-	nameElement.textContent = apartment.name.length > 7 ? apartment.name.slice(0, 6) + "..." : apartment.name;
-	detailsElement.textContent = `${apartment.year.slice(-5)} ${apartment.units}세대`;
 
-	markerElement.appendChild(nameElement);
-	markerElement.appendChild(detailsElement);
+    nameElement.textContent = apartment.name.length > 7 ? apartment.name.slice(0, 6) + "..." : apartment.name;
+    detailsElement.textContent = `${apartment.year.slice(-5)} ${apartment.units}세대`;
 
-	const marker = new naver.maps.Marker({
-		position: new naver.maps.LatLng(apartment.lat, apartment.lng),
-		map: window.map,
-		icon: {
-			content: markerElement,
-			anchor: new naver.maps.Point(10, 30)
-		}
-	});
+    markerElement.appendChild(nameElement);
+    markerElement.appendChild(detailsElement);
 
-	marker.apartmentId = apartment.id; // ✅ 마커 객체에 아파트 ID 저장
 
-    // ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
-    naver.maps.Event.addListener(marker, "click",  function(e) {
-		/*
-		nameElement.style.maxWidth = "500px"; // ✅ 전체 이름이 보이도록 확장
-		nameElement.textContent = apartment.name; // ✅ 전체 이름 표시
+		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
+    
 
-		// ✅ 3초 후 다시 축소
-		setTimeout(() => {
-			nameElement.style.maxWidth = "70px"; 
-			nameElement.textContent = shortName;
-		}, 1500);
+    const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(apartment.lat, apartment.lng),
+        map: window.map,
+        icon: {
+            content: markerElement,
+            anchor: new naver.maps.Point(10, 30)
+        }
+    });
+	marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
 
-		// ✅ 아파트 정보 표시 함수 호출
-		console.log(apartment.id);
-		*/
+	naver.maps.Event.addListener(marker, "click",  function(e) {
 		showApartmentInfo(apartment.id, {
-            x: e.offset.x,
-            y: e.offset.y
-        });
+			x: e.offset.x,
+			y: e.offset.y
+		});
 	});
 
-	addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
-    apartmentMarkers.push(marker);
-});
+	addMarkerRightClickEvent(marker, markerElement); // ✅ 마커 선택 이벤트 등록
 
-
-    // ✅ 마커 클러스터링 적용 (기존 마커는 클러스터링 대상에서 제외)
-	if (markerCluster) {
-		markerCluster.setMarkers([]); // ✅ 클러스터 초기화
-		markerCluster.setMarkers(apartmentMarkers);
-	} else {
-		markerCluster = new MarkerClustering({
-			minClusterSize: 2,
-			maxZoom: 14,
-			map: window.map,
-			markers: apartmentMarkers,
-			disableClickZoom: true, // ✅ 클러스터 클릭 시 기본 마커가 표시되지 않도록 설정
-			icons: [{
-				content: `<div style="display:none;"></div>`,  // ✅ 기본 마커를 안 보이게 설정
-				size: new naver.maps.Size(1, 1),
-				anchor: new naver.maps.Point(0, 0)
-			}]
-		});
-	}
+	return marker;
 }
+
+
+let prevSiseMapState = null; // 🔹 전역 변수로 이전 시세지도 상태 저장
+
+function removeLinesOutsideBounds(bounds) {
+    Object.entries(apartmentMarkers).forEach(([id, marker]) => {
+        const position = marker.getPosition();
+        const line = marker.lineToOrigin;
+
+        const isMarkerInside = bounds.hasLatLng(position);
+
+        // 마커가 bounds 바깥이면
+        if (!isMarkerInside) {
+            //console.log(`❌ 마커 제거됨: ${id}`);
+			if(marker.movementLine){
+				marker.movementLine.setMap(null);
+				marker.movementLine = null;
+			}
+            marker.setMap(null);
+            delete apartmentMarkers[id];
+
+            // 선도 같이 제거
+            if (line) {
+                //console.log(`❌ 선도 같이 제거됨: ${id}`);
+                line.setMap(null);
+                delete marker.lineToOrigin;
+            }
+        }
+    });
+}
+
+function removeAllLines() {
+	
+     Object.entries(apartmentMarkers).forEach(([id, marker]) => {
+        const position = marker.getPosition();
+        const isMarkerInside = window.map.getBounds().hasLatLng(position);
+
+        if (isMarkerInside) {
+            // 🔥 범위 안의 마커에 연결된 이동선 제거
+            if (marker.movementLine) {
+                marker.movementLine.setMap(null);
+                marker.movementLine = null;
+                //console.log(`🧹 ${id}의 이동선 제거됨`);
+            }
+        }
+    });
+}
+
+	// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
+	function updateMarkers(bounds) {
+
+//범위 벗어나면 마커 삭제
+removeLinesOutsideBounds(bounds)
+
+		const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
+		const showApartments = document.getElementById("toggleApartments").checked;
+		const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
+
+		if (!showApartments || window.map.getZoom() < 14) return;
+
+		const filtered = apartmentData.filter(apartment =>
+			bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) &&
+			apartment.units >= minUnits
+		);
+
+		const newMarkers = [];
+
+		// ✅ 시세지도 체크 상태가 바뀐 경우 → 모든 마커 제거
+		if (prevSiseMapState !== isSiseMapActive) {
+			Object.values(apartmentMarkers).forEach(marker => {
+				if (marker instanceof naver.maps.Marker) {
+					naver.maps.Event.clearInstanceListeners(marker);
+					marker.setMap(null);
+				}
+			});
+			apartmentMarkers = {}; // 캐시 초기화
+			prevSiseMapState = isSiseMapActive; // 상태 갱신
+		}
+
+		// ✅ 새 마커 생성 or 재사용
+		filtered.forEach(apartment => {
+			let marker = apartmentMarkers[apartment.id];
+
+			if (!marker) {
+				marker = isSiseMapActive
+					? renderSiseMapMarker(apartment)
+					: createDefaultMarker(apartment);
+
+				marker.__siseMap = isSiseMapActive;
+				apartmentMarkers[apartment.id] = marker;
+			}
+
+			newMarkers.push(marker);
+		});
+
+
+		if (markerCluster) {
+			markerCluster.setMarkers(newMarkers);
+		}
+
+
+
+	}
+
+
+
+
 let schoolMarkers = []; // ✅ 지도에 표시된 학교 마커 저장
 
 async function loadSchools() {
@@ -897,42 +1136,46 @@ function updateSchoolMarkers() {
     );
 
     filteredSchools.forEach(school => {
-        const markerContainer = document.createElement("div");
-        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+    // ✅ 마커 컨테이너를 markerElement로 활용
+    const markerElement = document.createElement("div");
+    markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
 
-        const markerIcon = document.createElement("img");
-        markerIcon.src = "eliSchool.png";
-        markerIcon.style = "width: 32px; height: 32px;";
+    const markerIcon = document.createElement("img");
+    markerIcon.src = "eliSchool.png";
+    markerIcon.style = "width: 32px; height: 32px;";
 
-        const infoBox = document.createElement("div");
-        infoBox.style = `
-			background: white;
-			border: 1px solid gray;
-			border-radius: 6px;
-			padding: 5px 10px;
-			font-size: 12px;
-			font-weight: bold;
-			box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-			white-space: nowrap; /* ✅ 줄 바꿈 방지 */
-			display: inline-block; /* ✅ 인라인 블록 요소로 설정 */
-			
-			overflow: hidden; /* ✅ 내용이 넘칠 경우 숨김 */
-			
-			text-align: center; /* ✅ 텍스트 중앙 정렬 */
-		`;
-        infoBox.textContent = `${school.schoolName.replace(/등학교/g, "")} (${school.studentCountPerClassroom}/${school.totalStudentCount})`;
+    const infoBox = document.createElement("div");
+    infoBox.style = `
+        background: white;
+        border: 1px solid gray;
+        border-radius: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-weight: bold;
+        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+        white-space: nowrap;
+        display: inline-block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-align: center;
+    `;
+    infoBox.textContent = `${school.schoolName.replace(/등학교/g, "")} (${school.studentCountPerClassroom}/${school.totalStudentCount})`;
 
-        markerContainer.appendChild(markerIcon);
-        markerContainer.appendChild(infoBox);
+    markerElement.appendChild(markerIcon);
+    markerElement.appendChild(infoBox);
 
-        const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(school.latitude, school.longitude),
-            map: window.map,
-            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
-        });
-		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
-        schoolMarkers.push(marker);
+    const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(school.latitude, school.longitude),
+        map: window.map,
+        icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) }
     });
+
+    // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
+    addMarkerRightClickEvent(marker, markerElement);
+
+    schoolMarkers.push(marker);
+});
+
 }
 
 
@@ -944,6 +1187,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 	await loadApartmentsDetail();
     await loadFacilities();
     await loadStarbucks();
+	await initIndexedDB();
 
 	if (window.map) {
         setupRightClickEvent();
@@ -984,54 +1228,41 @@ document.addEventListener("DOMContentLoaded", async () => {
 				let width = mapElement.clientWidth;
 				let height = mapElement.clientHeight;
 				window.map.setSize(new naver.maps.Size(width, height));
-				console.log("🔄 지도 크기 변경됨:", width, height);
+				//console.log("🔄 지도 크기 변경됨:", width, height);
 			}, 200); // ✅ 브라우저 리플로우 후 실행
 		}
 	}
-/*
-let currentScale = 0.85; // ✅ 기본 배율 설정
 
-function updateViewportScale(scaleChange) {
-    const newScale = Math.max(0.5, Math.min(1.0, currentScale + scaleChange)); // 🔹 배율 범위: 최소 0.5 ~ 최대 1.0
+//이동시 선 긋기
+naver.maps.Event.addListener(window.map, "click", function(e) {
+    if (activeMarker && activeMarker instanceof naver.maps.Marker) {
+        const newPosition = e.coord;
 
-    if (newScale !== currentScale) {
-        currentScale = newScale;
-        let mapElement = document.getElementById("map");
+        const origin = activeMarker.originPosition;
+        if (origin) {
+            // 🔴 이전 선이 있다면 지도에서 제거
+            if (activeMarker.movementLine) {
+                activeMarker.movementLine.setMap(null);
+            }
 
-        // 🔹 현재 기기의 가로 세로 최대 크기 가져오기
-        let maxWidth = window.innerWidth;
-        let maxHeight = window.innerHeight;
+            // 🔵 새 선 생성 및 마커에 저장
+            const line = new naver.maps.Polyline({
+                map: window.map,
+                path: [origin, newPosition],
+                strokeColor: "#000000",
+                strokeOpacity: 0.8,
+                strokeWeight: 2
+            });
 
-        // 🔹 `map` 크기 업데이트 (기기의 최대 해상도로 설정)
-        document.body.style.width = `${maxWidth}px`;
-        document.body.style.height = `${maxHeight}px`;
-        document.body.style.overflow = "hidden"; // ✅ 가로 스크롤 방지
-
-        mapElement.style.width = `${maxWidth}px`;
-        mapElement.style.height = `${maxHeight}px`;
-
-        // ✅ `transform: scale()`을 사용하여 배율 조정
-        document.body.style.transform = `scale(${currentScale})`;
-        document.body.style.transformOrigin = "top left";
-
-        console.log(`📌 현재 배율: ${currentScale}, 맵 크기: ${maxWidth}x${maxHeight}`);
-
-        // ✅ 지도 크기 강제 업데이트 (`setSize()` 적용)
-        if (window.map) {
-            setTimeout(() => {
-                let width = mapElement.clientWidth;
-                let height = mapElement.clientHeight;
-                window.map.setSize(new naver.maps.Size(width, height));
-                console.log("🔄 지도 크기 변경됨:", width, height);
-            }, 200); // ✅ 리플로우 후 실행
+            activeMarker.movementLine = line;
         }
-    }
-}
 
-// ✅ 확대 및 축소 버튼 이벤트 연결
-document.getElementById("scaleUpButton").addEventListener("click", () => updateViewportScale(0.05));
-document.getElementById("scaleDownButton").addEventListener("click", () => updateViewportScale(-0.05));
-*/
+        activeMarker.setPosition(newPosition);
+        //console.log("📌 마커 이동됨:", newPosition.toString());
+    }
+});
+
+
 
 
 });
@@ -1092,42 +1323,7 @@ function toggleFullscreen() {
 
 
 
-function toggleFullscreen() {
-    let mapElement = document.getElementById("map");
 
-    if (!document.fullscreenElement) {
-        if (mapElement.requestFullscreen) {
-            mapElement.requestFullscreen();
-        } else if (mapElement.mozRequestFullScreen) {
-            mapElement.mozRequestFullScreen();
-        } else if (mapElement.webkitRequestFullscreen) {
-            mapElement.webkitRequestFullscreen();
-        } else if (mapElement.msRequestFullscreen) {
-            mapElement.msRequestFullscreen();
-        }
-
-        // ✅ 전체 화면 전환 후 되돌리기 버튼 표시
-        document.getElementById("exitFullscreenButton").style.display = "block";
-		
-	document.getElementById("fullscreenButton").style.display = "none";
-    }
-}
-
-function exitFullscreen() {
-    if (document.exitFullscreen) {
-        document.exitFullscreen();
-    } else if (document.mozCancelFullScreen) {
-        document.mozCancelFullScreen();
-    } else if (document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
-    } else if (document.msExitFullscreen) {
-        document.msExitFullscreen();
-    }
-
-    // ✅ 되돌리기 버튼 숨김
-    document.getElementById("exitFullscreenButton").style.display = "none";
-	document.getElementById("fullscreenButton").style.display = "block";
-}
 
 let apartmentDetailData = {};
 
@@ -1159,7 +1355,11 @@ async function loadApartmentsDetail() {
 // 마커 클릭 시 정보 표시
 function showApartmentInfo(apartmentId, markerPosition) {
 //console.log(apartmentId)
-
+	// ✅ 시세 지도가 체크되어 있으면 아파트 정보 표시 안 함
+    if (document.getElementById("toggleSiseMap").checked) {
+        //console.log("🚫 시세 지도가 활성화되어 있어 아파트 정보 표시 안 함");
+        return;
+    }
     apartmentId = String(apartmentId);
     if (!apartmentDetailData[apartmentId]) {
         alert("데이터를 찾을 수 없습니다.");
@@ -1381,42 +1581,46 @@ function updateMiddleSchoolMarkers() {
     );
 
     filteredSchools.forEach(school => {
-        const markerContainer = document.createElement("div");
-        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+    // ✅ 마커 컨테이너를 markerElement로 활용
+    const markerElement = document.createElement("div");
+    markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
 
-        const markerIcon = document.createElement("img");
-        markerIcon.src = "midSchool.png";
-        markerIcon.style = "width: 32px; height: 32px;";
+    const markerIcon = document.createElement("img");
+    markerIcon.src = "midSchool.png";
+    markerIcon.style = "width: 32px; height: 32px;";
 
-        const infoBox = document.createElement("div");
-        infoBox.style = `
-            background: white;
-            border: 1px solid gray;
-            border-radius: 6px;
-            padding: 5px 10px;
-            font-size: 12px;
-            font-weight: bold;
-            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-            white-space: nowrap;
-            display: inline-block;
-            
-            overflow: hidden;
-            text-overflow: ellipsis;
-            text-align: center;
-        `;
-        infoBox.textContent = `${school["학교명"]} (${school["학업성취도"]})`;
+    const infoBox = document.createElement("div");
+    infoBox.style = `
+        background: white;
+        border: 1px solid gray;
+        border-radius: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-weight: bold;
+        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+        white-space: nowrap;
+        display: inline-block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-align: center;
+    `;
+    infoBox.textContent = `${school["학교명"]} (${school["학업성취도"]})`;
 
-        markerContainer.appendChild(markerIcon);
-        markerContainer.appendChild(infoBox);
+    markerElement.appendChild(markerIcon);
+    markerElement.appendChild(infoBox);
 
-        const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(school["위도"], school["경도"]),
-            map: window.map,
-            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
-        });
-		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
-        middleSchoolMarkers.push(marker);
+    const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(school["위도"], school["경도"]),
+        map: window.map,
+        icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) }
     });
+
+    // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
+    addMarkerRightClickEvent(marker, markerElement);
+
+    middleSchoolMarkers.push(marker);
+});
+
 }
 
 
@@ -1432,7 +1636,7 @@ async function loadFacilities() {
         const response = await fetch("facility.json");
         const facilities = await response.json();
 
-        console.log("✅ 시설 데이터 로드 완료", facilities);
+        //console.log("✅ 시설 데이터 로드 완료", facilities);
         window.facilityData = facilities; // ✅ 전체 시설 데이터 저장
 
         // ✅ 초기 마커 업데이트
@@ -1465,55 +1669,59 @@ function updateFacilityMarkers() {
     );
 
     filteredFacilities.forEach(facility => {
-        let iconSrc = "default.png"; // 기본 아이콘 (예외처리)
-        if (facility.category === 10) {
-            iconSrc = facility.description.includes("백화점") ? "depart.png" : "mart.png";
-        } else if (facility.category === 9) {
-            iconSrc = "hospital.png";
-        }
+    let iconSrc = "default.png"; // 기본 아이콘 (예외처리)
+    if (facility.category === 10) {
+        iconSrc = facility.description.includes("백화점") ? "depart.png" : "mart.png";
+    } else if (facility.category === 9) {
+        iconSrc = "hospital.png";
+    }
 
-        const markerContainer = document.createElement("div");
-        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+    // ✅ 마커 컨테이너를 markerElement로 활용
+    const markerElement = document.createElement("div");
+    markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
 
-        const markerIcon = document.createElement("img");
-        markerIcon.src = iconSrc;
-        markerIcon.style = "width: 32px; height: 32px;";
+    const markerIcon = document.createElement("img");
+    markerIcon.src = iconSrc;
+    markerIcon.style = "width: 32px; height: 32px;";
 
-        const infoBox = document.createElement("div");
-        infoBox.style = `
-            background: white;
-            border: 1px solid gray;
-            border-radius: 6px;
-            padding: 5px 10px;
-            font-size: 12px;
-            font-weight: bold;
-            box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-            white-space: nowrap;
-            display: inline-block;
-            max-width: 140px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            text-align: center;
-        `;
+    const infoBox = document.createElement("div");
+    infoBox.style = `
+        background: white;
+        border: 1px solid gray;
+        border-radius: 6px;
+        padding: 5px 10px;
+        font-size: 12px;
+        font-weight: bold;
+        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
+        white-space: nowrap;
+        display: inline-block;
+        max-width: 140px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        text-align: center;
+    `;
 
-		if (facility.category === 10) {
-			infoBox.textContent = `${facility.description} (${facility.name})`;
-		} else if (facility.category === 9) {
-			infoBox.textContent = `${facility.name}`;
-		}
-        //infoBox.textContent = `${facility.description} (${facility.name})`;
+    if (facility.category === 10) {
+        infoBox.textContent = `${facility.description} (${facility.name})`;
+    } else if (facility.category === 9) {
+        infoBox.textContent = `${facility.name}`;
+    }
 
-        markerContainer.appendChild(markerIcon);
-        markerContainer.appendChild(infoBox);
+    markerElement.appendChild(markerIcon);
+    markerElement.appendChild(infoBox);
 
-        const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(facility.lat, facility.lng),
-            map: window.map,
-            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
-        });
-		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
-        facilityMarkers.push(marker);
+    const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(facility.lat, facility.lng),
+        map: window.map,
+        icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) }
     });
+
+    // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
+    addMarkerRightClickEvent(marker, markerElement);
+
+    facilityMarkers.push(marker);
+});
+
 }
 
 // ✅ 시설 체크박스 변경 시 마커 업데이트
@@ -1528,7 +1736,7 @@ async function loadStarbucks() {
         const response = await fetch("starbucks.json");
         const starbucks = await response.json();
 
-        console.log("✅ 스타벅스 데이터 로드 완료", starbucks);
+        //console.log("✅ 스타벅스 데이터 로드 완료", starbucks);
         window.starbucksData = starbucks; // ✅ 전체 스타벅스 데이터 저장
 
         // ✅ 초기 마커 업데이트
@@ -1560,24 +1768,28 @@ function updateStarbucksMarkers() {
         bounds.hasLatLng(new naver.maps.LatLng(store.lat, store.lot))
     );
 
-    filteredStarbucks.forEach(store => {
+     filteredStarbucks.forEach(store => {
         let iconSrc = store.s_name.includes("R") ? "starbucksReserve.png" : "starbucks.png";
 
-        const markerContainer = document.createElement("div");
-        markerContainer.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        // ✅ 마커 컨테이너를 markerElement로 활용
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
 
         const markerIcon = document.createElement("img");
         markerIcon.src = iconSrc;
         markerIcon.style = "width: 32px; height: 32px;";
 
-        markerContainer.appendChild(markerIcon);
+        markerElement.appendChild(markerIcon);
 
         const marker = new naver.maps.Marker({
             position: new naver.maps.LatLng(store.lat, store.lot),
             map: window.map,
-            icon: { content: markerContainer, anchor: new naver.maps.Point(16, 32) }
+            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) }
         });
-		addMarkerRightClickEvent(marker); // ✅ 마커 생성 시 우클릭 이벤트 추가
+
+        // ✅ 우클릭 이벤트에 markerElement 전달
+        addMarkerRightClickEvent(marker, markerElement);
+
         starbucksMarkers.push(marker);
     });
 }
@@ -1595,71 +1807,48 @@ var activeMarkerElement = null; // ✅ 현재 선택된 마커의 요소 (테두
 // ✅ 🔥 마커 스타일 업데이트 함수 (선택된 경우 강조)
 function updateMarkerSelection(markerElement, isSelected) {
     if (markerElement) {
-        if (isSelected) {
-            markerElement.style.border = "2px solid red"; // 🔥 빨간 테두리 추가
-        } else {
-            markerElement.style.border = ""; // 🔥 원래대로 복귀
-        }
+        setTimeout(() => {
+            markerElement.style.outline = isSelected ? "3px solid red" : "";
+        }, 50); // ✅ DOM 업데이트 대기 후 스타일 적용
     }
 }
 
-// ✅ 마커 우클릭 시 선택 이벤트 추가 (마커 생성 시 적용)
-// ✅ 마커 우클릭 시 선택 이벤트 추가 (마커 생성 시 적용)
-function addMarkerRightClickEvent(marker) {
-    naver.maps.Event.addListener(marker, "rightclick", (e) => {
-        if (!e || !e.domEvent || typeof e.domEvent.preventDefault !== "function") {
-            console.warn("⚠️ 이벤트 객체가 올바르지 않음:", e);
-            return;
-        }
 
-        e.domEvent.preventDefault(); // ✅ 기본 우클릭 메뉴 방지
+function addMarkerRightClickEvent(marker, markerElement) {
+    naver.maps.Event.addListener(marker, "rightclick", (e) => {
+        e.domEvent.preventDefault();
         e.domEvent.stopPropagation();
 
-        if (!e.overlay) return; // ✅ 마커가 클릭되지 않은 경우 종료
+        const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
 
+        console.log("🚀 마커 우클릭 감지 (ID: " + marker.apartmentId + ")");
+
+        // ✅ 기존 선택된 마커 테두리 제거
         if (activeMarkerElement) {
             updateMarkerSelection(activeMarkerElement, false);
         }
 
+        // ✅ 현재 선택된 마커 업데이트
         activeMarker = marker;
-        activeMarkerElement = marker.getElement(); // ✅ 마커의 HTML 요소 가져오기
+        activeMarkerElement = markerElement; // ✅ 기존 방식
         updateMarkerSelection(activeMarkerElement, true);
 
-        //console.log("📌 선택된 마커:", marker);
+        // ✅ 만약 마커가 시세지도 마커이면 `.siseMapMarker`를 다시 찾고 스타일 적용
+        if (isSiseMapActive) {
+            setTimeout(() => {
+                const updatedMarkerElement = markerElement.querySelector(".siseMapMarker");
+                if (updatedMarkerElement) {
+                    activeMarkerElement = updatedMarkerElement;
+                    updateMarkerSelection(updatedMarkerElement, true);
+                }
+            }, 100); // ✅ DOM 업데이트 대기 후 스타일 적용
+        }
     });
 }
 
 
 
-// ✅ WASD 키 입력으로 마커 이동
-function handleKeyDown(event) {
-    if (!activeMarker) {
-        console.warn("⚠️ 이동할 마커가 선택되지 않았습니다.");
-        return;
-    }
 
-    let position = activeMarker.getPosition();
-    let lat = position.lat();
-    let lng = position.lng();
-    let step = 0.0004; // 🔥 이동 거리 조절 (기본 0.0008°)
-
-    switch (event.key) {
-        case "w": case "ㅈ": lat += step; break;
-        case "s": case "ㄴ": lat -= step; break;
-        case "a": case "ㅁ": lng -= step; break;
-        case "d": case "ㅇ": lng += step; break;
-        case "Escape":
-            updateMarkerSelection(activeMarkerElement, false);
-            activeMarker = null;
-            activeMarkerElement = null;
-            //console.log("❌ 마커 선택 해제");
-            return;
-    }
-
-    let newPosition = new naver.maps.LatLng(lat, lng);
-    activeMarker.setPosition(newPosition);
-    //console.log("➡️ 이동한 마커:", newPosition);
-}
 
 // ✅ 키보드 이벤트 등록
 document.removeEventListener("keydown", handleKeyDown);
@@ -1722,6 +1911,1254 @@ function setupRightClickEvent() {
 
     //console.log("✅ 지도 로드 완료 후 우클릭 이벤트 등록됨");
 }
+
+//////////////////////////////////시세 지도 ////////////////////////////
+
+
+
+
+var activeMarkerSet = null;
+
+// ✅ IndexedDB 초기화
+function initIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('hongbu', 1);
+
+        request.onupgradeneeded = function(event) {
+            const db = event.target.result;
+
+            if (!db.objectStoreNames.contains('apartments')) {
+                const store = db.createObjectStore('apartments', { keyPath: 'idType' });
+                store.createIndex('id', 'id', { unique: false });
+                console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
+            }
+        };
+
+        request.onsuccess = function(event) {
+            console.log('📌 IndexedDB 연결 성공 (DB: hongbu)');
+            resolve(event.target.result);
+        };
+
+        request.onerror = function(event) {
+            console.error('❌ IndexedDB 연결 실패:', event.target.error);
+            reject(event.target.error);
+        };
+    });
+}
+
+// ✅ IndexedDB 저장 함수
+function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
+    const request = indexedDB.open("hongbu", 1);
+    request.onsuccess = function(event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartments"], "readwrite");
+        const store = transaction.objectStore("apartments");
+
+        store.put({ idType: `${id}-${type}`, text, color, textColor, fontSize });
+
+        transaction.oncomplete = () => console.log(`✅ IndexedDB 저장 완료: ${id}`);
+        transaction.onerror = (e) => console.error(`❌ IndexedDB 저장 오류: ${e.target.error}`);
+
+    };
+	markerElement = document.querySelector(`[data-apartment-id='${id}']`);
+	markerElement.style.maxWidth = '160px';
+
+
+}
+
+// ✅ IndexedDB에서 데이터 가져오기
+function getFromIndexedDB(id, type) {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("hongbu", 1);
+
+        request.onerror = (event) => {
+            reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
+        };
+
+        request.onsuccess = (event) => {
+            const db = event.target.result;
+            const transaction = db.transaction(["apartments"], "readonly");
+            const store = transaction.objectStore("apartments");
+
+            const idType = `${id}-${type}`;
+            const getRequest = store.get(idType);
+
+            getRequest.onsuccess = () => {
+                if (getRequest.result) {
+                    resolve(getRequest.result);
+                } else {
+                    resolve({ text: "", color: "#9F9F9F", textColor: "#ffffff", fontSize: "12px" });
+                }
+            };
+
+            getRequest.onerror = () => {
+                reject("❌ IndexedDB 데이터 가져오기 실패");
+            };
+        };
+    });
+}
+document.getElementById("toggleSiseMap").addEventListener("change", function() {
+    const isChecked = this.checked;
+
+	document.getElementById("siseExportBtn").style.display = isChecked ? "inline-block" : "none";
+    document.getElementById("siseImportBtn").style.display = isChecked ? "inline-block" : "none";
+	document.getElementById("siseResetBtn").style.display = isChecked ? "inline-block" : "none";
+	if(!isChecked){
+		removeAllLines(window.map.getBounds());
+	}
+    updateMarkers(window.map.getBounds())
+	
+});
+
+
+
+function renderSiseMapMarker(apartment) {
+    // ✅ 기존 마커가 있으면 삭제
+    if (apartmentMarkers[apartment.id]) {
+        naver.maps.Event.clearInstanceListeners(apartmentMarkers[apartment.id]); // 🔥 기존 리스너 제거
+        apartmentMarkers[apartment.id].setMap(null); // 🔥 지도에서 삭제
+        delete apartmentMarkers[apartment.id]; // 🔥 메모리에서 제거
+    }
+
+    const markerElement = document.createElement("div");
+    markerElement.className = "siseMapMarker";
+    markerElement.style = `
+    background: #fff;
+    border: 2px solid black;
+    padding: 0px;
+    font-size: 12px;
+    text-align: center;
+    border-radius: 6px;
+    display: inline-block;  /* ✅ 자동 너비 설정 */
+    max-width: 200px;        /* ✅ 필요하면 최대 너비 제한 */
+min-width: 120px;
+    word-break: keep-all;   /* ✅ 줄바꿈 방지 */
+`;
+
+
+    markerElement.setAttribute("data-apartment-id", apartment.id);
+
+    const nameElement = document.createElement("div");
+    nameElement.innerHTML = `${apartment.name}<br>${apartment.year.slice(-5)} ${apartment.units}세대`;
+    nameElement.style = `
+        font-weight: bold;
+        font-size: 12px;
+        margin: 5px;
+overflow: hidden; /* ✅ 넘치는 내용 숨김 */
+    white-space: nowrap; /* ✅ 한 줄 유지 */
+    text-overflow: ellipsis; /* ✅ 말줄임 (...) 처리 */
+    `;
+
+    const tableContainer = document.createElement("div");
+    tableContainer.className = "tableContainer";
+    tableContainer.style = `
+    background: white;
+    padding: 0px;
+    font-size: 12px;
+min-height: 24px;
+    display: block;
+    width: auto;           /* ✅ 마커가 내용에 맞게 늘어나도록 */
+    max-width: none;       /* ✅ 제한 제거 */
+    overflow: visible;     /* ✅ 넘침 허용 */
+`;
+
+
+    markerElement.appendChild(nameElement);
+    markerElement.appendChild(tableContainer);
+
+    const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(apartment.lat, apartment.lng),
+        map: window.map,
+        icon: {
+            content: markerElement,
+            anchor: new naver.maps.Point(10, 30)
+        }
+    });
+	marker.originPosition = new naver.maps.LatLng(apartment.lat, apartment.lng); // ✅ 최초 위치 저장
+    marker.apartmentId = apartment.id;
+
+    // ✅ 중복 이벤트 방지 위해 기존 리스너 제거 후 다시 추가
+    addSiseMapMarkerLeftClickEvent(marker, markerElement);
+    addMarkerRightClickEvent(marker, markerElement);
+
+    // ✅ IndexedDB에서 데이터 불러오기
+    updateT2FromIndexedDB(apartment.id, markerElement, tableContainer);
+
+    return marker;
+}
+
+
+// ✅ IndexedDB에서 데이터 가져와 테이블 업데이트 + 수정 가능하게 적용
+function updateT2FromIndexedDB(id, markerElement, tableContainer) {
+	let siseChecked = document.getElementById("toggleSiseMap").checked;
+    if (!siseChecked) return;
+	
+
+    getFromIndexedDB(id, "시세1").then(data => {
+        let tableData = data?.text || generateDefaultTable();
+        tableContainer.innerHTML = createEditableTableHTML(id, tableData);
+
+        let bgColor = data?.color?.trim() || '#9F9F9F';
+		let textColor = data?.textColor?.trim() || '#FFFFFF';
+		let fontSize = data?.fontSize?.trim();
+
+		if (!fontSize || fontSize === "undefined" || fontSize === "") {
+			fontSize = "12px";
+		}
+
+
+        // ✅ IndexedDB에서 가져온 값 디버깅 출력
+        //console.log(`🎨 IndexedDB 불러온 데이터 (ID: ${id}):`, data);
+        //console.log(`🔹 적용할 색상: 배경색=${bgColor}, 글자색=${textColor}, 글자 크기=${fontSize}`);
+
+        markerElement.style.backgroundColor = bgColor;
+        markerElement.style.color = textColor;
+        markerElement.style.fontSize = fontSize;
+		tableContainer.style.fontSize = fontSize;
+
+        // ✅ 강제 적용 후 확인
+        //console.log(`🟢 적용된 markerElement.style.color: ${markerElement.style.color}`);
+
+        // ✅ 만약 color가 빈 값이면 기본값 강제 적용
+        if (!markerElement.style.color || markerElement.style.color === "" || markerElement.style.color === "undefined") {
+            markerElement.style.color = "#FFFFFF"; 
+            //console.log(`⚠️ 강제 적용 후 markerElement.style.color: ${markerElement.style.color}`);
+        }
+
+		// ✅ tableData 값을 검사해서 값이 있으면 → 160px, 없으면 → 120px
+let maxWidth = 120;
+
+if (data?.text?.trim()) {
+    // ✅ 텍스트가 비어 있지 않으면 너비를 늘림
+    maxWidth = 200;
+}
+
+// ✅ markerElement에 max-width 반영
+markerElement.style.maxWidth = `${maxWidth}px`;
+
+
+
+        makeTableEditable(tableContainer); // ✅ 테이블을 수정 가능하게 설정
+    }).catch(console.error);
+}
+
+
+
+// ✅ 기본 3x4 테이블 생성
+function generateDefaultTable() {
+    let defaultTable = [];
+    for (let i = 0; i < 3; i++) {
+        let row = [];
+        for (let j = 0; j < 4; j++) {
+            row.push("");  // 기본값 설정
+        }
+        defaultTable.push(row.join('\t'));
+    }
+    return defaultTable.join('\n'); // 줄바꿈 포함하여 저장
+}
+
+// ✅ 수정 가능한 테이블을 생성하는 함수
+function createEditableTableHTML(id, textData) {
+    let rows = textData.split('\n').map(row => row.split('\t'));
+    const table = document.createElement("table");
+    table.style.borderCollapse = "collapse";
+    table.style.width = "100%";             // ✅ 자동 너비
+    table.style.tableLayout = "auto";       // ✅ 열마다 유동적 너비
+    table.style.color = "black";
+
+    rows.forEach((row, rowIndex) => {
+        const tr = document.createElement("tr");
+        row.forEach((cell, colIndex) => {
+            const td = document.createElement("td");
+            td.dataset.id = id;
+            td.dataset.row = rowIndex;
+            td.dataset.col = colIndex;
+            td.textContent = cell.trim();
+
+            td.style = `
+				border: 1px solid black;
+				padding: 2px 4px;
+				text-align: center;
+				height: 24px;
+
+				vertical-align: middle;
+				white-space: normal;  /* ✅ 줄바꿈 허용 */
+				word-break: break-word; /* ✅ 텍스트 줄바꿈 */
+			`;
+
+
+            tr.appendChild(td);
+        });
+        table.appendChild(tr);
+    });
+
+    return table.outerHTML;
+}
+
+
+
+// ✅ IndexedDB에 테이블 데이터 저장 (tableContainer가 없을 경우 복구)
+function saveTableToIndexedDB(id, tableContainer) {
+    if (!tableContainer) {
+        console.warn(`⚠️ [saveTableToIndexedDB] tableContainer가 없습니다. ID: ${id || "undefined"}`);
+        return;
+    }
+
+    // ✅ 이미 저장 중인지 체크하여 중복 실행 방지
+    if (window.isSaving) {
+        console.warn("⚠️ IndexedDB 저장 중, 중복 호출 방지");
+        return;
+    }
+    window.isSaving = true;  // ✅ 저장 중 상태 플래그 설정
+
+    let tableData = [];
+    tableContainer.querySelectorAll("tr").forEach(row => {
+        let rowData = [];
+        row.querySelectorAll("td").forEach(td => {
+            rowData.push(td.textContent.trim());
+        });
+        tableData.push(rowData.join('\t'));
+    });
+
+    // ✅ IndexedDB에서 기존 색상 데이터를 불러와 유지
+    getFromIndexedDB(id, "시세1").then(existingData => {
+        let existingColor = existingData?.color || "#9F9F9F"; // ✅ 기존 배경색 유지
+        let existingTextColor = existingData?.textColor || "#ffffff"; // ✅ 기존 글자색 유지
+        let existingFontSize = existingData?.fontSize || "12px"; // ✅ 기존 폰트 크기 유지
+
+        saveToIndexedDB(id, "시세1", tableData.join('\n'), existingColor, existingTextColor, existingFontSize);
+    }).catch(error => {
+        console.error("❌ IndexedDB 불러오기 실패:", error);
+    }).finally(() => {
+        setTimeout(() => {
+            window.isSaving = false;  // ✅ 일정 시간 후 다시 저장 가능하게 설정
+        }, 100);
+    });
+}
+
+
+
+
+// ✅ 셀 삭제 함수 수정 (삭제 후 오류 방지)
+function deleteSelectedCells() {
+    if (!selectedCells || selectedCells.size === 0) {
+        console.warn("⚠️ 선택된 셀이 없음");
+        return;
+    }
+
+    selectedCells.forEach(td => {
+        if (td && td instanceof HTMLElement) {
+            td.textContent = ""; // ✅ 내용만 삭제
+        }
+    });
+
+    // ❗ activeMarkerElement가 없을 경우 복구 시도
+    if (!activeMarkerElement && selectedCells.size > 0) {
+        let firstCell = Array.from(selectedCells)[0];
+        activeMarkerElement = firstCell.closest(".siseMapMarker");
+    }
+
+    if (activeMarkerElement) {
+        let tableContainer = activeMarkerElement.querySelector(".tableContainer");
+        let id = activeMarkerElement.dataset.apartmentId;
+
+        if (!id || id === "undefined") {
+            console.warn("⚠️ 삭제 후 저장할 ID가 없음.");
+            return;
+        }
+
+        if (tableContainer) {
+            // ✅ 불필요한 setTimeout 제거 (즉시 저장)
+            saveTableToIndexedDB(id, tableContainer);
+        } else {
+            console.warn("⚠️ tableContainer 찾을 수 없음");
+        }
+    } else {
+        console.warn("⚠️ activeMarkerElement가 없음");
+    }
+}
+
+// ✅ 셀을 수정 가능하도록 설정 + IME 한글 입력 처리 (중복 방지)
+function makeTableEditable(tableContainer) {
+    let isComposing = false; // ✅ 한글 입력 중인지 확인
+    let lastFocusedTd = null; // ✅ 마지막으로 포커스된 셀 저장
+
+    tableContainer.querySelectorAll("td").forEach(td => {
+        // ✅ 기존 이벤트 제거 (중복 방지)
+        td.removeEventListener("click", handleTdClick);
+        td.removeEventListener("compositionstart", handleCompositionStart);
+        td.removeEventListener("compositionend", handleCompositionEnd);
+        //td.removeEventListener("keydown", handleKeyDown);
+        td.removeEventListener("blur", handleTdBlur);
+        td.removeEventListener("paste", handlePaste);
+
+        // ✅ 새로운 이벤트 추가
+        td.addEventListener("click", handleTdClick);
+        td.addEventListener("compositionstart", handleCompositionStart);
+        td.addEventListener("compositionend", handleCompositionEnd);
+        //td.addEventListener("keydown", handleKeyDown);
+        td.addEventListener("blur", handleTdBlur);
+        td.addEventListener("paste", handlePaste);
+    });
+
+    // ✅ 클릭 이벤트 핸들러 (셀을 클릭하면 편집 가능)
+    function handleTdClick(event) {
+		const td = event.target;
+		td.setAttribute("contenteditable", "true");
+		td.focus();
+		lastFocusedTd = td;
+
+		// ✅ 커서를 제일 오른쪽으로 이동시키기
+		const range = document.createRange();
+		const selection = window.getSelection();
+
+		range.selectNodeContents(td);
+		range.collapse(false); // false → 커서를 끝으로 보냄
+		selection.removeAllRanges();
+		selection.addRange(range);
+	}
+
+
+    // ✅ 한글 입력 시작 (IME 입력 감지)
+    function handleCompositionStart() {
+        isComposing = true;
+    }
+
+    // ✅ 한글 입력 완료 (포커스 유지 중이면 저장 안 함)
+    function handleCompositionEnd(event) {
+    isComposing = false; // ✅ 조합 종료 플래그
+    setTimeout(() => {
+        saveTableToIndexedDB(event.target.dataset.id, event.target.closest(".tableContainer"));
+    }, 50);
+}
+
+
+    
+
+    // ✅ 포커스 아웃 시 저장 (IME 입력 중이면 저장 방지)
+    function handleTdBlur(event) {
+        setTimeout(() => {
+            if (isComposing) return; // ✅ IME 입력 중이면 blur 저장 방지
+            isComposing = false; // ✅ 포커스가 아웃되었을 때 입력 종료
+            saveTableToIndexedDB(event.target.dataset.id, event.target.closest(".tableContainer"));
+        }, 50);
+    }
+
+    // ✅ 붙여넣기 이벤트 (붙여넣기 후 즉시 저장)
+     function handlePaste(event) {
+        event.preventDefault();
+        let clipboardData = event.clipboardData || window.clipboardData;
+        let pastedText = clipboardData.getData("text");
+
+        if (!pastedText.includes("\t") && !pastedText.includes("\n")) {
+            // ✅ 일반 텍스트 붙여넣기
+            document.execCommand("insertText", false, pastedText);
+            return;
+        }
+
+        // ✅ 엑셀에서 복사한 데이터를 테이블에 맞춰 삽입
+        let rows = pastedText.split("\n").map(row => row.split("\t"));
+        let startRow = parseInt(lastFocusedTd.dataset.row, 10);
+        let startCol = parseInt(lastFocusedTd.dataset.col, 10);
+        let table = lastFocusedTd.closest("table");
+
+        rows.forEach((row, rowIndex) => {
+            row.forEach((cellText, colIndex) => {
+                let targetRow = startRow + rowIndex;
+                let targetCol = startCol + colIndex;
+                let targetCell = table.querySelector(`td[data-row="${targetRow}"][data-col="${targetCol}"]`);
+                
+                if (targetCell) {
+                    targetCell.textContent = cellText.trim();
+                }
+            });
+        });
+
+        // ✅ 저장
+        saveTableToIndexedDB(lastFocusedTd.dataset.id, lastFocusedTd.closest(".tableContainer"));
+    }
+
+/*
+    // ✅ 테이블 너비 조정
+    setTimeout(() => {
+        adjustTableColumnWidths(tableContainer.querySelector("table"));
+    }, 100);
+*/    
+    //enableArrowKeyNavigation(tableContainer);
+    enableMultiCellSelection(tableContainer);
+}
+
+
+
+// ✅ 테이블을 수정 가능하도록 이벤트 추가 (방향키 이동 포함)
+// ✅ 테이블 셀의 너비를 동적으로 조정하는 함수
+// ✅ 테이블의 각 열 너비를 동적으로 조정하는 함수
+// ✅ 테이블의 각 열 너비를 데이터 길이에 맞게 조정하는 함수
+function adjustTableColumnWidths(table) {
+    let colWidths = [];
+    let totalWidth = 190; // ✅ 테이블 전체 너비 (기본값)
+    let minWidth = 30;    // ✅ 최소 열 너비
+    let maxWidth = 100;   // ✅ 최대 열 너비
+
+    // 1️⃣ 각 열의 최대 텍스트 길이 계산
+    table.querySelectorAll("tr").forEach(row => {
+        row.querySelectorAll("td").forEach((cell, colIndex) => {
+            let contentWidth = getTextWidth(cell.textContent.trim(), window.getComputedStyle(cell).font);
+            colWidths[colIndex] = Math.max(colWidths[colIndex] || minWidth, contentWidth + 10); // 🔹 패딩 추가
+        });
+    });
+
+    // 2️⃣ 가장 긴 열 찾기
+    let totalContentWidth = colWidths.reduce((sum, w) => sum + w, 0);
+    let scaleFactor = totalWidth / totalContentWidth;
+
+    // 3️⃣ 비율에 맞춰 열 너비 조정 (최대 너비 제한)
+    colWidths = colWidths.map(w => Math.min(maxWidth, Math.max(minWidth, Math.floor(w * scaleFactor))));
+
+    // 4️⃣ 각 열에 계산된 너비 적용
+    table.querySelectorAll("tr").forEach(row => {
+        row.querySelectorAll("td").forEach((cell, colIndex) => {
+            cell.style.minWidth = colWidths[colIndex] + "px"; // ✅ 최소 너비 적용
+            cell.style.maxWidth = colWidths[colIndex] + "px"; // ✅ 최대 너비 적용
+            cell.style.wordBreak = "break-word"; // ✅ 텍스트가 길면 자동 줄바꿈
+        });
+    });
+}
+
+
+// ✅ 텍스트의 실제 픽셀 너비를 계산하는 함수
+function getTextWidth(text, font) {
+    let canvas = getTextWidth.canvas || (getTextWidth.canvas = document.createElement("canvas"));
+    let context = canvas.getContext("2d");
+    context.font = font || "12px Arial";
+    return context.measureText(text).width;
+}
+
+
+// ✅ 현재 선택된 셀 목록
+let selectedCells = new Set();
+let lastSelectedCell = null;
+
+// ✅ 셀 선택 기능 (Shift 키 지원)
+function enableMultiCellSelection(tableContainer) {
+    let isMouseDown = false;
+
+    // ✅ 기존 이벤트 제거 (중복 방지)
+    document.removeEventListener("mouseup", handleMouseUp);
+    //document.removeEventListener("keydown", handleKeyDown);
+    document.removeEventListener("click", handleOutsideClick);
+
+    // ✅ 이벤트 핸들러 재등록
+    document.addEventListener("mouseup", handleMouseUp);
+    //document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("click", handleOutsideClick);
+
+    tableContainer.querySelectorAll("td").forEach(td => {
+        td.addEventListener("mousedown", function(event) {
+            event.preventDefault();
+            isMouseDown = true;
+
+            if (event.shiftKey && lastSelectedCell) {
+                selectRangeCells(lastSelectedCell, td, tableContainer);
+            } else {
+                clearSelectedCells();
+                toggleCellSelection(td);
+                lastSelectedCell = td;
+            }
+        });
+
+        td.addEventListener("mouseover", function(event) {
+            if (isMouseDown) {
+                if (event.shiftKey && lastSelectedCell) {
+                    selectRangeCells(lastSelectedCell, td, tableContainer);
+                } else {
+                    clearSelectedCells();
+                    toggleCellSelection(td);
+                }
+            }
+        });
+
+        td.addEventListener("mouseup", function() {
+            isMouseDown = false;
+        });
+
+        td.addEventListener("click", function(event) {
+            event.stopPropagation();
+        });
+    });
+}
+
+// ✅ 마우스 업 이벤트 핸들러 (중복 방지)
+function handleMouseUp() {
+    isMouseDown = false;
+}
+function handleKeyDown(event) {
+    const activeElement = document.activeElement;
+
+	// ✅ case 2: 지도 마커 이동용 WASD
+console.log("2494")
+console.log(activeMarker)
+    if (activeMarker) {
+        let position = activeMarker.getPosition();
+        let lat = position.lat();
+        let lng = position.lng();
+        let step = 0.0004;
+
+        switch (event.key) {
+            case "w": case "ㅈ": lat += step; break;
+            case "s": case "ㄴ": lat -= step; break;
+            case "a": case "ㅁ": lng -= step; break;
+            case "d": case "ㅇ": lng += step; break;
+            case "Escape":
+                updateMarkerSelection(activeMarkerElement, false);
+                activeMarker = null;
+                activeMarkerElement = null;
+                return;
+            default:
+                return;
+        }
+
+        let newPosition = new naver.maps.LatLng(lat, lng);
+        activeMarker.setPosition(newPosition);
+    }
+
+    // ✅ case 1: 테이블 셀 안에서 키보드 이벤트
+    if (activeElement && activeElement.tagName === "TD") {
+        // IME 한글 입력 중이면 무시
+        if (window.isComposing) return;
+
+        const tableContainer = activeElement.closest(".tableContainer");
+        const currentRow = parseInt(activeElement.dataset.row, 10);
+        const currentCol = parseInt(activeElement.dataset.col, 10);
+        const table = tableContainer.querySelector("table");
+
+        switch (event.key) {
+            case "ArrowUp":
+                event.preventDefault();
+                moveToCell(table, currentRow - 1, currentCol);
+                return;
+            case "ArrowDown":
+                event.preventDefault();
+                moveToCell(table, currentRow + 1, currentCol);
+                return;
+            case "ArrowLeft":
+                event.preventDefault();
+                moveToCell(table, currentRow, currentCol - 1);
+                console.log("왼쪽");
+                return;
+            case "ArrowRight":
+                event.preventDefault();
+                moveToCell(table, currentRow, currentCol + 1);
+                console.log("오른쪽");
+                return;
+            case "Delete":
+            case "Backspace":
+                if (selectedCells.size > 1) {
+                    event.preventDefault();
+                    deleteSelectedCells();
+                }
+                return;
+        }
+
+        // ✅ Ctrl+C 또는 Cmd+C 복사 처리
+        if ((event.ctrlKey || event.metaKey) && event.key === "c") {
+            if (selectedCells.size > 0) {
+                event.preventDefault();
+
+                const cellsArray = Array.from(selectedCells);
+                cellsArray.sort((a, b) => {
+                    const rowA = parseInt(a.dataset.row, 10);
+                    const rowB = parseInt(b.dataset.row, 10);
+                    if (rowA !== rowB) return rowA - rowB;
+                    return parseInt(a.dataset.col, 10) - parseInt(b.dataset.col, 10);
+                });
+
+                const maxRow = Math.max(...cellsArray.map(td => parseInt(td.dataset.row)));
+                const minRow = Math.min(...cellsArray.map(td => parseInt(td.dataset.row)));
+                const maxCol = Math.max(...cellsArray.map(td => parseInt(td.dataset.col)));
+                const minCol = Math.min(...cellsArray.map(td => parseInt(td.dataset.col)));
+
+                const rowCount = maxRow - minRow + 1;
+                const colCount = maxCol - minCol + 1;
+                const grid = Array.from({ length: rowCount }, () => Array(colCount).fill(""));
+
+                cellsArray.forEach(td => {
+                    const r = parseInt(td.dataset.row) - minRow;
+                    const c = parseInt(td.dataset.col) - minCol;
+                    grid[r][c] = td.textContent.trim();
+                });
+
+                const tsv = grid.map(row => row.join("\t")).join("\n");
+
+                navigator.clipboard.writeText(tsv).then(() => {
+                    console.log("✅ 셀 복사 완료");
+                }).catch(err => {
+                    console.error("❌ 클립보드 복사 실패:", err);
+                });
+            }
+        }
+    }
+
+    
+}
+
+
+
+// ✅ 마커 외부 클릭 시 블록 해제 (중복 방지)
+function handleOutsideClick(event) {
+    if (!event.target.closest(".siseMapMarker")) {
+        clearSelectedCells();
+    }
+}
+
+function clearSelectedCells() {
+    if (!selectedCells) return;
+    selectedCells.forEach(cell => {
+        cell.style.backgroundColor = ""; // ✅ 기존 선택 해제
+    });
+    selectedCells.clear(); // ✅ Set 초기화
+}
+
+
+// ✅ 범위 선택 기능 (Shift 키 사용)
+function selectRangeCells(startCell, endCell, tableContainer) {
+    let table = tableContainer.querySelector("table");
+    let startRow = parseInt(startCell.dataset.row);
+    let startCol = parseInt(startCell.dataset.col);
+    let endRow = parseInt(endCell.dataset.row);
+    let endCol = parseInt(endCell.dataset.col);
+
+    let minRow = Math.min(startRow, endRow);
+    let maxRow = Math.max(startRow, endRow);
+    let minCol = Math.min(startCol, endCol);
+    let maxCol = Math.max(startCol, endCol);
+
+    selectedCells.clear();
+
+    for (let row = minRow; row <= maxRow; row++) {
+        for (let col = minCol; col <= maxCol; col++) {
+            let targetCell = table.querySelector(`td[data-row="${row}"][data-col="${col}"]`);
+            if (targetCell) {
+                selectedCells.add(targetCell);
+                targetCell.style.backgroundColor = "#FFD700"; // ✅ 노란색 블록 표시
+            }
+        }
+    }
+}
+
+// ✅ 셀 선택/해제 기능 (Shift 미사용 시 단일 선택)
+function toggleCellSelection(td) {
+    if (selectedCells.has(td)) {
+        selectedCells.delete(td);
+        td.style.backgroundColor = ""; // ✅ 선택 해제
+    } else {
+        selectedCells.add(td);
+        td.style.backgroundColor = "#FFD700"; // ✅ 노란색 블록 지정
+    }
+}
+
+
+function enableArrowKeyNavigation(tableContainer) {
+    const table = tableContainer.querySelector("table");
+    if (!table) return;
+
+    // ✅ 기존 td 이벤트 제거
+    table.querySelectorAll("td").forEach(td => {
+        td.removeEventListener("keydown", handleArrowKey); // 중복 제거
+        td.addEventListener("keydown", handleArrowKey);     // 새로 등록
+    });
+}
+
+function handleArrowKey(event) {
+    const td = event.currentTarget;
+    const currentRow = parseInt(td.dataset.row, 10);
+    const currentCol = parseInt(td.dataset.col, 10);
+    const table = td.closest("table");
+
+    switch (event.key) {
+        case "ArrowUp":
+            event.preventDefault();
+            moveToCell(table, currentRow - 1, currentCol);
+            break;
+        case "ArrowDown":
+            event.preventDefault();
+            moveToCell(table, currentRow + 1, currentCol);
+            break;
+        case "ArrowLeft":
+            event.preventDefault();
+            moveToCell(table, currentRow, currentCol - 1);
+console.log("왼쪽");
+            break;
+        case "ArrowRight":
+            event.preventDefault();
+            moveToCell(table, currentRow, currentCol + 1);
+console.log("오른쪽");
+            break;
+        case "Delete":
+        case "Backspace":
+            if (selectedCells && selectedCells.size > 1) {
+                event.preventDefault();
+                deleteSelectedCells();
+            }
+            break;
+    }
+}
+function moveToCell(table, row, col) {
+    console.log("➡ moveToCell 호출:", row, col);
+
+    let maxRows = table.rows.length;
+    let maxCols = table.rows[0].cells.length;
+
+    if (row < 0 || row >= maxRows || col < 0 || col >= maxCols) {
+        console.warn(`⚠️ 유효하지 않은 이동 위치: row=${row}, col=${col}`);
+        return;
+    }
+
+    let targetCell = table.querySelector(`td[data-row="${row}"][data-col="${col}"]`);
+    console.log("🎯 targetCell:", targetCell);
+
+    if (targetCell) {
+        targetCell.setAttribute("contenteditable", "true");
+        setTimeout(() => {
+            targetCell.focus();
+
+            // ✅ 커서를 텍스트 끝으로 이동
+            const range = document.createRange();
+            const selection = window.getSelection();
+            range.selectNodeContents(targetCell);
+            range.collapse(false); // 끝으로 이동
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }, 10);
+    }
+}
+
+
+
+
+
+
+function rgbToHex(rgb) {
+    let rgbArray = rgb.match(/\d+/g);
+    if (!rgbArray || rgbArray.length < 3) return "#000000"; // 기본값
+
+    return `#${rgbArray
+        .slice(0, 3)
+        .map(x => parseInt(x).toString(16).padStart(2, "0"))
+        .join("")}`.toUpperCase();
+}
+
+function showColorPickerModal(apartmentId, defaultColor, defaultTextColor, defaultFontSize, callback) {
+
+    // ✅ 기존 모달 제거 (중복 방지)
+    const existingModal = document.querySelector('.custom-modal-siseMap');
+    if (existingModal) {
+        document.body.removeChild(existingModal);
+    }
+
+    // ✅ RGB 색상이 들어오면 HEX로 변환
+    if (defaultColor.startsWith("rgb")) defaultColor = rgbToHex(defaultColor);
+    if (defaultTextColor.startsWith("rgb")) defaultTextColor = rgbToHex(defaultTextColor);
+
+    // ✅ 모달 생성
+    const modal = document.createElement('div');
+    modal.className = 'custom-modal-siseMap';
+    modal.style.position = 'fixed';
+    modal.style.top = '50%';
+    modal.style.left = '50%';
+    modal.style.transform = 'translate(-50%, -50%)';
+    modal.style.backgroundColor = 'white';
+    modal.style.border = '1px solid #ccc';
+    modal.style.padding = '20px';
+    modal.style.zIndex = '10000';
+    modal.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.1)';
+    modal.style.width = '300px';
+
+    makeModalDraggable(modal);
+
+    // ✅ 색상 선택 블록 추가 (14개)
+    const colorDiv = document.createElement('div');
+    colorDiv.className = 'color-div';
+    colorDiv.style.display = 'flex';
+    colorDiv.style.flexWrap = 'wrap';
+    colorDiv.style.marginTop = '10px';
+
+    const colors = ['#000000', '#454648', '#474C4F', '#FF0000', '#FF6600', '#FFFF00', 
+                    '#92D050', '#00B050', '#00B0F0', '#0070C0', '#000099', '#7030A0', 
+                    '#CC3399', '#FF66CC'];
+
+    colors.forEach(color => {
+        const smallSquare = document.createElement('div');
+        smallSquare.className = 'small-square';
+        smallSquare.style.backgroundColor = color;
+        smallSquare.style.width = '24px';
+        smallSquare.style.height = '24px';
+        smallSquare.style.margin = '2px';
+        smallSquare.style.cursor = 'pointer';
+        smallSquare.style.border = '1px solid #000';
+
+        // ✅ 블록 클릭 시 배경색 변경
+        smallSquare.onclick = () => {
+            colorInput.value = color;
+            colorPicker.value = color;
+        };
+
+        colorDiv.appendChild(smallSquare);
+    });
+
+    modal.appendChild(colorDiv);
+
+    // ✅ 배경색 선택 (컬러 선택기 + 직접 입력)
+    const colorPickerWrapper = document.createElement('div');
+    colorPickerWrapper.className = 'color-picker-wrapper';
+
+    const colorPickerLabel = document.createElement('label');
+    colorPickerLabel.textContent = '배경색 : ';
+    const colorPicker = document.createElement('input');
+    colorPicker.type = 'color';
+    colorPicker.value = defaultColor || '#1C32F7';
+
+    const colorInput = document.createElement('input');
+    colorInput.type = 'text';
+    colorInput.className = 'color-input';
+    colorInput.placeholder = '색상값 입력 #000000';
+    colorInput.value = defaultColor || '#1C32F7';
+    colorInput.style.width = '80px';
+    colorInput.style.marginTop = '0px';
+
+    colorPicker.oninput = () => {
+        colorInput.value = colorPicker.value.toUpperCase();
+    };
+
+    colorPickerWrapper.appendChild(colorPickerLabel);
+    colorPickerWrapper.appendChild(colorPicker);
+    colorPickerWrapper.appendChild(colorInput);
+
+    modal.appendChild(colorPickerWrapper);
+
+    colorInput.addEventListener('input', () => {
+        if (/^#[0-9A-F]{6}$/i.test(colorInput.value)) {
+            colorPicker.value = colorInput.value.toUpperCase();
+        }
+    });
+
+    // ✅ 글자색 선택 (컬러 선택기 + 직접 입력)
+    const textColorPickerWrapper = document.createElement('div');
+    textColorPickerWrapper.className = 'color-picker-wrapper';
+
+    const textColorPickerLabel = document.createElement('label');
+    textColorPickerLabel.textContent = '글자색 : ';
+    const textColorPicker = document.createElement('input');
+textColorPicker.type = 'color';
+defaultTextColor = defaultTextColor?.trim() || '#FFFFFF'; // ✅ 기본값 강제 적용
+textColorPicker.value = defaultTextColor;
+
+
+const textColorInput = document.createElement('input');
+textColorInput.type = 'text';
+textColorInput.className = 'color-input';
+textColorInput.placeholder = '색상값 입력 #FFFFFF';
+textColorInput.value = defaultTextColor;
+
+    textColorInput.style.width = '80px';
+    textColorInput.style.marginTop = '0px';
+
+    textColorPicker.oninput = () => {
+        textColorInput.value = textColorPicker.value.toUpperCase();
+    };
+
+    textColorInput.addEventListener('input', () => {
+        if (/^#[0-9A-F]{6}$/i.test(textColorInput.value)) {
+            textColorPicker.value = textColorInput.value.toUpperCase();
+        }
+    });
+
+    textColorPickerWrapper.appendChild(textColorPickerLabel);
+    textColorPickerWrapper.appendChild(textColorPicker);
+    textColorPickerWrapper.appendChild(textColorInput);
+
+    modal.appendChild(textColorPickerWrapper);
+
+    // ✅ 글자 크기 조절
+    const fontSizeWrapper = document.createElement('div');
+    fontSizeWrapper.className = 'font-size-wrapper';
+
+    const fontSizeLabel = document.createElement('label');
+    fontSizeLabel.textContent = '글자 크기 : ';
+    const fontSizeInput = document.createElement('input');
+    fontSizeInput.type = 'number';
+    fontSizeInput.className = 'font-size-input';
+    fontSizeInput.value = parseInt(defaultFontSize) || '13';
+    fontSizeInput.style.width = '80px';
+
+    fontSizeWrapper.appendChild(fontSizeLabel);
+    fontSizeWrapper.appendChild(fontSizeInput);
+
+    modal.appendChild(fontSizeWrapper);
+
+
+
+const rowButtonContainer = document.createElement('div');
+    rowButtonContainer.style.marginTop = '10px';
+
+
+    // ✅ 버튼 컨테이너
+    const buttonContainer = document.createElement('div');
+    buttonContainer.style.marginTop = '10px';
+    buttonContainer.style.textAlign = 'right';
+
+    const saveButton = document.createElement('button');
+    saveButton.textContent = ' 확인 ';
+    saveButton.style.marginRight = '10px';
+		saveButton.onclick = () => {
+		updateMarkerStyleAndSave(apartmentId, colorInput.value, textColorInput.value, fontSizeInput.value + 'px');
+		closePopup();
+		document.body.removeChild(modal);
+	};
+
+ const addRowButton = document.createElement('button');
+    addRowButton.textContent = '행 추가';
+    addRowButton.onclick = () => addRowToTable(apartmentId);
+    rowButtonContainer.appendChild(addRowButton);
+
+    const removeRowButton = document.createElement('button');
+    removeRowButton.textContent = '행 제거';
+    removeRowButton.onclick = () => removeRowFromTable(apartmentId);
+    rowButtonContainer.appendChild(removeRowButton);
+
+    modal.appendChild(rowButtonContainer);
+
+
+
+const resetButton = document.createElement('button');
+resetButton.textContent = ' 초기화 ';
+resetButton.style.marginRight = '10px';
+resetButton.onclick = () => {
+    // ✅ IndexedDB에서 해당 데이터 삭제
+    const request = indexedDB.open("hongbu", 1);
+    request.onsuccess = function(event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartments"], "readwrite");
+        const store = transaction.objectStore("apartments");
+        store.delete(`${apartmentId}-시세1`);
+        transaction.oncomplete = () => {
+            console.log("✅ 초기화 완료 (IndexedDB 삭제됨)");
+
+            // ✅ 마커 스타일도 기본값으로 리셋
+            const markerElement = document.querySelector(`[data-apartment-id='${apartmentId}']`);
+            if (markerElement) {
+                markerElement.style.backgroundColor = "#9F9F9F";
+                markerElement.style.color = "#ffffff";
+                markerElement.style.fontSize = "12px";
+
+                const tableContainer = markerElement.querySelector(".tableContainer");
+                if (tableContainer) {
+                    tableContainer.innerHTML = createEditableTableHTML(apartmentId, generateDefaultTable());
+                    makeTableEditable(tableContainer);
+                }
+            }
+
+            // ✅ 모달 닫기
+            closePopup();
+            document.body.removeChild(modal);
+        };
+    };
+};
+
+buttonContainer.appendChild(resetButton);  // ⬅ 초기화 버튼 먼저
+    buttonContainer.appendChild(saveButton);
+
+    const cancelButton = document.createElement('button');
+    cancelButton.textContent = ' 닫기 ';
+    cancelButton.onclick = () => {
+        document.body.removeChild(modal);
+        closePopup();
+    };
+    buttonContainer.appendChild(cancelButton);
+
+    modal.appendChild(buttonContainer);
+
+    // ✅ 모달을 body에 추가
+    document.body.appendChild(modal);
+
+
+
+}
+
+function addRowToTable(apartmentId) {
+    // 해당 apartmentId의 테이블을 찾아서 새로운 행 추가
+    const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
+    if (tableContainer) {
+        const table = tableContainer.querySelector("table");
+
+        if (table) {
+            const newRow = table.insertRow();
+            // 각 셀에 기본값 추가 (예: 빈 텍스트)
+            for (let i = 0; i < table.rows[0].cells.length; i++) {
+                const newCell = newRow.insertCell();
+                newCell.textContent = ""; // 기본적으로 빈 텍스트
+                newCell.style.border = "1px solid black";
+                newCell.style.padding = "0px";
+                newCell.style.textAlign = "center";
+				newCell.style.height = "24px";
+            }
+			saveTableToIndexedDB(apartmentId, tableContainer);
+        }
+    }
+}
+
+function removeRowFromTable(apartmentId) {
+    // 해당 apartmentId의 테이블을 찾아서 선택된 행 제거
+    const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
+    if (tableContainer) {
+        const table = tableContainer.querySelector("table");
+
+        if (table && table.rows.length > 1) {
+            // 마지막 행을 삭제 (최소 1개 행이 남아야 하므로)
+            table.deleteRow(table.rows.length - 1);
+// ✅ 삭제 후 바로 IndexedDB에 저장
+            saveTableToIndexedDB(apartmentId, tableContainer);
+        }
+    }
+}
+
+function parsePriceDataFromTable(tableContainer) {
+    const rows = tableContainer.querySelectorAll("tr");
+    const parsed = [];
+
+    rows.forEach(row => {
+        const cells = row.querySelectorAll("td");
+        if (cells.length >= 3) {
+            const 평형 = cells[0].textContent.trim();
+            const 매매 = parseFloat(cells[1].textContent.trim());
+            const 전세 = parseFloat(cells[2].textContent.trim());
+
+            if (!isNaN(매매) && !isNaN(전세)) {
+                parsed.push({ 평형, 매매, 전세 });
+            }
+        }
+    });
+
+    return parsed;
+}
+
+function renderPriceChart(container, data) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 200;
+    canvas.height = data.length * 25 + 20; // 평형 수에 따라 높이 조정
+    canvas.style.margin = "5px";
+
+    const ctx = canvas.getContext("2d");
+
+    const maxPrice = Math.max(...data.flatMap(d => [d.매매, d.전세]));
+    const barMaxWidth = 80;
+
+    data.forEach((d, i) => {
+        const y = i * 25 + 20;
+        const label = d.평형;
+        ctx.fillStyle = "#000";
+        ctx.font = "12px sans-serif";
+        ctx.fillText(label, 0, y);
+
+        const saleWidth = (d.매매 / maxPrice) * barMaxWidth;
+        const leaseWidth = (d.전세 / maxPrice) * barMaxWidth;
+
+        ctx.fillStyle = "#ff4d4d"; // 빨간색 매매
+        ctx.fillRect(40, y - 10, saleWidth, 8);
+
+        ctx.fillStyle = "#4d79ff"; // 파란색 전세
+        ctx.fillRect(40, y, leaseWidth, 8);
+    });
+
+    container.appendChild(canvas);
+}
+
+async function exportToJSON() {
+    try {
+        const db = await initIndexedDB();
+        const transaction = db.transaction(['apartments'], 'readonly');
+        const store = transaction.objectStore('apartments');
+        const request = store.getAll();
+
+        request.onsuccess = async function(event) {
+            const data = event.target.result;
+            const jsonData = JSON.stringify(data, null, 2);
+
+            // 💾 저장할 파일 이름
+            const now = new Date();
+            const formattedDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            const formattedTime = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+            const defaultFilename = `홍부_시세지도_백업_${formattedDate}_${formattedTime}.json`;
+
+            // ✅ showSaveFilePicker로 저장 위치 선택
+            const handle = await window.showSaveFilePicker({
+                suggestedName: defaultFilename,
+                types: [
+                    {
+                        description: 'JSON Files',
+                        accept: { 'application/json': ['.json'] }
+                    }
+                ]
+            });
+
+            const writable = await handle.createWritable();
+            await writable.write(jsonData);
+            await writable.close();
+
+            console.log('✅ 저장 완료:', handle.name);
+        };
+
+        request.onerror = function(event) {
+            console.error('❌ Export transaction error: ', event.target.errorCode);
+        };
+    } catch (error) {
+        console.error('❌ 오류 발생:', error);
+    }
+}
+
+
+function importFromJSON(file) {
+    const reader = new FileReader();
+    reader.onload = function(event) {
+        const data = JSON.parse(event.target.result);
+
+        initIndexedDB().then(db => {
+            const transaction = db.transaction(['apartments'], 'readwrite');
+            const store = transaction.objectStore('apartments');
+
+            data.forEach(item => {
+                // ✅ 누락된 필드 보완
+                if (!item.type) item.type = '시세1';
+                if (!item.idType) item.idType = `${item.id}-${item.type}`;
+                store.put(item);
+            });
+
+            transaction.oncomplete = function() {
+				alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+
+				// ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
+				if (document.getElementById("toggleSiseMap").checked && window.map) {
+					prevSiseMapState = "초기화";
+					updateMarkers(window.map.getBounds());
+				}
+			};
+
+
+            transaction.onerror = function(event) {
+                console.error('❌ Import transaction error:', event.target.errorCode);
+            };
+        }).catch(error => {
+            console.error('❌ Failed to initialize hongbu DB:', error);
+        });
+    };
+
+    reader.readAsText(file);
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+
 </script>
 
 
