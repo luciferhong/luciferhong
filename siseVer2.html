@@ -370,7 +370,7 @@ buttonContainer {
 					const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
 					if (!confirmReset) return;
 
-					const request = indexedDB.open("hongSise", 3);
+					const request = indexedDB.open("hongSise", 4);
 
 					request.onsuccess = function (event) {
 						const db = event.target.result;
@@ -2038,7 +2038,7 @@ var activeMarkerSet = null;
 // ✅ IndexedDB 초기화
 async function initIndexedDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongSise", 3);
+        const request = indexedDB.open("hongSise", 4);
 
         request.onupgradeneeded = function(event) {
             const db = event.target.result;
@@ -2069,7 +2069,7 @@ async function initIndexedDB() {
 
 // ✅ IndexedDB 저장 함수
 function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
-    const request = indexedDB.open("hongSise", 3);
+    const request = indexedDB.open("hongSise", 4);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -2086,11 +2086,9 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 
 
 }
-
-// ✅ IndexedDB에서 데이터 가져오기
 function getFromIndexedDB(id, type) {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongSise", 3);
+        const request = indexedDB.open("hongSise", 4);
 
         request.onerror = (event) => {
             reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
@@ -2098,26 +2096,38 @@ function getFromIndexedDB(id, type) {
 
         request.onsuccess = (event) => {
             const db = event.target.result;
-            const transaction = db.transaction(["apartments"], "readonly");
-            const store = transaction.objectStore("apartments");
 
-            const idType = `${id}-${type}`;
-            const getRequest = store.get(idType);
+            // ✅ apartments store 존재 확인
+            if (!db.objectStoreNames.contains("apartments")) {
+                console.warn("⚠️ apartments store가 없습니다.");
+                resolve({ text: "", color: "#9F9F9F", textColor: "#ffffff", fontSize: "12px" });
+                return;
+            }
 
-            getRequest.onsuccess = () => {
-                if (getRequest.result) {
-                    resolve(getRequest.result);
-                } else {
-                    resolve({ text: "", color: "#9F9F9F", textColor: "#ffffff", fontSize: "12px" });
-                }
-            };
+            try {
+                const transaction = db.transaction(["apartments"], "readonly");
+                const store = transaction.objectStore("apartments");
+                const idType = `${id}-${type}`;
+                const getRequest = store.get(idType);
 
-            getRequest.onerror = () => {
-                reject("❌ IndexedDB 데이터 가져오기 실패");
-            };
+                getRequest.onsuccess = () => {
+                    if (getRequest.result) {
+                        resolve(getRequest.result);
+                    } else {
+                        resolve({ text: "", color: "#9F9F9F", textColor: "#ffffff", fontSize: "12px" });
+                    }
+                };
+
+                getRequest.onerror = () => {
+                    reject("❌ IndexedDB 데이터 가져오기 실패");
+                };
+            } catch (e) {
+                reject("❌ 트랜잭션 생성 중 오류: " + e.message);
+            }
         };
     });
 }
+
 /*
 document.getElementById("toggleSiseMap").addEventListener("change", function() {
     const isChecked = this.checked;
@@ -3093,7 +3103,7 @@ console.log(createEditableTableHTML(apartmentId, tableData));
 	resetButton.textContent = ' 초기화 ';
 	resetButton.style.marginRight = '10px';
 	resetButton.onclick = () => {
-		const request = indexedDB.open("hongSise", 3);
+		const request = indexedDB.open("hongSise", 4);
 		request.onsuccess = function(event) {
 			const db = event.target.result;
 			const transaction = db.transaction(["apartments"], "readwrite");
@@ -3309,61 +3319,70 @@ function importFromJSON(file) {
 
     reader.readAsText(file);
 }
-
 function importFromJSONToHongSise(file) {
-	const reader = new FileReader();
+  const reader = new FileReader();
 
-	reader.onload = function (event) {
-		const data = JSON.parse(event.target.result);
+  reader.onload = function (event) {
+    const data = JSON.parse(event.target.result);
+    const request = indexedDB.open("hongSise");
 
-		const request = indexedDB.open("hongSise");
+    request.onerror = function (e) {
+      console.error("❌ hongSise DB 열기 실패", e);
+    };
 
-		request.onerror = function (e) {
-			console.error("❌ hongSise DB 열기 실패", e);
-		};
+    request.onsuccess = function (e) {
+      const db = e.target.result;
+      const storeNames = db.objectStoreNames;
+      const tx = db.transaction(storeNames, "readwrite");
 
-		request.onsuccess = function (e) {
-			const db = e.target.result;
-			const storeNames = db.objectStoreNames;
-			const tx = db.transaction(storeNames, "readwrite");
+      let errorOccurred = false;
 
-			Promise.all(
-				Object.keys(data).map(storeName => {
-					return new Promise((resolve, reject) => {
-						if (!storeNames.contains(storeName)) {
-							console.warn(`⚠️ hongSise DB에 ${storeName} store 없음`);
-							return resolve();
-						}
+      tx.onerror = (e) => {
+        console.error("❌ 트랜잭션 오류", e);
+        errorOccurred = true;
+      };
 
-						const store = tx.objectStore(storeName);
-						const items = data[storeName];
+      tx.oncomplete = () => {
+        if (!errorOccurred) {
+          alert("✅ hongSise DB 데이터 가져오기 완료");
 
-						items.forEach(item => {
-							store.put(item);
-						});
+          if (document.getElementById("toggleSiseMap")?.checked && window.map) {
+            prevSiseMapState = "초기화";
+            updateMarkers(window.map.getBounds());
+          }
+        }
+      };
 
-						resolve();
-					});
-				})
-			)
-				.then(() => {
-					tx.oncomplete = () => {
-						alert("✅ hongSise DB 데이터 가져오기 완료");
+      Object.keys(data).forEach(storeName => {
+        if (!storeNames.contains(storeName)) {
+          console.warn(`⚠️ hongSise DB에 ${storeName} store 없음`);
+          return;
+        }
 
-						if (document.getElementById("toggleSiseMap")?.checked && window.map) {
-							prevSiseMapState = "초기화";
-							updateMarkers(window.map.getBounds());
-						}
-					};
-				})
-				.catch(err => {
-					console.error("❌ hongSise import 오류", err);
-				});
-		};
-	};
+        const store = tx.objectStore(storeName);
+        const items = data[storeName];
 
-	reader.readAsText(file);
+        items.forEach(item => {
+          try {
+            if (store.keyPath) {
+              store.put(item); // keyPath가 있으면 OK
+            } else if ("id" in item || "idType" in item) {
+              store.put(item, item.id || item.idType); // 수동 key 제공
+            } else {
+              console.warn("❗ 키 없음", item);
+            }
+          } catch (e) {
+            console.error("❌ put 실패:", e, item);
+            errorOccurred = true;
+          }
+        });
+      });
+    };
+  };
+
+  reader.readAsText(file);
 }
+
 
 
 // ✅ [1] hongSiseColor 백업 버튼
@@ -3741,7 +3760,7 @@ function getSavedOrDefaultTable(apartmentId) {
     // IndexedDB에서 기존 데이터 가져오기 시도
     // 없으면 기본 테이블 반환
     return new Promise((resolve) => {
-        const request = indexedDB.open("hongSise", 3);
+        const request = indexedDB.open("hongSise", 4);
         request.onsuccess = function(event) {
             const db = event.target.result;
             const transaction = db.transaction(["apartments"], "readonly");
@@ -4570,7 +4589,7 @@ document.getElementById("resetFiltersBtn").addEventListener("click", () => {
 
 function openHongSiseDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongSise", 3);
+    const request = indexedDB.open("hongSise", 4);
 
     request.onupgradeneeded = function (event) {
       const db = event.target.result;
