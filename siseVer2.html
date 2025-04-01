@@ -244,8 +244,25 @@ buttonContainer {
   <input type="number" id="filterPyeongTo" class="filter-input" placeholder="To">
 </div>
 
-<button id="hideNoPriceBtn" style="margin-left: 10px; padding: 4px 8px; font-size: 13px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer;">
-  시세 없는 아파트 숨기기
+<div class="filter-group">
+  <label for="filterPriceFrom" class="filter-label">💰매매가 필터:</label>
+  <input type="number" id="filterPriceFrom" class="filter-input" placeholder="From">
+  <span class="filter-tilde">~</span>
+  <input type="number" id="filterPriceTo" class="filter-input" placeholder="To">
+</div>
+
+<div class="filter-group">
+  <label for="filterLeaseFrom" class="filter-label">📦전세가 필터:</label>
+  <input type="number" id="filterLeaseFrom" class="filter-input" placeholder="From">
+  <span class="filter-tilde">~</span>
+  <input type="number" id="filterLeaseTo" class="filter-input" placeholder="To">
+</div>
+<button id="resetFiltersBtn" style="margin-left: 6px; padding: 6px 10px; font-size: 13px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer;">
+  🔄 필터 초기화
+</button>
+
+<button id="hideNoPriceBtn" style="margin-left: 6px; padding: 6px 10px; font-size: 13px; border-radius: 6px; border: 1px solid #ccc; background: #f5f5f5; cursor: pointer;">
+ 🙈 시세 없는 아파트 숨기기
 </button>
 
 
@@ -2197,9 +2214,6 @@ display: flex; flex-direction: row; align-items: flex-end;
 outerWrapper.appendChild(markerElement);
 outerWrapper.appendChild(chartContainer);
 
-
-
-		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
     
 
     const marker = new naver.maps.Marker({
@@ -2211,7 +2225,7 @@ outerWrapper.appendChild(chartContainer);
         }
     });
 	marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
-
+	marker._contentWrapper = outerWrapper;
 	naver.maps.Event.addListener(marker, "click",  function(e) {
 		showApartmentInfo(apartment.id, {
 			x: e.offset.x,
@@ -2237,7 +2251,8 @@ outerWrapper.appendChild(chartContainer);
 		const parsed = parsePriceDataFromTable(dummyDiv);
 
 		if (parsed.length > 0) {
-			renderPriceChart(chartContainer, parsed);
+			renderPriceChart(chartContainer, parsed, marker);
+			 
 		}
 	});
 
@@ -3527,16 +3542,33 @@ function getColorForPrice(price, settings) {
     // 해당 조건 없을 경우 기본값
     return "#cccccc";
 }
-function renderPriceChart(container, data) {
+function renderPriceChart(container, data, marker = null) {
 
+	const fromP = parseFloat(document.getElementById("filterPyeongFrom").value);
+	const toP = parseFloat(document.getElementById("filterPyeongTo").value);
+	const fromPrice = parseInt(document.getElementById("filterPriceFrom").value, 10);
+	const toPrice = parseInt(document.getElementById("filterPriceTo").value, 10);
+	const fromLease = parseInt(document.getElementById("filterLeaseFrom").value, 10);
+	const toLease = parseInt(document.getElementById("filterLeaseTo").value, 10);
 
-	const fromP = parseFloat(document.getElementById("filterPyeongFrom")?.value) || 0;
-	const toP = parseFloat(document.getElementById("filterPyeongTo")?.value) || Infinity;
 	const filteredData = data.filter(row => {
-	const pyeong = parseFloat(row.평형);
+	  const pyeong = parseFloat(row.평형);
+	  const price = parseInt(String(row.매매 ?? "").replace(/[^0-9]/g, ""), 10);
+	  const lease = parseInt(String(row.전세 ?? "").replace(/[^0-9]/g, ""), 10);
 
-	  return !isNaN(pyeong) && pyeong >= fromP && pyeong <= toP;
+	  const pyeongValid = (isNaN(fromP) && isNaN(toP)) || 
+		(!isNaN(pyeong) && (isNaN(fromP) || pyeong >= fromP) && (isNaN(toP) || pyeong <= toP));
+
+	  const priceValid = (isNaN(fromPrice) && isNaN(toPrice)) ||
+		(!isNaN(price) && (isNaN(fromPrice) || price >= fromPrice) && (isNaN(toPrice) || price <= toPrice));
+
+	  const leaseValid = (isNaN(fromLease) && isNaN(toLease)) ||
+		(!isNaN(lease) && (isNaN(fromLease) || lease >= fromLease) && (isNaN(toLease) || lease <= toLease));
+
+	  return pyeongValid && priceValid && leaseValid;
 	});
+
+
     const wrapper = document.createElement("div");
     wrapper.style.display = "flex";
     wrapper.style.gap = "1px";
@@ -3579,7 +3611,7 @@ function renderPriceChart(container, data) {
 		}
 	}
 
-//console.log(data)
+//console.log("filteredData : "+filteredData.length)
     filteredData.forEach(d => {
 
     if (isNaN(d.매매)) return; // 매매가 없는 경우는 건너뜀
@@ -3619,49 +3651,66 @@ function renderPriceChart(container, data) {
     bottom.style.padding = "5px 0";
     bottom.style.width = "100%";
 
- // 매매
-const 매매 = document.createElement("div");
-매매.style.fontWeight = "bold";
-매매.style.minHeight = "1.5em";
-if (d.매매 !== undefined && d.매매 !== null && d.매매 !== "" && !isNaN(d.매매)) {
-    매매.textContent = Number(d.매매).toFixed(1);
-} else {
-    매매.textContent = " ";
-}
-bottom.appendChild(매매);
+	 // 매매
+	const 매매 = document.createElement("div");
+	매매.style.fontWeight = "bold";
+	매매.style.minHeight = "1.5em";
+	if (d.매매 !== undefined && d.매매 !== null && d.매매 !== "" && !isNaN(d.매매)) {
+		매매.textContent = Number(d.매매).toFixed(1);
+	} else {
+		매매.textContent = " ";
+	}
+	bottom.appendChild(매매);
 
-// 전세
-const 전세 = document.createElement("div");
-전세.style.fontWeight = "bold";
-전세.style.minHeight = "1.5em";
-if (d.전세 !== undefined && d.전세 !== null && d.전세 !== "" && !isNaN(d.전세)) {
-    전세.textContent = Number(d.전세).toFixed(1);
-} else {
-    전세.textContent = " ";
-}
-bottom.appendChild(전세);
+	// 전세
+	const 전세 = document.createElement("div");
+	전세.style.fontWeight = "bold";
+	전세.style.minHeight = "1.5em";
+	if (d.전세 !== undefined && d.전세 !== null && d.전세 !== "" && !isNaN(d.전세)) {
+		전세.textContent = Number(d.전세).toFixed(1);
+	} else {
+		전세.textContent = " ";
+	}
+	bottom.appendChild(전세);
 
-// 기타
-const 기타 = document.createElement("div");
-기타.style.fontWeight = "bold";
-기타.style.minHeight = "1.5em";
-if (d.기타 !== undefined && d.기타 !== null && d.기타 !== "" && !isNaN(d.기타)) {
-    기타.textContent = Number(d.기타).toFixed(1);
-} else if(d.기타 !== undefined && d.기타 !== null && d.기타 !== ""){
-	기타.textContent = d.기타;
-} else {
-    기타.textContent = " ";
-}
-bottom.appendChild(기타);
+	// 기타
+	const 기타 = document.createElement("div");
+	기타.style.fontWeight = "bold";
+	기타.style.minHeight = "1.5em";
+	if (d.기타 !== undefined && d.기타 !== null && d.기타 !== "" && !isNaN(d.기타)) {
+		기타.textContent = Number(d.기타).toFixed(1);
+	} else if(d.기타 !== undefined && d.기타 !== null && d.기타 !== ""){
+		기타.textContent = d.기타;
+	} else {
+		기타.textContent = " ";
+	}
+	bottom.appendChild(기타);
 
-    card.appendChild(top);
-    card.appendChild(bottom);
-    wrapper.appendChild(card);
-});
+		card.appendChild(top);
+		card.appendChild(bottom);
+		wrapper.appendChild(card);
+	});
 
 
     container.innerHTML = "";
     container.appendChild(wrapper);
+
+
+	  // ✅ 차트 데이터가 없어 막대가 없을 경우 anchor 재조정
+	  if (filteredData.length == 0) {
+		marker.setIcon({
+		  content: marker._contentWrapper,
+		  anchor: new naver.maps.Point(10, 30)  // 기본 anchor로 되돌림
+		});
+	  }else if(filteredData.length > 0){
+		if (marker._contentWrapper) {
+		  marker.setIcon({
+			content: marker._contentWrapper,
+			anchor: new naver.maps.Point(10, 80)
+		  });
+		}
+
+		}
 }
 
 
@@ -4443,16 +4492,17 @@ function bindYearColorSettingsToModal() {
 
 let hideNoPrice = false;
 document.getElementById("hideNoPriceBtn").addEventListener("click", () => {
-  hideNoPrice = true; // ✅ 상태 기록
+  hideNoPrice = true;
 
   document.querySelectorAll(".marker-wrapper").forEach(wrapper => {
     const chart = wrapper.querySelector(".priceChartContainer");
     const marker = wrapper.querySelector("[data-apartment-id]");
     const absoluteWrapper = wrapper.parentElement;
 
-    const hasChart = chart && chart.querySelector("*");
+    const barArea = chart?.querySelector("div");
+    const hasVisibleChart = barArea && barArea.children.length > 0 && window.getComputedStyle(chart).display !== "none";
 
-    if (hasChart) {
+    if (hasVisibleChart) {
       wrapper.style.display = "inline-flex";
       if (marker) marker.style.display = "inline-block";
       if (absoluteWrapper) absoluteWrapper.style.display = "block";
@@ -4462,6 +4512,38 @@ document.getElementById("hideNoPriceBtn").addEventListener("click", () => {
   });
 });
 
+
+
+
+document.getElementById("filterPriceFrom").addEventListener("input", () => {
+  updateMarkers(window.map.getBounds(), true);
+});
+
+document.getElementById("filterPriceTo").addEventListener("input", () => {
+  updateMarkers(window.map.getBounds(), true);
+});
+
+document.getElementById("filterLeaseFrom").addEventListener("input", () => {
+  updateMarkers(window.map.getBounds(), true);
+});
+
+document.getElementById("filterLeaseTo").addEventListener("input", () => {
+  updateMarkers(window.map.getBounds(), true);
+});
+document.getElementById("resetFiltersBtn").addEventListener("click", () => {
+  const ids = [
+    "filterPyeongFrom", "filterPyeongTo",
+    "filterPriceFrom", "filterPriceTo",
+    "filterLeaseFrom", "filterLeaseTo"
+  ];
+
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = "";
+  });
+
+  updateMarkers(window.map.getBounds(), true); // ✅ 마커도 새로고침
+});
 
 </script>
 
