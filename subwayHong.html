@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>지하철 노선 지도</title>
+  <script type="text/javascript" src="https://openapi.map.naver.com/openapi/v3/maps.js?ncpClientId=hcuap73kdc"></script>
+  <style>
+   
+#map { width: 100%; height: calc(100vh - 65px); resize: both; }
+    #checkbox-container {
+      position: absolute;
+      top: 65px;
+      left: 10px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.9);
+      padding: 8px 12px;
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      font-family: sans-serif;
+      font-size: 13px;
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    #checkbox-container label {
+      display: block;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+<h1 style="font-size: 20px; font-weight: bold; text-align: left; margin-left:10px">
+    [루시퍼홍] 홍처르
+</h1>
+<div id="map"></div>
+<div id="checkbox-container"></div>
+
+<!-- 
+<div id="control-panel" style="position:absolute; top:10px; right:10px; background:white; padding:10px; border-radius:6px; z-index:1000; box-shadow:0 2px 6px rgba(0,0,0,0.2); font-family:sans-serif; font-size:13px;">
+  <button id="start-btn">시작</button>
+  <button id="reset-btn">리셋</button>
+  <button id="copy-btn">복사</button>
+  <pre id="output" style="margin-top:10px; max-height:300px; overflow:auto; white-space:pre-wrap;"></pre>
+</div> -->
+
+<script>
+const map = new naver.maps.Map('map', {
+  center: new naver.maps.LatLng(37.5665, 126.9780),
+  zoom: 11
+});
+
+const lineLayers = {};
+const lineCheckboxes = {};
+const markers = [];
+let lastLoadedData = null;
+
+const container = document.getElementById('checkbox-container');
+
+// 슬라이더 UI
+const opacityWrapper = document.createElement('div');
+opacityWrapper.style.marginBottom = '10px';
+
+const opacityLabel = document.createElement('div');
+opacityLabel.textContent = '지도 투명도';
+opacityLabel.style.marginBottom = '4px';
+opacityLabel.style.fontWeight = 'bold';
+
+const opacityInput = document.createElement('input');
+opacityInput.type = 'range';
+opacityInput.min = 0;
+opacityInput.max = 100;
+opacityInput.value = 100;
+opacityInput.style.width = '100%';
+
+opacityWrapper.appendChild(opacityLabel);
+opacityWrapper.appendChild(opacityInput);
+container.prepend(opacityWrapper);
+
+// 역명 표기 체크박스
+const stationLabelToggle = document.createElement('label');
+stationLabelToggle.style.display = 'block';
+stationLabelToggle.style.marginTop = '10px';
+
+const stationCheckbox = document.createElement('input');
+stationCheckbox.type = 'checkbox';
+stationCheckbox.checked = true;
+stationCheckbox.style.marginRight = '4px';
+
+stationLabelToggle.appendChild(stationCheckbox);
+stationLabelToggle.appendChild(document.createTextNode('역명 표기'));
+opacityWrapper.appendChild(stationLabelToggle);
+
+// 투명도 적용 함수
+function applyOpacity() {
+  const opacity = opacityInput.value / 100;
+  document.querySelectorAll('#map img').forEach(img => {
+    img.style.opacity = opacity;
+  });
+}
+
+opacityInput.addEventListener('input', applyOpacity);
+
+// 지도 확대/축소 시에도 유지
+const observer = new MutationObserver(() => {
+  setTimeout(applyOpacity, 10);
+});
+observer.observe(document.getElementById('map'), { childList: true, subtree: true });
+
+// 데이터 불러오기
+fetch('data-metro-line-1.0.0.json')
+  .then(res => res.json())
+  .then(data => {
+    lastLoadedData = data;
+    const lines = data.DATA;
+
+    // 전체 선택/해제
+    const allLabel = document.createElement('label');
+    const allCheckbox = document.createElement('input');
+    allCheckbox.type = 'checkbox';
+    allCheckbox.checked = true;
+    allLabel.appendChild(allCheckbox);
+    allLabel.append(' 전체 선택 / 해제');
+    container.appendChild(allLabel);
+    container.appendChild(document.createElement('hr'));
+
+    allCheckbox.addEventListener('click', () => {
+      const isChecked = allCheckbox.checked;
+      Object.entries(lineCheckboxes).forEach(([lineId, checkbox]) => {
+        checkbox.checked = isChecked;
+        lineLayers[lineId].forEach(obj => obj.setMap(isChecked ? map : null));
+      });
+      updateMarkers(lastLoadedData);
+    });
+
+    // 노선별 UI 및 레이어
+    lines.forEach(line => {
+      const sections = line.node;
+      const firstStation = sections[0]?.station[0];
+      const lineId = firstStation?.line || '노선';
+
+      if (!lineLayers[lineId]) {
+        lineLayers[lineId] = [];
+
+        const label = document.createElement('label');
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.dataset.line = lineId;
+        lineCheckboxes[lineId] = checkbox;
+        label.appendChild(checkbox);
+        label.append(` ${lineId}`);
+        container.appendChild(label);
+
+        checkbox.addEventListener('change', () => {
+          const isVisible = checkbox.checked;
+          lineLayers[lineId].forEach(obj => obj.setMap(isVisible ? map : null));
+
+          // 전체 선택 상태 반영
+          allCheckbox.checked = Object.values(lineCheckboxes).every(cb => cb.checked);
+
+          // 마커 갱신
+          updateMarkers(lastLoadedData);
+        });
+      }
+
+      sections.forEach(section => {
+        // 선 (NewVia 기준)
+        if (Array.isArray(section.NewVia)) {
+          section.NewVia.forEach(pathArray => {
+            const path = pathArray.map(([lat, lng]) => new naver.maps.LatLng(lat, lng));
+            const polyline = new naver.maps.Polyline({
+              path,
+              map: map,
+              strokeColor: line.color || '#000000',
+              strokeWeight: 4,
+              strokeOpacity: 1
+            });
+            lineLayers[lineId].push(polyline);
+          });
+        }
+      });
+    });
+
+    // 최초 마커 표시
+    updateMarkers(lastLoadedData);
+  });
+
+
+// 마커 갱신 함수
+function updateMarkers(data) {
+  markers.forEach(({ marker }) => marker.setMap(null));
+  markers.length = 0;
+
+  const showStations = stationCheckbox.checked;
+
+  Object.entries(lineCheckboxes).forEach(([lineId, checkbox]) => {
+    if (checkbox.checked) {
+      const line = data.DATA.find(l => l.node[0]?.station[0]?.line === lineId);
+      if (line) {
+        line.node.forEach(section => {
+          section.station.forEach(station => {
+            const isDuplicate = markers.some(m => m.name === station.name);
+            if (!isDuplicate && showStations) {
+              const marker = new naver.maps.Marker({
+                position: new naver.maps.LatLng(station.lat, station.lng),
+                map: map,
+                icon: {
+                  content: `
+                    <div style="
+                      background: white;
+                      padding: 2px 6px;
+                      border: 1px solid #555;
+                      border-radius: 3px;
+                      font-size: 12px;
+                      font-weight: bold;
+                      color: black;
+                      white-space: nowrap;
+                      box-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+                    ">${station.name}</div>`,
+                  size: new naver.maps.Size(80, 20),
+                  anchor: new naver.maps.Point(40, 10)
+                }
+              });
+              markers.push({ marker, name: station.name });
+            }
+          });
+        });
+      }
+    }
+  });
+}
+
+// 역명 표기 토글 시 마커 갱신
+stationCheckbox.addEventListener('change', () => {
+  updateMarkers(lastLoadedData);
+});
+
+
+/// 좌표구하기
+let isRecording = false;
+const coords = [];
+const outputEl = document.getElementById('output');
+
+// 시작 버튼 클릭 시 기록 시작
+document.getElementById('start-btn').addEventListener('click', () => {
+  isRecording = true;
+});
+
+// 리셋 버튼 클릭 시 초기화
+document.getElementById('reset-btn').addEventListener('click', () => {
+  isRecording = false;
+  coords.length = 0;
+  outputEl.textContent = '';
+});
+
+// 복사 버튼 클릭 시 클립보드로 복사
+document.getElementById('copy-btn').addEventListener('click', () => {
+  const text = outputEl.textContent.trim();
+  if (!text) {
+    alert("복사할 내용이 없습니다.");
+    return;
+  }
+
+  navigator.clipboard.writeText(text)
+    .then(() => alert("좌표가 복사되었습니다!"))
+    .catch(err => alert("복사 실패: " + err));
+});
+
+// 지도 클릭 시 좌표 저장 및 마커 표시
+naver.maps.Event.addListener(map, 'click', function(e) {
+  if (!isRecording) return;
+
+  const lat = parseFloat(e.coord.lat().toFixed(5));
+  const lng = parseFloat(e.coord.lng().toFixed(5));
+  coords.push([lat, lng]);
+
+  // 클릭한 위치에 마커 표시
+  new naver.maps.Marker({
+    position: new naver.maps.LatLng(lat, lng),
+    map: map,
+    icon: {
+      content: `<div style="
+        background: yellow;
+        padding: 2px 4px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: bold;
+        color: black;
+        border: 1px solid #333;
+      ">📍</div>`,
+      size: new naver.maps.Size(24, 24),
+      anchor: new naver.maps.Point(12, 12)
+    }
+  });
+
+  // 출력창에 누적 좌표 표시
+  outputEl.textContent = coords.map(c => `[${c[0]}, ${c[1]}]`).join(',\n') + ',';
+});
+
+</script>
+</body>
+</html>
