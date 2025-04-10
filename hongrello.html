@@ -3362,6 +3362,7 @@ function saveNote(id) {
         };
     });
 }
+
 function base64ToBlobUrl(base64) {
     const byteString = atob(base64.split(',')[1]);
     const mimeString = base64.split(',')[0].split(':')[1].split(';')[0];
@@ -3372,6 +3373,61 @@ function base64ToBlobUrl(base64) {
     }
     const blob = new Blob([ab], { type: mimeString });
     return URL.createObjectURL(blob);
+}
+
+function createImageWrapper(blobUrl, base64, idx) {
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "relative";
+    wrapper.style.display = "inline-block";
+    wrapper.style.marginRight = "6px";
+
+    const img = document.createElement("img");
+    img.src = blobUrl;
+    img.style.width = "60px";
+    img.style.height = "60px";
+    img.style.objectFit = "cover";
+    img.style.border = "1px solid #ccc";
+    img.style.borderRadius = "4px";
+    img.style.cursor = "pointer";
+    img.loading = "lazy";
+    img.title = `사진 ${idx + 1}`;
+
+    img.onclick = (e) => {
+        e.stopPropagation();
+        const modal = document.getElementById("imageModal");
+        const modalImg = document.getElementById("modalImage");
+        modalImg.src = blobUrl;
+        modal.style.display = "flex";
+        window.imageModalShowYn = true;
+    };
+
+    const deleteBtn = document.createElement("div");
+    deleteBtn.textContent = "✕";
+    deleteBtn.style.position = "absolute";
+    deleteBtn.style.top = "2px";
+    deleteBtn.style.right = "2px";
+    deleteBtn.style.background = "rgba(0,0,0,0.6)";
+    deleteBtn.style.color = "white";
+    deleteBtn.style.borderRadius = "50%";
+    deleteBtn.style.width = "16px";
+    deleteBtn.style.height = "16px";
+    deleteBtn.style.display = "flex";
+    deleteBtn.style.alignItems = "center";
+    deleteBtn.style.justifyContent = "center";
+    deleteBtn.style.cursor = "pointer";
+    deleteBtn.style.fontSize = "12px";
+
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (confirm("사진을 삭제합니다")) {
+            deletedImages.push(base64);
+            wrapper.remove();
+        }
+    };
+
+    wrapper.appendChild(img);
+    wrapper.appendChild(deleteBtn);
+    return wrapper;
 }
 
 function loadNote(id) {
@@ -3389,84 +3445,30 @@ function loadNote(id) {
             if (!data) return;
 
             document.getElementById("noteText").value = data.memo || "";
-
             const preview = document.getElementById("imagePreview");
             const images = data.images || [];
 
-            // 🔒 깜빡임 방지: 레이아웃은 유지하고 보이지만 않음
-            preview.style.visibility = "hidden";
             preview.innerHTML = "";
+            preview.style.visibility = "hidden";
 
-            if (images.length === 0) return;
-
-            const fragment = document.createDocumentFragment();
-
-            images.forEach((base64, idx) => {
-                const blobUrl = base64ToBlobUrl(base64);
-
-                const wrapper = document.createElement("div");
-                wrapper.style.position = "relative";
-                wrapper.style.display = "inline-block";
-                wrapper.style.marginRight = "6px";
-
-                const img = document.createElement("img");
-                img.src = blobUrl;
-                img.style.width = "60px";
-                img.style.height = "60px";
-                img.style.objectFit = "cover";
-                img.style.border = "1px solid #ccc";
-                img.style.borderRadius = "4px";
-                img.style.cursor = "pointer";
-                img.loading = "lazy";
-                img.title = `사진 ${idx + 1}`;
-
-                img.onclick = (e) => {
-                    e.stopPropagation();
-                    const modal = document.getElementById("imageModal");
-                    const modalImg = document.getElementById("modalImage");
-                    modalImg.src = blobUrl;
-                    modal.style.display = "flex";
-                    window.imageModalShowYn = true;
-                };
-
-                const deleteBtn = document.createElement("div");
-                deleteBtn.textContent = "✕";
-                deleteBtn.style.position = "absolute";
-                deleteBtn.style.top = "2px";
-                deleteBtn.style.right = "2px";
-                deleteBtn.style.background = "rgba(0,0,0,0.6)";
-                deleteBtn.style.color = "white";
-                deleteBtn.style.borderRadius = "50%";
-                deleteBtn.style.width = "16px";
-                deleteBtn.style.height = "16px";
-                deleteBtn.style.display = "flex";
-                deleteBtn.style.alignItems = "center";
-                deleteBtn.style.justifyContent = "center";
-                deleteBtn.style.cursor = "pointer";
-                deleteBtn.style.fontSize = "12px";
-
-                deleteBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    if (confirm("사진을 삭제합니다")) {
-                        deletedImages.push(base64);
-                        wrapper.remove();
-                    }
-                };
-
-                wrapper.appendChild(img);
-                wrapper.appendChild(deleteBtn);
-                fragment.appendChild(wrapper);
-            });
-
-            // 깜빡임 방지를 위해 프레임 2번 나눔
-            requestAnimationFrame(() => {
-                preview.appendChild(fragment);
-
-                // 다음 프레임에서 visibility 복구
-                requestAnimationFrame(() => {
+            // 👇 이미지 1장씩 순차 렌더링
+            function insertSequentially(index) {
+                if (index >= images.length) {
                     preview.style.visibility = "visible";
-                });
-            });
+                    return;
+                }
+
+                const base64 = images[index];
+                const blobUrl = base64ToBlobUrl(base64);
+                const wrapper = createImageWrapper(blobUrl, base64, index);
+
+                preview.appendChild(wrapper);
+
+                // 다음 이미지 삽입을 약간 딜레이
+                setTimeout(() => insertSequentially(index + 1), 20); // ms는 조정 가능
+            }
+
+            insertSequentially(0);
         };
     };
 }
