@@ -3237,32 +3237,48 @@ function importFromJSON(file) {
 
 /////////////////////////////////////////////////////////////////////////////////////////
 let deletedImages = []; // 삭제된 이미지 목록
+
 function saveNote(id) {
     const memo = document.getElementById("noteText").value;
-    const imageElements = document.querySelectorAll("#imagePreview img");
+    const files = document.getElementById("imageInput").files;
+    const readerPromises = [];
 
-    const images = [];
-    imageElements.forEach(img => {
-        if (img.dataset.deleted !== "true") {
-            images.push(img.src);
-        }
-    });
+    for (let file of files) {
+        const reader = new FileReader();
+        const promise = new Promise((resolve) => {
+            reader.onload = () => resolve(reader.result);
+        });
+        reader.readAsDataURL(file);
+        readerPromises.push(promise);
+    }
 
-    const request = indexedDB.open("hongbuMemo", 2);
-    request.onsuccess = function (event) {
-        const db = event.target.result;
-        const transaction = db.transaction(["apartmentNotes"], "readwrite");
-        const store = transaction.objectStore("apartmentNotes");
-        const data = { id, memo, images };
+    Promise.all(readerPromises).then(newImageDataUrls => {
+        const request = indexedDB.open("hongbuMemo", 2);
+        request.onsuccess = function (event) {
+            const db = event.target.result;
+            const transaction = db.transaction(["apartmentNotes"], "readwrite");
+            const store = transaction.objectStore("apartmentNotes");
 
-        store.put(data);
+            const getRequest = store.get(id);
+            getRequest.onsuccess = function () {
+                let existing = getRequest.result || { id, memo: "", images: [] };
 
-        transaction.oncomplete = function () {
-            alert("저장되었습니다.");
-            // ✅ 저장 후 다시 로드해서 화면 갱신
-            loadNote(id);
+                // 🔄 삭제된 이미지를 제외
+                existing.images = (existing.images || []).filter(
+                    (img) => !deletedImages.includes(img)
+                );
+
+                // 새 이미지 추가
+                existing.images.push(...newImageDataUrls);
+                existing.memo = memo;
+
+                store.put(existing);
+                deletedImages = []; // 저장 후 초기화
+                alert("저장되었습니다!");
+				loadNote(id);
+            };
         };
-    };
+    });
 }
 
 
