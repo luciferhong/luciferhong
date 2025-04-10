@@ -3372,7 +3372,6 @@ function saveNote(id) {
         };
     });
 }
-
 function base64ToBlobUrl(base64) {
     const byteString = atob(base64.split(',')[1]);
     const mimeString = base64.split(',')[0].split(':')[1].split(';')[0];
@@ -3385,28 +3384,34 @@ function base64ToBlobUrl(base64) {
     return URL.createObjectURL(blob);
 }
 
-function createImageWrapper(blobUrl, base64, idx) {
+function createCanvasThumbnail(blobUrl, base64, idx, onDelete) {
     const wrapper = document.createElement("div");
     wrapper.style.position = "relative";
     wrapper.style.display = "inline-block";
     wrapper.style.marginRight = "6px";
+    wrapper.style.width = "60px";
+    wrapper.style.height = "60px";
 
-    const img = document.createElement("img");
+    const canvas = document.createElement("canvas");
+    canvas.width = 60;
+    canvas.height = 60;
+    canvas.style.border = "1px solid #ccc";
+    canvas.style.borderRadius = "4px";
+    canvas.style.cursor = "pointer";
+    canvas.title = `사진 ${idx + 1}`;
+
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, 60, 60);
+    };
     img.src = blobUrl;
-    img.style.width = "60px";
-    img.style.height = "60px";
-    img.style.objectFit = "cover";
-    img.style.border = "1px solid #ccc";
-    img.style.borderRadius = "4px";
-    img.style.cursor = "pointer";
-    img.loading = "lazy";
-    img.title = `사진 ${idx + 1}`;
 
-    img.onclick = (e) => {
+    canvas.onclick = (e) => {
         e.stopPropagation();
         const modal = document.getElementById("imageModal");
         const modalImg = document.getElementById("modalImage");
-        modalImg.src = blobUrl;
+        modalImg.src = blobUrl; // 여기선 img로 확대 미리보기
         modal.style.display = "flex";
         window.imageModalShowYn = true;
     };
@@ -3430,12 +3435,12 @@ function createImageWrapper(blobUrl, base64, idx) {
     deleteBtn.onclick = (e) => {
         e.stopPropagation();
         if (confirm("사진을 삭제합니다")) {
-            deletedImages.push(base64);
+            onDelete(base64);
             wrapper.remove();
         }
     };
 
-    wrapper.appendChild(img);
+    wrapper.appendChild(canvas);
     wrapper.appendChild(deleteBtn);
     return wrapper;
 }
@@ -3455,13 +3460,13 @@ function loadNote(id) {
             if (!data) return;
 
             document.getElementById("noteText").value = data.memo || "";
+
             const preview = document.getElementById("imagePreview");
             const images = data.images || [];
 
             preview.innerHTML = "";
             preview.style.visibility = "hidden";
 
-            // 👇 이미지 1장씩 순차 렌더링
             function insertSequentially(index) {
                 if (index >= images.length) {
                     preview.style.visibility = "visible";
@@ -3470,21 +3475,21 @@ function loadNote(id) {
 
                 const base64 = images[index];
                 const blobUrl = base64ToBlobUrl(base64);
-                const wrapper = createImageWrapper(blobUrl, base64, index);
 
-                preview.appendChild(wrapper);
+                const canvasWrapper = createCanvasThumbnail(blobUrl, base64, index, (deleted) => {
+                    deletedImages.push(deleted);
+                });
 
-                // 다음 이미지 삽입을 약간 딜레이
-                setTimeout(() => insertSequentially(index + 1), 20); // ms는 조정 가능
+                preview.appendChild(canvasWrapper);
+
+                // 순차 렌더링: 깜빡임 방지
+                setTimeout(() => insertSequentially(index + 1), 20);
             }
 
             insertSequentially(0);
         };
     };
 }
-
-
-
 
 
 
