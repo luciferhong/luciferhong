@@ -222,6 +222,14 @@ buttonContainer {
         <button id="uploadGPX">GPX 불러오기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
         <button id="clearMap">경로 초기화</button>
+
+<div style="margin-top: 0px;">
+    <button onclick="backupMemoDB()">🗂️ 메모 백업</button>
+    <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
+    <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
+</div>
+
+
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: none;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
@@ -240,8 +248,29 @@ buttonContainer {
 <div id="apartmentInfo" style="border: 1px solid black; padding: 10px; display:none">
     <p>아파트 정보를 확인하려면 마커를 클릭하세요.</p>
 </div>
+<!-- 모달 최상단 + 배경 흐림 -->
+<div id="imageModal" style="
+    display: none;
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background-color: rgba(0,0,0,0.7);
+    justify-content: center;
+    align-items: center;
+    z-index: 99999;  /* ✅ 최상단 */
+">
+    <img id="modalImage" style="
+        max-width: 90%;
+        max-height: 90%;
+        border-radius: 8px;
+        box-shadow: 0 0 10px black;
+        background: white;
+    " />
+</div>
 
 <script>
+//이미지 확대 여부
+let imageModalShowYn = false;
  class MapHandler {
 
 		
@@ -1201,6 +1230,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadFacilities();
     await loadStarbucks();
 	await initIndexedDB();
+	await initMemoIndexedDB();
 
 	if (window.map) {
         setupRightClickEvent();
@@ -1439,10 +1469,11 @@ function showApartmentInfo(apartmentId, markerPosition) {
         infoDiv.style.transform = "translate(-50%, -50%)";
     }, 10);
 
-    loadNote(apartmentId);
+    loadNote(apartmentId); // 🔸 저장된 메모 불러오기
 
     event?.stopPropagation();
 }
+
 
 // ✅ 네이버 부동산 링크 열기 함수 추가
 	function openNaverRealEstate(apartmentId) {
@@ -1450,21 +1481,31 @@ function showApartmentInfo(apartmentId, markerPosition) {
 		window.open(url, "_blank");
 	}
 
+
 document.addEventListener("click", (event) => {
     const apartmentInfo = document.getElementById("apartmentInfo");
+    const imageModal = document.getElementById("imageModal");
 
-    // ✅ 클릭한 요소가 apartmentInfo 내부일 경우 유지
-    if (apartmentInfo.contains(event.target)) {
-        return;
-    }
+    // apartmentInfo가 존재하지 않으면 리턴
+    if (!apartmentInfo) return;
 
-    // ✅ 클릭 순간 표시되었는지 확인 후 100ms 지연 후 닫기 (버블링 방지)
     setTimeout(() => {
+        // 🔒 모달이 열려있으면 닫지 않음
+console.log(imageModalShowYn);
+        if (imageModalShowYn === true) {imageModalShowYn = false; return;}
+
+        // apartmentInfo 내부 클릭이면 닫지 않음
+        if (apartmentInfo.contains(event.target)) return;
+
+        // 그 외엔 닫기
         if (apartmentInfo.style.display === "block") {
+console.log("실행됨");
             apartmentInfo.style.display = "none";
         }
     }, 0);
 });
+
+
 
 document.getElementById("apartmentInfo").addEventListener("touchstart", function(event) {
     const infoDiv = event.currentTarget;
@@ -1940,6 +1981,32 @@ function initIndexedDB() {
                 store.createIndex('id', 'id', { unique: false });
                 console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
             }
+
+			 if (!db.objectStoreNames.contains("apartmentNotes")) {
+				db.createObjectStore("apartmentNotes", { keyPath: "id" });
+			}
+        };
+
+        request.onsuccess = function(event) {
+            console.log('📌 IndexedDB 연결 성공 (DB: hongbu)');
+            resolve(event.target.result);
+        };
+
+        request.onerror = function(event) {
+            console.error('❌ IndexedDB 연결 실패:', event.target.error);
+            reject(event.target.error);
+        };
+    });
+}
+
+function initMemoIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('hongbuMemo', 2);
+
+        request.onupgradeneeded = function(event) {
+            const db = event.target.result;
+
+           
 
 			 if (!db.objectStoreNames.contains("apartmentNotes")) {
 				db.createObjectStore("apartmentNotes", { keyPath: "id" });
@@ -3169,58 +3236,203 @@ function importFromJSON(file) {
 
 
 /////////////////////////////////////////////////////////////////////////////////////////
+let deletedImages = []; // 삭제된 이미지 목록
 
 function saveNote(id) {
-    const note = document.getElementById("noteText").value;
-    const imageInput = document.getElementById("imageInput");
-    const files = Array.from(imageInput.files);
+    const memo = document.getElementById("noteText").value;
+    const files = document.getElementById("imageInput").files;
+    const readerPromises = [];
 
-    const readers = files.map(file => {
-        return new Promise(resolve => {
-            const reader = new FileReader();
+    for (let file of files) {
+        const reader = new FileReader();
+        const promise = new Promise((resolve) => {
             reader.onload = () => resolve(reader.result);
-            reader.readAsDataURL(file);
         });
-    });
+        reader.readAsDataURL(file);
+        readerPromises.push(promise);
+    }
 
-    Promise.all(readers).then(images => {
-        const data = { id, note, images };
-        const request = indexedDB.open("hongbu", 2);
+    Promise.all(readerPromises).then(newImageDataUrls => {
+        const request = indexedDB.open("hongbuMemo", 2);
         request.onsuccess = function (event) {
             const db = event.target.result;
-            const tx = db.transaction("apartmentNotes", "readwrite");
-            tx.objectStore("apartmentNotes").put(data);
+            const transaction = db.transaction(["apartmentNotes"], "readwrite");
+            const store = transaction.objectStore("apartmentNotes");
+
+            const getRequest = store.get(id);
+            getRequest.onsuccess = function () {
+                let existing = getRequest.result || { id, memo: "", images: [] };
+
+                // 🔄 삭제된 이미지를 제외
+                existing.images = (existing.images || []).filter(
+                    (img) => !deletedImages.includes(img)
+                );
+
+                // 새 이미지 추가
+                existing.images.push(...newImageDataUrls);
+                existing.memo = memo;
+
+                store.put(existing);
+                deletedImages = []; // 저장 후 초기화
+                alert("저장되었습니다!");
+            };
         };
     });
 }
 
+
 function loadNote(id) {
-    const request = indexedDB.open("hongbu", 2);
+    deletedImages = []; // 불러올 때 초기화
+
+    const request = indexedDB.open("hongbuMemo", 2);
     request.onsuccess = function (event) {
         const db = event.target.result;
-        const tx = db.transaction("apartmentNotes", "readonly");
-        const store = tx.objectStore("apartmentNotes");
-        const getReq = store.get(id);
+        const transaction = db.transaction(["apartmentNotes"], "readonly");
+        const store = transaction.objectStore("apartmentNotes");
+        const getRequest = store.get(id);
 
-        getReq.onsuccess = function () {
-            const data = getReq.result;
+        getRequest.onsuccess = function () {
+            const data = getRequest.result;
             if (data) {
-                document.getElementById("noteText").value = data.note || "";
+                document.getElementById("noteText").value = data.memo || "";
 
                 const preview = document.getElementById("imagePreview");
                 preview.innerHTML = "";
-                (data.images || []).forEach(src => {
+
+                (data.images || []).forEach((imageDataUrl, idx) => {
+                    const wrapper = document.createElement("div");
+                    wrapper.style.position = "relative";
+                    wrapper.style.display = "inline-block";
+                    wrapper.style.marginRight = "6px";
+
                     const img = document.createElement("img");
-                    img.src = src;
-                    img.style.width = "100px";
-                    img.style.height = "auto";
+                    img.src = imageDataUrl;
+                    img.style.width = "60px";
+                    img.style.height = "60px";
+                    img.style.objectFit = "cover";
                     img.style.border = "1px solid #ccc";
-                    preview.appendChild(img);
+                    img.style.borderRadius = "4px";
+                    img.style.cursor = "pointer";
+                    img.title = `사진 ${idx + 1}`;
+
+                    // 썸네일 클릭 시 모달 열기
+                    img.onclick = (e) => {
+                        e.stopPropagation();
+                        document.getElementById("modalImage").src = imageDataUrl;
+                        document.getElementById("imageModal").style.display = "flex";
+                    };
+
+                    // 삭제 버튼
+                    const deleteBtn = document.createElement("div");
+                    deleteBtn.textContent = "✕";
+                    deleteBtn.style.position = "absolute";
+                    deleteBtn.style.top = "2px";
+                    deleteBtn.style.right = "2px";
+                    deleteBtn.style.background = "rgba(0,0,0,0.6)";
+                    deleteBtn.style.color = "white";
+                    deleteBtn.style.borderRadius = "50%";
+                    deleteBtn.style.width = "16px";
+                    deleteBtn.style.height = "16px";
+                    deleteBtn.style.display = "flex";
+                    deleteBtn.style.alignItems = "center";
+                    deleteBtn.style.justifyContent = "center";
+                    deleteBtn.style.cursor = "pointer";
+                    deleteBtn.style.fontSize = "12px";
+
+                    deleteBtn.onclick = (e) => {
+                        e.stopPropagation();
+                        deletedImages.push(imageDataUrl); // ✅ 삭제된 목록에 추가
+                        wrapper.remove(); // 화면에서만 제거
+                    };
+
+                    wrapper.appendChild(img);
+                    wrapper.appendChild(deleteBtn);
+                    preview.appendChild(wrapper);
                 });
             }
         };
     };
 }
+
+
+
+// ✅ 모달 닫기 이벤트도 등록
+document.getElementById("imageModal").addEventListener("click", () => {
+    document.getElementById("imageModal").style.display = "none";
+	imageModalShowYn = true;
+});
+
+
+function showImageModal(src) {
+    const modal = document.getElementById("imageModal");
+    const modalImg = document.getElementById("modalImage");
+    modalImg.src = src;
+    modal.style.display = "flex";
+}
+
+// ✅ 메모 백업
+function backupMemoDB() {
+    const request = indexedDB.open("hongbuMemo", 2);
+    request.onsuccess = function (event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartmentNotes"], "readonly");
+        const store = transaction.objectStore("apartmentNotes");
+
+        const allData = [];
+        store.openCursor().onsuccess = function (event) {
+            const cursor = event.target.result;
+            if (cursor) {
+                allData.push(cursor.value);
+                cursor.continue();
+            } else {
+                const blob = new Blob([JSON.stringify(allData, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `hongbuMemo_backup_${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        };
+    };
+}
+
+// ✅ 메모 복원
+function restoreMemoDB() {
+    document.getElementById("memoRestoreInput").click();
+
+    document.getElementById("memoRestoreInput").onchange = function (e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (event) {
+            try {
+                const jsonData = JSON.parse(event.target.result);
+                if (!Array.isArray(jsonData)) {
+                    alert("유효하지 않은 백업 파일입니다.");
+                    return;
+                }
+
+                const request = indexedDB.open("hongbuMemo", 2);
+                request.onsuccess = function (event) {
+                    const db = event.target.result;
+                    const transaction = db.transaction(["apartmentNotes"], "readwrite");
+                    const store = transaction.objectStore("apartmentNotes");
+
+                    jsonData.forEach(entry => store.put(entry));
+                    alert("메모 복원이 완료되었습니다.");
+                };
+            } catch (err) {
+                alert("파일 읽기 오류: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    };
+}
+
 
 </script>
 
