@@ -116,7 +116,7 @@
     position: fixed;
     top: 50%;
     left: 50%;
-    transform: translate(-50%, -50%);
+    
     background: white;
     border: 1px solid black;
     padding: 8px;
@@ -125,12 +125,15 @@
     box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
     display: none;
     z-index: 10000;
-    
+     will-change: transform; /* GPU 렌더링 힌트 */
+  contain: layout paint;  /* 레이아웃 변화 제한 */
     max-width: 90%;
-    max-height: 50vh; /* ✅ 화면 높이의 80%까지 확장 */
+    max-height: 70vh; /* ✅ 화면 높이의 80%까지 확장 */
     overflow-y: auto; /* ✅ 내부 스크롤 활성화 */
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch; /* ✅ iOS 부드러운 스크롤 */
+ backface-visibility: hidden; /* 깜박임 방지 */
+    transform: translateZ(0);    /* GPU 렌더링 안정화 */
 }
 
 
@@ -181,6 +184,34 @@ buttonContainer {
     gap: 10px; /* ✅ 버튼 간격 조정 */
     margin-top: 10px;
 }
+#imagePreview {
+  width: 100%;
+  height: 72px;              /* 고정 높이 */
+  overflow-x: auto;
+  white-space: nowrap;       /* 줄바꿈 방지 */
+}
+
+#imagePreview > div {
+  display: inline-block;
+}
+#imageModal {
+  display: none;
+  justify-content: center;
+  align-items: center;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  z-index: 99999;
+  backface-visibility: hidden;
+  will-change: opacity;
+}
+
+#modalCanvas {
+  max-width: 90%;
+  max-height: 90%;
+  border-radius: 8px;
+}
+
 
     </style>
 </head>
@@ -222,6 +253,14 @@ buttonContainer {
         <button id="uploadGPX">GPX 불러오기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
         <button id="clearMap">경로 초기화</button>
+
+<div style="margin-top: 0px;">
+    <button onclick="backupMemoDB()">🗂️ 메모 백업</button>
+    <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
+    <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
+</div>
+
+
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: none;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
@@ -240,8 +279,16 @@ buttonContainer {
 <div id="apartmentInfo" style="border: 1px solid black; padding: 10px; display:none">
     <p>아파트 정보를 확인하려면 마커를 클릭하세요.</p>
 </div>
+<!-- 모달 최상단 + 배경 흐림 -->
+<!-- 이미지 모달 (canvas로 변경) -->
+<div id="imageModal">
+  <canvas id="modalCanvas" width="600" height="600"></canvas>
+</div>
+
 
 <script>
+//이미지 확대 여부
+let imageModalShowYn = false;
  class MapHandler {
 
 		
@@ -283,7 +330,7 @@ buttonContainer {
 				const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
 				if (!confirmReset) return;
 
-				const request = indexedDB.open("hongbu", 1);
+				const request = indexedDB.open("hongbu", 2);
 				request.onsuccess = function(event) {
 					const db = event.target.result;
 					const transaction = db.transaction(["apartments"], "readwrite");
@@ -1201,6 +1248,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadFacilities();
     await loadStarbucks();
 	await initIndexedDB();
+	await initMemoIndexedDB();
 
 	if (window.map) {
         setupRightClickEvent();
@@ -1290,9 +1338,9 @@ document.getElementById("toggleSchools").addEventListener("change", () => {
 let observer = new ResizeObserver(() => {
     if (window.map) {
         let mapElement = document.getElementById("map");
-        let width = mapElement.clientWidth;
-        let height = mapElement.clientHeight;
-        window.map.setSize(new naver.maps.Size(width, height)); // 지도 크기 업데이트
+        //let width = mapElement.clientWidth;
+        //let height = mapElement.clientHeight;
+        //window.map.setSize(new naver.maps.Size(width, height)); // 지도 크기 업데이트
 		//console.log("지도 변함");
     }
 });
@@ -1364,15 +1412,11 @@ async function loadApartmentsDetail() {
     }
 }
 
-   
-// 마커 클릭 시 정보 표시
+   // 마커 클릭 시 정보 표시
 function showApartmentInfo(apartmentId, markerPosition) {
-//console.log(apartmentId)
-	// ✅ 시세 지도가 체크되어 있으면 아파트 정보 표시 안 함
-    if (document.getElementById("toggleSiseMap").checked) {
-        //console.log("🚫 시세 지도가 활성화되어 있어 아파트 정보 표시 안 함");
-        return;
-    }
+  event?.stopPropagation();
+    if (document.getElementById("toggleSiseMap").checked) return;
+
     apartmentId = String(apartmentId);
     if (!apartmentDetailData[apartmentId]) {
         alert("데이터를 찾을 수 없습니다.");
@@ -1380,10 +1424,8 @@ function showApartmentInfo(apartmentId, markerPosition) {
     }
 
     let apt = apartmentDetailData[apartmentId];
-	//let aptInfo = apartmentData[apartmentId];
-	let aptInfo = apartmentData.find(apartment => String(apartment.id) === apartmentId);
-
-    let leaseInfo = aptInfo ? aptInfo.lease : "정보 없음"; // ✅ lease 정보 가져오기
+    let aptInfo = apartmentData.find(apartment => String(apartment.id) === apartmentId);
+    let leaseInfo = aptInfo ? aptInfo.lease : "정보 없음";
     let typeInfo = apt.타입정보 || [];
 
     let infoHtml = `
@@ -1412,7 +1454,7 @@ function showApartmentInfo(apartmentId, markerPosition) {
         infoHtml += `
             <tr>
                 <td>${type["공급평수"]}</td>
-				<td>${type["공급면적"]}</td>
+                <td>${type["공급면적"]}</td>
                 <td>${type["전용면적"]}</td>
                 <td>${type["구조"]}</td>
                 <td>${type["방 갯수"]}</td>
@@ -1422,29 +1464,123 @@ function showApartmentInfo(apartmentId, markerPosition) {
             </tr>`;
     });
 
-	
+    // 🔸 메모 + 이미지 업로드 추가
+    infoHtml += `
+        </table>
+        <div style="margin-top: 20px;">
+            <label>메모:</label>
+            <textarea id="noteText" rows="5" style="width: 100%; box-sizing: border-box;"></textarea>
+            <div style="margin-top: 10px;">
+                <label>사진 추가:</label>
+                <input type="file" id="imageInput" accept="image/*" multiple />
+            </div>
+            <div id="imagePreview" style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px;"></div>
+            <button onclick="saveNote('${apartmentId}')" style="margin-top: 10px;">저장</button>
+        </div>`;
 
-    infoHtml += `</table>`;
-
-
-
-	
-
-    let infoDiv = document.getElementById("apartmentInfo");
-    infoDiv.innerHTML = infoHtml;
-    infoDiv.style.display = "block"; // ✅ 표시
-
-// 🔹 위치 재확인 (강제 적용)
-    setTimeout(() => {
+       const infoDiv = document.getElementById("apartmentInfo");
+    
+    // 최초 1회만 위치 고정 (중복 적용 방지)
+    if (!infoDiv.dataset.positioned) {
         infoDiv.style.top = "50%";
         infoDiv.style.left = "50%";
         infoDiv.style.transform = "translate(-50%, -50%)";
-    }, 10);
+        infoDiv.dataset.positioned = "true";
+    }
+    infoDiv.innerHTML = infoHtml;
+    infoDiv.style.display = "block";
+
+  
 
 
+    loadNote(apartmentId); // 🔸 저장된 메모 불러오기
+
+	setTimeout(() => {
+		const imageInput = document.getElementById("imageInput");
+		const preview = document.getElementById("imagePreview");
+
+		if (imageInput) {
+			imageInput.addEventListener("change", (e) => {
+				preview.style.display = "block";
+
+				for (const file of e.target.files) {
+					const reader = new FileReader();
+					reader.onload = function (event) {
+						const imageDataUrl = event.target.result;
+
+						const wrapper = document.createElement("div");
+						wrapper.style.position = "relative";
+						wrapper.style.display = "inline-block";
+						wrapper.style.marginRight = "6px";
+						wrapper.style.width = "60px";
+						wrapper.style.height = "60px";
+
+						const canvas = document.createElement("canvas");
+						canvas.width = 60;
+						canvas.height = 60;
+						canvas.style.border = "1px solid #ccc";
+						canvas.style.borderRadius = "4px";
+						canvas.style.cursor = "pointer";
+						canvas.title = "미리보기";
+
+						const ctx = canvas.getContext("2d");
+						const img = new Image();
+						img.onload = () => {
+							ctx.drawImage(img, 0, 0, 60, 60);
+						};
+						img.src = imageDataUrl;
+
+						canvas.onclick = (e) => {
+							e.stopPropagation();
+							const modal = document.getElementById("imageModal");
+							const modalCanvas = document.getElementById("modalCanvas");
+							const modalCtx = modalCanvas.getContext("2d");
+
+							const previewImg = new Image();
+							previewImg.onload = () => {
+								modalCanvas.width = previewImg.width;
+								modalCanvas.height = previewImg.height;
+								modalCtx.drawImage(previewImg, 0, 0);
+								modal.style.display = "flex";
+								window.imageModalShowYn = true;
+							};
+							previewImg.src = imageDataUrl;
+						};
+
+						const deleteBtn = document.createElement("div");
+						deleteBtn.textContent = "✕";
+						deleteBtn.style.position = "absolute";
+						deleteBtn.style.top = "2px";
+						deleteBtn.style.right = "2px";
+						deleteBtn.style.background = "rgba(0,0,0,0.6)";
+						deleteBtn.style.color = "white";
+						deleteBtn.style.borderRadius = "50%";
+						deleteBtn.style.width = "16px";
+						deleteBtn.style.height = "16px";
+						deleteBtn.style.display = "flex";
+						deleteBtn.style.alignItems = "center";
+						deleteBtn.style.justifyContent = "center";
+						deleteBtn.style.cursor = "pointer";
+						deleteBtn.style.fontSize = "12px";
+
+						deleteBtn.onclick = (e) => {
+							e.stopPropagation();
+							if (confirm("사진을 삭제합니다")) {
+								wrapper.remove();
+							}
+						};
+
+						wrapper.appendChild(canvas);
+						wrapper.appendChild(deleteBtn);
+						preview.appendChild(wrapper);
+					};
+					reader.readAsDataURL(file);
+				}
+			});
+		}
+	}, 0);
 
 
-     event.stopPropagation();
 
 }
 
@@ -1455,21 +1591,31 @@ function showApartmentInfo(apartmentId, markerPosition) {
 		window.open(url, "_blank");
 	}
 
+
 document.addEventListener("click", (event) => {
     const apartmentInfo = document.getElementById("apartmentInfo");
+    const imageModal = document.getElementById("imageModal");
 
-    // ✅ 클릭한 요소가 apartmentInfo 내부일 경우 유지
-    if (apartmentInfo.contains(event.target)) {
-        return;
-    }
+    // apartmentInfo가 존재하지 않으면 리턴
+    if (!apartmentInfo) return;
 
-    // ✅ 클릭 순간 표시되었는지 확인 후 100ms 지연 후 닫기 (버블링 방지)
     setTimeout(() => {
+        // 🔒 모달이 열려있으면 닫지 않음
+
+        if (imageModalShowYn === true) {imageModalShowYn = false; return;}
+
+        // apartmentInfo 내부 클릭이면 닫지 않음
+        if (apartmentInfo.contains(event.target)) return;
+
+        // 그 외엔 닫기
         if (apartmentInfo.style.display === "block") {
+//console.log("실행됨");
             apartmentInfo.style.display = "none";
         }
     }, 0);
 });
+
+
 
 document.getElementById("apartmentInfo").addEventListener("touchstart", function(event) {
     const infoDiv = event.currentTarget;
@@ -1935,7 +2081,7 @@ var activeMarkerSet = null;
 // ✅ IndexedDB 초기화
 function initIndexedDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('hongbu', 1);
+        const request = indexedDB.open('hongbu', 2);
 
         request.onupgradeneeded = function(event) {
             const db = event.target.result;
@@ -1948,7 +2094,33 @@ function initIndexedDB() {
         };
 
         request.onsuccess = function(event) {
-            console.log('📌 IndexedDB 연결 성공 (DB: hongbu)');
+            console.log('📌 hongbu 연결 성공 (DB: hongbu)');
+            resolve(event.target.result);
+        };
+
+        request.onerror = function(event) {
+            console.error('❌ IndexedDB 연결 실패:', event.target.error);
+            reject(event.target.error);
+        };
+    });
+}
+
+function initMemoIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('hongbuMemo', 2);
+
+        request.onupgradeneeded = function(event) {
+            const db = event.target.result;
+
+           
+
+			 if (!db.objectStoreNames.contains("apartmentNotes")) {
+				db.createObjectStore("apartmentNotes", { keyPath: "id" });
+			}
+        };
+
+        request.onsuccess = function(event) {
+            console.log('📌 hongbuMemo 연결 성공 (DB: hongbu)');
             resolve(event.target.result);
         };
 
@@ -1961,7 +2133,7 @@ function initIndexedDB() {
 
 // ✅ IndexedDB 저장 함수
 function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
-    const request = indexedDB.open("hongbu", 1);
+    const request = indexedDB.open("hongbu", 2);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -1982,7 +2154,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 // ✅ IndexedDB에서 데이터 가져오기
 function getFromIndexedDB(id, type) {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 1);
+        const request = indexedDB.open("hongbu", 2);
 
         request.onerror = (event) => {
             reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
@@ -2530,7 +2702,7 @@ console.log(activeMarker)
             default:
                 return;
         }
-
+console.log(newPosition);
         let newPosition = new naver.maps.LatLng(lat, lng);
         activeMarker.setPosition(newPosition);
     }
@@ -2948,7 +3120,7 @@ resetButton.textContent = ' 초기화 ';
 resetButton.style.marginRight = '10px';
 resetButton.onclick = () => {
     // ✅ IndexedDB에서 해당 데이터 삭제
-    const request = indexedDB.open("hongbu", 1);
+    const request = indexedDB.open("hongbu", 2);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -3170,7 +3342,274 @@ function importFromJSON(file) {
 
 
 /////////////////////////////////////////////////////////////////////////////////////////
+let deletedImages = []; // 삭제된 이미지 목록
 
+function saveNote(id) {
+    const memo = document.getElementById("noteText").value;
+    const files = document.getElementById("imageInput").files;
+    const readerPromises = [];
+
+    for (let file of files) {
+        const reader = new FileReader();
+        const promise = new Promise((resolve) => {
+            reader.onload = () => resolve(reader.result);
+        });
+        reader.readAsDataURL(file);
+        readerPromises.push(promise);
+    }
+
+    Promise.all(readerPromises).then(newImageDataUrls => {
+        const request = indexedDB.open("hongbuMemo", 2);
+        request.onsuccess = function (event) {
+            const db = event.target.result;
+            const transaction = db.transaction(["apartmentNotes"], "readwrite");
+            const store = transaction.objectStore("apartmentNotes");
+
+            const getRequest = store.get(id);
+            getRequest.onsuccess = function () {
+                let existing = getRequest.result || { id, memo: "", images: [] };
+
+                // 🔄 삭제된 이미지를 제외
+                existing.images = (existing.images || []).filter(
+                    (img) => !deletedImages.includes(img)
+                );
+
+                // 새 이미지 추가
+                existing.images.push(...newImageDataUrls);
+                existing.memo = memo;
+
+                store.put(existing);
+                deletedImages = []; // 저장 후 초기화
+                alert("저장되었습니다!");
+				loadNote(id);
+            };
+        };
+    });
+}
+function base64ToBlobUrl(base64) {
+    const byteString = atob(base64.split(',')[1]);
+    const mimeString = base64.split(',')[0].split(':')[1].split(';')[0];
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
+    }
+    const blob = new Blob([ab], { type: mimeString });
+    return URL.createObjectURL(blob);
+}
+
+function createCanvasThumbnail(blobUrl, base64, idx, onDelete) {
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "relative";
+    wrapper.style.display = "inline-block";
+    wrapper.style.marginRight = "6px";
+    wrapper.style.width = "60px";
+    wrapper.style.height = "60px";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 60;
+    canvas.height = 60;
+    canvas.style.border = "1px solid #ccc";
+    canvas.style.borderRadius = "4px";
+    canvas.style.cursor = "pointer";
+    canvas.title = `사진 ${idx + 1}`;
+
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, 60, 60);
+    };
+    img.src = blobUrl;
+
+    canvas.onclick = (e) => {
+	  e.stopPropagation();
+
+	  const modal = document.getElementById("imageModal");
+	  const modalCanvas = document.getElementById("modalCanvas");
+	  const ctx = modalCanvas.getContext("2d");
+
+	  const img = new Image();
+	  img.onload = () => {
+		// 이미지 크기에 맞게 캔버스 조절
+		modalCanvas.width = img.width;
+		modalCanvas.height = img.height;
+		ctx.drawImage(img, 0, 0);
+		modal.style.display = "flex";
+		window.imageModalShowYn = true;
+	  };
+	  img.src = blobUrl;
+	};
+
+
+    const deleteBtn = document.createElement("div");
+    deleteBtn.textContent = "✕";
+    deleteBtn.style.position = "absolute";
+    deleteBtn.style.top = "2px";
+    deleteBtn.style.right = "2px";
+    deleteBtn.style.background = "rgba(0,0,0,0.6)";
+    deleteBtn.style.color = "white";
+    deleteBtn.style.borderRadius = "50%";
+    deleteBtn.style.width = "16px";
+    deleteBtn.style.height = "16px";
+    deleteBtn.style.display = "flex";
+    deleteBtn.style.alignItems = "center";
+    deleteBtn.style.justifyContent = "center";
+    deleteBtn.style.cursor = "pointer";
+    deleteBtn.style.fontSize = "12px";
+
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (confirm("사진을 삭제합니다")) {
+            onDelete(base64);
+            wrapper.remove();
+        }
+    };
+
+    wrapper.appendChild(canvas);
+    wrapper.appendChild(deleteBtn);
+    return wrapper;
+}
+
+function loadNote(id) {
+    deletedImages = [];
+
+    const request = indexedDB.open("hongbuMemo", 2);
+    request.onsuccess = function (event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartmentNotes"], "readonly");
+        const store = transaction.objectStore("apartmentNotes");
+        const getRequest = store.get(id);
+
+        getRequest.onsuccess = function () {
+            const data = getRequest.result;
+const preview = document.getElementById("imagePreview");
+            if (!data) {
+				
+				  preview.style.display = "none"; // 이미지 없으면 숨김
+				  return;
+			}else{	
+
+				const images = data.images || [];
+console.log(images.length)
+				if(images.length > 0){
+					preview.style.display = "block"; // 이미지 있을 땐 보이게
+				}else{
+					preview.style.display = "none"; // 이미지 있을 땐 보이게
+				}
+				
+				
+				document.getElementById("noteText").value = data.memo || "";
+
+				
+
+
+
+				preview.innerHTML = "";
+				preview.style.visibility = "hidden";
+
+				function insertSequentially(index) {
+					if (index >= images.length) {
+						preview.style.visibility = "visible";
+						return;
+					}
+
+					const base64 = images[index];
+					const blobUrl = base64ToBlobUrl(base64);
+
+					const canvasWrapper = createCanvasThumbnail(blobUrl, base64, index, (deleted) => {
+						deletedImages.push(deleted);
+					});
+
+					preview.appendChild(canvasWrapper);
+
+					// 순차 렌더링: 깜빡임 방지
+					setTimeout(() => insertSequentially(index + 1), 20);
+				}
+
+				insertSequentially(0);
+			}		
+        };
+    };
+}
+
+
+
+// ✅ 모달 닫기 이벤트도 등록
+document.getElementById("imageModal").addEventListener("click", () => {
+    document.getElementById("imageModal").style.display = "none";
+	imageModalShowYn = true;
+});
+
+
+function showImageModal(src) {
+    const modal = document.getElementById("imageModal");
+    const modalImg = document.getElementById("modalImage");
+    modalImg.src = src;
+    modal.style.display = "flex";
+}
+
+// ✅ 메모 백업
+function backupMemoDB() {
+    const request = indexedDB.open("hongbuMemo", 2);
+    request.onsuccess = function (event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartmentNotes"], "readonly");
+        const store = transaction.objectStore("apartmentNotes");
+
+        const allData = [];
+        store.openCursor().onsuccess = function (event) {
+            const cursor = event.target.result;
+            if (cursor) {
+                allData.push(cursor.value);
+                cursor.continue();
+            } else {
+                const blob = new Blob([JSON.stringify(allData, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `hongbuMemo_backup_${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        };
+    };
+}
+
+// ✅ 메모 복원
+function restoreMemoDB() {
+    document.getElementById("memoRestoreInput").click();
+
+    document.getElementById("memoRestoreInput").onchange = function (e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (event) {
+            try {
+                const jsonData = JSON.parse(event.target.result);
+                if (!Array.isArray(jsonData)) {
+                    alert("유효하지 않은 백업 파일입니다.");
+                    return;
+                }
+
+                const request = indexedDB.open("hongbuMemo", 2);
+                request.onsuccess = function (event) {
+                    const db = event.target.result;
+                    const transaction = db.transaction(["apartmentNotes"], "readwrite");
+                    const store = transaction.objectStore("apartmentNotes");
+
+                    jsonData.forEach(entry => store.put(entry));
+                    alert("메모 복원이 완료되었습니다.");
+                };
+            } catch (err) {
+                alert("파일 읽기 오류: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    };
+}
 
 </script>
 
