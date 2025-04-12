@@ -228,6 +228,8 @@ buttonContainer {
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
 	<label><input type="checkbox" id="toggleFacilities">환경</label>
 	<label><input type="checkbox" id="toggleStarbucks">스벅</label>
+	<label><input type="checkbox" id="toggleMemoIcon" checked>메모 아이콘 표시</label>
+
 	<label><input type="checkbox" id="toggleSiseMap" >시세지도</label>
 
 
@@ -1017,6 +1019,30 @@ function createDefaultMarker(apartment) {
     markerElement.appendChild(nameElement);
     markerElement.appendChild(detailsElement);
 
+getMemoFromIndexedDB(apartment.id).then(memo => {
+    const hasMemo = memo?.memo?.trim()?.length > 0;
+    const hasImages = Array.isArray(memo?.images) && memo.images.length > 0;
+    const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
+
+    if (showMemoIcon && (hasMemo || hasImages)) {
+        const memoIcon = document.createElement("img");
+        memoIcon.src = "memo.png"; // 🔺 이미지 파일명
+        memoIcon.style = `
+            position: absolute;
+            top: -16px;
+            left: -20px;
+            width: 28px;
+            height: 28px;
+            z-index: 10;
+            pointer-events: none;
+        `;
+        markerElement.style.position = "relative";
+        markerElement.appendChild(memoIcon);
+    }
+});
+
+
+
 
 		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
     
@@ -1335,9 +1361,25 @@ naver.maps.Event.addListener(window.map, "click", function(e) {
 
 
 });
+
 document.getElementById("toggleApartments").addEventListener("change", () => {
     updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
 });
+
+
+document.getElementById("toggleMemoIcon").addEventListener("change", () => {
+Object.values(apartmentMarkers).forEach(marker => {
+        if (marker instanceof naver.maps.Marker) {
+            marker.setMap(null);
+        }
+    });
+    apartmentMarkers = {}; // ✅ 마커 캐시도 초기화
+
+    // ✅ 다시 그리기
+    
+    updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
+});
+
 
 document.getElementById("toggleSchools").addEventListener("change", () => {
     updateSchoolMarkers(); // ✅ 즉시 업데이트
@@ -1424,7 +1466,34 @@ const aptMemoImageList = {};
 
    // 마커 클릭 시 정보 표시
 // 마커 클릭 시 정보 표시
-function showApartmentInfo(apartmentId, markerPosition) {
+
+async function compressImage(base64, maxSize = 600, quality = 0.8) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement("canvas");
+            let [w, h] = [img.width, img.height];
+            if (w > h && w > maxSize) {
+                h *= maxSize / w;
+                w = maxSize;
+            } else if (h >= w && h > maxSize) {
+                w *= maxSize / h;
+                h = maxSize;
+            }
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            const compressedBase64 = canvas.toDataURL("image/jpeg", quality);
+            resolve(compressedBase64);
+        };
+        img.src = base64;
+    });
+}
+
+
+
+ function showApartmentInfo(apartmentId, markerPosition) {
   event?.stopPropagation();
   if (document.getElementById("toggleSiseMap").checked) return;
 
@@ -1527,13 +1596,26 @@ function showApartmentInfo(apartmentId, markerPosition) {
       preview.style.display = "flex";
       for (const file of files) {
         const reader = new FileReader();
-        reader.onload = function (event) {
+        reader.onload = async function (event) {
+
           const imageDataUrl = event.target.result;
           if (!aptMemoImageList[apartmentId]) {
             aptMemoImageList[apartmentId] = [];
           }
 			aptMemoImageList[apartmentId].push(imageDataUrl);
 
+
+/*
+const originalBase64 = event.target.result;
+
+  // ✅ 압축
+  const compressedBase64 = await compressImage(originalBase64, 600, 1.0);
+
+  if (!aptMemoImageList[apartmentId]) {
+    aptMemoImageList[apartmentId] = [];
+  }
+  aptMemoImageList[apartmentId].push(compressedBase64);
+*/
           const wrapper = document.createElement("div");
           wrapper.style.position = "relative";
           wrapper.style.display = "inline-block";
@@ -3715,7 +3797,7 @@ function deleteMemoDB() {
   };
   deleteRequest.onerror = (event) => {
     console.error("❌ DB 삭제 실패:", event.target.error);
-    alert("❌ 메모 DB 삭제 중 오류가 발생했습니다.");
+    //alert("❌ 메모 DB 삭제 중 오류가 발생했습니다.");328
   };
 }
 
@@ -3734,6 +3816,20 @@ function deleteNote(id) {
       loadNote(id);
     };
   };
+}
+function getMemoFromIndexedDB(id) {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("hongbuMemo", 2);
+        request.onerror = () => reject("DB 열기 실패");
+        request.onsuccess = (event) => {
+            const db = event.target.result;
+            const transaction = db.transaction(["apartmentNotes"], "readonly"); // ✅ 정확한 store 이름
+            const store = transaction.objectStore("apartmentNotes");
+            const getRequest = store.get(String(id));
+            getRequest.onsuccess = () => resolve(getRequest.result);
+            getRequest.onerror = () => reject("데이터 가져오기 실패");
+        };
+    });
 }
 
 
