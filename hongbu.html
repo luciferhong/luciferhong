@@ -263,6 +263,7 @@ buttonContainer {
 
     <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
 </div>
+<div id="backupStatus" style="margin-top: 10px; color: #333;"></div>
 
 
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
@@ -3821,32 +3822,63 @@ function showImageModal(src) {
 
 // ✅ 메모 백업
 function backupMemoDB() {
-    const request = indexedDB.open("hongbuMemo", 2);
-    request.onsuccess = function (event) {
-        const db = event.target.result;
-        const transaction = db.transaction(["apartmentNotes"], "readonly");
-        const store = transaction.objectStore("apartmentNotes");
+  const statusEl = document.getElementById("backupStatus");
+  if (statusEl) statusEl.textContent = "📦 백업을 준비 중입니다...";
 
-        const allData = [];
-        store.openCursor().onsuccess = function (event) {
-            const cursor = event.target.result;
-            if (cursor) {
-                allData.push(cursor.value);
-                cursor.continue();
-            } else {
-                const blob = new Blob([JSON.stringify(allData, null, 2)], { type: "application/json" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `홍부_메모백업_${new Date().toISOString().slice(0, 10)}.json`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+  try {
+    const request = indexedDB.open("hongbuMemo", 2);
+
+    request.onsuccess = function (event) {
+      const db = event.target.result;
+      const transaction = db.transaction(["apartmentNotes"], "readonly");
+      const store = transaction.objectStore("apartmentNotes");
+
+      const allData = store.getAll();
+
+      allData.onsuccess = function () {
+        try {
+          const result = allData.result;
+
+          if (result.length === 0) {
+            if (statusEl) statusEl.textContent = "⚠️ 백업할 데이터가 없습니다.";
+            return;
+          }
+
+          if (statusEl) statusEl.textContent = `📄 ${result.length}건의 데이터를 백업 중입니다...`;
+
+          setTimeout(() => {
+            try {
+              const json = JSON.stringify(result, null, 2);
+              const blob = new Blob([json], { type: "application/json" });
+
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(blob);
+              a.download = "memo_backup.json";
+              a.click();
+
+              if (statusEl) statusEl.textContent = "✅ 백업이 완료되었습니다.";
+            } catch (err) {
+              if (statusEl) statusEl.textContent = "❌ 백업 생성 중 오류 발생: " + err.message;
             }
-        };
+          }, 100); // UI 렌더링 기회 확보
+        } catch (err) {
+          if (statusEl) statusEl.textContent = "❌ 데이터 처리 오류: " + err.message;
+        }
+      };
+
+      allData.onerror = function (e) {
+        if (statusEl) statusEl.textContent = "❌ 데이터를 불러오는 중 오류 발생: " + e.target.error;
+      };
     };
+
+    request.onerror = function (e) {
+      if (statusEl) statusEl.textContent = "❌ DB 열기 실패: " + e.target.error;
+    };
+  } catch (e) {
+    if (statusEl) statusEl.textContent = "❌ 예기치 못한 오류 발생: " + e.message;
+  }
 }
+
 
 // ✅ 메모 복원
 function restoreMemoDB() {
