@@ -2251,10 +2251,12 @@ function initIndexedDB() {
 function initMemoIndexedDB() {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open('hongbuMemo', 2);
-
+//console.log("✅ initMemoIndexedDB 실행");
         request.onupgradeneeded = function(event) {
-            const db = event.target.result;
+//console.log("✅ onupgradeneeded 실행");
 
+            const db = event.target.result;
+//console.log(db)
            
 
 			 if (!db.objectStoreNames.contains("apartmentNotes")) {
@@ -3486,7 +3488,9 @@ function importFromJSON(file) {
 
 /////////////////////////////////////////////////////////////////////////////////////////
 let deletedImages = []; // 삭제된 이미지 목록
-function saveNote(id) {
+
+async function saveNote(id) {
+  await initMemoIndexedDB();  // 💡 여기가 핵심
   const memo = document.getElementById("noteText").value;
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
@@ -3693,7 +3697,8 @@ function createCanvasThumbnail(blobUrl, base64, idx, onDelete) {
     return wrapper;
 }
 
-function loadNote(id) {
+async function loadNote(id) {
+await initMemoIndexedDB()
   const request = indexedDB.open("hongbuMemo", 2);
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -3947,23 +3952,28 @@ function deleteMemoDB() {
 }
 
 function deleteNote(id) {
-  if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
+  if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 2);
-  request.onsuccess = function (event) {
-    const db = event.target.result;
-    const transaction = db.transaction(["apartmentNotes"], "readwrite");
-    const store = transaction.objectStore("apartmentNotes");
+  const deleteRequest = indexedDB.deleteDatabase("hongbuMemo");
 
-    const deleteRequest = store.delete(id);
-    deleteRequest.onsuccess = function () {
-      //alert("해당 아파트 메모가 초기화되었습니다.");
-      loadNote(id);
-    };
+  deleteRequest.onsuccess = function () {
+    alert("모든 메모가 삭제되었습니다.");
+    // 필요 시 화면 리로드
+    location.reload();
+  };
+
+  deleteRequest.onerror = function (event) {
+    console.error("❌ DB 삭제 중 오류:", event.target.error);
+    alert("❌ DB 삭제 중 오류가 발생했습니다.");
+  };
+
+  deleteRequest.onblocked = function () {
+    alert("❌ 다른 탭에서 사용 중입니다. 모든 탭을 닫고 다시 시도해주세요.");
   };
 }
-function getMemoFromIndexedDB(id) {
-    return new Promise((resolve, reject) => {
+async function getMemoFromIndexedDB(id) {
+    return new Promise(async (resolve, reject) => {
+		await initMemoIndexedDB(); 
         const request = indexedDB.open("hongbuMemo", 2);
         request.onerror = () => reject("DB 열기 실패");
         request.onsuccess = (event) => {
