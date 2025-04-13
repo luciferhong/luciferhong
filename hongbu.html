@@ -3490,6 +3490,83 @@ function saveNote(id) {
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
   const request = indexedDB.open("hongbuMemo", 2);
+
+  request.onerror = function (event) {
+    console.error("❌ DB 열기 실패:", event.target.error);
+    alert("❌ 메모 저장 중 오류가 발생했습니다. (DB 열기 실패)");
+  };
+
+  request.onsuccess = function (event) {
+    try {
+      const db = event.target.result;
+      const transaction = db.transaction(["apartmentNotes"], "readwrite");
+
+      transaction.onerror = function (event) {
+        console.error("❌ 트랜잭션 오류:", event.target.error);
+        alert("❌ 메모 저장 중 오류가 발생했습니다. (트랜잭션 실패)");
+      };
+
+      const store = transaction.objectStore("apartmentNotes");
+      const getRequest = store.get(id);
+
+      getRequest.onerror = function (event) {
+        console.error("❌ 데이터 읽기 실패:", event.target.error);
+        alert("❌ 메모 저장 중 오류가 발생했습니다. (기존 데이터 조회 실패)");
+      };
+
+      getRequest.onsuccess = function () {
+        try {
+          let existing = getRequest.result || { id, memo: "", images: [] };
+          existing.images = images;
+          existing.memo = memo;
+
+          const putRequest = store.put(existing);
+
+          putRequest.onsuccess = function () {
+            //alert("저장되었습니다!");
+            loadNote(id);
+
+            // ✅ 마커 갱신 처리
+            const marker = apartmentMarkers[id];
+            if (marker) {
+              marker.setMap(null);  // 기존 마커 제거
+              delete apartmentMarkers[id];  // 캐시 삭제
+
+              const apartment = apartmentData.find(a => String(a.id) === String(id));
+              if (apartment) {
+                const isSiseMap = document.getElementById("toggleSiseMap")?.checked;
+                const newMarker = isSiseMap
+                  ? renderSiseMapMarker(apartment)
+                  : createDefaultMarker(apartment);
+                newMarker.__siseMap = isSiseMap;
+                apartmentMarkers[id] = newMarker;
+              }
+            }
+          };
+
+          putRequest.onerror = function (event) {
+            console.error("❌ 저장 실패:", event.target.error);
+            alert("❌ 메모 저장 중 오류가 발생했습니다. (저장 실패)");
+          };
+
+        } catch (error) {
+          console.error("❌ 내부 처리 실패:", error);
+          alert("❌ 메모 저장 중 오류가 발생했습니다. (처리 오류)");
+        }
+      };
+    } catch (error) {
+      console.error("❌ DB 처리 중 예외:", error);
+      alert("❌ 메모 저장 중 오류가 발생했습니다. (DB 처리 중 예외)");
+    }
+  };
+}
+
+/*
+function saveNote(id) {
+  const memo = document.getElementById("noteText").value;
+  const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
+
+  const request = indexedDB.open("hongbuMemo", 2);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -3526,7 +3603,7 @@ function saveNote(id) {
     };
   };
 }
-
+*/
 
 
 
