@@ -3836,9 +3836,14 @@ async function backupMemoDB() {
     const transaction = db.transaction(["apartmentNotes"], "readonly");
     const store = transaction.objectStore("apartmentNotes");
 
-    const zip = new JSZip();
-    const chunkSize = 10;
     const chunkList = [];
+    const chunkSize = 10;
+
+    const now = new Date();
+    const timestamp = now.toISOString()
+      .replace(/T/, "_")
+      .replace(/:/g, "-")
+      .replace(/\..+/, "");
 
     store.openCursor().onsuccess = function (event) {
       const cursor = event.target.result;
@@ -3851,25 +3856,16 @@ async function backupMemoDB() {
         for (let i = 0; i < totalChunks; i++) {
           const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
           const json = JSON.stringify(chunk, null, 2);
-          zip.file(`memo_part_${i + 1}.json`, json);
-        }
+          const blob = new Blob([json], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
 
-        const now = new Date();
-        const timestamp = now.toISOString()
-          .replace(/T/, "_")
-          .replace(/:/g, "-")
-          .replace(/\..+/, "");
-
-        const fileName = `홍부_메모백업_${timestamp}.zip`;
-
-        zip.generateAsync({ type: "blob" }).then(function (content) {
           const a = document.createElement("a");
-          a.href = URL.createObjectURL(content);
-          a.download = fileName;
+          a.href = url;
+          a.download = `홍부_메모백업_${timestamp}_part${i + 1}.json`;
           a.click();
-        }).catch(err => {
-          alert("❌ ZIP 생성 중 오류: " + err.message);
-        });
+
+          URL.revokeObjectURL(url); // 메모리 해제
+        }
 
         db.close();
       }
@@ -3885,6 +3881,7 @@ async function backupMemoDB() {
     alert("❌ DB 열기 실패");
   };
 }
+
 
 
 
@@ -3951,50 +3948,57 @@ function backupMemoDB_OLD() {
 // ✅ 메모 복원
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
-  input.accept = ".zip";
+  input.accept = ".json"; // ZIP 말고 JSON만 받음
+  input.multiple = true;  // ✅ 여러 파일 선택 허용
 
   input.onchange = async function (event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const zip = new JSZip();
-    const zipContent = await zip.loadAsync(file);
+    const files = Array.from(event.target.files);
+    if (!files.length) return;
 
     const allRecords = [];
 
-    for (const filename of Object.keys(zipContent.files)) {
-      if (filename.endsWith(".json")) {
-        const fileData = await zipContent.files[filename].async("string");
-        const records = JSON.parse(fileData);
+    try {
+      for (const file of files) {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
 
-        // ✅ 배열이면 spread, 아니면 단일 객체로 처리
-        if (Array.isArray(records)) {
-          allRecords.push(...records);
+        if (Array.isArray(parsed)) {
+          allRecords.push(...parsed);
         } else {
-          allRecords.push(records);
+          allRecords.push(parsed);
         }
       }
-    }
 
-    // ✅ DB에 넣기
-    const request = indexedDB.open("hongbuMemo", 2);
-    request.onsuccess = function (event) {
-      const db = event.target.result;
-      const transaction = db.transaction(["apartmentNotes"], "readwrite");
-      const store = transaction.objectStore("apartmentNotes");
+      const request = indexedDB.open("hongbuMemo", 2);
+      request.onsuccess = function (event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartmentNotes"], "readwrite");
+        const store = transaction.objectStore("apartmentNotes");
 
-      for (const item of allRecords) {
-        store.put(item);
-      }
+        for (const item of allRecords) {
+          store.put(item);
+        }
 
-      transaction.oncomplete = () => {
-        alert("✅ 메모 복원이 완료되었습니다.");
-        db.close();
+        transaction.oncomplete = () => {
+          alert(`✅ ${allRecords.length}개의 메모가 복원되었습니다.`);
+          db.close();
+        };
+
+        transaction.onerror = () => {
+          alert("❌ 메모 복원 중 오류가 발생했습니다.");
+          db.close();
+        };
       };
-    };
+
+      request.onerror = function () {
+        alert("❌ DB 열기 실패");
+      };
+    } catch (e) {
+      alert("❌ 복원 중 오류 발생: " + e.message);
+    }
   };
 
-  input.click();
+  input.click(); // 파일 선택 창 열기
 }
 
 
