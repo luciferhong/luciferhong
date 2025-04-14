@@ -3837,24 +3837,28 @@ async function backupMemoDB() {
     const store = transaction.objectStore("apartmentNotes");
 
     const zip = new JSZip();
+    const chunkSize = 10;
+    const chunkList = [];
 
     store.openCursor().onsuccess = function (event) {
       const cursor = event.target.result;
       if (cursor) {
         const item = cursor.value;
-        const id = String(item.id ?? Date.now()); // ID 없을 경우 대비
-
-        const json = JSON.stringify(item, null, 2);
-        zip.file(`memo_${id}.json`, json);
-
+        chunkList.push(item);
         cursor.continue();
       } else {
-        // ✅ 파일명에 날짜와 시간 추가
+        const totalChunks = Math.ceil(chunkList.length / chunkSize);
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
+          const json = JSON.stringify(chunk, null, 2);
+          zip.file(`memo_part_${i + 1}.json`, json);
+        }
+
         const now = new Date();
         const timestamp = now.toISOString()
-          .replace(/T/, "_")      // 날짜 시간 구분자 _로
-          .replace(/:/g, "-")     // 콜론 -> 하이픈
-          .replace(/\..+/, "");   // 밀리초 제거
+          .replace(/T/, "_")
+          .replace(/:/g, "-")
+          .replace(/\..+/, "");
 
         const fileName = `홍부_메모백업_${timestamp}.zip`;
 
@@ -3863,6 +3867,8 @@ async function backupMemoDB() {
           a.href = URL.createObjectURL(content);
           a.download = fileName;
           a.click();
+        }).catch(err => {
+          alert("❌ ZIP 생성 중 오류: " + err.message);
         });
 
         db.close();
