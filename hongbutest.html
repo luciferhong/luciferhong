@@ -291,16 +291,34 @@ buttonContainer {
 <!-- 이미지 모달 -->
 <div id="imageModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background-color:rgba(0,0,0,0.8); justify-content:center; align-items:center; z-index:99999;">
   <canvas id="modalCanvas" style="max-width:90vw; max-height:90vh; border-radius:8px;"></canvas>
-  <!-- <button id="copyImageButton" style="position: absolute; top: 20px; right: 20px;  background: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer;">
+
+  <!-- 📋 복사 버튼 -->
+  <button id="copyImageButton" style="
+    position: absolute; 
+    top: 20px; 
+    right: 20px;  
+    background: white; 
+    border: none; 
+    padding: 8px 12px; 
+    border-radius: 4px; 
+    cursor: pointer;">
     📋 복사
-  </button> -->
+  </button>
 
-  <div id="imageToolbar" style="position: absolute; top: 20px; right: 20px; z-index: 9999;">
-  <button id="copyImageButton">📋 복사</button>
-  <button id="downloadImageBtn">💾 다운로드</button> <!-- ✅ 추가 -->
+  <!-- ✅ ⬇️ 다운로드 버튼 (복사 버튼 왼쪽에 위치) -->
+  <button id="downloadImageButton" style="
+    position: absolute; 
+    top: 20px; 
+    right: 100px;  
+    background: white; 
+    border: none; 
+    padding: 8px 12px; 
+    border-radius: 4px; 
+    cursor: pointer;">
+    ⬇️ 다운로드
+  </button>
 </div>
 
-</div>
 
 
 
@@ -389,7 +407,7 @@ let imageModalShowYn = false;
 
 				naver.maps.Event.addListener(this.map, "click", (e) => {
 					if (!this.currentPolyline) {
-						//console.warn("⚠️ 경로 그리기 모드가 아님");
+						console.warn("⚠️ 경로 그리기 모드가 아님");
 						return; // 🚫 실행 중단 (오류 방지)
 					}
 					this.currentPath.push(e.coord);
@@ -1647,43 +1665,22 @@ const originalBase64 = event.target.result;
           const img = new Image();
           img.onload = () => ctx.drawImage(img, 0, 0, 60, 60);
           img.src = imageDataUrl;
-canvas.onclick = (e) => {
-  e.stopPropagation();
-  const modal = document.getElementById("imageModal");
-  const modalCanvas = document.getElementById("modalCanvas");
-  const ctx = modalCanvas.getContext("2d");
 
-  const fullImage = new Image();
-  fullImage.onload = () => {
-    const realW = fullImage.naturalWidth;
-    const realH = fullImage.naturalHeight;
-
-    // ✅ 내부 캔버스 해상도 설정 (고해상도 원본 기준)
-    modalCanvas.width = realW;
-    modalCanvas.height = realH;
-
-    // ✅ 화면에 표시될 최대 크기 계산 (90% 비율)
-    const maxW = window.innerWidth * 0.9;
-    const maxH = window.innerHeight * 0.9;
-    const scale = Math.min(maxW / realW, maxH / realH, 1);
-
-    // ✅ style로 비율 맞춰 축소 (왜곡 방지)
-    modalCanvas.style.width = realW * scale + "px";
-    modalCanvas.style.height = realH * scale + "px";
-
-    // ✅ 선명도 향상 (보간 끄기)
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(fullImage, 0, 0);
-
-    // ✅ 모달 열기
-    modal.style.display = "flex";
-    window.imageModalShowYn = true;
-  };
-
-  // ✅ 원본 base64 우선 사용
-  fullImage.src = img.dataset.original || img.src;
-};
-
+          canvas.onclick = (e) => {
+            e.stopPropagation();
+            const modal = document.getElementById("imageModal");
+            const modalCanvas = document.getElementById("modalCanvas");
+            const modalCtx = modalCanvas.getContext("2d");
+            const previewImg = new Image();
+            previewImg.onload = () => {
+              modalCanvas.width = previewImg.width;
+              modalCanvas.height = previewImg.height;
+              modalCtx.drawImage(previewImg, 0, 0);
+              modal.style.display = "flex";
+              window.imageModalShowYn = true;
+            };
+            previewImg.src = imageDataUrl;
+          };
 
           const deleteBtn = document.createElement("div");
           deleteBtn.textContent = "✕";
@@ -1771,9 +1768,9 @@ document.addEventListener("click", (event) => {
  const id = apartmentInfo.getAttribute("data-id");
       const memo = document.getElementById("noteText")?.value?.trim();
       const images = aptMemoImageList?.[id] ?? [];
-//console.log(id);
-//console.log(memo);
-//console.log(images);
+console.log(id);
+console.log(memo);
+console.log(images);
       //if ((memo && memo !== "") || images.length > 0) {
         saveNote(id); // ✅ 자동 저장
       //}
@@ -2289,7 +2286,7 @@ function initMemoIndexedDB() {
 
     request.onsuccess = function (event) {
       const db = event.target.result;
-      //console.log("📌 hongbuMemo 연결 성공 (DB: hongbu)");
+      console.log("📌 hongbuMemo 연결 성공 (DB: hongbu)");
 
       // ✅ 바로 닫고 resolve (init 용이므로 이후 함수가 다시 열게 됨)
       db.close();
@@ -3652,6 +3649,79 @@ function base64ToBlobUrl(base64) {
     return URL.createObjectURL(blob);
 }
 
+function createCanvasThumbnail(blobUrl, base64, idx, onDelete) {
+    const wrapper = document.createElement("div");
+    wrapper.style.position = "relative";
+    wrapper.style.display = "inline-block";
+    wrapper.style.marginRight = "6px";
+    wrapper.style.width = "60px";
+    wrapper.style.height = "60px";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 60;
+    canvas.height = 60;
+    canvas.style.border = "1px solid #ccc";
+    canvas.style.borderRadius = "4px";
+    canvas.style.cursor = "pointer";
+    canvas.title = `사진 ${idx + 1}`;
+
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+        ctx.drawImage(img, 0, 0, 60, 60);
+    };
+    img.src = blobUrl;
+
+    canvas.onclick = (e) => {
+	  e.stopPropagation();
+
+	  const modal = document.getElementById("imageModal");
+	  const modalCanvas = document.getElementById("modalCanvas");
+	  const ctx = modalCanvas.getContext("2d");
+
+	  const img = new Image();
+	  img.onload = () => {
+		// 이미지 크기에 맞게 캔버스 조절
+		modalCanvas.width = img.width;
+		modalCanvas.height = img.height;
+		ctx.drawImage(img, 0, 0);
+		modal.style.display = "flex";
+		window.imageModalShowYn = true;
+	  };
+	  img.src = blobUrl;
+window.lastOpenedBase64 = img.dataset.original || img.src;
+
+	};
+
+
+    const deleteBtn = document.createElement("div");
+    deleteBtn.textContent = "✕";
+    deleteBtn.style.position = "absolute";
+    deleteBtn.style.top = "2px";
+    deleteBtn.style.right = "2px";
+    deleteBtn.style.background = "rgba(0,0,0,0.6)";
+    deleteBtn.style.color = "white";
+    deleteBtn.style.borderRadius = "50%";
+    deleteBtn.style.width = "16px";
+    deleteBtn.style.height = "16px";
+    deleteBtn.style.display = "flex";
+    deleteBtn.style.alignItems = "center";
+    deleteBtn.style.justifyContent = "center";
+    deleteBtn.style.cursor = "pointer";
+    deleteBtn.style.fontSize = "12px";
+
+    deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (confirm("사진을 삭제합니다")) {
+            onDelete(base64);
+            wrapper.remove();
+        }
+    };
+
+    wrapper.appendChild(canvas);
+    wrapper.appendChild(deleteBtn);
+    return wrapper;
+}
 
 async function loadNote(id) {
 await initMemoIndexedDB()
@@ -3709,57 +3779,30 @@ preview.innerHTML = "";
         canvas.title = "미리보기";
 
         const ctx = canvas.getContext("2d");
-ctx.imageSmoothingEnabled = false;
         const img = new Image();
         img.onload = () => {
           ctx.drawImage(img, 0, 0, 60, 60);
         };
         img.src = imageDataUrl;
 
-    canvas.onclick = (e) => {
+       canvas.onclick = (e) => {
   e.stopPropagation();
-
   const modal = document.getElementById("imageModal");
   const modalCanvas = document.getElementById("modalCanvas");
-  const ctx = modalCanvas.getContext("2d");
+  const modalCtx = modalCanvas.getContext("2d");
 
   const fullImage = new Image();
   fullImage.onload = () => {
-    const realW = fullImage.naturalWidth;
-    const realH = fullImage.naturalHeight;
-
-    //console.log("realW:", realW);
-    //console.log("realH:", realH);
-
-    // ✅ 내부 해상도 설정 (고해상도 그대로)
-    modalCanvas.width = realW;
-    modalCanvas.height = realH;
-
-    // ✅ 화면 크기에 맞춰 스케일 계산 (비율 유지)
-    const maxW = window.innerWidth * 0.9;
-    const maxH = window.innerHeight * 0.9;
-    const scale = Math.min(maxW / realW, maxH / realH, 1); // 확대 금지
-
-    // ✅ 화면 표시용 style 크기 설정 (비율 유지)
-    modalCanvas.style.width = realW * scale + "px";
-    modalCanvas.style.height = realH * scale + "px";
-
-    // ✅ 선명도 최적화
-    ctx.imageSmoothingEnabled = false;
-
-    // ✅ 이미지 그리기
-    ctx.drawImage(fullImage, 0, 0);
-
-    // ✅ 모달 표시
+    modalCanvas.width = fullImage.width;
+    modalCanvas.height = fullImage.height;
+    modalCtx.drawImage(fullImage, 0, 0);
     modal.style.display = "flex";
     window.imageModalShowYn = true;
   };
+  fullImage.src = img.src; // ✅ 썸네일 이미지 말고 원본으로 새로 로드
+window.lastOpenedBase64 = img.dataset.original || img.src;
 
-  // ✅ 원본 base64 우선 사용
-  fullImage.src = img.dataset.original || img.src
-lastOpenedBase64 = imageDataUrl;
 };
-
 
 
         const deleteBtn = document.createElement("div");
@@ -3823,8 +3866,10 @@ async function backupMemoDB() {
     const chunkList = [];
     const chunkSize = 10;
 
+    // ✅ 한국 시간 기준 타임스탬프 생성
     const now = new Date();
-    const timestamp = now.toISOString()
+    const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000); // UTC+9 보정
+    const timestamp = koreaTime.toISOString()
       .replace(/T/, "_")
       .replace(/:/g, "-")
       .replace(/\..+/, "");
@@ -4036,24 +4081,27 @@ document.getElementById("copyImageButton").onclick = async () => {
     }
   }, "image/png");
 };
+let lastOpenedBase64;
 
-let lastOpenedBase64 = ""; // 전역 변수로 기억
-document.getElementById("downloadImageBtn").onclick = () => {
-  // ✅ 현재 표시 중인 이미지 요소 참조
-  const modalImage = document.getElementById("modalImage"); // 또는 저장된 원본 base64 사용
-  const base64 = modalImage?.src || lastOpenedBase64; // 예비 fallback
+document.getElementById("downloadImageButton").addEventListener("click", () => {
+  if (!window.lastOpenedBase64) {
+    alert("❌ 다운로드할 이미지가 없습니다.");
+    return;
+  }
 
-  // ✅ 링크로 다운로드 처리
-  const link = document.createElement("a");
-  link.href = base64;
+  const a = document.createElement("a");
+  a.href = window.lastOpenedBase64;
 
-  // 파일명에 날짜+시간 포함
+  // ✅ 한국 시간 기준으로 파일명 생성
   const now = new Date();
-  const timestamp = now.toISOString().replace(/T/, "_").replace(/:/g, "-").replace(/\..+/, "");
-  link.download = `홍부_메모_${timestamp}.png`;
+  const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  const timestamp = koreaTime.toISOString().slice(0, 19).replace(/T/, "_").replace(/:/g, "-");
 
-  link.click();
-};
+  a.download = `홍부_메모_${timestamp}.png`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+});
 
 
 
