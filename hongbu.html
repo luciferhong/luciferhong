@@ -3854,8 +3854,73 @@ function showImageModal(src) {
     modal.style.display = "flex";
 }
 
-// ✅ 메모 백업
 async function backupMemoDB() {
+  const request = indexedDB.open("hongbuMemo", 2);
+
+  request.onsuccess = function (event) {
+    const db = event.target.result;
+    const transaction = db.transaction(["apartmentNotes"], "readonly");
+    const store = transaction.objectStore("apartmentNotes");
+
+    const chunkList = [];
+    const chunkSize = 10;
+
+    const now = new Date();
+    const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    const timestamp = koreaTime.toISOString()
+      .replace(/T/, "_")
+      .replace(/:/g, "-")
+      .replace(/\..+/, "");
+
+    const cursorRequest = store.openCursor();
+    cursorRequest.onsuccess = async function (event) {
+      const cursor = event.target.result;
+      if (cursor) {
+        chunkList.push(cursor.value);
+        cursor.continue();
+      } else {
+        const totalChunks = Math.ceil(chunkList.length / chunkSize);
+
+        for (let i = 0; i < totalChunks; i++) {
+          const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
+          const json = JSON.stringify(chunk, null, 2);
+          const blob = new Blob([json], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+
+          await new Promise(resolve => {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `홍부_메모백업_${timestamp}_part${i + 1}.json`;
+            document.body.appendChild(a); // iOS용 필요
+            a.click();
+
+            setTimeout(() => {
+              URL.revokeObjectURL(url);
+              a.remove();
+              resolve();
+            }, 1000); // 다운로드 완료 대기 시간
+          });
+        }
+
+        db.close();
+        alert("✅ 백업이 완료되었습니다.");
+      }
+    };
+
+    cursorRequest.onerror = function () {
+      alert("❌ 백업 중 오류 발생 (cursor 실패)");
+      db.close();
+    };
+  };
+
+  request.onerror = function () {
+    alert("❌ DB 열기 실패");
+  };
+}
+
+
+// ✅ 메모 백업
+async function backupMemoDB_OLD() {
   const request = indexedDB.open("hongbuMemo", 2);
 
   request.onsuccess = function (event) {
@@ -3913,65 +3978,6 @@ async function backupMemoDB() {
 
 
 
-
-
-function backupMemoDB_OLD() {
-  const statusEl = document.getElementById("backupStatus");
-  if (statusEl) statusEl.textContent = "📦 백업을 준비 중입니다...";
-
-  try {
-    const request = indexedDB.open("hongbuMemo", 2);
-
-    request.onsuccess = function (event) {
-      const db = event.target.result;
-      const transaction = db.transaction(["apartmentNotes"], "readonly");
-      const store = transaction.objectStore("apartmentNotes");
-
-      const allData = store.getAll();
-
-      allData.onsuccess = function () {
-        try {
-          const result = allData.result;
-
-          if (result.length === 0) {
-            if (statusEl) statusEl.textContent = "⚠️ 백업할 데이터가 없습니다.";
-            return;
-          }
-
-          if (statusEl) statusEl.textContent = `📄 ${result.length}건의 데이터를 백업 중입니다...`;
-
-          setTimeout(() => {
-            try {
-              const json = JSON.stringify(result, null, 2);
-              const blob = new Blob([json], { type: "application/json" });
-
-              const a = document.createElement("a");
-              a.href = URL.createObjectURL(blob);
-              a.download = "memo_backup.json";
-              a.click();
-
-              if (statusEl) statusEl.textContent = "✅ 백업이 완료되었습니다.";
-            } catch (err) {
-              if (statusEl) statusEl.textContent = "❌ 백업 생성 중 오류 발생: " + err.message;
-            }
-          }, 100); // UI 렌더링 기회 확보
-        } catch (err) {
-          if (statusEl) statusEl.textContent = "❌ 데이터 처리 오류: " + err.message;
-        }
-      };
-
-      allData.onerror = function (e) {
-        if (statusEl) statusEl.textContent = "❌ 데이터를 불러오는 중 오류 발생: " + e.target.error;
-      };
-    };
-
-    request.onerror = function (e) {
-      if (statusEl) statusEl.textContent = "❌ DB 열기 실패: " + e.target.error;
-    };
-  } catch (e) {
-    if (statusEl) statusEl.textContent = "❌ 예기치 못한 오류 발생: " + e.message;
-  }
-}
 
 
 // ✅ 메모 복원
