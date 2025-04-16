@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>홍부 메모 백업</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      color: #333;
+    }
+    button {
+      padding: 10px 16px;
+      background-color: #4A90E2;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    button:hover {
+      background-color: #357ABD;
+    }
+    .part-button {
+      display: block;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>📦 홍부 메모 백업</h1>
+  <p>아래 버튼을 눌러 메모 데이터를 백업하세요. 데이터가 많을 경우 여러 PART로 나뉘어 다운로드됩니다.</p>
+  <button onclick="backupMemoDB()">✅ 백업 시작</button>
+
+  <div id="downloadContainer"></div>
+
+  <script>
+    async function backupMemoDB() {
+      const request = indexedDB.open("hongbuMemo", 2);
+
+      request.onsuccess = function (event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartmentNotes"], "readonly");
+        const store = transaction.objectStore("apartmentNotes");
+
+        const chunkList = [];
+        const chunkSize = 10;
+
+        const now = new Date();
+        const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+        const timestamp = koreaTime.toISOString()
+          .replace(/T/, "_")
+          .replace(/:/g, "-")
+          .replace(/\..+/, "");
+
+        const cursorRequest = store.openCursor();
+        cursorRequest.onsuccess = function (event) {
+          const cursor = event.target.result;
+          if (cursor) {
+            chunkList.push(cursor.value);
+            cursor.continue();
+          } else {
+            const totalChunks = Math.ceil(chunkList.length / chunkSize);
+            const container = document.getElementById("downloadContainer");
+            container.innerHTML = `<h3>📁 총 ${totalChunks}개의 백업 파일</h3>`;
+
+            for (let i = 0; i < totalChunks; i++) {
+              const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
+              const json = JSON.stringify(chunk, null, 2);
+              const blob = new Blob([json], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+
+              const button = document.createElement("button");
+              button.textContent = `⬇️ PART ${i + 1} 다운로드`;
+              button.className = "part-button";
+              button.onclick = () => {
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `홍부_메모백업_${timestamp}_part${i + 1}.json`;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                  URL.revokeObjectURL(url);
+                  a.remove();
+                }, 1000);
+              };
+
+              container.appendChild(button);
+            }
+
+            alert("✅ 백업이 준비되었습니다. 각 PART를 눌러 수동으로 다운로드하세요.");
+            db.close();
+          }
+        };
+
+        cursorRequest.onerror = function () {
+          alert("❌ 백업 중 오류 발생 (cursor 실패)");
+          db.close();
+        };
+      };
+
+      request.onerror = function () {
+        alert("❌ DB 열기 실패");
+      };
+    }
+  </script>
+</body>
+</html>
