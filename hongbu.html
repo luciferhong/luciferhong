@@ -214,7 +214,11 @@ buttonContainer {
   border-radius: 8px;
 }
 
-
+ @media (max-width: 768px) {
+    .only-pc {
+      display: none !important;
+    }
+  }
     </style>
 </head>
 <body>
@@ -228,11 +232,14 @@ buttonContainer {
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label><input type="checkbox" id="toggleSchools" >초</label>
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
-	<label><input type="checkbox" id="toggleFacilities">환경</label>
+	<label><input type="checkbox" id="toggleㄴFacilities">환경</label>
 	<label><input type="checkbox" id="toggleStarbucks">스벅</label>
 	<label><input type="checkbox" id="toggleMemoIcon" checked>메모 아이콘 표시</label>
 
 	<label><input type="checkbox" id="toggleSiseMap" >시세지도</label>
+	<label class="only-pc" style="color: red; margin-left: auto; white-space: nowrap;">
+  길찾기할 때 출발시각은 현재 컴퓨터 시각에 맞춰집니다. 평일 오전 7시반으로 맞추면 출발시각이 해당 시각으로 변경됩니다
+</label>
 
 
 
@@ -1312,7 +1319,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadStarbucks();
 	await initIndexedDB();
 	await initMemoIndexedDB();
-await loadApartments();
+	await loadApartments();
+	findWay();
+
 	if (window.map) {
         setupRightClickEvent();
     } else {
@@ -4200,6 +4209,196 @@ async function getMemoFromIndexedDB(id) {
 }
 
 
+function findWay() {
+    // 오버레이 생성
+    var overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.top = `calc(100px)`;
+    overlay.style.left = '0px';
+    overlay.style.width = `calc(100% - 50px)`;
+    overlay.style.height = `calc(100% - 100px)`;
+    overlay.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+    overlay.style.display = 'none';
+    overlay.style.justifyContent = 'center';
+    overlay.style.alignItems = 'center';
+    overlay.style.zIndex = '9999';
+
+    // 닫기 버튼 생성
+    var closeButton = document.createElement('button');
+    closeButton.innerText = '닫기';
+    closeButton.style.position = 'absolute';
+    closeButton.style.top = '0px';
+    closeButton.style.right = '20px';
+    closeButton.style.backgroundColor = 'red';
+    closeButton.style.color = 'white';
+    closeButton.style.padding = '10px';
+    closeButton.style.border = 'none';
+    closeButton.style.cursor = 'pointer';
+
+    // iframe 생성
+    var iframe = document.createElement('iframe');
+    iframe.id = 'iframeOverlay';
+    iframe.style.width = '100%';
+    iframe.style.height = '100%';
+    iframe.style.border = 'none';
+
+    // 오버레이에 닫기 버튼과 iframe 추가
+    overlay.appendChild(closeButton);
+    overlay.appendChild(iframe);
+
+    // 오버레이를 body에 추가
+    document.body.appendChild(overlay);
+
+    // 닫기 버튼 클릭 시 오버레이 닫기
+    closeButton.addEventListener('click', function() {
+        overlay.style.display = 'none';
+        iframe.src = '';  // iframe 비우기
+        //document.querySelector('.ctn_wrap.open').style.width = '390px';
+        //document.querySelector('.map_wrap').style.width = `calc(100% - 390px)`;
+        document.querySelector('.map_wrap').style.height = '100%';
+    });
+
+    // "길찾기" 버튼 생성
+    var routeButton = document.createElement('button');
+    routeButton.innerText = '길찾기';
+    routeButton.style.position = 'absolute';
+    routeButton.style.display = 'none';
+    routeButton.style.zIndex = '10000';
+    routeButton.style.padding = '10px';
+    routeButton.style.backgroundColor = '#007bff';
+    routeButton.style.color = 'white';
+    routeButton.style.border = 'none';
+    routeButton.style.cursor = 'pointer';
+    routeButton.style.borderRadius = '5px';
+
+    // "길찾기" 버튼을 body에 추가
+    document.body.appendChild(routeButton);
+
+    // 체크박스 컨테이너 생성
+    var checkboxContainer = document.createElement('div');
+    checkboxContainer.style.position = 'absolute';
+    checkboxContainer.style.display = 'none';
+    checkboxContainer.style.backgroundColor = 'white';
+    checkboxContainer.style.padding = '10px';
+    checkboxContainer.style.zIndex = '9999';
+    checkboxContainer.style.border = '1px solid #ccc';
+    checkboxContainer.style.borderRadius = '5px';
+
+    // 목적지 체크박스 리스트 생성
+    const destinations = [
+        { id: 'chk1', lat: 37.497951, lng: 127.027636, name: '강남역2호선', code: 222 },
+        { id: 'chk2', lat: 37.564719, lng: 126.977022, name: '서울시청역2호선', code: 273 },
+        { id: 'chk3', lat: 37.521624, lng: 126.924374, name: '여의도역5호선', code: 526 },
+        { id: 'chk4', lat: 37.481339, lng: 126.882734, name: '가산디지털단지역1호선', code: 172 },
+        { id: 'chk8', lat: 37.485266, lng: 126.900198, name: '구로지디털단지역2호선', code: 232 },
+        { id: 'chk5', lat: 37.394768, lng: 127.111699, name: '판교역신분당선', code: 1914 },
+        { id: 'chk6', lat: 37.560143, lng: 126.825231, name: '마곡역5호선', code: 514 },
+        { id: 'chk7', lat: 37.576528, lng: 126.898109, name: 'DMC역6호선', code: 618 }
+    ];
+
+  var style = document.createElement('style');
+style.innerHTML = `
+    input[type="checkbox"] {
+        width: 20px;   /* 기본 크기 설정 */
+        height: 20px;  /* 기본 크기 설정 */
+        visibility: visible; /* 체크박스가 보이도록 설정 */
+        appearance: auto;  /* 기본 체크박스 스타일로 설정 */
+        -webkit-appearance: checkbox; /* 브라우저 호환성 */
+    }
+`;
+document.head.appendChild(style);
+
+
+    destinations.forEach((dest, index) => {
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = dest.id;
+    checkbox.style.display = 'inline-block'; // 체크박스가 보이도록 설정
+    checkbox.style.visibility = 'visible';   // 체크박스가 숨겨지지 않도록 설정
+
+    // 처음 3개의 체크박스를 기본값으로 체크
+    if (index < 3) {
+        checkbox.checked = true;
+    }
+
+    var label = document.createElement('label');
+    label.htmlFor = dest.id;  // label의 for 속성을 체크박스 id와 연결
+    label.innerText = dest.name;
+    label.style.fontSize = '16px'; // 텍스트 크기 조정
+
+    var container = document.createElement('div');
+    container.style.display = 'flex';  // 체크박스와 레이블을 나란히 배치
+    container.style.alignItems = 'center'; // 세로로 정렬을 맞춤
+    container.style.marginBottom = '5px'; // 항목 사이에 간격 추가
+
+    container.appendChild(checkbox);
+    container.appendChild(label);
+
+    checkboxContainer.appendChild(container);
+});
+
+
+
+    // 체크박스 컨테이너를 body에 추가
+    document.body.appendChild(checkboxContainer);
+
+    // 우클릭 시 이벤트를 등록하여 "길찾기" 버튼을 표시
+    naver.maps.Event.addListener(window.map, 'rightclick', function(e) {
+        var latlng = e.coord;  // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
+        var startX = latlng.lng();  // 우클릭한 위치의 경도
+        var startY = latlng.lat();  // 우클릭한 위치의 위도
+
+        // 우클릭한 화면상의 마우스 좌표 가져오기 (clientX, clientY)
+        var mouseEvent = e.pointerEvent;
+        var mouseX = mouseEvent.clientX;
+        var mouseY = mouseEvent.clientY;
+
+        // 마우스 우클릭 위치에 "길찾기" 버튼과 체크박스 표시
+        routeButton.style.left = mouseX + 'px';
+        routeButton.style.top = mouseY + 'px';
+        routeButton.style.display = 'block';  // 버튼을 화면에 표시
+
+        checkboxContainer.style.left = (mouseX + 65) + 'px';
+        checkboxContainer.style.top = mouseY + 'px';
+        checkboxContainer.style.display = 'block';
+
+        // "길찾기" 버튼 클릭 시 오버레이를 표시하고, iframe에 경로 표시
+        routeButton.onclick = function() {
+            var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
+
+
+            if (selectedDestinations.length > 0) {
+                var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
+
+                // URL에 선택된 목적지 id 추가
+                var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
+                 //var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&mode=transit`;
+                //var url = `http://localhost:8000/test2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
+
+                iframe.src = url;
+                overlay.style.display = 'flex';
+                routeButton.style.display = 'none';
+                checkboxContainer.style.display = 'none';
+               //document.querySelector('.ctn_wrap.open').style.width = '0px';
+              //document.querySelector('.map_wrap').style.width = `calc(100% - 390px)`;
+        //document.querySelector('.map_wrap').style.height = '40%';
+            } else {
+                alert('적어도 하나의 목적지를 선택하세요.');
+            }
+
+
+            // 버튼과 체크박스를 다시 숨김
+            routeButton.style.display = 'none';
+            checkboxContainer.style.display = 'none';
+        };
+    });
+
+    // 지도 클릭 시 "길찾기" 버튼 숨기기
+    window.map.getElement().addEventListener('click', function() {
+        routeButton.style.display = 'none';
+        checkboxContainer.style.display = 'none';
+    });
+};
 
 </script>
 
