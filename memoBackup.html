@@ -34,7 +34,7 @@
 <body>
   <h1>📦 홍부 메모 백업</h1>
   <p>아래 버튼을 눌러 메모 데이터를 백업하세요. 데이터가 많을 경우 여러 PART로 나뉘어 다운로드됩니다.</p>
-	<p>백업 시작 버튼을 누른 후 몇 초 정도 시간이 소요될 수 있습니다</p>
+  <p>백업 시작 버튼을 누른 후 몇 초 정도 시간이 소요될 수 있습니다</p>
   <button onclick="backupMemoDB()">✅ 백업 시작</button>
 
   <div id="downloadContainer"></div>
@@ -48,8 +48,9 @@
         const transaction = db.transaction(["apartmentNotes"], "readonly");
         const store = transaction.objectStore("apartmentNotes");
 
-        const chunkList = [];
         const chunkSize = 10;
+        let chunk = [];
+        let part = 1;
 
         const now = new Date();
         const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
@@ -58,41 +59,25 @@
           .replace(/:/g, "-")
           .replace(/\..+/, "");
 
+        const container = document.getElementById("downloadContainer");
+        container.innerHTML = "";
+
         const cursorRequest = store.openCursor();
+
         cursorRequest.onsuccess = function (event) {
           const cursor = event.target.result;
           if (cursor) {
-            chunkList.push(cursor.value);
+            chunk.push(cursor.value);
+            if (chunk.length === chunkSize) {
+              createDownloadButton(chunk, part++, timestamp);
+              chunk = [];
+            }
             cursor.continue();
           } else {
-            const totalChunks = Math.ceil(chunkList.length / chunkSize);
-            const container = document.getElementById("downloadContainer");
-            container.innerHTML = `<h3>📁 총 ${totalChunks}개의 백업 파일</h3>`;
-
-            for (let i = 0; i < totalChunks; i++) {
-              const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
-              const json = JSON.stringify(chunk, null, 2);
-              const blob = new Blob([json], { type: "application/json" });
-              const url = URL.createObjectURL(blob);
-
-              const button = document.createElement("button");
-              button.textContent = `⬇️ PART ${i + 1} 다운로드`;
-              button.className = "part-button";
-              button.onclick = () => {
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = `홍부_메모백업_${timestamp}_part${i + 1}.json`;
-                document.body.appendChild(a);
-                a.click();
-                setTimeout(() => {
-                  URL.revokeObjectURL(url);
-                  a.remove();
-                }, 1000);
-              };
-
-              container.appendChild(button);
+            if (chunk.length > 0) {
+              createDownloadButton(chunk, part++, timestamp);
             }
-
+            container.insertAdjacentHTML("afterbegin", `<h3>📁 총 ${part - 1}개의 백업 파일</h3>`);
             alert("✅ 백업이 준비되었습니다. 각 PART를 눌러 수동으로 다운로드하세요.");
             db.close();
           }
@@ -107,6 +92,29 @@
       request.onerror = function () {
         alert("❌ DB 열기 실패");
       };
+    }
+
+    function createDownloadButton(dataChunk, partNumber, timestamp) {
+      const json = JSON.stringify(dataChunk, null, 2);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+
+      const button = document.createElement("button");
+      button.textContent = `⬇️ PART ${partNumber} 다운로드`;
+      button.className = "part-button";
+      button.onclick = () => {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `홍부_메모백업_${timestamp}_part${partNumber}.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          a.remove();
+        }, 1000);
+      };
+
+      document.getElementById("downloadContainer").appendChild(button);
     }
   </script>
 </body>
