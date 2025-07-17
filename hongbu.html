@@ -2766,6 +2766,7 @@ function generateDefaultTable() {
     return defaultTable.join('\n'); // 줄바꿈 포함하여 저장
 }
 
+/*
 // ✅ 수정 가능한 테이블을 생성하는 함수
 function createEditableTableHTML(id, textData) {
     let rows = textData.split('\n').map(row => row.split('\t'));
@@ -2791,13 +2792,77 @@ function createEditableTableHTML(id, textData) {
 				height: 24px;
 
 				vertical-align: middle;
-				white-space: normal;  /* ✅ 줄바꿈 허용 */
-				word-break: break-word; /* ✅ 텍스트 줄바꿈 */
+				white-space: normal;  // ✅ 줄바꿈 허용 
+				word-break: break-word; // ✅ 텍스트 줄바꿈 
 			`;
 
 
             tr.appendChild(td);
         });
+        table.appendChild(tr);
+    });
+
+    return table.outerHTML;
+}
+*/
+function createEditableTableHTML(id, textData) {
+    let rows = textData.split('\n').map(row => row.split('\t'));
+    const table = document.createElement("table");
+    table.style.borderCollapse = "collapse";
+    table.style.width = "100%";
+    table.style.tableLayout = "auto";
+    table.style.color = "black";
+
+    rows.forEach((row, rowIndex) => {
+        const tr = document.createElement("tr");
+
+        for (let colIndex = 0; colIndex < 4; colIndex++) {  // 열 4개 고정
+            const td = document.createElement("td");
+            td.dataset.id = id;
+            td.dataset.row = rowIndex;
+            td.dataset.col = colIndex;
+            td.contentEditable = "true";
+            td.textContent = row[colIndex]?.trim() || "";
+
+            // ✅ 셀 스타일
+            td.style = `
+                border: 1px solid black;
+                padding: 2px 4px;
+                text-align: center;
+                height: 24px;
+                vertical-align: middle;
+                white-space: normal;
+                word-break: break-word;
+            `;
+
+            // ✅ Tab 키 이동 이벤트 추가 위치 (여기!)
+            td.addEventListener("keydown", (event) => {
+  if (event.key === "Tab") {
+    event.preventDefault();
+
+    const currentRow = parseInt(td.dataset.row, 10);
+    const currentCol = parseInt(td.dataset.col, 10);
+    const table = td.closest("table");  // ✅ 현재 마커 내부의 이 테이블 안에서만
+
+    let nextCell = table.querySelector(`td[data-row='${currentRow}'][data-col='${currentCol + 1}']`);
+
+    // 다음 열이 없으면 다음 행의 첫 번째 열
+    if (!nextCell) {
+      nextCell = table.querySelector(`td[data-row='${currentRow + 1}'][data-col='0']`);
+    }
+
+    // ✅ 해당 테이블 안에 존재하는 셀만 focus
+    if (nextCell) {
+      nextCell.focus();
+    }
+  }
+});
+
+
+
+            tr.appendChild(td);
+        }
+
         table.appendChild(tr);
     });
 
@@ -3103,6 +3168,8 @@ function handleMouseUp() {
 }
 function handleKeyDown(event) {
     const activeElement = document.activeElement;
+console.log("activeElement :")
+console.log(activeElement)
 
 	// ✅ case 2: 지도 마커 이동용 WASD
 
@@ -3594,6 +3661,67 @@ buttonContainer.appendChild(resetButton);  // ⬅ 초기화 버튼 먼저
 
 }
 
+function parseTextToTable(text) {
+  return text
+    .trim()
+    .split("\n")
+    .map(row => row.split("\t"));
+}
+
+function convertTableToText(tableArray) {
+  return tableArray.map(row => row.join("\t")).join("\n");
+}
+
+
+function addRowToTable(apartmentId) {
+    const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
+    if (tableContainer) {
+        const table = tableContainer.querySelector("table");
+
+        if (table) {
+            const newRow = table.insertRow();
+            const rowIndex = table.rows.length - 1;
+
+            for (let colIndex = 0; colIndex < 4; colIndex++) {  // 열 수 고정
+                const newCell = newRow.insertCell();
+                newCell.className = "sise-cell";  // ✅ 스타일 클래스만 적용
+                newCell.contentEditable = "true";
+                newCell.dataset.row = rowIndex;
+                newCell.dataset.col = colIndex;
+                newCell.dataset.id = apartmentId;
+
+                // 이벤트 바인딩
+                newCell.addEventListener("input", () => {
+                    newCell.style.backgroundColor = "#ffe"; // 변경 감지용 임시 스타일
+                });
+
+                newCell.addEventListener("blur", () => {
+                    const value = newCell.innerText.trim();
+                    const row = parseInt(newCell.dataset.row, 10);
+                    const col = parseInt(newCell.dataset.col, 10);
+
+                    getFromIndexedDB(apartmentId, "시세1").then(existing => {
+                        const text = existing?.text || "";
+                        const parsed = parseTextToTable(text);
+
+                        while (parsed.length <= row) parsed.push(["", "", "", ""]);
+                        while (parsed[row].length < 4) parsed[row].push("");
+
+                        parsed[row][col] = value;
+
+                        const newText = convertTableToText(parsed);
+                        saveToIndexedDB(apartmentId, "시세1", newText, existing?.color, existing?.textColor, existing?.fontSize);
+                    });
+                });
+            }
+
+            saveTableToIndexedDB(apartmentId, tableContainer);
+        }
+    }
+}
+
+
+/*
 function addRowToTable(apartmentId) {
     // 해당 apartmentId의 테이블을 찾아서 새로운 행 추가
     const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
@@ -3615,7 +3743,7 @@ function addRowToTable(apartmentId) {
         }
     }
 }
-
+*/
 function removeRowFromTable(apartmentId) {
     // 해당 apartmentId의 테이블을 찾아서 선택된 행 제거
     const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
