@@ -179,6 +179,7 @@ td, th {
     padding: 5px; /* ✅ 내부 여백 조정 */
     text-align: center;
     white-space: nowrap; /* ✅ 줄바꿈 방지 */
+  word-break: keep-all;
 }
 buttonContainer {
     display: flex;
@@ -300,6 +301,8 @@ buttonContainer {
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: none;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
+<button id="siseVer2ImportBtn" style="display: block;">시세지도Ver2에서 가져오기</button>
+<button id="siseVer2ResetBtn" style="display: block;">시세지도Ver2데이터 초기화</button>
 
 
 
@@ -394,31 +397,72 @@ let imageModalShowYn = false;
 					input.click();
 				});
 
+				// ✅ 시세지도 복원 (임포트)
+				document.getElementById("siseVer2ImportBtn").addEventListener("click", () => {
+					const input = document.createElement('input');
+					input.type = 'file';
+					input.accept = 'application/json';
+					input.onchange = function (event) {
+						const file = event.target.files[0];
+						if (file) {
+							importFromSiseVer2JSON(file);
+						}
+					};
+					input.click();
+				});
+
+
 				document.getElementById("siseResetBtn").addEventListener("click", () => {
-				const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
-				if (!confirmReset) return;
+					const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
+					if (!confirmReset) return;
 
-				const request = indexedDB.open("hongbu", 2);
-				request.onsuccess = function(event) {
-					const db = event.target.result;
-					const transaction = db.transaction(["apartments"], "readwrite");
-					const store = transaction.objectStore("apartments");
+					const request = indexedDB.open("hongbu", 3);
+					request.onsuccess = function(event) {
+						const db = event.target.result;
+						const transaction = db.transaction(["apartments"], "readwrite");
+						const store = transaction.objectStore("apartments");
 
-					const clearRequest = store.clear(); // ✅ 전체 삭제
+						const clearRequest = store.clear(); // ✅ 전체 삭제
 
-					clearRequest.onsuccess = function() {
-						alert("✅ 시세지도 데이터가 초기화되었습니다.");
-						// 🔁 마커 업데이트
-						prevSiseMapState = "초기화";
-						updateMarkers(window.map.getBounds());
+						clearRequest.onsuccess = function() {
+							alert("✅ 시세지도 데이터가 초기화되었습니다.");
+							// 🔁 마커 업데이트
+							prevSiseMapState = "초기화";
+							updateMarkers(window.map.getBounds());
+						};
+
+						clearRequest.onerror = function(event) {
+							console.error("❌ 시세지도 초기화 실패:", event.target.error);
+							alert("❌ 초기화 중 오류가 발생했습니다.");
+						};
 					};
+				});
 
-					clearRequest.onerror = function(event) {
-						console.error("❌ 시세지도 초기화 실패:", event.target.error);
-						alert("❌ 초기화 중 오류가 발생했습니다.");
+				document.getElementById("siseVer2ResetBtn").addEventListener("click", () => {
+					const confirmReset = confirm("⚠️ 시세지도Ver2 데이터를 초기화하면 복구할 수 없습니다. 시세지도Ver2에서 백업을 권장드립니다. \n계속하시겠습니까?");
+					if (!confirmReset) return;
+
+					const request = indexedDB.open("hongbu", 3);
+					request.onsuccess = function(event) {
+						const db = event.target.result;
+						const transaction = db.transaction(["importSiseVer2"], "readwrite");
+						const store = transaction.objectStore("importSiseVer2");
+
+						const clearRequest = store.clear(); // ✅ 전체 삭제
+
+						clearRequest.onsuccess = function() {
+							alert("✅ 시세지도Ver2 데이터가 초기화되었습니다.");
+							// 🔁 마커 업데이트
+							prevSiseMapState = "초기화";
+							updateMarkers(window.map.getBounds());
+						};
+
+						clearRequest.onerror = function(event) {
+							console.error("❌ 시세지도 초기화 실패:", event.target.error);
+							alert("❌ 초기화 중 오류가 발생했습니다.");
+						};
 					};
-				};
-			});
+				});
 
 
 
@@ -1863,6 +1907,8 @@ apartmentInfo.setAttribute("data-id", apartmentId);
     infoDiv.style.transform = "translate(-50%, -50%)";
     infoDiv.dataset.positioned = "true";
   }
+
+
   infoDiv.innerHTML = infoHtml;
   infoDiv.style.display = "block";
 
@@ -1983,6 +2029,9 @@ const originalBase64 = event.target.result;
       });
     }
   }, 0);
+
+showSiseVer2DataToggle(apartmentId);
+
 }
 
 
@@ -2504,13 +2553,18 @@ var activeMarkerSet = null;
 // ✅ IndexedDB 초기화
 function initIndexedDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('hongbu', 2);
+        const request = indexedDB.open("hongbu", 3);
 
         request.onupgradeneeded = function(event) {
             const db = event.target.result;
 
             if (!db.objectStoreNames.contains('apartments')) {
                 const store = db.createObjectStore('apartments', { keyPath: 'idType' });
+                store.createIndex('id', 'id', { unique: false });
+                console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
+            }
+			if (!db.objectStoreNames.contains('importSiseVer2')) {
+                const store = db.createObjectStore('importSiseVer2', { keyPath: 'idType' });
                 store.createIndex('id', 'id', { unique: false });
                 console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
             }
@@ -2529,7 +2583,7 @@ function initIndexedDB() {
 }
 function initMemoIndexedDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbuMemo", 2);
+    const request = indexedDB.open("hongbuMemo", 3);
 
     request.onupgradeneeded = function (event) {
       const db = event.target.result;
@@ -2557,7 +2611,7 @@ function initMemoIndexedDB() {
 
 // ✅ IndexedDB 저장 함수
 function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
-    const request = indexedDB.open("hongbu", 2);
+    const request = indexedDB.open("hongbu", 3);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -2570,7 +2624,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 
     };
 	markerElement = document.querySelector(`[data-apartment-id='${id}']`);
-	markerElement.style.maxWidth = '160px';
+	//markerElement.style.maxWidth = '160px';
 
 
 }
@@ -2578,7 +2632,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 // ✅ IndexedDB에서 데이터 가져오기
 function getFromIndexedDB(id, type) {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 2);
+        const request = indexedDB.open("hongbu", 3);
 
         request.onerror = (event) => {
             reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
@@ -2766,6 +2820,7 @@ function generateDefaultTable() {
     return defaultTable.join('\n'); // 줄바꿈 포함하여 저장
 }
 
+/*
 // ✅ 수정 가능한 테이블을 생성하는 함수
 function createEditableTableHTML(id, textData) {
     let rows = textData.split('\n').map(row => row.split('\t'));
@@ -2791,13 +2846,77 @@ function createEditableTableHTML(id, textData) {
 				height: 24px;
 
 				vertical-align: middle;
-				white-space: normal;  /* ✅ 줄바꿈 허용 */
-				word-break: break-word; /* ✅ 텍스트 줄바꿈 */
+				white-space: normal;  // ✅ 줄바꿈 허용 
+				word-break: break-word; // ✅ 텍스트 줄바꿈 
 			`;
 
 
             tr.appendChild(td);
         });
+        table.appendChild(tr);
+    });
+
+    return table.outerHTML;
+}
+*/
+function createEditableTableHTML(id, textData) {
+    let rows = textData.split('\n').map(row => row.split('\t'));
+    const table = document.createElement("table");
+    table.style.borderCollapse = "collapse";
+    table.style.width = "100%";
+    table.style.tableLayout = "auto";
+    table.style.color = "black";
+
+    rows.forEach((row, rowIndex) => {
+        const tr = document.createElement("tr");
+
+        for (let colIndex = 0; colIndex < 4; colIndex++) {  // 열 4개 고정
+            const td = document.createElement("td");
+            td.dataset.id = id;
+            td.dataset.row = rowIndex;
+            td.dataset.col = colIndex;
+            td.contentEditable = "true";
+            td.textContent = row[colIndex]?.trim() || "";
+
+            // ✅ 셀 스타일
+            td.style = `
+                border: 1px solid black;
+                padding: 2px 4px;
+                text-align: center;
+                height: 24px;
+                vertical-align: middle;
+                white-space: normal;
+                word-break: break-word;
+            `;
+
+            // ✅ Tab 키 이동 이벤트 추가 위치 (여기!)
+            td.addEventListener("keydown", (event) => {
+  if (event.key === "Tab") {
+    event.preventDefault();
+
+    const currentRow = parseInt(td.dataset.row, 10);
+    const currentCol = parseInt(td.dataset.col, 10);
+    const table = td.closest("table");  // ✅ 현재 마커 내부의 이 테이블 안에서만
+
+    let nextCell = table.querySelector(`td[data-row='${currentRow}'][data-col='${currentCol + 1}']`);
+
+    // 다음 열이 없으면 다음 행의 첫 번째 열
+    if (!nextCell) {
+      nextCell = table.querySelector(`td[data-row='${currentRow + 1}'][data-col='0']`);
+    }
+
+    // ✅ 해당 테이블 안에 존재하는 셀만 focus
+    if (nextCell) {
+      nextCell.focus();
+    }
+  }
+});
+
+
+
+            tr.appendChild(td);
+        }
+
         table.appendChild(tr);
     });
 
@@ -3103,6 +3222,8 @@ function handleMouseUp() {
 }
 function handleKeyDown(event) {
     const activeElement = document.activeElement;
+console.log("activeElement :")
+console.log(activeElement)
 
 	// ✅ case 2: 지도 마커 이동용 WASD
 
@@ -3544,7 +3665,7 @@ resetButton.textContent = ' 초기화 ';
 resetButton.style.marginRight = '10px';
 resetButton.onclick = () => {
     // ✅ IndexedDB에서 해당 데이터 삭제
-    const request = indexedDB.open("hongbu", 2);
+    const request = indexedDB.open("hongbu", 3);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -3594,6 +3715,67 @@ buttonContainer.appendChild(resetButton);  // ⬅ 초기화 버튼 먼저
 
 }
 
+function parseTextToTable(text) {
+  return text
+    .trim()
+    .split("\n")
+    .map(row => row.split("\t"));
+}
+
+function convertTableToText(tableArray) {
+  return tableArray.map(row => row.join("\t")).join("\n");
+}
+
+
+function addRowToTable(apartmentId) {
+    const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
+    if (tableContainer) {
+        const table = tableContainer.querySelector("table");
+
+        if (table) {
+            const newRow = table.insertRow();
+            const rowIndex = table.rows.length - 1;
+
+            for (let colIndex = 0; colIndex < 4; colIndex++) {  // 열 수 고정
+                const newCell = newRow.insertCell();
+                newCell.className = "sise-cell";  // ✅ 스타일 클래스만 적용
+                newCell.contentEditable = "true";
+                newCell.dataset.row = rowIndex;
+                newCell.dataset.col = colIndex;
+                newCell.dataset.id = apartmentId;
+
+                // 이벤트 바인딩
+                newCell.addEventListener("input", () => {
+                    newCell.style.backgroundColor = "#ffe"; // 변경 감지용 임시 스타일
+                });
+
+                newCell.addEventListener("blur", () => {
+                    const value = newCell.innerText.trim();
+                    const row = parseInt(newCell.dataset.row, 10);
+                    const col = parseInt(newCell.dataset.col, 10);
+
+                    getFromIndexedDB(apartmentId, "시세1").then(existing => {
+                        const text = existing?.text || "";
+                        const parsed = parseTextToTable(text);
+
+                        while (parsed.length <= row) parsed.push(["", "", "", ""]);
+                        while (parsed[row].length < 4) parsed[row].push("");
+
+                        parsed[row][col] = value;
+
+                        const newText = convertTableToText(parsed);
+                        saveToIndexedDB(apartmentId, "시세1", newText, existing?.color, existing?.textColor, existing?.fontSize);
+                    });
+                });
+            }
+
+            saveTableToIndexedDB(apartmentId, tableContainer);
+        }
+    }
+}
+
+
+/*
 function addRowToTable(apartmentId) {
     // 해당 apartmentId의 테이블을 찾아서 새로운 행 추가
     const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
@@ -3615,7 +3797,7 @@ function addRowToTable(apartmentId) {
         }
     }
 }
-
+*/
 function removeRowFromTable(apartmentId) {
     // 해당 apartmentId의 테이블을 찾아서 선택된 행 제거
     const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
@@ -3765,6 +3947,145 @@ function importFromJSON(file) {
 }
 
 
+//시세지도ver2에서 시세 가져오기
+function importFromSiseVer2JSON(file) {
+    const reader = new FileReader();
+    reader.onload = function(event) {
+        const json = JSON.parse(event.target.result);
+        const data = Array.isArray(json) ? json : json.apartments;
+
+        if (!Array.isArray(data)) {
+            alert("❌ 유효한 시세지도Ver2 데이터가 아닙니다.");
+            return;
+        }
+
+        initIndexedDB().then(db => {
+            if (!db.objectStoreNames.contains('importSiseVer2')) {
+                alert("❌ 'importSiseVer2' 스토어가 존재하지 않습니다. DB 버전을 올려 스토어를 생성하세요.");
+                db.close();
+                return;
+            }
+
+            const transaction = db.transaction(['importSiseVer2'], 'readwrite');
+            const store = transaction.objectStore('importSiseVer2');
+
+            data.forEach(item => {
+                // ✅ 누락된 필드 보완
+                if (!item.type && item.idType?.includes('-')) {
+                    item.type = item.idType.split("-")[1];
+                }
+                if (!item.id && item.idType?.includes('-')) {
+                    item.id = item.idType.split("-")[0];
+                }
+                if (!item.type) item.type = '시세1';
+                if (!item.idType) item.idType = `${item.id}-${item.type}`;
+                store.put(item);
+            });
+
+            transaction.oncomplete = function() {
+                alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+                // ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
+            };
+
+            transaction.onerror = function(event) {
+                console.error('❌ Import transaction error:', event.target.error);
+            };
+        }).catch(error => {
+            console.error('❌ Failed to initialize hongbu DB:', error);
+        });
+    };
+
+    reader.readAsText(file);
+}
+
+// 🔍 Ver2 시세 표시용 함수
+
+function showSiseVer2DataToggle(apartmentId) {
+    const dbRequest = indexedDB.open("hongbu", 3);
+
+    dbRequest.onsuccess = function(event) {
+        const db = event.target.result;
+
+        if (!db.objectStoreNames.contains("importSiseVer2")) return;
+
+        const transaction = db.transaction(["importSiseVer2"], "readonly");
+        const store = transaction.objectStore("importSiseVer2");
+
+        const getAllRequest = store.getAll();
+
+        getAllRequest.onsuccess = function(e) {
+            const allItems = e.target.result;
+            const matched = allItems.filter(
+                item => item.id === apartmentId && item.type === "시세1"
+            );
+
+            if (matched.length === 0) return;
+
+            const container = document.getElementById("apartmentInfo");
+
+            // ✅ 버튼 생성
+            const button = document.createElement("button");
+            button.textContent = "📊 Ver2 시세 보기";
+            button.style.marginTop = "10px";
+            button.style.padding = "6px 10px";
+            button.style.fontSize = "14px";
+            button.style.borderRadius = "4px";
+            button.style.cursor = "pointer";
+            button.style.border = "1px solid #aaa";
+            button.style.backgroundColor = "#f7f7f7";
+
+            container.appendChild(button);
+
+            // ✅ 클릭 시 표 렌더링
+            button.addEventListener("click", (e) => {
+				e.stopPropagation(); // ✅ 모달 닫힘 방지
+
+				matched.forEach(item => {
+					const parsed = item.text.trim().split("\n").map(row => row.trim()).filter(row => row);
+					if (parsed.length === 0) return;
+
+					const table = document.createElement("table");
+					table.style.marginTop = "10px";
+					table.innerHTML = `
+						<tr style="background: #eee;">
+							<th>평형</th>
+							<th>매매</th>
+							<th>전세</th>
+							<th>비고</th>
+						</tr>
+					`;
+
+					parsed.forEach(line => {
+						const [pyeong, maemae, jeonse, etc = ""] = line.split("\t");
+						const tr = document.createElement("tr");
+						tr.innerHTML = `
+							<td>${pyeong || ""}</td>
+							<td>${maemae || ""}</td>
+							<td>${jeonse || ""}</td>
+							<td>${etc || ""}</td>
+						`;
+						table.appendChild(tr);
+					});
+
+					const label = document.createElement("div");
+					label.textContent = "📊 시세지도 Ver2 데이터";
+					label.style.marginTop = "10px";
+					label.style.fontWeight = "bold";
+					label.style.color = "#333";
+
+					container.appendChild(label);
+					container.appendChild(table);
+				});
+
+				button.remove(); // 버튼 제거
+			});
+
+        };
+    };
+}
+
+
+
 /////////////////////////////////////////////////////////////////////////////////////////
 let deletedImages = []; // 삭제된 이미지 목록
 
@@ -3773,7 +4094,7 @@ async function saveNote(id) {
   const memo = document.getElementById("noteText").value;
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onerror = function (event) {
     console.error("❌ DB 열기 실패:", event.target.error);
@@ -3851,7 +4172,7 @@ function saveNote(id) {
   const memo = document.getElementById("noteText").value;
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -3980,7 +4301,7 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 async function loadNote(id) {
 await initMemoIndexedDB()
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -4110,7 +4431,7 @@ function showImageModal(src) {
 }
 
 async function backupMemoDB() {
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4176,7 +4497,7 @@ async function backupMemoDB() {
 
 // ✅ 메모 백업
 async function backupMemoDB_OLD() {
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4259,7 +4580,7 @@ function restoreMemoDB() {
         }
       }
 
-      const request = indexedDB.open("hongbuMemo", 2);
+      const request = indexedDB.open("hongbuMemo", 3);
       request.onsuccess = function (event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4310,7 +4631,7 @@ function restoreMemoDB_OLD() {
                     return;
                 }
 
-                const request = indexedDB.open("hongbuMemo", 2);
+                const request = indexedDB.open("hongbuMemo", 3);
                 request.onsuccess = function (event) {
                     const db = event.target.result;
                     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4369,7 +4690,7 @@ document.getElementById("downloadImageButton").addEventListener("click", () => {
 function deleteMemoDB() {
   if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
   request.onsuccess = function (event) {
     const db = event.target.result;
     db.close(); // 👉 연결 먼저 닫기
@@ -4400,7 +4721,7 @@ function deleteMemoDB() {
 function deleteNote(id) {
   if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4430,7 +4751,7 @@ async function getMemoFromIndexedDB(id) {
   return new Promise(async (resolve, reject) => {
     await initMemoIndexedDB();
 
-    const request = indexedDB.open("hongbuMemo", 2);
+    const request = indexedDB.open("hongbuMemo", 3);
     request.onerror = () => reject("DB 열기 실패");
 
     request.onsuccess = (event) => {
