@@ -301,6 +301,8 @@ buttonContainer {
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: none;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
+<button id="siseVer2ImportBtn" style="display: block;">시세지도Ver2에서 가져오기</button>
+<button id="siseVer2ResetBtn" style="display: block;">시세지도Ver2데이터 초기화</button>
 
 
 
@@ -395,31 +397,72 @@ let imageModalShowYn = false;
 					input.click();
 				});
 
+				// ✅ 시세지도 복원 (임포트)
+				document.getElementById("siseVer2ImportBtn").addEventListener("click", () => {
+					const input = document.createElement('input');
+					input.type = 'file';
+					input.accept = 'application/json';
+					input.onchange = function (event) {
+						const file = event.target.files[0];
+						if (file) {
+							importFromSiseVer2JSON(file);
+						}
+					};
+					input.click();
+				});
+
+
 				document.getElementById("siseResetBtn").addEventListener("click", () => {
-				const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
-				if (!confirmReset) return;
+					const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
+					if (!confirmReset) return;
 
-				const request = indexedDB.open("hongbu", 2);
-				request.onsuccess = function(event) {
-					const db = event.target.result;
-					const transaction = db.transaction(["apartments"], "readwrite");
-					const store = transaction.objectStore("apartments");
+					const request = indexedDB.open("hongbu", 3);
+					request.onsuccess = function(event) {
+						const db = event.target.result;
+						const transaction = db.transaction(["apartments"], "readwrite");
+						const store = transaction.objectStore("apartments");
 
-					const clearRequest = store.clear(); // ✅ 전체 삭제
+						const clearRequest = store.clear(); // ✅ 전체 삭제
 
-					clearRequest.onsuccess = function() {
-						alert("✅ 시세지도 데이터가 초기화되었습니다.");
-						// 🔁 마커 업데이트
-						prevSiseMapState = "초기화";
-						updateMarkers(window.map.getBounds());
+						clearRequest.onsuccess = function() {
+							alert("✅ 시세지도 데이터가 초기화되었습니다.");
+							// 🔁 마커 업데이트
+							prevSiseMapState = "초기화";
+							updateMarkers(window.map.getBounds());
+						};
+
+						clearRequest.onerror = function(event) {
+							console.error("❌ 시세지도 초기화 실패:", event.target.error);
+							alert("❌ 초기화 중 오류가 발생했습니다.");
+						};
 					};
+				});
 
-					clearRequest.onerror = function(event) {
-						console.error("❌ 시세지도 초기화 실패:", event.target.error);
-						alert("❌ 초기화 중 오류가 발생했습니다.");
+				document.getElementById("siseVer2ResetBtn").addEventListener("click", () => {
+					const confirmReset = confirm("⚠️ 시세지도Ver2 데이터를 초기화하면 복구할 수 없습니다. 시세지도Ver2에서 백업을 권장드립니다. \n계속하시겠습니까?");
+					if (!confirmReset) return;
+
+					const request = indexedDB.open("hongbu", 3);
+					request.onsuccess = function(event) {
+						const db = event.target.result;
+						const transaction = db.transaction(["importSiseVer2"], "readwrite");
+						const store = transaction.objectStore("importSiseVer2");
+
+						const clearRequest = store.clear(); // ✅ 전체 삭제
+
+						clearRequest.onsuccess = function() {
+							alert("✅ 시세지도Ver2 데이터가 초기화되었습니다.");
+							// 🔁 마커 업데이트
+							prevSiseMapState = "초기화";
+							updateMarkers(window.map.getBounds());
+						};
+
+						clearRequest.onerror = function(event) {
+							console.error("❌ 시세지도 초기화 실패:", event.target.error);
+							alert("❌ 초기화 중 오류가 발생했습니다.");
+						};
 					};
-				};
-			});
+				});
 
 
 
@@ -1864,6 +1907,8 @@ apartmentInfo.setAttribute("data-id", apartmentId);
     infoDiv.style.transform = "translate(-50%, -50%)";
     infoDiv.dataset.positioned = "true";
   }
+
+
   infoDiv.innerHTML = infoHtml;
   infoDiv.style.display = "block";
 
@@ -1984,6 +2029,9 @@ const originalBase64 = event.target.result;
       });
     }
   }, 0);
+
+showSiseVer2DataToggle(apartmentId);
+
 }
 
 
@@ -2505,13 +2553,18 @@ var activeMarkerSet = null;
 // ✅ IndexedDB 초기화
 function initIndexedDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open('hongbu', 2);
+        const request = indexedDB.open("hongbu", 3);
 
         request.onupgradeneeded = function(event) {
             const db = event.target.result;
 
             if (!db.objectStoreNames.contains('apartments')) {
                 const store = db.createObjectStore('apartments', { keyPath: 'idType' });
+                store.createIndex('id', 'id', { unique: false });
+                console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
+            }
+			if (!db.objectStoreNames.contains('importSiseVer2')) {
+                const store = db.createObjectStore('importSiseVer2', { keyPath: 'idType' });
                 store.createIndex('id', 'id', { unique: false });
                 console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
             }
@@ -2530,7 +2583,7 @@ function initIndexedDB() {
 }
 function initMemoIndexedDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbuMemo", 2);
+    const request = indexedDB.open("hongbuMemo", 3);
 
     request.onupgradeneeded = function (event) {
       const db = event.target.result;
@@ -2558,7 +2611,7 @@ function initMemoIndexedDB() {
 
 // ✅ IndexedDB 저장 함수
 function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
-    const request = indexedDB.open("hongbu", 2);
+    const request = indexedDB.open("hongbu", 3);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -2579,7 +2632,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 // ✅ IndexedDB에서 데이터 가져오기
 function getFromIndexedDB(id, type) {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 2);
+        const request = indexedDB.open("hongbu", 3);
 
         request.onerror = (event) => {
             reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
@@ -2613,6 +2666,9 @@ document.getElementById("toggleSiseMap").addEventListener("change", function() {
 	document.getElementById("siseExportBtn").style.display = isChecked ? "inline-block" : "none";
     document.getElementById("siseImportBtn").style.display = isChecked ? "inline-block" : "none";
 	document.getElementById("siseResetBtn").style.display = isChecked ? "inline-block" : "none";
+
+document.getElementById("siseVer2ImportBtn").style.display = isChecked ? "none" : "inline-block";
+document.getElementById("siseVer2ResetBtn").style.display = isChecked ? "none" : "inline-block";
 	if(!isChecked){
 		removeAllLines(window.map.getBounds());
 	}
@@ -3612,7 +3668,7 @@ resetButton.textContent = ' 초기화 ';
 resetButton.style.marginRight = '10px';
 resetButton.onclick = () => {
     // ✅ IndexedDB에서 해당 데이터 삭제
-    const request = indexedDB.open("hongbu", 2);
+    const request = indexedDB.open("hongbu", 3);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -3894,6 +3950,145 @@ function importFromJSON(file) {
 }
 
 
+//시세지도ver2에서 시세 가져오기
+function importFromSiseVer2JSON(file) {
+    const reader = new FileReader();
+    reader.onload = function(event) {
+        const json = JSON.parse(event.target.result);
+        const data = Array.isArray(json) ? json : json.apartments;
+
+        if (!Array.isArray(data)) {
+            alert("❌ 유효한 시세지도Ver2 데이터가 아닙니다.");
+            return;
+        }
+
+        initIndexedDB().then(db => {
+            if (!db.objectStoreNames.contains('importSiseVer2')) {
+                alert("❌ 'importSiseVer2' 스토어가 존재하지 않습니다. DB 버전을 올려 스토어를 생성하세요.");
+                db.close();
+                return;
+            }
+
+            const transaction = db.transaction(['importSiseVer2'], 'readwrite');
+            const store = transaction.objectStore('importSiseVer2');
+
+            data.forEach(item => {
+                // ✅ 누락된 필드 보완
+                if (!item.type && item.idType?.includes('-')) {
+                    item.type = item.idType.split("-")[1];
+                }
+                if (!item.id && item.idType?.includes('-')) {
+                    item.id = item.idType.split("-")[0];
+                }
+                if (!item.type) item.type = '시세1';
+                if (!item.idType) item.idType = `${item.id}-${item.type}`;
+                store.put(item);
+            });
+
+            transaction.oncomplete = function() {
+                alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+                // ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
+            };
+
+            transaction.onerror = function(event) {
+                console.error('❌ Import transaction error:', event.target.error);
+            };
+        }).catch(error => {
+            console.error('❌ Failed to initialize hongbu DB:', error);
+        });
+    };
+
+    reader.readAsText(file);
+}
+
+// 🔍 Ver2 시세 표시용 함수
+
+function showSiseVer2DataToggle(apartmentId) {
+    const dbRequest = indexedDB.open("hongbu", 3);
+
+    dbRequest.onsuccess = function(event) {
+        const db = event.target.result;
+
+        if (!db.objectStoreNames.contains("importSiseVer2")) return;
+
+        const transaction = db.transaction(["importSiseVer2"], "readonly");
+        const store = transaction.objectStore("importSiseVer2");
+
+        const getAllRequest = store.getAll();
+
+        getAllRequest.onsuccess = function(e) {
+            const allItems = e.target.result;
+            const matched = allItems.filter(
+                item => item.id === apartmentId && item.type === "시세1"
+            );
+
+            if (matched.length === 0) return;
+
+            const container = document.getElementById("apartmentInfo");
+
+            // ✅ 버튼 생성
+            const button = document.createElement("button");
+            button.textContent = "📊 시세지도Ver2 시세 보기";
+            button.style.marginTop = "10px";
+            button.style.padding = "6px 10px";
+            button.style.fontSize = "14px";
+            button.style.borderRadius = "4px";
+            button.style.cursor = "pointer";
+            button.style.border = "1px solid #aaa";
+            button.style.backgroundColor = "#f7f7f7";
+
+            container.appendChild(button);
+
+            // ✅ 클릭 시 표 렌더링
+            button.addEventListener("click", (e) => {
+				e.stopPropagation(); // ✅ 모달 닫힘 방지
+
+				matched.forEach(item => {
+					const parsed = item.text.trim().split("\n").map(row => row.trim()).filter(row => row);
+					if (parsed.length === 0) return;
+
+					const table = document.createElement("table");
+					table.style.marginTop = "10px";
+					table.innerHTML = `
+						<tr style="background: #eee;">
+							<th>평형</th>
+							<th>매매</th>
+							<th>전세</th>
+							<th>비고</th>
+						</tr>
+					`;
+
+					parsed.forEach(line => {
+						const [pyeong, maemae, jeonse, etc = ""] = line.split("\t");
+						const tr = document.createElement("tr");
+						tr.innerHTML = `
+							<td>${pyeong || ""}</td>
+							<td>${maemae || ""}</td>
+							<td>${jeonse || ""}</td>
+							<td>${etc || ""}</td>
+						`;
+						table.appendChild(tr);
+					});
+
+					const label = document.createElement("div");
+					label.textContent = "📊 시세지도 Ver2 데이터";
+					label.style.marginTop = "10px";
+					label.style.fontWeight = "bold";
+					label.style.color = "#333";
+
+					container.appendChild(label);
+					container.appendChild(table);
+				});
+
+				button.remove(); // 버튼 제거
+			});
+
+        };
+    };
+}
+
+
+
 /////////////////////////////////////////////////////////////////////////////////////////
 let deletedImages = []; // 삭제된 이미지 목록
 
@@ -3902,7 +4097,7 @@ async function saveNote(id) {
   const memo = document.getElementById("noteText").value;
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onerror = function (event) {
     console.error("❌ DB 열기 실패:", event.target.error);
@@ -3980,7 +4175,7 @@ function saveNote(id) {
   const memo = document.getElementById("noteText").value;
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4109,7 +4304,7 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 async function loadNote(id) {
 await initMemoIndexedDB()
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -4239,7 +4434,7 @@ function showImageModal(src) {
 }
 
 async function backupMemoDB() {
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4305,7 +4500,7 @@ async function backupMemoDB() {
 
 // ✅ 메모 백업
 async function backupMemoDB_OLD() {
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4388,7 +4583,7 @@ function restoreMemoDB() {
         }
       }
 
-      const request = indexedDB.open("hongbuMemo", 2);
+      const request = indexedDB.open("hongbuMemo", 3);
       request.onsuccess = function (event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4439,7 +4634,7 @@ function restoreMemoDB_OLD() {
                     return;
                 }
 
-                const request = indexedDB.open("hongbuMemo", 2);
+                const request = indexedDB.open("hongbuMemo", 3);
                 request.onsuccess = function (event) {
                     const db = event.target.result;
                     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4498,7 +4693,7 @@ document.getElementById("downloadImageButton").addEventListener("click", () => {
 function deleteMemoDB() {
   if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
   request.onsuccess = function (event) {
     const db = event.target.result;
     db.close(); // 👉 연결 먼저 닫기
@@ -4529,7 +4724,7 @@ function deleteMemoDB() {
 function deleteNote(id) {
   if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 2);
+  const request = indexedDB.open("hongbuMemo", 3);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4559,7 +4754,7 @@ async function getMemoFromIndexedDB(id) {
   return new Promise(async (resolve, reject) => {
     await initMemoIndexedDB();
 
-    const request = indexedDB.open("hongbuMemo", 2);
+    const request = indexedDB.open("hongbuMemo", 3);
     request.onerror = () => reject("DB 열기 실패");
 
     request.onsuccess = (event) => {
