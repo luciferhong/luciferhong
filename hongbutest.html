@@ -1686,58 +1686,62 @@ document.addEventListener("DOMContentLoaded", async () => {
 		}
 	});
 
-let longPressTimer = null;
+	let longPressTimeout;
+	let touchStartTime = null;
 
-function setupLongPressListener() {
-  const mapDiv = document.getElementById("map");
+	// ✅ PC (mousedown + mouseup)
+	window.map.addListener('mousedown', (e) => {
+	  touchStartTime = Date.now();
+	  longPressTimeout = setTimeout(() => {
+		handleLongPress(e.coord);
+	  }, 800); // 0.8초 이상 클릭하면 길게 누르기로 인식
+	});
 
-  // 모바일: 터치
-  mapDiv.addEventListener("touchstart", (e) => {
-    const touch = e.touches[0];
-    const offset = mapDiv.getBoundingClientRect();
-    const x = touch.clientX - offset.left;
-    const y = touch.clientY - offset.top;
+	window.map.addListener('mouseup', () => {
+	  clearTimeout(longPressTimeout);
+	});
 
-    longPressTimer = setTimeout(() => {
-      const coord = window.map.getProjection().fromPointToLatLng(
-        window.map.getProjection().fromCoordToPoint(window.map.getCenter()).add(
-          new naver.maps.Point((x - mapDiv.clientWidth / 2) / 256 * Math.pow(2, window.map.getZoom()),
-                               (y - mapDiv.clientHeight / 2) / 256 * Math.pow(2, window.map.getZoom()) * -1)
-        )
-      );
-      handleLongPress(coord);
-    }, 700); // 0.7초 이상 터치 시 인식
-  });
+	// ✅ 모바일 (touchstart + touchend + touchmove)
+	const mapContainer = document.getElementById("map"); // 반드시 존재해야 함
 
-  mapDiv.addEventListener("touchend", () => {
-    clearTimeout(longPressTimer);
-  });
+	mapContainer.addEventListener("touchstart", (e) => {
+	  if (!e.touches || e.touches.length > 1) return; // 두 손가락 이상은 무시
+	  const touch = e.touches[0];
+	  const clientX = touch.clientX;
+	  const clientY = touch.clientY;
 
-  // 데스크탑: 마우스
-  mapDiv.addEventListener("mousedown", (e) => {
-    const x = e.offsetX;
-    const y = e.offsetY;
+	  const projection = window.map.getProjection();
+	  const rect = mapContainer.getBoundingClientRect();
+	  const x = clientX - rect.left;
+	  const y = clientY - rect.top;
+	  const scale = Math.pow(2, window.map.getZoom());
+	  const centerPoint = projection.fromCoordToPoint(window.map.getCenter());
 
-    longPressTimer = setTimeout(() => {
-      const coord = window.map.getProjection().fromPointToLatLng(
-        window.map.getProjection().fromCoordToPoint(window.map.getCenter()).add(
-          new naver.maps.Point((x - mapDiv.clientWidth / 2) / 256 * Math.pow(2, window.map.getZoom()),
-                               (y - mapDiv.clientHeight / 2) / 256 * Math.pow(2, window.map.getZoom()) * -1)
-        )
-      );
-      handleLongPress(coord);
-    }, 700);
-  });
+	  const delta = new naver.maps.Point(
+		(x - mapContainer.clientWidth / 2) / 256 * scale,
+		(y - mapContainer.clientHeight / 2) / 256 * scale * -1
+	  );
 
-  mapDiv.addEventListener("mouseup", () => {
-    clearTimeout(longPressTimer);
-  });
-}
+	  const coord = projection.fromPointToCoord(centerPoint.add(delta));
 
+	  touchStartTime = Date.now();
+	  longPressTimeout = setTimeout(() => {
+		handleLongPress(coord);
+	  }, 800);
+	});
 
+	mapContainer.addEventListener("touchend", () => {
+	  clearTimeout(longPressTimeout);
+	});
+	mapContainer.addEventListener("touchmove", () => {
+	  clearTimeout(longPressTimeout);
+	});
 
 });
 
+
+
+	
 function handleLongPress(coord) {
   const fileInput = document.createElement("input");
   fileInput.type = "file";
@@ -1761,6 +1765,7 @@ function handleLongPress(coord) {
   fileInput.click();
   document.body.removeChild(fileInput);
 }
+
 
 function createImageMarker(coord, base64Image) {
   const markerElement = document.createElement("div");
