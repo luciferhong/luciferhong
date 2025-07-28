@@ -281,11 +281,12 @@ buttonContainer {
         <button id="startPolyline">경로 그리기</button>
 		<button id="undoLastPointButton">직전 취소</button>
         <button id="completePolyline">경로 그리기 완료</button>
+<button id="clearMap">경로 초기화</button>
         <button id="downloadGPX">GPX 다운로드</button>
         <button id="uploadGPX">GPX 불러오기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
-        <button id="clearMap">경로 초기화</button>
-
+        
+<button id="showInguBtn" style="display: block;">인구데이터</button>
 <div style="margin-top: 0px;">
    <!--  <button onclick="backupMemoDB()">🗂️ 메모 백업</button> -->
 <button onclick="window.open('memoBackup.html', '_blank')">📦 메모 백업</button>
@@ -301,10 +302,50 @@ buttonContainer {
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: none;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
+<div style="margin-top: 0px;">
 <button id="siseVer2ImportBtn" style="display: block;">시세지도Ver2에서 가져오기</button>
 <button id="siseVer2ResetBtn" style="display: block;">시세지도Ver2데이터 초기화</button>
+</div>
 
+<!-- ✅ 인구 데이터 팝업 버튼 -->
 
+<div id="inguModal" style="
+  display:none;
+  position:fixed;
+  top:60px;
+  left:50%;
+  transform:translateX(-50%);
+  width:90%;
+  max-width:800px;
+  max-height:80vh;
+  overflow:auto;
+  background:#fff;
+  border:4px solid #333;
+  padding:20px;
+  z-index:99999;
+">
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div><strong>데이터 기준일자: 2025-07-28</strong></div>
+    <button onclick="document.getElementById('inguModal').style.display='none'">닫기</button>
+  </div>
+  <div style="margin-top: 10px;">
+    <label>시도: <select id="sidoSelect"></select></label>
+    <label>시군구: <select id="sigunguSelect"></select></label>
+  </div>
+  <table border="1" style="width:100%; margin-top:10px; border-collapse:collapse;" id="inguTable">
+    <thead>
+      <tr>
+        <th onclick="sortTable('시도')">시도</th>
+        <th onclick="sortTable('시군구')">시군구</th>
+        <th onclick="sortTable('읍면동')">읍면동</th>
+        <th onclick="sortTable('총인구수')">총인구수</th>
+        <th onclick="sortTable('세대수')">세대수</th>
+        <th onclick="sortTable('세대당인구')">세대당 인구</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
 
     </div>
     <div id="locationButton" title="현재 위치">📍</div> <!-- ✅ 현재 위치 버튼 -->
@@ -4977,6 +5018,87 @@ document.head.appendChild(style);
         checkboxContainer.style.display = 'none';
     });
 };
+
+
+
+let inguData = [];
+let currentSort = { key: null, asc: true };
+
+document.getElementById("showInguBtn").addEventListener("click", async () => {
+  if (inguData.length === 0) {
+    const res = await fetch("ingu.txt");
+    const text = await res.text();
+    const lines = text.trim().split("\n");
+    const headers = lines[0].split("\t");
+    inguData = lines.slice(1).map(line => {
+      const [시도, 시군구, 읍면동, 총인구수, 세대수, 세대당인구] = line.split("\t");
+      return { 시도, 시군구, 읍면동, 총인구수, 세대수, 세대당인구 };
+    });
+
+    // 시도 옵션 설정
+    const sidoSet = new Set(inguData.map(d => d.시도).filter(Boolean));
+    const sidoSelect = document.getElementById("sidoSelect");
+    sidoSelect.innerHTML = [...sidoSet].map(s => `<option value="${s}" ${s === '서울특별시' ? 'selected' : ''}>${s}</option>`).join("");
+
+    sidoSelect.addEventListener("change", () => {
+      updateSigunguSelect();
+      updateTable();
+    });
+
+    document.getElementById("sigunguSelect").addEventListener("change", updateTable);
+
+    updateSigunguSelect();
+  }
+
+  document.getElementById("inguModal").style.display = "block";
+  updateTable();
+});
+
+function updateSigunguSelect() {
+  const selectedSido = document.getElementById("sidoSelect").value;
+  const sigunguSet = new Set(inguData.filter(d => d.시도 === selectedSido).map(d => d.시군구).filter(Boolean));
+  const sigunguSelect = document.getElementById("sigunguSelect");
+  sigunguSelect.innerHTML = [...sigunguSet].map(s => `<option value="${s}" ${s === '종로구' ? 'selected' : ''}>${s}</option>`).join("");
+}
+
+function updateTable() {
+  const sido = document.getElementById("sidoSelect").value;
+  const sigungu = document.getElementById("sigunguSelect").value;
+  let filtered = inguData.filter(d => (!sido || d.시도 === sido) && (!sigungu || d.시군구 === sigungu));
+
+  // 정렬 적용
+  if (currentSort.key) {
+    filtered.sort((a, b) => {
+      let valA = a[currentSort.key] || "";
+      let valB = b[currentSort.key] || "";
+      if (!isNaN(valA.replace(/,/g, '')) && !isNaN(valB.replace(/,/g, ''))) {
+        valA = parseFloat(valA.replace(/,/g, ''));
+        valB = parseFloat(valB.replace(/,/g, ''));
+      }
+      return currentSort.asc ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
+    });
+  }
+
+  const tbody = document.querySelector("#inguTable tbody");
+  tbody.innerHTML = filtered.map(d => `
+    <tr>
+      <td>${d.시도}</td><td>${d.시군구 || ""}</td><td>${d.읍면동 || ""}</td>
+      <td style="text-align:right">${d.총인구수}</td><td style="text-align:right">${d.세대수}</td><td style="text-align:right">${d.세대당인구}</td>
+    </tr>
+  `).join("");
+}
+
+function sortTable(key) {
+  if (currentSort.key === key) {
+    currentSort.asc = !currentSort.asc;
+  } else {
+    currentSort.key = key;
+    currentSort.asc = true;
+  }
+  updateTable();
+}
+
+
 
 </script>
 
