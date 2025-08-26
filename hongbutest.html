@@ -459,7 +459,7 @@ let imageModalShowYn = false;
 					const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
 					if (!confirmReset) return;
 
-					const request = indexedDB.open("hongbu", 3);
+					const request = indexedDB.open("hongbu", 5);
 					request.onsuccess = function(event) {
 						const db = event.target.result;
 						const transaction = db.transaction(["apartments"], "readwrite");
@@ -485,7 +485,7 @@ let imageModalShowYn = false;
 					const confirmReset = confirm("⚠️ 시세지도Ver2 데이터를 초기화하면 복구할 수 없습니다. 시세지도Ver2에서 백업을 권장드립니다. \n계속하시겠습니까?");
 					if (!confirmReset) return;
 
-					const request = indexedDB.open("hongbu", 3);
+					const request = indexedDB.open("hongbu", 5);
 					request.onsuccess = function(event) {
 						const db = event.target.result;
 						const transaction = db.transaction(["importSiseVer2"], "readwrite");
@@ -844,6 +844,20 @@ let imageModalShowYn = false;
 
 		window.map = new naver.maps.Map("map", mapOptions);
 
+		// 🔽 저장된 지도 위치 복원
+		try {
+		  const pos = await getHongbuSetting("mapPosition");
+		  if (pos && pos.lat && pos.lng) {
+			window.map.setCenter(new naver.maps.LatLng(pos.lat, pos.lng));
+			if (typeof pos.zoom === "number") {
+			  window.map.setZoom(pos.zoom);
+			}
+		  }
+		} catch (err) {
+		  console.warn("지도 위치 복원 실패:", err);
+		}
+
+
 		apartmentMarkers = [];
 			// 지도 이벤트 등록
 			naver.maps.Event.addListener(window.map, "idle", () => {
@@ -898,23 +912,7 @@ let imageModalShowYn = false;
 			center: new naver.maps.LatLng(37.5665, 126.9780),
 			zoom: 15
 		});*/
-		const useBlank = document.getElementById("toggleBlankMap")?.checked;
-		createMap(useBlank);
-
-
-		// ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
-		//new MapHandler(window.map);
-
-		// ✅ 아파트 데이터 불러오기
-		await loadApartments();
-
-		// ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-		naver.maps.Event.addListener(window.map, "idle", () => {
-			const bounds = window.map.getBounds();
-			updateMarkers(bounds);
-		});
-
-		console.log("✅ 네이버 지도 초기화 완료.");
+		
 	});
 
 
@@ -1658,12 +1656,40 @@ document.addEventListener("DOMContentLoaded", async () => {
         alert("⚠️ 카카오톡 인앱 브라우저에서 실행 중입니다.\n\n저장 기능이 정상 동작하지 않습니다.\n크롬, 웨일, 삼성인터넷 등 외부 브라우저로 열어주세요.");
     }
 
+await initIndexedDB();
+
+		const useBlank = document.getElementById("toggleBlankMap")?.checked;
+		createMap(useBlank);
+
+
+		// ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
+		//new MapHandler(window.map);
+
+		// ✅ 아파트 데이터 불러오기
+		
+
+		// ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
+		naver.maps.Event.addListener(window.map, "idle", () => {
+			const bounds = window.map.getBounds();
+			updateMarkers(bounds);
+			const center = window.map.getCenter();
+			const zoom   = window.map.getZoom();
+			setHongbuSetting("mapPosition", { lat: center.lat(), lng: center.lng(), zoom })
+			  .catch(console.warn);
+
+		});
+
+		console.log("✅ 네이버 지도 초기화 완료.");
+
+
+
+await loadApartments();
     await loadSchools();
     await loadMiddleSchools();
 	await loadApartmentsDetail();
     await loadFacilities();
     await loadStarbucks();
-	await initIndexedDB();
+	
 	await initMemoIndexedDB();
 	await loadApartments();
 	await findWay();
@@ -2490,7 +2516,7 @@ document.getElementById("toggleStarbucks").addEventListener("change", () => {
 
 
 ////////////////////////// 이동 이벤트 //////////////////////////
-var activeMarker = null; // ✅ 현재 선택된 마커
+let activeMarker = null; // ✅ 현재 선택된 마커
 var activeMarkerElement = null; // ✅ 현재 선택된 마커의 요소 (테두리 변경용)
 
 // ✅ 🔥 마커 스타일 업데이트 함수 (선택된 경우 강조)
@@ -2614,7 +2640,7 @@ var activeMarkerSet = null;
 // ✅ IndexedDB 초기화
 function initIndexedDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 3);
+        const request = indexedDB.open("hongbu", 5);
 
         request.onupgradeneeded = function(event) {
             const db = event.target.result;
@@ -2627,8 +2653,13 @@ function initIndexedDB() {
 			if (!db.objectStoreNames.contains('importSiseVer2')) {
                 const store = db.createObjectStore('importSiseVer2', { keyPath: 'idType' });
                 store.createIndex('id', 'id', { unique: false });
-                console.log('✅ IndexedDB 업그레이드 완료: apartments store 생성됨');
-            }
+                console.log('✅ IndexedDB 업그레이드 완료: importSiseVer2 store 생성됨');
+            } // 🔽🔽🔽 여기가 추가된 부분
+			if (!db.objectStoreNames.contains('settings')) {
+				db.createObjectStore('settings'); // keyPath 없이 key-value 형태로 사용
+				console.log('✅ IndexedDB 업그레이드 완료: settings store 생성됨');
+			}
+			  // 🔼🔼🔼
         };
 
         request.onsuccess = function(event) {
@@ -2644,7 +2675,7 @@ function initIndexedDB() {
 }
 function initMemoIndexedDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbuMemo", 3);
+    const request = indexedDB.open("hongbuMemo", 4);
 
     request.onupgradeneeded = function (event) {
       const db = event.target.result;
@@ -2670,9 +2701,43 @@ function initMemoIndexedDB() {
   });
 }
 
+
+// ✅ hongbu.settings 저장
+function setHongbuSetting(key, value) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("hongbu", 5);
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const tx = db.transaction(["settings"], "readwrite");
+      const store = tx.objectStore("settings");
+      store.put(value, key);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = (e) => { db.close(); reject(e); };
+    };
+    request.onerror = (e) => reject(e);
+  });
+}
+
+// ✅ hongbu.settings 읽기
+function getHongbuSetting(key) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("hongbu", 5);
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const tx = db.transaction(["settings"], "readonly");
+      const store = tx.objectStore("settings");
+      const getReq = store.get(key);
+      getReq.onsuccess = () => { resolve(getReq.result); };
+      getReq.onerror = (e) => { reject(e); };
+    };
+    request.onerror = (e) => reject(e);
+  });
+}
+
+
 // ✅ IndexedDB 저장 함수
 function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
-    const request = indexedDB.open("hongbu", 3);
+    const request = indexedDB.open("hongbu", 5);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -2693,7 +2758,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 // ✅ IndexedDB에서 데이터 가져오기
 function getFromIndexedDB(id, type) {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 3);
+        const request = indexedDB.open("hongbu", 5);
 
         request.onerror = (event) => {
             reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
@@ -3286,8 +3351,8 @@ function handleMouseUp() {
 }
 function handleKeyDown(event) {
     const activeElement = document.activeElement;
-console.log("activeElement :")
-console.log(activeElement)
+console.log("activeMarker :")
+console.log(activeMarker)
 
 	// ✅ case 2: 지도 마커 이동용 WASD
 
@@ -3729,7 +3794,7 @@ resetButton.textContent = ' 초기화 ';
 resetButton.style.marginRight = '10px';
 resetButton.onclick = () => {
     // ✅ IndexedDB에서 해당 데이터 삭제
-    const request = indexedDB.open("hongbu", 3);
+    const request = indexedDB.open("hongbu", 5);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -4065,7 +4130,7 @@ function importFromSiseVer2JSON(file) {
 // 🔍 Ver2 시세 표시용 함수
 
 function showSiseVer2DataToggle(apartmentId) {
-    const dbRequest = indexedDB.open("hongbu", 3);
+    const dbRequest = indexedDB.open("hongbu", 5);
 
     dbRequest.onsuccess = function(event) {
         const db = event.target.result;
@@ -4158,7 +4223,7 @@ async function saveNote(id) {
   const memo = document.getElementById("noteText").value;
   const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  const request = indexedDB.open("hongbuMemo", 3);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onerror = function (event) {
     console.error("❌ DB 열기 실패:", event.target.error);
@@ -4230,51 +4295,6 @@ async function saveNote(id) {
 
   };
 }
-
-/*
-function saveNote(id) {
-  const memo = document.getElementById("noteText").value;
-  const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
-
-  const request = indexedDB.open("hongbuMemo", 3);
-  request.onsuccess = function (event) {
-    const db = event.target.result;
-    const transaction = db.transaction(["apartmentNotes"], "readwrite");
-    const store = transaction.objectStore("apartmentNotes");
-
-    const getRequest = store.get(id);
-    getRequest.onsuccess = function () {
-      let existing = getRequest.result || { id, memo: "", images: [] };
-
-      existing.images = images;
-      existing.memo = memo;
-
-      store.put(existing);
-
-      //alert("저장되었습니다!");
-      loadNote(id);
-
-      // ✅ 마커 갱신 처리
-      const marker = apartmentMarkers[id];
-      if (marker) {
-        marker.setMap(null);  // 기존 마커 제거
-        delete apartmentMarkers[id];  // 캐시 삭제
-
-        const apartment = apartmentData.find(a => String(a.id) === String(id));
-        if (apartment) {
-          const isSiseMap = document.getElementById("toggleSiseMap")?.checked;
-          const newMarker = isSiseMap
-            ? renderSiseMapMarker(apartment)
-            : createDefaultMarker(apartment);
-          newMarker.__siseMap = isSiseMap;
-          apartmentMarkers[id] = newMarker;
-        }
-      }
-    };
-  };
-}
-*/
-
 
 
 function base64ToBlobUrl(base64) {
@@ -4365,7 +4385,7 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 async function loadNote(id) {
 await initMemoIndexedDB()
-  const request = indexedDB.open("hongbuMemo", 3);
+  const request = indexedDB.open("hongbuMemo", 4);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -4495,7 +4515,7 @@ function showImageModal(src) {
 }
 
 async function backupMemoDB() {
-  const request = indexedDB.open("hongbuMemo", 3);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4561,7 +4581,7 @@ async function backupMemoDB() {
 
 // ✅ 메모 백업
 async function backupMemoDB_OLD() {
-  const request = indexedDB.open("hongbuMemo", 3);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4644,7 +4664,7 @@ function restoreMemoDB() {
         }
       }
 
-      const request = indexedDB.open("hongbuMemo", 3);
+      const request = indexedDB.open("hongbuMemo", 4);
       request.onsuccess = function (event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4695,7 +4715,7 @@ function restoreMemoDB_OLD() {
                     return;
                 }
 
-                const request = indexedDB.open("hongbuMemo", 3);
+                const request = indexedDB.open("hongbuMemo", 4);
                 request.onsuccess = function (event) {
                     const db = event.target.result;
                     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -4754,7 +4774,7 @@ document.getElementById("downloadImageButton").addEventListener("click", () => {
 function deleteMemoDB() {
   if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 3);
+  const request = indexedDB.open("hongbuMemo", 4);
   request.onsuccess = function (event) {
     const db = event.target.result;
     db.close(); // 👉 연결 먼저 닫기
@@ -4785,7 +4805,7 @@ function deleteMemoDB() {
 function deleteNote(id) {
   if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 3);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -4815,7 +4835,7 @@ async function getMemoFromIndexedDB(id) {
   return new Promise(async (resolve, reject) => {
     await initMemoIndexedDB();
 
-    const request = indexedDB.open("hongbuMemo", 3);
+    const request = indexedDB.open("hongbuMemo", 4);
     request.onerror = () => reject("DB 열기 실패");
 
     request.onsuccess = (event) => {
