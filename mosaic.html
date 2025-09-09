@@ -14,13 +14,13 @@
       padding: 0;
     }
     #canvas {
-	  border: 1px solid #ccc;
-	  max-width: 100vw;
-	  max-height: 100vh;
-	  width: auto;
-	  height: auto;
-	  margin-top: 10px;
-	}
+      border: 1px solid #ccc;
+      max-width: 100vw;
+      max-height: 100vh;
+      width: auto;
+      height: auto;
+      margin-top: 10px;
+    }
 
     .controls {
       display: flex;
@@ -57,13 +57,13 @@
     </div>
     <div class="button-group">
       <button id="blurBtn">블러 처리</button>
-      <button id="downloadBtn">다운로드</button>
+      <button id="copyBtn" disabled>그림 복사</button>
+      <button id="downloadBtn" disabled>그림 다운로드</button>
       <button id="clearBtn">그림 삭제</button>
       <button id="resetBtn">원복</button>
       <button id="rotateBtn">90도 회전</button>
     </div>
     <p>파일선택 또는 Ctrl+V로 이미지를 붙여넣으세요.<br>블러처리를 여러번 누르면 중첩되어 적용됩니다</p>
-	
   </div>
   <canvas id="canvas"></canvas>
 
@@ -71,17 +71,28 @@
   <script>
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
+
     const upload = document.getElementById('upload');
     const blurBtn = document.getElementById('blurBtn');
+    const copyBtn = document.getElementById('copyBtn');
     const downloadBtn = document.getElementById('downloadBtn');
     const clearBtn = document.getElementById('clearBtn');
     const resetBtn = document.getElementById('resetBtn');
     const rotateBtn = document.getElementById('rotateBtn');
+
     let img = new Image();
     let blurLevel = parseInt(document.querySelector('input[name="blurLevel"]:checked').value);
     let accumulatedBlurLevel = 0; // 누적된 블러 레벨
     let originalImageData = null;
     let rotationAngle = 0;
+    let hasImage = false; // 현재 캔버스에 그림 존재 여부
+
+    // 버튼 상태 업데이트
+    function updateButtons() {
+      copyBtn.disabled = !hasImage;
+      downloadBtn.disabled = !hasImage;
+    }
+    updateButtons(); // 초기 비활성화
 
     // 사진 선택 이벤트
     upload.addEventListener('change', (event) => {
@@ -92,10 +103,12 @@
           img.src = e.target.result;
           img.onload = () => {
             EXIF.getData(file, function() {
-              const orientation = EXIF.getTag(this, "Orientation") || 1;
+              const orientation = EXIF.getTag(this, 'Orientation') || 1;
               drawImageWithOrientation(img, orientation);
               originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
               accumulatedBlurLevel = 0; // 이미지 업로드 시 초기화
+              hasImage = true; // 그림 존재
+              updateButtons();
             });
           };
         };
@@ -108,7 +121,7 @@
       const items = event.clipboardData && event.clipboardData.items;
       if (items) {
         for (let item of items) {
-          if (item.type.indexOf("image") !== -1) {
+          if (item.type.indexOf('image') !== -1) {
             const blob = item.getAsFile();
             const reader = new FileReader();
             reader.onload = (e) => {
@@ -117,6 +130,8 @@
                 drawImageWithOrientation(img, 1);
                 originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                 accumulatedBlurLevel = 0; // 이미지 붙여넣기 시 초기화
+                hasImage = true; // 그림 존재
+                updateButtons();
               };
             };
             reader.readAsDataURL(blob);
@@ -154,7 +169,7 @@
     // 블러 버튼 클릭 이벤트
     blurBtn.addEventListener('click', applyBlur);
 
-    // 다운로드 버튼 클릭 이벤트
+    // 다운로드 버튼 클릭 이벤트 (이미지 없으면 버튼 자체가 비활성화됨)
     downloadBtn.addEventListener('click', () => {
       const link = document.createElement('a');
       link.href = canvas.toDataURL('image/png');
@@ -162,9 +177,35 @@
       link.click();
     });
 
+    // 클립보드 복사 버튼 클릭 이벤트 (이미지 없으면 버튼 자체가 비활성화됨)
+    copyBtn.addEventListener('click', async () => {
+      if (!('clipboard' in navigator) || typeof ClipboardItem === 'undefined') {
+        alert('이 브라우저에서는 이미지 클립보드 복사가 지원되지 않습니다. (HTTPS 환경 권장)');
+        return;
+      }
+      try {
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+        if (!blob) throw new Error('캔버스 Blob 생성 실패');
+        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+        //alert('캔버스 이미지가 클립보드로 복사되었습니다!\n(붙여넣기: 카톡/디스코드/포토샵 등)');
+      } catch (err) {
+        console.error(err);
+        // 폴백: Data URL 텍스트 복사
+        try {
+          const dataUrl = canvas.toDataURL('image/png');
+          await navigator.clipboard.writeText(dataUrl);
+          alert('이미지 대신 데이터 URL을 복사했습니다. 일부 앱에서는 이미지로 인식되지 않을 수 있습니다.');
+        } catch (e2) {
+          alert('복사에 실패했습니다. HTTPS(또는 localhost) 환경에서 다시 시도해주세요.');
+        }
+      }
+    });
+
     // 그림 삭제 버튼 클릭 이벤트
     clearBtn.addEventListener('click', () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      hasImage = false;
+      updateButtons();
     });
 
     // 원복 버튼 클릭 이벤트
@@ -176,11 +217,14 @@
         canvas.height = img.height;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.putImageData(originalImageData, 0, 0);
+        hasImage = true;
+        updateButtons();
       }
     });
 
     // 90도 회전 버튼 클릭 이벤트
     rotateBtn.addEventListener('click', () => {
+      if (!hasImage) return;
       rotationAngle = (rotationAngle + 90) % 360;
       rotateCanvas(rotationAngle);
     });
@@ -210,31 +254,30 @@
       }
     }
 
-  // 화면 크기에 맞춰 초기 캔버스 크기 설정
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
-function drawImageWithOrientation(image, orientation) {
-  // 이미지 원본 크기에 맞게 캔버스 크기를 설정
-  canvas.width = orientation > 4 ? image.height : image.width;
-  canvas.height = orientation > 4 ? image.width : image.height;
+    // 화면 크기에 맞춰 초기 캔버스 크기 설정
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
 
-  ctx.save();
-  if (orientation === 3) {
-    ctx.translate(canvas.width, canvas.height);
-    ctx.rotate(Math.PI);
-  } else if (orientation === 6) {
-    ctx.translate(canvas.width, 0);
-    ctx.rotate(Math.PI / 2);
-  } else if (orientation === 8) {
-    ctx.translate(0, canvas.height);
-    ctx.rotate(-Math.PI / 2);
-  }
-  // 이미지 원본 크기에 맞춰 그리기
-  ctx.drawImage(image, 0, 0, image.width, image.height);
-  ctx.restore();
-}
+    function drawImageWithOrientation(image, orientation) {
+      // 이미지 원본 크기에 맞게 캔버스 크기를 설정
+      canvas.width = orientation > 4 ? image.height : image.width;
+      canvas.height = orientation > 4 ? image.width : image.height;
 
-
+      ctx.save();
+      if (orientation === 3) {
+        ctx.translate(canvas.width, canvas.height);
+        ctx.rotate(Math.PI);
+      } else if (orientation === 6) {
+        ctx.translate(canvas.width, 0);
+        ctx.rotate(Math.PI / 2);
+      } else if (orientation === 8) {
+        ctx.translate(0, canvas.height);
+        ctx.rotate(-Math.PI / 2);
+      }
+      // 이미지 원본 크기에 맞춰 그리기
+      ctx.drawImage(image, 0, 0, image.width, image.height);
+      ctx.restore();
+    }
   </script>
 </body>
 </html>
