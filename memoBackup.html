@@ -1,122 +1,320 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <title>홍부 메모 백업</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <title>홍부 메모 백업 (지역 필터 · 자동 apt.json)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
-    body {
-      font-family: sans-serif;
-      padding: 20px;
-      background: #f5f5f5;
-    }
-    h1 {
-      color: #333;
-    }
-    button {
-      padding: 10px 16px;
-      background-color: #4A90E2;
-      color: white;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 16px;
-    }
-    button:hover {
-      background-color: #357ABD;
-    }
-    .part-button {
-      display: block;
-      margin: 10px 0;
-    }
+    :root { --bg:#f7f7f9; --card:#fff; --text:#222; --muted:#666; --brand:#4A90E2; --brand2:#357ABD; }
+    html, body { height: 100%; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, 'Noto Sans', Arial, sans-serif; margin:0; padding:24px; background:var(--bg); color:var(--text); }
+    h1 { margin:0 0 14px; font-size:24px; }
+    p  { margin:6px 0 14px; color:var(--muted) }
+    .card { background:var(--card); border:1px solid #e9e9ef; border-radius:12px; padding:16px; box-shadow: 0 2px 8px rgba(0,0,0,.04); }
+    .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    label { font-size:14px; color:#333; }
+    select, button, input[type="file"] { font-size:14px; border-radius:8px; border:1px solid #d7d7de; padding:8px 10px; background:#fff; }
+    select { min-width: 180px; }
+    button { background:var(--brand); color:#fff; border:none; cursor:pointer; padding:10px 16px; font-weight:600; }
+    button:hover { background:var(--brand2); }
+    button.secondary { background:#fff; color:#333; border:1px solid #d7d7de; }
+    .muted { color:var(--muted); font-size:13px; }
+    .counter { font-size:13px; color:#333; margin-left:auto; }
+    .downloads { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+    .divider { height:1px; background:#eee; margin:12px 0; }
   </style>
 </head>
 <body>
   <h1>📦 홍부 메모 백업</h1>
-  <p>아래 버튼을 눌러 메모 데이터를 백업하세요. 데이터가 많을 경우 여러 PART로 나뉘어 다운로드됩니다.</p>
-  <p>백업 시작 버튼을 누른 후 몇 초 정도 시간이 소요될 수 있습니다</p>
-  <button onclick="backupMemoDB()">✅ 백업 시작</button>
+  <p>시도/시군구를 먼저 선택하세요. <span class="muted">목록에는 "메모가 존재하는 지역"만 표시됩니다.</span></p>
 
-  <div id="downloadContainer"></div>
+  <div class="card" id="filters">
+    <div class="row" style="gap:12px">
+      <label>시도
+        <select id="sidoFilter"><option value="">전체</option></select>
+      </label>
+      <label>시군구
+        <select id="sigunguFilter" disabled><option value="">전체</option></select>
+      </label>
+      <button id="refreshRegions" class="secondary">🔄 지역 새로고침</button>
+      <label class="secondary" style="display:flex;align-items:center;gap:8px">
+        <input type="file" id="aptFile" accept="application/json,.json" />
+        <span class="muted">apt.json 불러오기(수동)</span>
+      </label>
+      <span id="aptStatus" class="muted">(아파트 데이터 미로딩)</span>
+      <span class="counter">선택된 메모: <b id="selCount">0</b>건</span>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="row">
+      <button id="backupBtn">⬇️ 선택 메모 백업</button>
+      <span class="muted">대량일 경우 여러 PART로 나뉘어 생성됩니다.</span>
+    </div>
+    <div class="divider"></div>
+    <div id="downloadContainer" class="downloads"></div>
+  </div>
 
   <script>
-    async function backupMemoDB() {
-      const request = indexedDB.open("hongbuMemo", 4);
+    // === IndexedDB 설정 ===
+    const DB_NAME = 'hongbuMemo';
+    const DB_VERSION = 4; // 기존 memoBackup.html과 동일 버전
+    const STORE_NOTES = 'apartmentNotes';
 
-      request.onsuccess = function (event) {
-        const db = event.target.result;
-        const transaction = db.transaction(["apartmentNotes"], "readonly");
-        const store = transaction.objectStore("apartmentNotes");
+    // === UI 요소 ===
+    const els = {
+      sido: document.getElementById('sidoFilter'),
+      sigungu: document.getElementById('sigunguFilter'),
+      refresh: document.getElementById('refreshRegions'),
+      aptFile: document.getElementById('aptFile'),
+      aptStatus: document.getElementById('aptStatus'),
+      backup: document.getElementById('backupBtn'),
+      selCount: document.getElementById('selCount'),
+      downloads: document.getElementById('downloadContainer'),
+    };
 
-        const chunkSize = 10;
-        let chunk = [];
-        let part = 1;
+    // === 유틸 ===
+    const aptIndex = new Map(); // aptId -> {sido, sidoNm, sigungu, sigunguNm}
+    function setAptStatus(text){ if(els.aptStatus) els.aptStatus.textContent = text; }
 
-        const now = new Date();
-        const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-        const timestamp = koreaTime.toISOString()
-          .replace(/T/, "_")
-          .replace(/:/g, "-")
-          .replace(/\..+/, "");
+    function fillOptions(selectEl, items) {
+      const prev = selectEl.value;
+      selectEl.innerHTML = '';
+      const optAll = document.createElement('option');
+      optAll.value = '';
+      optAll.textContent = '전체';
+      selectEl.appendChild(optAll);
+      (items || []).forEach(({ value, label }) => {
+        const opt = document.createElement('option');
+        opt.value = String(value ?? '');
+        opt.textContent = String(label ?? value ?? '');
+        selectEl.appendChild(opt);
+      });
+      if ([...selectEl.options].some(o => o.value === prev)) selectEl.value = prev;
+    }
 
-        const container = document.getElementById("downloadContainer");
-        container.innerHTML = "";
-
-        const cursorRequest = store.openCursor();
-
-        cursorRequest.onsuccess = function (event) {
-          const cursor = event.target.result;
-          if (cursor) {
-            chunk.push(cursor.value);
-            if (chunk.length === chunkSize) {
-              createDownloadButton(chunk, part++, timestamp);
-              chunk = [];
-            }
-            cursor.continue();
-          } else {
-            if (chunk.length > 0) {
-              createDownloadButton(chunk, part++, timestamp);
-            }
-            container.insertAdjacentHTML("afterbegin", `<h3>📁 총 ${part - 1}개의 백업 파일</h3>`);
-            alert("✅ 백업이 준비되었습니다. 각 PART를 눌러 수동으로 다운로드하세요.");
-            db.close();
-          }
+    // === apt.json 로딩 ===
+    async function loadAptJsonFromFile(file){
+      try{
+        const text = await file.text();
+        const data = JSON.parse(text);
+        ingestAptData(data);
+        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (파일)`);
+      }catch(err){
+        console.error(err);
+        setAptStatus('apt.json 파싱 실패');
+        alert('apt.json을 읽는 중 오류가 발생했습니다.');
+      }
+    }
+    async function loadAptJsonFromSamePath(){
+      try{
+        const res = await fetch('apt.json', { cache: 'no-store' });
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const data = await res.json();
+        ingestAptData(data);
+        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (자동)`);
+        return true;
+      }catch(err){
+        console.warn('apt.json 자동 로드 실패:', err);
+        setAptStatus('(아파트 데이터 미로딩: apt.json을 업로드하세요)');
+        return false;
+      }
+    }
+    function ingestAptData(data){
+      aptIndex.clear();
+      const arr = Array.isArray(data) ? data : (
+        Array.isArray(data?.apartments) ? data.apartments :
+        Array.isArray(data?.data) ? data.data : []
+      );
+      arr.forEach(a => {
+        const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+        if(!id) return;
+        const entry = {
+          sido: String(a.sido ?? a.sidoCode ?? '').trim(),
+          sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+          sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
+          sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
         };
+        aptIndex.set(id, entry);
+      });
+    }
 
-        cursorRequest.onerror = function () {
-          alert("❌ 백업 중 오류 발생 (cursor 실패)");
-          db.close();
+    // === DB ===
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror = () => reject(new Error('DB 열기 실패'));
+      });
+    }
+    async function getAllNotes() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction([STORE_NOTES], 'readonly');
+        const st = tx.objectStore(STORE_NOTES);
+        const out = [];
+        const req = st.openCursor();
+        req.onsuccess = e => {
+          const cur = e.target.result;
+          if (cur) { out.push(cur.value); cur.continue(); }
+          else { resolve(out); db.close(); }
         };
-      };
+        req.onerror = () => { reject(new Error('cursor 실패')); db.close(); };
+      });
+    }
 
-      request.onerror = function () {
-        alert("❌ DB 열기 실패");
+    // === 지역 파생 ===
+    function regionFromNoteViaApt(note){
+      const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+      if(!id) return null;
+      const a = aptIndex.get(id);
+      if(!a) return null;
+      return {
+        sidoCode: a.sido || '',
+        sidoName: a.sidoNm || a.sido || '',
+        sigunguCode: a.sigungu || '',
+        sigunguName: a.sigunguNm || a.sigungu || '',
       };
     }
 
-    function createDownloadButton(dataChunk, partNumber, timestamp) {
-      const json = JSON.stringify(dataChunk, null, 2);
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
+    // === 필터 구성 ===
+    async function buildRegionFiltersFromNotes() {
+      const notes = await getAllNotes();
+      if(aptIndex.size === 0){
+        // apt.json 미로딩 상태
+        els.sigungu.disabled = true;
+        fillOptions(els.sido, []);
+        await updateSelectedCount(notes);
+        return;
+      }
 
-      const button = document.createElement("button");
-      button.textContent = `⬇️ PART ${partNumber} 다운로드`;
-      button.className = "part-button";
-      button.onclick = () => {
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `홍부_메모백업_${timestamp}_part${partNumber}.json`;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => {
-          URL.revokeObjectURL(url);
-          a.remove();
-        }, 1000);
-      };
+      const bySido = new Map(); // sidoCode -> { name, sigungu: Map(sigCode -> {name,count}), count }
 
-      document.getElementById("downloadContainer").appendChild(button);
+      notes.forEach(n => {
+		if (!hasMemoContent(n)) return;  // ✅ 비어있는 메모 제외
+        const r = regionFromNoteViaApt(n);
+        if (!r || !r.sidoCode) return;
+        if (!bySido.has(r.sidoCode)) bySido.set(r.sidoCode, { name: r.sidoName || r.sidoCode, sigungu: new Map(), count: 0 });
+        const node = bySido.get(r.sidoCode);
+        node.count++;
+        if (r.sigunguCode) {
+          const cur = node.sigungu.get(r.sigunguCode) || { name: r.sigunguName || r.sigunguCode, count: 0 };
+          cur.count++;
+          node.sigungu.set(r.sigunguCode, cur);
+        }
+      });
+
+      const sidoItems = Array.from(bySido.entries())
+        .map(([code, { name, count }]) => ({ value: code, label: `${name} (${count}건)` }))
+        .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+      fillOptions(els.sido, sidoItems);
+
+      const selSido = (els.sido.value || '').trim();
+      if (selSido && bySido.has(selSido)) {
+        const sigItems = Array.from(bySido.get(selSido).sigungu.entries())
+          .map(([code, obj]) => ({ value: code, label: `${obj.name} (${obj.count}건)` }))
+          .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+        fillOptions(els.sigungu, sigItems);
+        els.sigungu.disabled = false;
+      } else {
+        fillOptions(els.sigungu, []);
+        els.sigungu.disabled = true;
+      }
+
+      await updateSelectedCount(notes);
     }
+
+	// ✅ 메모/사진이 하나도 없으면 false
+	function hasMemoContent(n) {
+	  const memoText = String(n?.memo ?? '')
+		.replace(/<[^>]*>/g, '')   // HTML 태그 제거
+		.replace(/&nbsp;/gi, ' ')  // nbsp 제거
+		.trim();
+	  const imgs = Array.isArray(n?.images) ? n.images : [];
+	  return memoText.length > 0 || imgs.length > 0;
+	}
+
+
+    function noteMatchesSelection(note){
+	  if (!hasMemoContent(note)) return false;  // ✅ 비어있는 메모 제외
+      const r = regionFromNoteViaApt(note) || {};
+      const sSel = (els.sido.value || '').trim();
+      const gSel = (els.sigungu.value || '').trim();
+      if (sSel && String(r.sidoCode || '').trim() !== sSel) return false;
+      if (gSel && String(r.sigunguCode || '').trim() !== gSel) return false;
+      return true;
+    }
+
+    async function updateSelectedCount(preloaded){
+      const notes = preloaded || await getAllNotes();
+      const cnt = notes.reduce((acc, n) => acc + (noteMatchesSelection(n) ? 1 : 0), 0);
+      els.selCount.textContent = String(cnt);
+      return cnt;
+    }
+
+    // === 백업 ===
+    async function backupSelectedNotes(){
+      const notes = await getAllNotes();
+      const filtered = notes.filter(noteMatchesSelection);
+
+      els.downloads.innerHTML = '';
+      if(!filtered.length){
+        alert('선택한 지역에 해당하는 메모가 없습니다.');
+        return;
+      }
+      const chunkSize = 200;
+      let part = 1;
+      const now = new Date();
+      const koreaTime = new Date(now.getTime() + 9*60*60*1000);
+      const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
+
+      for(let i=0;i<filtered.length;i+=chunkSize){
+        const chunk = filtered.slice(i, i+chunkSize);
+        const json = JSON.stringify(chunk, null, 2);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const btn = document.createElement('button');
+        btn.textContent = `⬇️ PART ${part} 다운로드`;
+        btn.className = 'secondary';
+        const filePart = part;
+        btn.onclick = () => {
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `홍부_메모백업_${ts}_part${filePart}.json`;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 800);
+        };
+        els.downloads.appendChild(btn);
+        part++;
+      }
+
+      const h = document.createElement('div');
+      h.innerHTML = `<h3>📁 총 ${part-1}개의 백업 파일 · 메모 ${filtered.length}건</h3>`;
+      els.downloads.prepend(h);
+    }
+
+    // === 이벤트 ===
+    els.refresh.addEventListener('click', async ()=>{
+      await loadAptJsonFromSamePath();
+      await buildRegionFiltersFromNotes();
+    });
+    els.aptFile.addEventListener('change', async (e)=>{
+      const f = e.target.files && e.target.files[0];
+      if(!f) return;
+      await loadAptJsonFromFile(f);
+      await buildRegionFiltersFromNotes();
+    });
+    els.sido.addEventListener('change', buildRegionFiltersFromNotes);
+    els.sigungu.addEventListener('change', ()=>updateSelectedCount());
+    els.backup.addEventListener('click', backupSelectedNotes);
+
+    // === 초기 ===
+    (async function init(){
+      setAptStatus('(아파트 데이터 자동 로드 시도 중)');
+      await loadAptJsonFromSamePath();
+      await buildRegionFiltersFromNotes();
+    })();
   </script>
 </body>
 </html>
-
