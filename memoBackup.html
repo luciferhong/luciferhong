@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>홍부 메모 백업 (지역 필터 · 자동 apt.json)</title>
+  <title>홍부 메모 백업 (모바일 메모리 최적화 · 지역 필터)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root { --bg:#f7f7f9; --card:#fff; --text:#222; --muted:#666; --brand:#4A90E2; --brand2:#357ABD; }
@@ -26,7 +26,7 @@
 </head>
 <body>
   <h1>📦 홍부 메모 백업</h1>
-  <p>시도/시군구를 먼저 선택하세요. <span class="muted">목록에는 "메모가 존재하는 지역"만 표시됩니다.</span></p>
+  <p>시도/시군구를 먼저 선택하세요. <span class="muted">목록에는 “메모/사진이 실제로 존재하는 지역”만 표시됩니다.</span></p>
 
   <div class="card" id="filters">
     <div class="row" style="gap:12px">
@@ -41,7 +41,7 @@
         <input type="file" id="aptFile" accept="application/json,.json" />
         <span class="muted">apt.json 불러오기(수동)</span>
       </label>
-      <span id="aptStatus" class="muted">(아파트 데이터 미로딩)</span>
+      <span id="aptStatus" class="muted">(아파트 데이터 로드 대기)</span>
       <span class="counter">선택된 메모: <b id="selCount">0</b>건</span>
     </div>
   </div>
@@ -49,19 +49,23 @@
   <div class="card" style="margin-top:14px">
     <div class="row">
       <button id="backupBtn">⬇️ 선택 메모 백업</button>
-      <span class="muted">대량일 경우 여러 PART로 나뉘어 생성됩니다.</span>
+      <span class="muted">대량이면 PART로 분할 생성됩니다.</span>
     </div>
     <div class="divider"></div>
     <div id="downloadContainer" class="downloads"></div>
   </div>
 
   <script>
-    // === IndexedDB 설정 ===
+    // ==========================
+    // IndexedDB 기본 설정
+    // ==========================
     const DB_NAME = 'hongbuMemo';
-    const DB_VERSION = 4; // 기존 memoBackup.html과 동일 버전
+    const DB_VERSION = 4;
     const STORE_NOTES = 'apartmentNotes';
 
-    // === UI 요소 ===
+    // ==========================
+    // UI 엘리먼트
+    // ==========================
     const els = {
       sido: document.getElementById('sidoFilter'),
       sigungu: document.getElementById('sigunguFilter'),
@@ -69,14 +73,13 @@
       aptFile: document.getElementById('aptFile'),
       aptStatus: document.getElementById('aptStatus'),
       backup: document.getElementById('backupBtn'),
-      selCount: document.getElementById('selCount'),
       downloads: document.getElementById('downloadContainer'),
+      selCount: document.getElementById('selCount'),
     };
 
-    // === 유틸 ===
-    const aptIndex = new Map(); // aptId -> {sido, sidoNm, sigungu, sigunguNm}
-    function setAptStatus(text){ if(els.aptStatus) els.aptStatus.textContent = text; }
-
+    // ==========================
+    // 공통 유틸
+    // ==========================
     function fillOptions(selectEl, items) {
       const prev = selectEl.value;
       selectEl.innerHTML = '';
@@ -93,53 +96,19 @@
       if ([...selectEl.options].some(o => o.value === prev)) selectEl.value = prev;
     }
 
-    // === apt.json 로딩 ===
-    async function loadAptJsonFromFile(file){
-      try{
-        const text = await file.text();
-        const data = JSON.parse(text);
-        ingestAptData(data);
-        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (파일)`);
-      }catch(err){
-        console.error(err);
-        setAptStatus('apt.json 파싱 실패');
-        alert('apt.json을 읽는 중 오류가 발생했습니다.');
-      }
-    }
-    async function loadAptJsonFromSamePath(){
-      try{
-        const res = await fetch('apt.json', { cache: 'no-store' });
-        if(!res.ok) throw new Error('HTTP '+res.status);
-        const data = await res.json();
-        ingestAptData(data);
-        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (자동)`);
-        return true;
-      }catch(err){
-        console.warn('apt.json 자동 로드 실패:', err);
-        setAptStatus('(아파트 데이터 미로딩: apt.json을 업로드하세요)');
-        return false;
-      }
-    }
-    function ingestAptData(data){
-      aptIndex.clear();
-      const arr = Array.isArray(data) ? data : (
-        Array.isArray(data?.apartments) ? data.apartments :
-        Array.isArray(data?.data) ? data.data : []
-      );
-      arr.forEach(a => {
-        const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
-        if(!id) return;
-        const entry = {
-          sido: String(a.sido ?? a.sidoCode ?? '').trim(),
-          sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
-          sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
-          sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
-        };
-        aptIndex.set(id, entry);
-      });
+    // ✅ 메모/사진이 하나도 없으면 제외
+    function hasMemoContent(n) {
+      const memoText = String(n?.memo ?? '')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .trim();
+      const imgs = Array.isArray(n?.images) ? n.images : [];
+      return memoText.length > 0 || imgs.length > 0;
     }
 
-    // === DB ===
+    // ==========================
+    // IndexedDB 순회(스트리밍)
+    // ==========================
     function openDB() {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -147,28 +116,113 @@
         req.onerror = () => reject(new Error('DB 열기 실패'));
       });
     }
-    async function getAllNotes() {
+
+    // 모든 노트를 스트리밍으로 순회 (visitor(note) 호출)
+    async function iterateNotes(visitor) {
       const db = await openDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction([STORE_NOTES], 'readonly');
-        const st = tx.objectStore(STORE_NOTES);
-        const out = [];
+      const tx = db.transaction([STORE_NOTES], 'readonly');
+      const st = tx.objectStore(STORE_NOTES);
+
+      await new Promise((resolve, reject) => {
         const req = st.openCursor();
-        req.onsuccess = e => {
+        req.onsuccess = async e => {
           const cur = e.target.result;
-          if (cur) { out.push(cur.value); cur.continue(); }
-          else { resolve(out); db.close(); }
+          if (cur) {
+            try { await visitor(cur.value); } catch (err) { console.error('visitor error', err); }
+            cur.continue();
+          } else {
+            resolve();
+          }
         };
-        req.onerror = () => { reject(new Error('cursor 실패')); db.close(); };
+        req.onerror = () => reject(new Error('cursor 실패'));
       });
+
+      db.close();
     }
 
-    // === 지역 파생 ===
-    function regionFromNoteViaApt(note){
+    // ==========================
+    // apt.json 인덱스
+    // ==========================
+    const aptIndex = new Map(); // aptId -> { sido, sidoNm, sigungu, sigunguNm }
+    const setAptStatus = t => { els.aptStatus.textContent = t; };
+
+    // 노트에서 실제 사용되는 aptId만 모으기(빈 메모 제외)
+    async function collectUsedAptIds() {
+      const set = new Set();
+      await iterateNotes(note => {
+        if (!hasMemoContent(note)) return;
+        const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+        if (id) set.add(id);
+      });
+      return set;
+    }
+
+    // 같은 경로의 apt.json을 로드하되, 실제 사용되는 apt만 인덱싱
+    async function loadFilteredAptIndexFromSamePath() {
+      try {
+        const usedIds = await collectUsedAptIds();
+        const res = await fetch('apt.json', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        aptIndex.clear();
+        const arr = Array.isArray(data) ? data :
+          (Array.isArray(data?.apartments) ? data.apartments :
+           Array.isArray(data?.data) ? data.data : []);
+        for (const a of arr) {
+          const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+          if (!id || !usedIds.has(id)) continue;
+          aptIndex.set(id, {
+            sido: String(a.sido ?? a.sidoCode ?? '').trim(),
+            sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+            sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
+            sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
+          });
+        }
+        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (필요 항목만)`);
+        return true;
+      } catch (e) {
+        console.warn('apt.json 자동 로드 실패:', e);
+        setAptStatus('(아파트 데이터 미로딩: apt.json을 업로드하세요)');
+        return false;
+      }
+    }
+
+    // 수동 업로드도 사용되는 apt만 인덱싱
+    async function loadAptJsonFromFile(file) {
+      try {
+        const usedIds = await collectUsedAptIds();
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        aptIndex.clear();
+        const arr = Array.isArray(data) ? data :
+          (Array.isArray(data?.apartments) ? data.apartments :
+           Array.isArray(data?.data) ? data.data : []);
+        for (const a of arr) {
+          const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+          if (!id || !usedIds.has(id)) continue;
+          aptIndex.set(id, {
+            sido: String(a.sido ?? a.sidoCode ?? '').trim(),
+            sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+            sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
+            sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
+          });
+        }
+        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (파일/필터)`);
+      } catch (err) {
+        console.error(err);
+        setAptStatus('apt.json 파싱 실패');
+        alert('apt.json을 읽는 중 오류가 발생했습니다.');
+      }
+    }
+
+    // 노트 → apt 인덱스 조인
+    function regionFromNoteViaApt(note) {
       const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
-      if(!id) return null;
+      if (!id) return null;
       const a = aptIndex.get(id);
-      if(!a) return null;
+      if (!a) return null;
       return {
         sidoCode: a.sido || '',
         sidoName: a.sidoNm || a.sido || '',
@@ -177,21 +231,21 @@
       };
     }
 
-    // === 필터 구성 ===
+    // ==========================
+    // 필터 구성 / 카운트(스트리밍)
+    // ==========================
     async function buildRegionFiltersFromNotes() {
-      const notes = await getAllNotes();
-      if(aptIndex.size === 0){
-        // apt.json 미로딩 상태
+      if (aptIndex.size === 0) {
         els.sigungu.disabled = true;
         fillOptions(els.sido, []);
-        await updateSelectedCount(notes);
+        await updateSelectedCount(); // 스트리밍 카운트
         return;
       }
 
       const bySido = new Map(); // sidoCode -> { name, sigungu: Map(sigCode -> {name,count}), count }
 
-      notes.forEach(n => {
-		if (!hasMemoContent(n)) return;  // ✅ 비어있는 메모 제외
+      await iterateNotes(n => {
+        if (!hasMemoContent(n)) return;
         const r = regionFromNoteViaApt(n);
         if (!r || !r.sidoCode) return;
         if (!bySido.has(r.sidoCode)) bySido.set(r.sidoCode, { name: r.sidoName || r.sidoCode, sigungu: new Map(), count: 0 });
@@ -221,22 +275,11 @@
         els.sigungu.disabled = true;
       }
 
-      await updateSelectedCount(notes);
+      await updateSelectedCount(); // 스트리밍 카운트
     }
 
-	// ✅ 메모/사진이 하나도 없으면 false
-	function hasMemoContent(n) {
-	  const memoText = String(n?.memo ?? '')
-		.replace(/<[^>]*>/g, '')   // HTML 태그 제거
-		.replace(/&nbsp;/gi, ' ')  // nbsp 제거
-		.trim();
-	  const imgs = Array.isArray(n?.images) ? n.images : [];
-	  return memoText.length > 0 || imgs.length > 0;
-	}
-
-
-    function noteMatchesSelection(note){
-	  if (!hasMemoContent(note)) return false;  // ✅ 비어있는 메모 제외
+    function noteMatchesSelection(note) {
+      if (!hasMemoContent(note)) return false; // 빈 메모 제외
       const r = regionFromNoteViaApt(note) || {};
       const sSel = (els.sido.value || '').trim();
       const gSel = (els.sigungu.value || '').trim();
@@ -245,32 +288,34 @@
       return true;
     }
 
-    async function updateSelectedCount(preloaded){
-      const notes = preloaded || await getAllNotes();
-      const cnt = notes.reduce((acc, n) => acc + (noteMatchesSelection(n) ? 1 : 0), 0);
+    async function updateSelectedCount() {
+      let cnt = 0;
+      await iterateNotes(n => { if (noteMatchesSelection(n)) cnt++; });
       els.selCount.textContent = String(cnt);
       return cnt;
     }
 
-    // === 백업 ===
-    async function backupSelectedNotes(){
-      const notes = await getAllNotes();
-      const filtered = notes.filter(noteMatchesSelection);
-
-      els.downloads.innerHTML = '';
-      if(!filtered.length){
-        alert('선택한 지역에 해당하는 메모가 없습니다.');
+    // ==========================
+    // 백업 (스트리밍 분할)
+    // ==========================
+    async function backupSelectedNotes() {
+      if (aptIndex.size === 0) {
+        alert('apt.json이 로드되지 않았습니다.');
         return;
       }
+      els.downloads.innerHTML = '';
+
       const chunkSize = 200;
-      let part = 1;
+      let part = 1, total = 0;
+      let chunk = [];
+
       const now = new Date();
-      const koreaTime = new Date(now.getTime() + 9*60*60*1000);
+      const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
       const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
 
-      for(let i=0;i<filtered.length;i+=chunkSize){
-        const chunk = filtered.slice(i, i+chunkSize);
-        const json = JSON.stringify(chunk, null, 2);
+      function flush() {
+        if (!chunk.length) return;
+        const json = JSON.stringify(chunk); // pretty-print 미사용 → 메모리/용량 절약
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const btn = document.createElement('button');
@@ -283,37 +328,54 @@
           a.download = `홍부_메모백업_${ts}_part${filePart}.json`;
           document.body.appendChild(a);
           a.click();
-          setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 800);
+          setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
         };
         els.downloads.appendChild(btn);
         part++;
+        chunk = []; // 메모리 즉시 해제
       }
 
+      await iterateNotes(n => {
+        if (!noteMatchesSelection(n)) return;
+        chunk.push(n);
+        total++;
+        if (chunk.length >= chunkSize) flush();
+      });
+      flush();
+
+      if (total === 0) {
+        alert('선택한 지역에 해당하는 메모가 없습니다.');
+        return;
+      }
       const h = document.createElement('div');
-      h.innerHTML = `<h3>📁 총 ${part-1}개의 백업 파일 · 메모 ${filtered.length}건</h3>`;
+      h.innerHTML = `<h3>📁 총 ${part - 1}개의 백업 파일 · 메모 ${total}건</h3>`;
       els.downloads.prepend(h);
     }
 
-    // === 이벤트 ===
-    els.refresh.addEventListener('click', async ()=>{
-      await loadAptJsonFromSamePath();
+    // ==========================
+    // 이벤트 & 초기화
+    // ==========================
+    els.refresh.addEventListener('click', async () => {
+      setAptStatus('(아파트 데이터 새로 로드 중…)');
+      await loadFilteredAptIndexFromSamePath();
       await buildRegionFiltersFromNotes();
     });
-    els.aptFile.addEventListener('change', async (e)=>{
+
+    els.aptFile.addEventListener('change', async e => {
       const f = e.target.files && e.target.files[0];
-      if(!f) return;
+      if (!f) return;
       await loadAptJsonFromFile(f);
       await buildRegionFiltersFromNotes();
     });
+
     els.sido.addEventListener('change', buildRegionFiltersFromNotes);
-    els.sigungu.addEventListener('change', ()=>updateSelectedCount());
+    els.sigungu.addEventListener('change', () => updateSelectedCount());
     els.backup.addEventListener('click', backupSelectedNotes);
 
-    // === 초기 ===
     (async function init(){
-      setAptStatus('(아파트 데이터 자동 로드 시도 중)');
-      await loadAptJsonFromSamePath();
-      await buildRegionFiltersFromNotes();
+      setAptStatus('(아파트 데이터 자동 로드 시도 중…)');
+      await loadFilteredAptIndexFromSamePath();  // 필요한 apt만 인덱싱
+      await buildRegionFiltersFromNotes();       // 스트리밍 집계
     })();
   </script>
 </body>
