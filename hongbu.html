@@ -228,6 +228,17 @@ buttonContainer {
 </h1>
 
 <div id="controls">
+<label>시도:
+  <select id="sidoFilter">
+    <option value="">전체</option>
+  </select>
+</label>
+<label>시군구:
+  <select id="sigunguFilter" disabled>
+    <option value="">전체</option>
+  </select>
+</label>
+
     <label for="unitFilter">최소세대수: </label>
     <input type="number" id="unitFilter" min="0" value="190">
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
@@ -241,10 +252,10 @@ buttonContainer {
 	<label class="only-pc"><input type="checkbox" id="toggleFindWay">길찾기</label>
 	<label><input type="checkbox" id="toggleBlankMap">백지도</label>
 
-
+<!-- 
 	<label class="only-pc" style="color: red; margin-left: auto; white-space: nowrap;">
   길찾기할 때 출발시각은 현재 컴퓨터 시각에 맞춰집니다. 평일 오전 7시반으로 맞추면 출발시각이 해당 시각으로 변경됩니다
-</label>
+</label> -->
 
 <div id="locationPopup" style="
   display: none;
@@ -281,7 +292,7 @@ buttonContainer {
         <button id="startPolyline">경로 그리기</button>
 		<button id="undoLastPointButton">직전 취소</button>
         <button id="completePolyline">경로 그리기 완료</button>
-<button id="clearMap">경로 초기화</button>
+		<button id="clearMap">경로 초기화</button>
         <button id="downloadGPX">GPX 다운로드</button>
         <button id="uploadGPX">GPX 불러오기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
@@ -1062,12 +1073,21 @@ console.log(document.getElementById("locationPopup").style.display);
 				units: parseInt(apt.units, 10), // ✅ 올바른 속성 접근
 				lat: parseFloat(apt.lat), // ✅ 올바른 속성 접근
 				lng: parseFloat(apt.lng), // ✅ 올바른 속성 접근
-				lease: apt.lease // ✅ 올바른 속성 접근
+				lease: apt.lease, // ✅ 올바른 속성 접근
+				sido : apt.sido, //시도
+				sidoNm : apt.sidoNm, //시도명
+				sigungu : apt.sigungu, //시군구
+				sigunguNm : apt.sigunguNm //시군구명
+
 			}));
 
 			
 			//console.log("✅ 아파트 데이터 fetch 완료");
 			updateMarkers(window.map.getBounds())
+
+buildRegionFiltersFromApartments();
+attachRegionFilterEvents();
+
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
 		}
@@ -1498,6 +1518,10 @@ function updateMarkers(bounds) {
 			return; // ✅ 마커 제거 후 더 이상 작업하지 않음
 		}
 
+// ▼ 추가: 현재 선택된 시도/시군구 읽기
+  const { sidoSel, sigunguSel } = getFilterEls();
+  const selectedSido = (sidoSel?.value || '').trim();     // '' => 전체
+  const selectedSigungu = (sigunguSel?.value || '').trim(); // '' => 전체
 
 	//범위 벗어나면 마커 삭제
 	removeLinesOutsideBounds(bounds)
@@ -1508,11 +1532,24 @@ function updateMarkers(bounds) {
 
 			if (!showApartments || window.map.getZoom() < 14) return;
 
+ // ▼ 여기서 시도/시군구 필터까지 적용
+  const filtered = apartmentData.filter(apartment => {
+    const inBounds = bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng));
+    const unitOK = apartment.units >= minUnits;
+
+    const sidoOK = !selectedSido || (apartment.sido || '').trim() === selectedSido;
+    const sigunguOK = !selectedSigungu || (apartment.sigungu || '').trim() === selectedSigungu;
+//console.log("apartment.sido : "+apartment.sido)
+//console.log("apartment.sigungu : "+apartment.sigungu)
+    return inBounds && unitOK && sidoOK && sigunguOK;
+  });
+
+/*
 			const filtered = apartmentData.filter(apartment =>
 				bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) &&
 				apartment.units >= minUnits
 			);
-
+ */
 			const newMarkers = [];
 
 			// ✅ 시세지도 체크 상태가 바뀐 경우 → 모든 마커 제거
@@ -1653,7 +1690,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 	
 
     if (isKakaoInAppBrowser()) {
-        alert("⚠️ 카카오톡 인앱 브라우저에서 실행 중입니다.\n\n저장 기능이 정상 동작하지 않습니다.\n크롬, 웨일, 삼성인터넷 등 외부 브라우저로 열어주세요.");
+        alert("⚠️ 카카오톡 인앱 브라우저에서 실행 중입니다.\n\n홍부 저장 기능이 정상 동작하지 않습니다.\n크롬, 웨일, 삼성인터넷 등 외부 브라우저로 열어주세요.");
     }
 
 await initIndexedDB();
@@ -4218,83 +4255,107 @@ function showSiseVer2DataToggle(apartmentId) {
 /////////////////////////////////////////////////////////////////////////////////////////
 let deletedImages = []; // 삭제된 이미지 목록
 
-async function saveNote(id) {
-  await initMemoIndexedDB();  // 💡 여기가 핵심
-  const memo = document.getElementById("noteText").value;
-  const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  const request = indexedDB.open("hongbuMemo", 4);
+  async function saveNote(id) {
+    await initMemoIndexedDB();
 
-  request.onerror = function (event) {
-    console.error("❌ DB 열기 실패:", event.target.error);
-    alert("❌ 메모 저장 중 오류가 발생했습니다. (DB 열기 실패)");
-  };
+    const memo = (document.getElementById("noteText").value || "").trim();
+    const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-  request.onsuccess = function (event) {
-    try {
-      const db = event.target.result;
-      const transaction = db.transaction(["apartmentNotes"], "readwrite");
+    const request = indexedDB.open("hongbuMemo", 4);
 
-      transaction.onerror = function (event) {
-        console.error("❌ 트랜잭션 오류:", event.target.error);
-        alert("❌ 메모 저장 중 오류가 발생했습니다. (트랜잭션 실패)");
-      };
+    request.onerror = function (event) {
+      console.error("❌ DB 열기 실패:", event.target.error);
+      alert("❌ 메모 저장 중 오류가 발생했습니다. (DB 열기 실패)");
+    };
 
-      const store = transaction.objectStore("apartmentNotes");
-      const getRequest = store.get(id);
+    request.onsuccess = function (event) {
+      try {
+        const db = event.target.result;
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
 
-      getRequest.onerror = function (event) {
-        console.error("❌ 데이터 읽기 실패:", event.target.error);
-        alert("❌ 메모 저장 중 오류가 발생했습니다. (기존 데이터 조회 실패)");
-      };
+        const getRequest = store.get(id);
+        getRequest.onerror = function (event) {
+          console.error("❌ 데이터 읽기 실패:", event.target.error);
+          alert("❌ 메모 저장 중 오류가 발생했습니다. (기존 데이터 조회 실패)");
+        };
 
-      getRequest.onsuccess = function () {
-        try {
-          let existing = getRequest.result || { id, memo: "", images: [] };
-          existing.images = images;
-          existing.memo = memo;
+        getRequest.onsuccess = function () {
+          try {
+            const existing = getRequest.result || null;
 
-          const putRequest = store.put(existing);
+            // ✅ 메모/사진 모두 없으면: 저장하지 않음. 기존 레코드가 있으면 삭제.
+            if ((!memo || memo.length === 0) && (!images || images.length === 0)) {
+              if (existing) {
+                const delReq = store.delete(id);
+                delReq.onsuccess = function () {
+                  // UI 초기화
+                  aptMemoImageList[id] = [];
+                  loadNote(id);
 
-          putRequest.onsuccess = function () {
-            //alert("저장되었습니다!");
-            loadNote(id);
+                  // 마커 재생성(메모 아이콘 제거 효과)
+                  const marker = apartmentMarkers[id];
+                  if (marker) {
+                    marker.setMap(null);
+                    delete apartmentMarkers[id];
+                  }
+                  const apartment = apartmentData.find(a => String(a.id) === String(id));
+                  if (apartment) {
+                    const isSiseMap = document.getElementById("toggleSiseMap")?.checked;
+                    const newMarker = isSiseMap ? renderSiseMapMarker(apartment) : createDefaultMarker(apartment);
+                    newMarker.__siseMap = isSiseMap;
+                    apartmentMarkers[id] = newMarker;
+                  }
+                };
+                delReq.onerror = function (event) {
+                  console.error("❌ 삭제 실패:", event.target.error);
+                  alert("❌ 메모 삭제 중 오류가 발생했습니다.");
+                };
+              }
+              return; // 🚫 여기서 끝 — 빈 내용은 저장/생성하지 않음
+            }
 
-            // ✅ 마커 갱신 처리
-            const marker = apartmentMarkers[id];
-            if (marker) {
-              marker.setMap(null);  // 기존 마커 제거
-              delete apartmentMarkers[id];  // 캐시 삭제
+            // ✅ 내용이 있으면 저장/갱신
+            const toSave = existing || { id, memo: "", images: [] };
+            toSave.memo = memo;
+            toSave.images = images;
 
+            const putRequest = store.put(toSave);
+            putRequest.onsuccess = function () {
+              loadNote(id);
+
+              // 마커 재생성(메모 아이콘 반영)
+              const marker = apartmentMarkers[id];
+              if (marker) {
+                marker.setMap(null);
+                delete apartmentMarkers[id];
+              }
               const apartment = apartmentData.find(a => String(a.id) === String(id));
               if (apartment) {
                 const isSiseMap = document.getElementById("toggleSiseMap")?.checked;
-                const newMarker = isSiseMap
-                  ? renderSiseMapMarker(apartment)
-                  : createDefaultMarker(apartment);
+                const newMarker = isSiseMap ? renderSiseMapMarker(apartment) : createDefaultMarker(apartment);
                 newMarker.__siseMap = isSiseMap;
                 apartmentMarkers[id] = newMarker;
               }
-            }
-          };
+            };
+            putRequest.onerror = function (event) {
+              console.error("❌ 저장 실패:", event.target.error);
+              alert("❌ 메모 저장 중 오류가 발생했습니다. (저장 실패)");
+            };
 
-          putRequest.onerror = function (event) {
-            console.error("❌ 저장 실패:", event.target.error);
-            alert("❌ 메모 저장 중 오류가 발생했습니다. (저장 실패)");
-          };
+          } catch (error) {
+            console.error("❌ 내부 처리 실패:", error);
+            alert("❌ 메모 저장 중 오류가 발생했습니다. (처리 오류)");
+          }
+        };
+      } catch (error) {
+        console.error("❌ DB 처리 중 예외:", error);
+        alert("❌ 메모 저장 중 오류가 발생했습니다.");
+      }
+    };
+  }
 
-        } catch (error) {
-          console.error("❌ 내부 처리 실패:", error);
-          alert("❌ 메모 저장 중 오류가 발생했습니다. (처리 오류)");
-        }
-      };
-    } catch (error) {
-	  console.error("❌ DB 처리 중 예외:", error);
-	  alert("❌ 메모 저장 중 오류가 발생했습니다.\n" + error.message || error.toString());
-	}
-
-  };
-}
 
 
 function base64ToBlobUrl(base64) {
@@ -5153,7 +5214,155 @@ function updateHeaderArrows() {
 }
 
 
+// ▼ 필터 셀렉트 참조
+function getFilterEls() {
+  return {
+    sidoSel: document.getElementById('sidoFilter'),
+    sigunguSel: document.getElementById('sigunguFilter'),
+  };
+}
 
+// ▼ 옵션 채우기 유틸
+// ▼ 옵션 채우기 유틸 (items: string | {value, label})
+function fillOptions(selectEl, items) {
+  const prev = selectEl.value;
+  selectEl.innerHTML = '';
+
+  // 첫 옵션: 전체(빈값)
+  const optAll = document.createElement('option');
+  optAll.value = '';
+  optAll.textContent = '전체';
+  selectEl.appendChild(optAll);
+
+  (items || []).forEach(item => {
+    const opt = document.createElement('option');
+    if (typeof item === 'string') {
+      // 문자열만 온 경우: value/label 동일
+      opt.value = item;
+      opt.textContent = item;
+    } else {
+      // { value: 코드값, label: 화면표시이름 }
+      opt.value = item.value;
+      opt.textContent = item.label;
+    }
+    selectEl.appendChild(opt);
+  });
+
+  // 이전 선택 유지(가능하면)
+  if ([...selectEl.options].some(o => o.value === prev)) {
+    selectEl.value = prev;
+  } else {
+    selectEl.value = '';
+  }
+}
+
+// ▼ 시도/시군구 옵션 구성 (apartmentData 기반)
+//   - 시도: label=시도명(sidoNm), value=시도코드(sido)
+//   - 시군구: label=시군구명(sigunguNm), value=시군구코드(sigungu)
+function buildRegionFiltersFromApartments() {
+  const { sidoSel, sigunguSel } = getFilterEls();
+  if (!sidoSel || !sigunguSel || !Array.isArray(apartmentData)) return;
+
+  // 시도코드 -> { name: 시도명, sigungu: Map(시군구코드 -> 시군구명) }
+  const bySido = new Map();
+  apartmentData.forEach(a => {
+    const sc = String(a.sido || '').trim();
+    const sn = String(a.sidoNm || '').trim();
+    const gc = String(a.sigungu || '').trim();
+    const gn = String(a.sigunguNm || '').trim();
+    if (!sc) return;
+    if (!bySido.has(sc)) bySido.set(sc, { name: sn || sc, sigungu: new Map() });
+    if (gc) bySido.get(sc).sigungu.set(gc, gn || gc);
+  });
+
+  // 시도 옵션: value=코드, label=이름
+  const sidoItems = Array.from(bySido.entries())
+    .map(([code, obj]) => ({ value: code, label: obj.name }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+  fillOptions(sidoSel, sidoItems);
+
+  // 선택된 시도에 따라 시군구 옵션 생성
+  const selectedSidoCode = (sidoSel.value || '').trim();
+  if (selectedSidoCode && bySido.has(selectedSidoCode)) {
+    const sigunguItems = Array.from(bySido.get(selectedSidoCode).sigungu.entries())
+      .map(([code, name]) => ({ value: code, label: name }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+    fillOptions(sigunguSel, sigunguItems); // value=코드, label=이름
+    sigunguSel.disabled = false;
+  } else {
+    fillOptions(sigunguSel, []);
+    sigunguSel.disabled = true;
+  }
+}
+
+
+// ▼ 필터 변경 이벤트
+function attachRegionFilterEvents() {
+  const { sidoSel, sigunguSel } = getFilterEls();
+  if (!sidoSel || !sigunguSel) return;
+
+  // 시도 변경시: 시군구 목록 재구성 + 전체로 리셋
+  sidoSel.addEventListener('change', () => {
+    buildRegionFiltersFromApartments();
+    // 지도에 즉시 반영
+    //if (window.map) updateMarkers(window.map.getBounds());
+  });
+
+  // 시군구 변경시: 지도에 즉시 반영
+  sigunguSel.addEventListener('change', () => {
+
+const isSigunguAll = (sigunguSel?.value || '').trim();
+
+  // 👉 시군구가 '전체'(빈 값)면 아무 동작도 하지 않음
+  if (!isSigunguAll) return;
+
+
+    if (window.map) {
+Object.values(apartmentMarkers).forEach(marker => {
+					if (marker instanceof naver.maps.Marker) {
+						naver.maps.Event.clearInstanceListeners(marker);
+						marker.setMap(null);
+					}
+				});
+				apartmentMarkers = {}; // 캐시 초기화
+				//prevSiseMapState = isSiseMapActive; // 상태 갱신
+focusMapToSelectedRegion(15);                 // ✅ 지도 이동
+  if (window.map && window.map.getBounds) {
+    updateMarkers(window.map.getBounds());      // ✅ 마커 갱신
+  }
+}
+  });
+}
+
+function getFilterEls() {
+  return {
+    sidoSel: document.getElementById('sidoFilter'),
+    sigunguSel: document.getElementById('sigunguFilter'),
+  };
+}
+
+// ✅ 선택된 시군구/시도의 "첫 번째 아파트" 좌표로 지도 이동
+function focusMapToSelectedRegion(zoomLevel = 15) {
+  if (!window.map || !Array.isArray(apartmentData)) return;
+  const { sidoSel, sigunguSel } = getFilterEls();
+  const sigCode = (sigunguSel?.value || '').trim();
+  const siCode  = (sidoSel?.value    || '').trim();
+
+  let target = null;
+  if (sigCode) {
+    target = apartmentData.find(a => String(a.sigungu).trim() === sigCode);
+  }
+  if (!target && siCode) {
+    target = apartmentData.find(a => String(a.sido).trim() === siCode);
+  }
+  if (!target) return;
+
+  const center = new naver.maps.LatLng(parseFloat(target.lat), parseFloat(target.lng));
+  window.map.setCenter(center);
+  if (window.map.getZoom() < zoomLevel) {
+    window.map.setZoom(zoomLevel);
+  }
+}
 
 
 </script>
@@ -5164,3 +5373,4 @@ function updateHeaderArrows() {
 
 </body>
 </html>
+
