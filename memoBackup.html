@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>홍부 메모 백업 (지역 필터 지원)</title>
+  <title>홍부 메모 백업 (모바일 최적화 · 10개 분할 · 지연생성)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root { --bg:#f7f7f9; --card:#fff; --text:#222; --muted:#666; --brand:#4A90E2; --brand2:#357ABD; }
@@ -13,7 +13,7 @@
     .card { background:var(--card); border:1px solid #e9e9ef; border-radius:12px; padding:16px; box-shadow: 0 2px 8px rgba(0,0,0,.04); }
     .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
     label { font-size:14px; color:#333; }
-    select, button, input[type="number"] { font-size:14px; border-radius:8px; border:1px solid #d7d7de; padding:8px 10px; background:#fff; }
+    select, button, input[type="file"] { font-size:14px; border-radius:8px; border:1px solid #d7d7de; padding:8px 10px; background:#fff; }
     select { min-width: 180px; }
     button { background:var(--brand); color:#fff; border:none; cursor:pointer; padding:10px 16px; font-weight:600; }
     button:hover { background:var(--brand2); }
@@ -22,31 +22,26 @@
     .counter { font-size:13px; color:#333; margin-left:auto; }
     .downloads { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
     .divider { height:1px; background:#eee; margin:12px 0; }
-    .hidden { display:none; }
   </style>
 </head>
 <body>
   <h1>📦 홍부 메모 백업</h1>
-  <p>시도/시군구를 먼저 선택하세요. <span class="muted">목록에는 "메모가 존재하는 지역"만 표시됩니다.</span></p>
+  <p>시도/시군구를 먼저 선택하세요. <span class="muted">목록에는 “메모 또는 사진이 실제로 존재하는 지역”만 표시됩니다.</span></p>
 
   <div class="card" id="filters">
     <div class="row" style="gap:12px">
       <label>시도
-        <select id="sidoFilter">
-          <option value="">전체</option>
-        </select>
+        <select id="sidoFilter"><option value="">전체</option></select>
       </label>
       <label>시군구
-        <select id="sigunguFilter" disabled>
-          <option value="">전체</option>
-        </select>
+        <select id="sigunguFilter" disabled><option value="">전체</option></select>
       </label>
       <button id="refreshRegions" class="secondary">🔄 지역 새로고침</button>
       <label class="secondary" style="display:flex;align-items:center;gap:8px">
         <input type="file" id="aptFile" accept="application/json,.json" />
-        <span class="muted">apt.json 불러오기</span>
+        <span class="muted">apt.json 불러오기(수동)</span>
       </label>
-      <span id="aptStatus" class="muted">(아파트 데이터 미로딩)</span>
+      <span id="aptStatus" class="muted">(아파트 데이터 로드 대기)</span>
       <span class="counter">선택된 메모: <b id="selCount">0</b>건</span>
     </div>
   </div>
@@ -54,31 +49,38 @@
   <div class="card" style="margin-top:14px">
     <div class="row">
       <button id="backupBtn">⬇️ 선택 메모 백업</button>
-      <span class="muted">대량일 경우 여러 PART로 나뉘어 생성됩니다.</span>
+      <span class="muted">카카오톡 전송을 위해 10개씩 분할·다운로드(지연생성) 합니다.</span>
     </div>
     <div class="divider"></div>
     <div id="downloadContainer" class="downloads"></div>
   </div>
 
   <script>
-    // === IndexedDB 설정 ===
+    // ==========================
+    // IndexedDB 기본 설정
+    // ==========================
     const DB_NAME = 'hongbuMemo';
-    const DB_VERSION = 4; // memoBackup.html과 동일 버전
+    const DB_VERSION = 4;
     const STORE_NOTES = 'apartmentNotes';
 
-    // === UI 요소 ===
+    // ==========================
+    // UI 요소
+    // ==========================
     const els = {
       sido: document.getElementById('sidoFilter'),
       sigungu: document.getElementById('sigunguFilter'),
       refresh: document.getElementById('refreshRegions'),
-      backup: document.getElementById('backupBtn'),
-      selCount: document.getElementById('selCount'),
-      downloads: document.getElementById('downloadContainer'),
       aptFile: document.getElementById('aptFile'),
       aptStatus: document.getElementById('aptStatus'),
+      selCount: document.getElementById('selCount'),
+      downloads: document.getElementById('downloadContainer'),
+      backup: document.getElementById('backupBtn'),
     };
+    const setAptStatus = t => { els.aptStatus.textContent = t; };
 
-    // === 유틸: 옵션 채우기 (value: 코드, label: 이름) ===
+    // ==========================
+    // 유틸
+    // ==========================
     function fillOptions(selectEl, items) {
       const prev = selectEl.value;
       selectEl.innerHTML = '';
@@ -95,78 +97,27 @@
       if ([...selectEl.options].some(o => o.value === prev)) selectEl.value = prev;
     }
 
-    // === 아파트 인덱스 (apt.json) ===
-    const aptIndex = new Map(); // aptId(string) -> {sido, sidoNm, sigungu, sigunguNm}
-
-    function setAptStatus(text){ if(els.aptStatus) els.aptStatus.textContent = text; }
-
-    // apt.json 파일 업로드 파서
-    async function loadAptJsonFromFile(file){
-      try{
-        const text = await file.text();
-        const data = JSON.parse(text);
-        ingestAptData(data);
-        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨`);
-      }catch(err){
-        console.error(err);
-        setAptStatus('apt.json 파싱 실패');
-        alert('apt.json을 읽는 중 오류가 발생했습니다.');
-      }
+    function stripHtmlAndTrim(s) {
+      return String(s ?? '')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .trim();
     }
 
-    // 다양한 형태의 apt.json을 수용하여 인덱싱
-    function ingestAptData(data){
-      aptIndex.clear();
-      const arr = Array.isArray(data) ? data : (
-        Array.isArray(data?.apartments) ? data.apartments :
-        Array.isArray(data?.data) ? data.data : []
-      );
-      arr.forEach(a => {
-        const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
-        if(!id) return;
-        const entry = {
-          sido: String(a.sido ?? a.sidoCode ?? '').trim(),
-          sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
-          sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
-          sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
-        };
-        aptIndex.set(id, entry);
-      });
+    // 메모/사진이 하나도 없으면 제외
+    function hasMemoContent(n) {
+      const memoText = stripHtmlAndTrim(n?.memo);
+      const imgs = Array.isArray(n?.images) ? n.images : [];
+      return memoText.length > 0 || imgs.length > 0;
     }
 
-    // === 유틸: 노트에서 아파트ID -> 지역코드/이름 매핑 조회 ===
-    function regionFromNoteViaApt(note){
-      const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
-      if(!id) return null;
-      const a = aptIndex.get(id);
-      if(!a) return null;
-      return {
-        sidoCode: a.sido || '',
-        sidoName: a.sidoNm || a.sido || '',
-        sigunguCode: a.sigungu || '',
-        sigunguName: a.sigunguNm || a.sigungu || '',
-      };
+    function noteIdOf(n) {
+      return String(n?.id ?? n?.aptId ?? n?.apartmentId ?? '').trim();
     }
 
-    // === 유틸: 노트에서 지역코드/이름을 관대하게 추출 ===
-    function normalizeRegionFromNote(note) {
-      // 1) 우선 apt.json 인덱스로부터 조인
-      const viaApt = regionFromNoteViaApt(note);
-      if (viaApt) return viaApt;
-      // 2) (백업 호환) 메모 객체 자체에 지역 필드가 있는 경우만 보조로 사용
-      const sCode = String(note.sido ?? note.sidoCode ?? note.siCode ?? '').trim();
-      const sName = String(note.sidoNm ?? note.sidoName ?? note.siName ?? '').trim();
-      const gCode = String(note.sigungu ?? note.sigunguCode ?? note.guCode ?? '').trim();
-      const gName = String(note.sigunguNm ?? note.sigunguName ?? note.guName ?? '').trim();
-      return {
-        sidoCode: sCode || (sName ? sName : ''),
-        sidoName: sName || (sCode ? sCode : ''),
-        sigunguCode: gCode || (gName ? gName : ''),
-        sigunguName: gName || (gCode ? gCode : ''),
-      };
-    }
-
-    // === DB 열기 ===
+    // ==========================
+    // DB 스트리밍 순회
+    // ==========================
     function openDB() {
       return new Promise((resolve, reject) => {
         const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -175,40 +126,136 @@
       });
     }
 
-    // === 모든 노트 순회 ===
-    async function getAllNotes() {
+    // 모든 노트를 스트리밍으로 순회 (visitor(note) 호출)
+    async function iterateNotes(visitor) {
       const db = await openDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction([STORE_NOTES], 'readonly');
-        const st = tx.objectStore(STORE_NOTES);
-        const out = [];
+      const tx = db.transaction([STORE_NOTES], 'readonly');
+      const st = tx.objectStore(STORE_NOTES);
+
+      await new Promise((resolve, reject) => {
         const req = st.openCursor();
-        req.onsuccess = e => {
+        req.onsuccess = async e => {
           const cur = e.target.result;
-          if (cur) { out.push(cur.value); cur.continue(); }
-          else { resolve(out); db.close(); }
+          if (cur) {
+            try { await visitor(cur.value); } catch (err) { console.error('visitor error', err); }
+            cur.continue();
+          } else {
+            resolve();
+          }
         };
-        req.onerror = () => { reject(new Error('cursor 실패')); db.close(); };
+        req.onerror = () => reject(new Error('cursor 실패'));
       });
+
+      db.close();
     }
 
-    // === 지역 목록 구성 (메모가 존재하는 지역만) ===
+    // ==========================
+    // apt.json 인덱스 (필요한 것만)
+    // ==========================
+    const aptIndex = new Map(); // aptId -> {sido, sidoNm, sigungu, sigunguNm}
+
+    // 노트에서 실제 사용되는 aptId 집합 만들기(빈 메모 제외)
+    async function collectUsedAptIds() {
+      const set = new Set();
+      await iterateNotes(n => {
+        if (!hasMemoContent(n)) return;
+        const id = noteIdOf(n);
+        if (id) set.add(id);
+      });
+      return set;
+    }
+
+    // 같은 경로의 apt.json을 로드 → 사용되는 aptId만 인덱싱
+    async function loadFilteredAptIndexFromSamePath() {
+      try {
+        const usedIds = await collectUsedAptIds();
+        const res = await fetch('apt.json', { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+
+        aptIndex.clear();
+        const arr = Array.isArray(data) ? data :
+          (Array.isArray(data?.apartments) ? data.apartments :
+           Array.isArray(data?.data) ? data.data : []);
+        for (const a of arr) {
+          const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+          if (!id || !usedIds.has(id)) continue;
+          aptIndex.set(id, {
+            sido: String(a.sido ?? a.sidoCode ?? '').trim(),
+            sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+            sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
+            sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
+          });
+        }
+        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (필요 항목만)`);
+        return true;
+      } catch (e) {
+        console.warn('apt.json 자동 로드 실패:', e);
+        setAptStatus('(아파트 데이터 미로딩: apt.json을 업로드하세요)');
+        return false;
+      }
+    }
+
+    // 수동 업로드도 사용되는 apt만 인덱싱
+    async function loadAptJsonFromFile(file) {
+      try {
+        const usedIds = await collectUsedAptIds();
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        aptIndex.clear();
+        const arr = Array.isArray(data) ? data :
+          (Array.isArray(data?.apartments) ? data.apartments :
+           Array.isArray(data?.data) ? data.data : []);
+        for (const a of arr) {
+          const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+          if (!id || !usedIds.has(id)) continue;
+          aptIndex.set(id, {
+            sido: String(a.sido ?? a.sidoCode ?? '').trim(),
+            sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+            sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
+            sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
+          });
+        }
+        setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (파일/필터)`);
+      } catch (err) {
+        console.error(err);
+        setAptStatus('apt.json 파싱 실패');
+        alert('apt.json을 읽는 중 오류가 발생했습니다.');
+      }
+    }
+
+    // 노트 → apt 인덱스 조인
+    function regionFromNoteViaApt(note) {
+      const id = noteIdOf(note);
+      if (!id) return null;
+      const a = aptIndex.get(id);
+      if (!a) return null;
+      return {
+        sidoCode: a.sido || '',
+        sidoName: a.sidoNm || a.sido || '',
+        sigunguCode: a.sigungu || '',
+        sigunguName: a.sigunguNm || a.sigungu || '',
+      };
+    }
+
+    // ==========================
+    // 필터 구성 / 카운트 (스트리밍)
+    // ==========================
     async function buildRegionFiltersFromNotes() {
-      const notes = await getAllNotes();
-      if(aptIndex.size === 0){
-        // apt.json이 로딩되지 않았다면, 일단 카운트만 갱신하고 종료
-        setAptStatus('(아파트 데이터 미로딩)');
+      if (aptIndex.size === 0) {
         els.sigungu.disabled = true;
         fillOptions(els.sido, []);
-        updateSelectedCount(notes);
+        await updateSelectedCount();
         return;
       }
 
-      const bySido = new Map(); // sidoCode -> { name, sigungu: Map(sigCode -> {name,count}), count }
+      const bySido = new Map(); // sidoCode -> {name, sigungu: Map(code-> {name,count}), count}
 
-      notes.forEach(n => {
-        const r = normalizeRegionFromNote(n); // 내부적으로 aptIndex 사용
-        if (!r || !r.sidoCode) return; // 지역 없는 메모는 스킵
+      await iterateNotes(n => {
+        if (!hasMemoContent(n)) return;
+        const r = regionFromNoteViaApt(n);
+        if (!r || !r.sidoCode) return;
         if (!bySido.has(r.sidoCode)) bySido.set(r.sidoCode, { name: r.sidoName || r.sidoCode, sigungu: new Map(), count: 0 });
         const node = bySido.get(r.sidoCode);
         node.count++;
@@ -219,13 +266,11 @@
         }
       });
 
-      // 시도 옵션 (이름 + 건수)
       const sidoItems = Array.from(bySido.entries())
         .map(([code, { name, count }]) => ({ value: code, label: `${name} (${count}건)` }))
         .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
       fillOptions(els.sido, sidoItems);
 
-      // 선택된 시도의 시군구 옵션 (이름 + 건수)
       const selSido = (els.sido.value || '').trim();
       if (selSido && bySido.has(selSido)) {
         const sigItems = Array.from(bySido.get(selSido).sigungu.entries())
@@ -238,136 +283,132 @@
         els.sigungu.disabled = true;
       }
 
-      // 현재 선택 조건에 맞는 메모 수 갱신
-      updateSelectedCount(notes);
+      await updateSelectedCount();
     }
 
-      notes.forEach(n => {
-        const r = normalizeRegionFromNote(n);
-        if (!r.sidoCode) return; // 지역 없는 메모는 스킵
-        if (!bySido.has(r.sidoCode)) bySido.set(r.sidoCode, { name: r.sidoName || r.sidoCode, sigungu: new Map(), count: 0 });
-        const node = bySido.get(r.sidoCode);
-        node.count++;
-        if (r.sigunguCode) node.sigungu.set(r.sigunguCode, r.sigunguName || r.sigunguCode);
-      });
-
-      // 시도 옵션
-      const sidoItems = Array.from(bySido.entries())
-        .map(([code, { name, count }]) => ({ value: code, label: `${name} (${count}건)` }))
-        .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-      fillOptions(els.sido, sidoItems);
-
-      // 선택된 시도의 시군구 옵션
-      const selSido = (els.sido.value || '').trim();
-      if (selSido && bySido.has(selSido)) {
-        const sigItems = Array.from(bySido.get(selSido).sigungu.entries())
-          .map(([code, name]) => ({ value: code, label: name }))
-          .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-        fillOptions(els.sigungu, sigItems);
-        els.sigungu.disabled = false;
-      } else {
-        fillOptions(els.sigungu, []);
-        els.sigungu.disabled = true;
-      }
-
-      // 현재 선택 조건에 맞는 메모 수 갱신
-      updateSelectedCount(notes);
-    }
-
-    // === 현재 선택 조건과 일치하는지 검사 ===
     function noteMatchesSelection(note) {
-      const r = normalizeRegionFromNote(note);
+      if (!hasMemoContent(note)) return false; // 빈 메모 제외
+      const r = regionFromNoteViaApt(note) || {};
       const sSel = (els.sido.value || '').trim();
       const gSel = (els.sigungu.value || '').trim();
-      if (sSel && String(r.sidoCode).trim() !== sSel) return false;
-      if (gSel && String(r.sigunguCode).trim() !== gSel) return false;
+      if (sSel && String(r.sidoCode || '').trim() !== sSel) return false;
+      if (gSel && String(r.sigunguCode || '').trim() !== gSel) return false;
       return true;
     }
 
-    // === 선택된 조건의 메모 개수 카운트 ===
-    async function updateSelectedCount(preloaded) {
-      const notes = preloaded || await getAllNotes();
-      const cnt = notes.reduce((acc, n) => acc + (noteMatchesSelection(n) ? 1 : 0), 0);
+    async function updateSelectedCount() {
+      let cnt = 0;
+      await iterateNotes(n => { if (noteMatchesSelection(n)) cnt++; });
       els.selCount.textContent = String(cnt);
       return cnt;
     }
 
-    // === 백업(선택 조건만) ===
+    // ==========================
+    // 백업 (10개 분할 · 지연생성)
+    // ==========================
     async function backupSelectedNotes() {
-      const notes = await getAllNotes();
-      const filtered = notes.filter(noteMatchesSelection);
-
-      // 다운로드 영역 초기화
+      if (aptIndex.size === 0) {
+        alert('apt.json이 로드되지 않았습니다.');
+        return;
+      }
       els.downloads.innerHTML = '';
 
-      if (!filtered.length) {
+      // 1) 먼저 "선택 조건에 맞는 메모의 ID만" 수집 (본문은 건드리지 않음)
+      const selectedIds = [];
+      await iterateNotes(n => {
+        if (!noteMatchesSelection(n)) return;
+        const id = noteIdOf(n);
+        if (id) selectedIds.push(id);
+      });
+
+      if (selectedIds.length === 0) {
         alert('선택한 지역에 해당하는 메모가 없습니다.');
         return;
       }
 
-      const chunkSize = 10; // ✅ 카카오톡 전송 편의를 위해 10개씩 분할
-      let part = 1;
+      // 2) 10개씩 파트 나누되, 여기서는 Blob을 만들지 않음 (지연 생성)
+      const chunkSize = 10; // 카카오톡 전송 편의
+      const totalParts = Math.ceil(selectedIds.length / chunkSize);
+
       const now = new Date();
       const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
       const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
 
-      for (let i = 0; i < filtered.length; i += chunkSize) {
-        const chunk = filtered.slice(i, i + chunkSize);
-        createDownloadButton(chunk, part++, ts);
+      const head = document.createElement('div');
+      head.innerHTML = `<h3>📁 총 ${totalParts}개의 백업 파일 · 메모 ${selectedIds.length}건</h3>`;
+      els.downloads.appendChild(head);
+
+      // 3) 파트 버튼 생성 (클릭 순간에만 DB 읽어서 Blob 생성 → 다운로드 후 즉시 해제)
+      for (let part = 1, i = 0; i < selectedIds.length; part++, i += chunkSize) {
+        const start = i;
+        const end = Math.min(i + chunkSize, selectedIds.length);
+        const btn = document.createElement('button');
+        btn.className = 'secondary';
+        btn.textContent = `⬇️ PART ${part} 다운로드 (${end - start}개)`;
+
+        btn.onclick = async () => {
+          // 클릭 시점 DB 접근
+          const db = await openDB();
+          const tx = db.transaction([STORE_NOTES], 'readonly');
+          const st = tx.objectStore(STORE_NOTES);
+
+          const sliceIds = selectedIds.slice(start, end);
+          const out = [];
+          // getAll이 브라우저별 제약이 있어 id별 get 병렬
+          await Promise.all(sliceIds.map(id => new Promise(res => {
+            const r = st.get(id);
+            r.onsuccess = () => { if (r.result) out.push(r.result); res(); };
+            r.onerror   = () => res();
+          })));
+          db.close();
+
+          if (out.length === 0) {
+            alert('이 파트에 백업할 메모가 없습니다.');
+            return;
+          }
+
+          const json = JSON.stringify(out); // pretty-print 제거 → 용량 절감
+          const blob = new Blob([json], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `홍부_메모백업_${ts}_part${part}.json`;
+          document.body.appendChild(a);
+          a.click();
+
+          // 즉시 해제(메모리 누수 방지)
+          setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
+        };
+
+        els.downloads.appendChild(btn);
       }
-
-      // 헤더 표시
-      const h = document.createElement('div');
-      h.innerHTML = `<h3>📁 총 ${part - 1}개의 백업 파일 · 메모 ${filtered.length}건</h3>`;
-      els.downloads.prepend(h);
     }
 
-    function createDownloadButton(dataChunk, partNumber, timestamp) {
-      const json = JSON.stringify(dataChunk); // ✅ 용량 절감을 위해 pretty-print 제거
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const btn = document.createElement('button');
-      btn.textContent = `⬇️ PART ${partNumber} 다운로드`;
-      btn.className = 'secondary';
-      btn.onclick = () => {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `홍부_메모백업_${timestamp}_part${partNumber}.json`;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
-      };
-      els.downloads.appendChild(btn);
-    }
+    // ==========================
+    // 이벤트 & 초기화
+    // ==========================
+    els.refresh.addEventListener('click', async () => {
+      setAptStatus('(아파트 데이터 새로 로드 중…)');
+      await loadFilteredAptIndexFromSamePath();
+      await buildRegionFiltersFromNotes();
+    });
 
-    // === 이벤트 바인딩 ===
-    els.refresh.addEventListener('click', buildRegionFiltersFromNotes);
-
-    // apt.json 업로드 핸들러
-    els.aptFile.addEventListener('change', async (e)=>{
+    els.aptFile.addEventListener('change', async e => {
       const f = e.target.files && e.target.files[0];
-      if(!f) return;
+      if (!f) return;
       await loadAptJsonFromFile(f);
-      // 로딩 직후 지역목록 재구성
       await buildRegionFiltersFromNotes();
     });
 
-    els.sido.addEventListener('change', async () => {
-      // 시도 바뀌면 시군구 재구성
-      await buildRegionFiltersFromNotes();
-    });
-
-    els.sigungu.addEventListener('change', async () => {
-      // 시군구 바뀌면 카운트만 갱신
-      await updateSelectedCount();
-    });
-
+    els.sido.addEventListener('change', buildRegionFiltersFromNotes);
+    els.sigungu.addEventListener('change', () => updateSelectedCount());
     els.backup.addEventListener('click', backupSelectedNotes);
 
-    // === 초기 로드 ===
     (async function init() {
-      setAptStatus('(아파트 데이터 미로딩)');
-      await buildRegionFiltersFromNotes();
+      setAptStatus('(아파트 데이터 자동 로드 시도 중…)');
+      await loadFilteredAptIndexFromSamePath();   // 내용 있는 메모의 aptId만 인덱싱
+      await buildRegionFiltersFromNotes();        // 스트리밍 집계
     })();
   </script>
 </body>
