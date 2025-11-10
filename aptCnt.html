@@ -3,272 +3,527 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>전국 아파트 단지 대시보드 (모바일 최적화)</title>
+<title>전국 아파트 단지 대시보드 (모바일/엑셀 반영 최종)</title>
 
+<!-- SheetJS (XLSX) for real Excel export -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
 <style>
   :root{
-    --bg:#0b0f17; --card:#121826; --muted:#93a4bf; --text:#e6eefc;
-    --accent:#60a5fa; --border:rgba(255,255,255,.08);
-    --pane-h: 72vh; --right-pager-h: 46px;
+    --bg:#0b0f17; --card:#121826; --muted:#93a4bf; --text:#e6eefc; --accent:#60a5fa;
+    --border: rgba(255,255,255,.08);
+    /* 1080p 기준 내부 스크롤용 높이 */
+    --pane-h: 72vh;         /* 좌/우 테이블 본체 높이 */
+    --right-pager-h: 46px;  /* 우측 하단 페이저 높이 */
   }
   html,body{height:100%}
   body{
     margin:0; background:linear-gradient(180deg,#0b1020,#0b0f17);
-    color:var(--text); font-family:ui-sans-serif,system-ui,-apple-system;
-    overflow:hidden;
+    color:var(--text);
+    font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+    overflow:hidden; /* 데스크톱: 페이지 스크롤 없음(내부 스크롤) */
   }
   .wrap{display:grid; grid-template-rows:auto 1fr; min-height:100vh; gap:14px; padding:16px;}
-  header{display:flex; align-items:center; justify-content:space-between;}
+  header{display:flex; align-items:center; justify-content:space-between; gap:12px;}
   header h1{margin:0; font-size:22px; font-weight:700}
-  .panes{display:grid; grid-template-columns:320px 1fr; gap:14px; height:calc(100vh - 96px);}
+  header .meta{font-size:12px; color:var(--muted)}
+  .panes{display:grid; grid-template-columns:320px 1fr; gap:14px; min-height:0; height:calc(100vh - 96px);}
   .card{
-    background:rgba(18,24,38,.82); border:1px solid var(--border);
-    border-radius:16px; backdrop-filter:blur(6px);
-    box-shadow:0 10px 30px rgba(0,0,0,.25); display:flex; flex-direction:column; overflow:hidden;
+    background:rgba(18,24,38,.82); border:1px solid var(--border); border-radius:16px;
+    backdrop-filter: blur(6px); box-shadow:0 10px 30px rgba(0,0,0,.25);
+    min-height:0; display:flex; flex-direction:column; overflow:hidden;
   }
   .card header{padding:10px 14px; border-bottom:1px solid var(--border)}
-  .card .body{padding:10px; display:flex; flex-direction:column; gap:8px; height:100%;}
+  .card header h2{margin:0; font-size:15px}
+  .card .body{
+    padding:10px; min-height:0; display:flex; flex-direction:column; gap:8px; height:100%;
+  }
   .toolbar{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
-  input[type="text"],input[type="number"],select{
+  input[type="text"], input[type="number"], select{
     background:#0c1220; color:var(--text); border:1px solid var(--border);
-    border-radius:10px; padding:8px 10px;
+    border-radius:10px; padding:8px 10px; outline:none;
   }
   label.ck{display:flex; gap:6px; align-items:center; font-size:13px; color:#cfe6ff;}
-  .pill{border:1px solid var(--border); padding:6px 10px; border-radius:999px; font-size:12px; color:#93a4bf;}
-  .table-wrap{border:1px solid var(--border); border-radius:10px; overflow:auto; background:#0c1220;}
-  table{border-collapse:separate; border-spacing:0; width:100%; font-size:13px;}
-  thead th{position:sticky; top:0; background:#101828; color:#cfe6ff; padding:8px 10px;}
-  tbody td{padding:8px 10px; border-bottom:1px solid rgba(255,255,255,.05);}
-  tbody tr:hover{background:rgba(96,165,250,.08);}
-  .left-wrap{height:var(--pane-h);}
-  .right-wrap{height:calc(var(--pane-h) - var(--right-pager-h));}
-  #pager{display:flex; align-items:center; gap:8px; height:var(--right-pager-h);}
-  .unit-btn,.download-btn{
-    background:rgba(96,165,250,.15); color:#cfe6ff;
-    border:1px solid rgba(96,165,250,.35); border-radius:8px;
-    padding:6px 10px; font-size:12px; cursor:pointer;
+  .pill{border:1px solid var(--border); padding:6px 10px; border-radius:999px;
+    font-size:12px; color:var(--muted);}
+  .legend{font-size:12px; color:var(--muted)}
+  .table-wrap{
+    border:1px solid var(--border); border-radius:10px; overflow:auto; background:#0c1220;
   }
-  .unit-btn:hover,.download-btn:hover{background:rgba(96,165,250,.25);}
+  table{border-collapse:separate; border-spacing:0; width:100%; font-size:13px;}
+  thead th{
+    position:sticky; top:0; background:#101828; color:#cfe6ff; z-index:1;
+    text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); white-space:nowrap;
+  }
+  tbody td{padding:8px 10px; border-bottom:1px solid rgba(255,255,255,.04)}
+  tbody tr:hover{background:rgba(96,165,250,.08)}
+  /* 왼쪽 표 */
+  .left-wrap{height:var(--pane-h)}
+  .left-wrap table{min-width:auto; table-layout:auto; width:100%}
+  .left-wrap thead th:nth-child(1){width:38%}
+  .left-wrap thead th:nth-child(2){width:42%}
+  .left-wrap thead th:nth-child(3){width:20%; text-align:right;}
+  .left-wrap td:last-child{text-align:right;}
+  /* 오른쪽 표: 본문 내 스크롤 (페이저 높이 감안) */
+  .right-wrap{height:calc(var(--pane-h) - var(--right-pager-h))}
+  .count-badge{background:rgba(96,165,250,.15); color:#cfe6ff;
+    padding:2px 8px; border-radius:999px; font-size:11px;
+    border:1px solid rgba(96,165,250,.35);}
+  #pager{display:flex; gap:6px; align-items:center; margin:4px 0 0 0; padding:0; height:var(--right-pager-h)}
+  #pageSize{height:32px}
+  .unit-btn, .download-btn {
+    background:rgba(96,165,250,.15);
+    color:#cfe6ff;
+    border:1px solid rgba(96,165,250,.35);
+    border-radius:8px;
+    padding:6px 10px;
+    font-size:12px;
+    cursor:pointer;
+    transition:all .2s;
+  }
+  .unit-btn:hover, .download-btn:hover { background:rgba(96,165,250,.25); }
+
+  /* 모바일 최적화: 좌/우 → 상/하, 왼쪽카드 높이 제한(오른쪽이 살짝 보이게) */
   @media (max-width:1024px){
-    html,body{height:auto;} body{overflow:auto;}
-    .panes{grid-template-columns:1fr; grid-template-rows:auto auto; height:auto;}
+    html, body { height:auto; }
+    body { overflow:auto; } /* 모바일에서 페이지 스크롤 허용 */
+
+    .panes{
+      grid-template-columns:1fr;
+      grid-template-rows:auto auto;
+      height:auto;
+    }
+
+    /* 왼쪽 카드 전체에 화면보다 살짝 작게 최대 높이 적용 */
     #leftCard{
-      max-height:calc(100dvh - 120px) !important; /* 화면보다 살짝 작게 */
+      max-height:calc(100dvh - 120px) !important; /* 필요하면 90~160px로 튜닝 */
       overflow:hidden;
     }
-    #leftCard .body{flex-direction:column; height:100%; min-height:0;}
+    #leftCard .body{
+      display:flex; flex-direction:column; height:100%; min-height:0;
+    }
     #leftCard .left-wrap{
       flex:1 1 auto; min-height:0; overflow:auto; overscroll-behavior:contain;
     }
-    .right-wrap{margin-top:12px; height:auto; max-height:none;}
+
+    .right-wrap{
+      margin-top:12px;
+      height:auto; max-height:none; /* 아래 그리드는 본문 스크롤로 접근 */
+    }
   }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>전국 아파트 단지 대시보드</h1>
-    <span id="summaryMeta" class="pill">로딩중...</span>
-  </header>
-
-  <div class="panes">
-    <!-- LEFT -->
-    <section class="card" id="leftCard">
-      <header><h2>시군구별 단지수</h2></header>
-      <div class="body">
-        <div class="toolbar">
-          <input id="leftSearch" type="text" placeholder="검색: 시도명/시군구" />
-        </div>
-        <div class="toolbar">
-          <label class="ck"><input type="checkbox" id="ckSale"/>아파트분양권 포함</label>
-          <label class="ck">세대수(이상)
-            <input id="minUnits" type="number" value="200" style="width:60px;text-align:right;"/>
-            <button class="unit-btn" data-val="200">200</button>
-            <button class="unit-btn" data-val="300">300</button>
-          </label>
-        </div>
-        <div class="toolbar">
-          <label class="ck">전용면적
-            <input id="areaFrom" type="number" placeholder="from" style="width:70px"/> ~
-            <input id="areaTo" type="number" placeholder="to" style="width:70px"/>㎡
-          </label>
-        </div>
-        <div class="table-wrap left-wrap">
-          <table id="leftTable"><thead>
-            <tr><th>시도명</th><th>시군구</th><th id="sortByCount" style="cursor:pointer;">단지수</th></tr>
-          </thead><tbody></tbody></table>
-        </div>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>전국 아파트 단지 대시보드</h1>
+        <div class="meta">좌: 동적 단지수(필터 반영) · 우: 상세 데이터</div>
       </div>
-    </section>
+      <div class="toolbar"><span class="pill" id="summaryMeta">데이터 로딩중…</span></div>
+    </header>
 
-    <!-- RIGHT -->
-    <section class="card">
-      <header><h2>상세 데이터</h2></header>
-      <div class="body">
-        <div class="toolbar">
-          <input id="detailSearch" type="text" placeholder="검색"/>
-          <select id="colSelect">
-            <option value="">모든 컬럼</option>
-            <option>시도명</option><option>시군구</option><option>단지명</option>
-          </select>
-          <span id="filterBadge" class="pill" style="display:none;"></span>
+    <div class="panes">
+      <!-- LEFT: Dynamic counts with filters -->
+      <section class="card" id="leftCard">
+        <header><h2>시군구별 단지수</h2></header>
+        <div class="body">
+          <div class="toolbar">
+            <input id="leftSearch" type="text" placeholder="검색: 시도명/시군구" />
+          </div>
+          <div class="toolbar">
+            <label class="ck"><input type="checkbox" id="ckSale" />아파트분양권 포함</label>
+            <label class="ck">세대수(이상)
+              <input id="minUnits" type="number" min="0" step="10" value="200" style="width:60px; text-align:right;" />
+              <button class="unit-btn" data-val="200">200</button>
+              <button class="unit-btn" data-val="300">300</button>
+            </label>
+          </div>
+          <div class="toolbar">
+            <label class="ck">전용면적
+              <input id="areaFrom" type="number" min="0" step="1" placeholder="from" style="width:70px" /> ~
+              <input id="areaTo" type="number" min="0" step="1" placeholder="to" style="width:70px" /> ㎡
+            </label>
+          </div>
+          <div class="legend">행 클릭 → 우측 상세 필터링 (단지코드 중복 제거 후 카운트)</div>
+          <div class="table-wrap left-wrap">
+            <table id="leftTable">
+              <thead>
+                <tr>
+                  <th>시도명</th>
+                  <th>시군구</th>
+                  <th id="sortByCount" style="cursor:pointer;">단지수</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-        <div class="table-wrap right-wrap">
-          <table id="detailTable"><thead><tr>
-            <th>시도명</th><th>시군구</th><th>읍면동</th><th>유형</th>
-            <th>단지코드</th><th>단지명</th><th>사용승인일</th><th>총세대수</th><th>전용면적</th>
-          </tr></thead><tbody></tbody></table>
+      </section>
+
+      <!-- RIGHT: Details -->
+      <section class="card">
+        <header><h2>상세 데이터</h2></header>
+        <div class="body">
+          <div class="toolbar">
+            <input id="detailSearch" type="text" placeholder="자유 검색 (모든 컬럼 또는 선택 컬럼)" />
+            <select id="colSelect">
+              <option value="">모든 컬럼에서 검색</option>
+              <option>시도명</option><option>시군구</option><option>읍면동</option><option>유형</option>
+              <option>단지코드</option><option>단지명</option><option>사용승인일</option><option>총세대수</option><option>전용면적</option>
+            </select>
+            <span id="filterBadge" class="count-badge" style="display:none;"></span>
+          </div>
+          <div class="table-wrap right-wrap">
+            <table id="detailTable">
+              <thead><tr>
+                <th>시도명</th><th>시군구</th><th>읍면동</th><th>유형</th>
+                <th>단지코드</th><th>단지명</th><th>사용승인일</th><th>총세대수</th><th>전용면적</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="pager">
+            <button id="prevBtn">이전</button>
+            <span id="pageInfo" class="pill">-</span>
+            <button id="nextBtn">다음</button>
+            <span style="flex:1"></span>
+            <button id="downloadBtn" class="download-btn">엑셀 다운로드</button>
+          </div>
         </div>
-        <div id="pager">
-          <button id="prevBtn">이전</button>
-          <span id="pageInfo" class="pill">-</span>
-          <button id="nextBtn">다음</button>
-          <span style="flex:1"></span>
-          <button id="downloadBtn" class="download-btn">엑셀 다운로드</button>
-        </div>
-      </div>
-    </section>
+      </section>
+    </div>
   </div>
-</div>
 
 <script>
-const leftTbody=document.querySelector('#leftTable tbody');
-const detailTbody=document.querySelector('#detailTable tbody');
-const ckSale=document.getElementById('ckSale');
-const minUnitsInp=document.getElementById('minUnits');
-const areaFromInp=document.getElementById('areaFrom');
-const areaToInp=document.getElementById('areaTo');
-const leftSearch=document.getElementById('leftSearch');
-const sortByCount=document.getElementById('sortByCount');
-const pageInfo=document.getElementById('pageInfo');
-const prevBtn=document.getElementById('prevBtn');
-const nextBtn=document.getElementById('nextBtn');
-const detailSearch=document.getElementById('detailSearch');
-const colSelect=document.getElementById('colSelect');
-const filterBadge=document.getElementById('filterBadge');
-const downloadBtn=document.getElementById('downloadBtn');
+  // DOM refs
+  const leftTbody   = document.querySelector('#leftTable tbody');
+  const detailTbody = document.querySelector('#detailTable tbody');
+  const leftSearch  = document.getElementById('leftSearch');
+  const detailSearch= document.getElementById('detailSearch');
+  const colSelect   = document.getElementById('colSelect');
+  const filterBadge = document.getElementById('filterBadge');
+  const summaryMeta = document.getElementById('summaryMeta');
+  const prevBtn     = document.getElementById('prevBtn');
+  const nextBtn     = document.getElementById('nextBtn');
+  const pageInfo    = document.getElementById('pageInfo');
+  const ckSale      = document.getElementById('ckSale');
+  const minUnitsInp = document.getElementById('minUnits');
+  const areaFromInp = document.getElementById('areaFrom');
+  const areaToInp   = document.getElementById('areaTo');
+  const sortByCountTh = document.getElementById('sortByCount');
+  const downloadBtn = document.getElementById('downloadBtn');
 
-let apartments=[],complexes=[],sggCounts=[],filteredDetail=[];
-let currentPage=1,pageSize=100,selectedSido="",selectedSgg="",sortDir=null;
+  // State
+  let apartments = [];           // 원본 행(면적별 중복 포함)
+  let complexes  = [];           // 단지 단위 요약(세대수 최대, 면적 리스트, 분양권 존재 여부)
+  let sggCounts  = [];           // 동적 계산된 시군구별 단지수
+  let filteredDetail = [];       // 우측 표시용 데이터
+  let currentPage = 1;
+  let pageSize   = 100;
+  let selectedSido = "", selectedSgg = ""; // 좌측 선택
+  let sortDir = null;            // null=기본, 'asc', 'desc' (좌측 단지수 정렬 상태)
 
-function fmt(n){return new Intl.NumberFormat('ko-KR').format(n??0);}
-function toNum(v){if(v==null||v==='')return NaN;const n=Number(String(v).replace(/,/g,''));return Number.isFinite(n)?n:NaN;}
+  // Utils
+  function fmt(n){ try{ return new Intl.NumberFormat('ko-KR').format(n ?? 0); }catch(e){ return n; } }
+  function toNum(val){
+    if(val===null || val===undefined || val==='') return NaN;
+    const s = String(val).replace(/,/g,'').trim();
+    const num = Number(s);
+    return Number.isFinite(num) ? num : NaN;
+  }
 
-function buildComplexes(rows){
-  const map=new Map();
-  for(const r of rows){
-    const code=r['단지코드']; if(!code) continue;
-    const units=toNum(r['총세대수']), area=toNum(r['전용면적']);
-    const type=String(r['유형']||'');
-    if(!map.has(code)){
-      map.set(code,{단지코드:code,시도명:r['시도명']||'',시군구:r['시군구']||'',
-        총세대수:units,면적목록:Number.isFinite(area)?[area]:[],분양권:type.includes('아파트분양권')});
+  // 1) 단지 단위 요약 생성
+  function buildComplexes(rows){
+    const map = new Map(); // key: 단지코드
+    for(const r of rows){
+      const code = r['단지코드'];
+      if(!code) continue;
+      const key = String(code);
+      const units = toNum(r['총세대수']);
+      const area  = toNum(r['전용면적']);
+      const type  = String(r['유형'] || '');
+
+      if(!map.has(key)){
+        map.set(key, {
+          단지코드: key,
+          시도명: r['시도명'] || '',
+          시군구: r['시군구'] || '',
+          총세대수: Number.isFinite(units) ? units : NaN,
+          면적목록: Number.isFinite(area) ? [area] : [],
+          분양권: type.includes('아파트분양권'),
+        });
+      }else{
+        const ex = map.get(key);
+        if(Number.isFinite(units)){
+          ex.총세대수 = Number.isFinite(ex.총세대수) ? Math.max(ex.총세대수, units) : units;
+        }
+        if(Number.isFinite(area)) ex.면적목록.push(area);
+        if(type.includes('아파트분양권')) ex.분양권 = true;
+      }
+    }
+    complexes = Array.from(map.values());
+  }
+
+  // 면적 범위 만족 여부 (비어있으면 미적용)
+  function complexAreaOk(ex, hasMin, min, hasMax, max){
+    if(!hasMin && !hasMax) return true;        // 필터 미적용
+    if(!ex.면적목록.length) return false;      // 필터 활성 시 면적정보 없으면 제외
+    for(const a of ex.면적목록){
+      if(hasMin && a < min) continue;
+      if(hasMax && a > max) continue;
+      return true;
+    }
+    return false;
+  }
+
+  // 2) 동적 카운트 계산 (+ 왼쪽 검색 반영)
+  function computeSggCounts(){
+    const includeSale = ckSale.checked;
+    const minUnits = toNum(minUnitsInp.value) || 0;
+
+    const minArea = toNum(areaFromInp.value);
+    const maxArea = toNum(areaToInp.value);
+    const hasMin = Number.isFinite(minArea);
+    const hasMax = Number.isFinite(maxArea);
+
+    const filteredComplexes = complexes.filter(c => {
+      if(!includeSale && c.분양권) return false;
+      if(!Number.isFinite(c.총세대수) || c.총세대수 < minUnits) return false;
+      if(!complexAreaOk(c, hasMin, minArea, hasMax, maxArea)) return false;
+      return true;
+    });
+
+    const map = new Map(); // key: 시도||시군구
+    for(const c of filteredComplexes){
+      const gkey = `${c.시도명||''}||${c.시군구||''}`;
+      map.set(gkey, (map.get(gkey)||0)+1);
+    }
+    sggCounts = Array.from(map.entries()).map(([k,cnt])=>{
+      const [sido, sgg] = k.split('||');
+      return {시도명:sido, 시군구:sgg, 단지수:cnt};
+    });
+
+    // 정렬 유지
+    if(sortDir === 'asc'){
+      sggCounts.sort((a,b)=> a.단지수 - b.단지수);
+    }else if(sortDir === 'desc'){
+      sggCounts.sort((a,b)=> b.단지수 - a.단지수);
     }else{
-      const ex=map.get(code);
-      if(Number.isFinite(units)) ex.총세대수=Math.max(ex.총세대수||0,units);
-      if(Number.isFinite(area)) ex.면적목록.push(area);
-      if(type.includes('아파트분양권')) ex.분양권=true;
+      sggCounts.sort((a,b)=> a.시도명.localeCompare(b.시도명) || a.시군구.localeCompare(b.시군구));
+    }
+
+    // 🔎 왼쪽 검색어 적용 (시도명/시군구)
+    const q = (leftSearch.value || '').trim().toLowerCase();
+    if(q){
+      sggCounts = sggCounts.filter(r =>
+        String(r['시도명']||'').toLowerCase().includes(q) ||
+        String(r['시군구']||'').toLowerCase().includes(q)
+      );
+    }
+
+    // 헤더 아이콘 표시
+    if(sortDir==='asc') sortByCountTh.textContent = '단지수 ▲';
+    else if(sortDir==='desc') sortByCountTh.textContent = '단지수 ▼';
+    else sortByCountTh.textContent = '단지수';
+  }
+
+  // 3) 좌측 렌더
+  function renderLeft(){
+    leftTbody.innerHTML = '';
+    for(const r of sggCounts){
+      const tr = document.createElement('tr');
+      const sggTxt = r['시군구'] || '(없음)';
+      tr.innerHTML = `<td>${r['시도명']||''}</td><td>${sggTxt}</td><td style="text-align:right">${fmt(r['단지수'])}</td>`;
+      tr.style.cursor = 'pointer';
+      tr.addEventListener('click', ()=>{
+        selectedSido = r['시도명'] || '';
+        selectedSgg  = r['시군구'] || '';
+        applyDetailFilter();
+      });
+      leftTbody.appendChild(tr);
     }
   }
-  complexes=[...map.values()];
-}
 
-function complexAreaOk(ex,hasMin,min,hasMax,max){
-  if(!hasMin&&!hasMax)return true;
-  if(!ex.면적목록.length)return false;
-  return ex.면적목록.some(a=>(!hasMin||a>=min)&&(!hasMax||a<=max));
-}
+  // 4) 페이징/상세
+  function paginate(rows){
+    const total = rows.length;
+    const maxPage = Math.max(1, Math.ceil(total / pageSize));
+    if(currentPage > maxPage) currentPage = maxPage;
+    const start = (currentPage - 1) * pageSize;
+    const slice = rows.slice(start, start + pageSize);
+    pageInfo.textContent = `${fmt(currentPage)} / ${fmt(maxPage)} · 총 ${fmt(total)} 행`;
+    prevBtn.disabled = currentPage <= 1;
+    nextBtn.disabled = currentPage >= maxPage;
+    return slice;
+  }
+  function renderDetail(rows){
+    detailTbody.innerHTML = '';
+    for(const r of paginate(rows)){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${r['시도명']||''}</td>
+        <td>${r['시군구']||''}</td>
+        <td>${r['읍면동']||''}</td>
+        <td>${r['유형']||''}</td>
+        <td>${r['단지코드']||''}</td>
+        <td>${r['단지명']||''}</td>
+        <td>${r['사용승인일']||''}</td>
+        <td style="text-align:right">${fmt(r['총세대수'])}</td>
+        <td style="text-align:right">${r['전용면적']||''}</td>
+      `;
+      detailTbody.appendChild(tr);
+    }
+  }
 
-function computeSggCounts(){
-  const inc=ckSale.checked,minU=toNum(minUnitsInp.value)||0;
-  const minA=toNum(areaFromInp.value),maxA=toNum(areaToInp.value);
-  const hasMin=Number.isFinite(minA),hasMax=Number.isFinite(maxA);
-  const f=complexes.filter(c=>{
-    if(!inc&&c.분양권)return false;
-    if(!Number.isFinite(c.총세대수)||c.총세대수<minU)return false;
-    if(!complexAreaOk(c,hasMin,minA,hasMax,maxA))return false;
-    return true;
+  // 5) 좌측 선택을 우측 상세에 반영 (현재 필터 기준)
+  function applyDetailFilter(){
+    const includeSale = ckSale.checked;
+    const minUnits = toNum(minUnitsInp.value) || 0;
+
+    const minArea = toNum(areaFromInp.value);
+    const maxArea = toNum(areaToInp.value);
+    const hasMin = Number.isFinite(minArea);
+    const hasMax = Number.isFinite(maxArea);
+
+    const complexOk = new Set();
+    for(const c of complexes){
+      if(!includeSale && c.분양권) continue;
+      if(!Number.isFinite(c.총세대수) || c.총세대수 < minUnits) continue;
+      if(!complexAreaOk(c, hasMin, minArea, hasMax, maxArea)) continue;
+      if(selectedSido && (c.시도명 || '') !== selectedSido) continue;
+      if((selectedSgg ?? '') !== '' && (c.시군구 || '') !== selectedSgg) continue;
+      complexOk.add(c.단지코드);
+    }
+
+    // 우측 상세는 "행 단위"로도 면적 범위를 적용해 보여줌
+    filteredDetail = apartments.filter(r => {
+      const ok = complexOk.has(String(r['단지코드']||''));
+      if(!ok) return false;
+
+      const a = toNum(r['전용면적']);
+      if(!hasMin && !hasMax) return true;               // 면적 필터 미적용
+      if(!Number.isFinite(a)) return false;             // 필터 활성 시 면적정보 없으면 제외
+      if(hasMin && a < minArea) return false;
+      if(hasMax && a > maxArea) return false;
+      return true;
+    });
+
+    currentPage = 1;
+    renderDetail(filteredDetail);
+
+    const sggLabel = (selectedSgg ?? '') === '' ? '(없음)' : selectedSgg;
+    filterBadge.textContent = `${selectedSido || ''} ${sggLabel} · 행 ${fmt(filteredDetail.length)}개`;
+    filterBadge.style.display = '';
+  }
+
+  // 6) 오른쪽 자유 검색(모든 열)
+  function doDetailSearch(){
+    const q = (detailSearch.value || '').trim().toLowerCase();
+    const field = colSelect.value;
+    const target = filteredDetail.length ? filteredDetail : apartments;
+    if(!q){
+      currentPage = 1;
+      renderDetail(target);
+      filterBadge.style.display = filteredDetail.length ? '' : 'none';
+      return;
+    }
+    const keys = field ? [field] :
+      ['시도명','시군구','읍면동','유형','단지코드','단지명','사용승인일','총세대수','전용면적'];
+    const out = target.filter(r => keys.some(k => String(r[k] ?? '').toLowerCase().includes(q)));
+    currentPage = 1;
+    renderDetail(out);
+    filterBadge.textContent = `검색 결과: ${fmt(out.length)}행`;
+    filterBadge.style.display = '';
+  }
+
+  // XLSX(엑셀) 다운로드: 현재 페이지가 아닌 '전체 데이터(필터 반영 전체)'
+  function downloadExcel(){
+    const rows = (filteredDetail.length ? filteredDetail : apartments);
+    if(!rows.length){
+      alert('다운로드할 데이터가 없습니다.');
+      return;
+    }
+    const headers = ['시도명','시군구','읍면동','유형','단지코드','단지명','사용승인일','총세대수','전용면적'];
+
+    // 워크시트 생성 (헤더 순서 지정)
+    const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+    // 한글 헤더 보정
+    headers.forEach((key, i) => {
+      const cell = XLSX.utils.encode_col(i) + '1';
+      if(ws[cell]) ws[cell].v = key;
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, '아파트단지');
+
+    // 파일명: 선택된 시군구가 있으면 그 이름으로, 없으면 기본명
+    const filename = (selectedSgg && selectedSgg.trim()!=='')
+      ? `${selectedSgg.trim()}.xlsx`
+      : 'apartments_all.xlsx';
+
+    XLSX.writeFile(wb, filename);
+  }
+
+  // 이벤트: 왼쪽 검색/필터
+  leftSearch.addEventListener('input', ()=>{ computeSggCounts(); renderLeft(); });
+  [ckSale, minUnitsInp, areaFromInp, areaToInp].forEach(el => {
+    el.addEventListener('input', ()=>{
+      computeSggCounts();
+      renderLeft();
+      if(selectedSido || selectedSgg) applyDetailFilter();
+    });
   });
-  const map=new Map();
-  for(const c of f){
-    const key=(c.시도명||'')+'|'+(c.시군구||'');
-    map.set(key,(map.get(key)||0)+1);
-  }
-  sggCounts=[...map.entries()].map(([k,v])=>{const[sido,sgg]=k.split('|');return{시도명:sido,시군구:sgg,단지수:v}});
-  if(sortDir==='asc')sggCounts.sort((a,b)=>a.단지수-b.단지수);
-  else if(sortDir==='desc')sggCounts.sort((a,b)=>b.단지수-a.단지수);
-  else sggCounts.sort((a,b)=>a.시도명.localeCompare(b.시도명)||a.시군구.localeCompare(b.시군구));
-}
 
-function renderLeft(){
-  leftTbody.innerHTML='';
-  for(const r of sggCounts){
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${r.시도명}</td><td>${r.시군구}</td><td style="text-align:right">${fmt(r.단지수)}</td>`;
-    tr.onclick=()=>{selectedSido=r.시도명;selectedSgg=r.시군구;applyDetail();};
-    leftTbody.appendChild(tr);
-  }
-}
-function paginate(rows){
-  const total=rows.length,max=Math.max(1,Math.ceil(total/pageSize));
-  if(currentPage>max)currentPage=max;
-  const start=(currentPage-1)*pageSize;
-  const page=rows.slice(start,start+pageSize);
-  pageInfo.textContent=`${fmt(currentPage)} / ${fmt(max)} · 총 ${fmt(total)} 행`;
-  prevBtn.disabled=currentPage<=1;nextBtn.disabled=currentPage>=max;
-  return page;
-}
-function renderDetail(rows){
-  detailTbody.innerHTML='';
-  for(const r of paginate(rows)){
-    const tr=document.createElement('tr');
-    tr.innerHTML=`<td>${r.시도명}</td><td>${r.시군구}</td><td>${r.읍면동}</td>
-      <td>${r.유형}</td><td>${r.단지코드}</td><td>${r.단지명}</td><td>${r.사용승인일}</td>
-      <td>${fmt(r.총세대수)}</td><td>${r.전용면적}</td>`;
-    detailTbody.appendChild(tr);
-  }
-}
-function applyDetail(){
-  const inc=ckSale.checked,minU=toNum(minUnitsInp.value)||0;
-  const minA=toNum(areaFromInp.value),maxA=toNum(areaToInp.value);
-  const hasMin=Number.isFinite(minA),hasMax=Number.isFinite(maxA);
-  const ok=new Set();
-  for(const c of complexes){
-    if(!inc&&c.분양권)continue;
-    if(!Number.isFinite(c.총세대수)||c.총세대수<minU)continue;
-    if(!complexAreaOk(c,hasMin,minA,hasMax,maxA))continue;
-    if(c.시도명!==selectedSido||c.시군구!==selectedSgg)continue;
-    ok.add(c.단지코드);
-  }
-  filteredDetail=apartments.filter(r=>ok.has(String(r.단지코드||'')));
-  currentPage=1;renderDetail(filteredDetail);
-  filterBadge.style.display='';filterBadge.textContent=`${selectedSgg} (${fmt(filteredDetail.length)}행)`;
-}
+  // 세대수 빠른입력 버튼
+  document.querySelectorAll('.unit-btn').forEach(btn => {
+    btn.addEventListener('click', ()=>{
+      minUnitsInp.value = btn.dataset.val;
+      computeSggCounts(); renderLeft();
+      if(selectedSido || selectedSgg) applyDetailFilter();
+    });
+  });
 
-function downloadExcel(){
-  const rows=filteredDetail.length?filteredDetail:apartments;
-  if(!rows.length){alert('데이터 없음');return;}
-  const headers=['시도명','시군구','읍면동','유형','단지코드','단지명','사용승인일','총세대수','전용면적'];
-  const ws=XLSX.utils.json_to_sheet(rows,{header:headers});
-  headers.forEach((h,i)=>{const c=XLSX.utils.encode_col(i)+'1';if(ws[c])ws[c].v=h;});
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'아파트단지');
-  const fname=selectedSgg?`${selectedSgg}.xlsx`:'apartments_all.xlsx';
-  XLSX.writeFile(wb,fname);
-}
+  // 단지수 헤더 정렬 토글
+  sortByCountTh.addEventListener('click', ()=>{
+    if(sortDir === null) sortDir = 'asc';
+    else if(sortDir === 'asc') sortDir = 'desc';
+    else sortDir = null;
+    computeSggCounts();
+    renderLeft();
+  });
 
-document.querySelectorAll('.unit-btn').forEach(b=>b.onclick=()=>{minUnitsInp.value=b.dataset.val;computeSggCounts();renderLeft();});
-[ckSale,minUnitsInp,areaFromInp,areaToInp,leftSearch].forEach(el=>el.oninput=()=>{computeSggCounts();renderLeft();});
-sortByCount.onclick=()=>{if(sortDir===null)sortDir='asc';else if(sortDir==='asc')sortDir='desc';else sortDir=null;computeSggCounts();renderLeft();};
-prevBtn.onclick=()=>{if(currentPage>1){currentPage--;renderDetail(filteredDetail.length?filteredDetail:apartments);}};
-nextBtn.onclick=()=>{currentPage++;renderDetail(filteredDetail.length?filteredDetail:apartments);};
-downloadBtn.onclick=downloadExcel;
+  // 이벤트: 오른쪽 검색/페이징/다운로드
+  detailSearch.addEventListener('input', doDetailSearch);
+  colSelect.addEventListener('change', doDetailSearch);
+  prevBtn.addEventListener('click', ()=>{ if(currentPage>1){ currentPage--; renderDetail(filteredDetail.length?filteredDetail:apartments); }});
+  nextBtn.addEventListener('click', ()=>{ currentPage++; renderDetail(filteredDetail.length?filteredDetail:apartments); });
+  downloadBtn.addEventListener('click', downloadExcel);
 
-(async()=>{
-  const r=await fetch('apartments.json');apartments=await r.json();
-  buildComplexes(apartments);computeSggCounts();renderLeft();renderDetail(apartments);
-})();
+  async function init(){
+    const aptRes = await fetch('apartments.json');
+    apartments = await aptRes.json();
+
+    // 숫자 정규화
+    apartments = apartments.map(r => {
+      const units = toNum(r['총세대수']);
+      if(Number.isFinite(units)) r['총세대수'] = units;
+      const area = toNum(r['전용면적']);
+      if(Number.isFinite(area)) r['전용면적'] = area;
+      return r;
+    });
+
+    buildComplexes(apartments);
+    computeSggCounts(); renderLeft();
+
+    filteredDetail = [];  // 초기엔 전체
+    renderDetail(apartments);
+
+    // 상단 요약: 단지 수/시군구 수
+    const sggSet = new Set(complexes.map(c => (c.시도명||'')+'|'+(c.시군구||'')));
+    summaryMeta.textContent = `시군구 ${fmt(sggSet.size)}개 · 단지 ${fmt(complexes.length)}개`;
+  }
+  window.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
 </html>
