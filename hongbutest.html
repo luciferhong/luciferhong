@@ -10,6 +10,41 @@
 	<script type="text/javascript" src="MarkerClustering.js"></script>
 	<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
+<style>
+  /* #map는 동적 버튼 포지셔닝을 위해 relative */
+  #map { position: relative; }
+
+  /* 지도 우상단 플로팅 버튼 */
+  .map-float-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #bbb;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10000;
+  /* 아이콘 위치 살짝 상향 보정 */
+  transform: translateY(-1px);
+}
+
+
+  /* 전체화면일 때 상단 타이틀/컨트롤 숨김(선택) */
+  body.fullscreen-active > h1,
+  body.fullscreen-active > #controls { display: none !important; }
+
+  /* 모바일 브라우저 상단/하단 UI 변동 대응: svh 권장 */
+  @supports (height: 100svh) {
+    #map { height: calc(100svh - 150px); }
+  }
+</style>
 
 
 
@@ -913,6 +948,7 @@ let imageModalShowYn = false;
 	document.getElementById("toggleBlankMap").addEventListener("change", async () => {
 		const useBlank = document.getElementById("toggleBlankMap").checked;
 		await createMap(useBlank);
+		injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
 		
 	});
 
@@ -1063,7 +1099,8 @@ console.log(document.getElementById("locationPopup").style.display);
     
 		try {
 			//const response = await fetch("https://your-github-username.github.io/data/apt.json"); // ✅ JSON 파일 사용
-			const response = await fetch("apt.json");
+			//const response = await fetch("apt.json");
+			const response = await fetch(`apt.json?t=${Date.now()}`, { cache: "no-store" });
 			const data = await response.json();
 
 			apartmentData = data.map((apt, index) => ({
@@ -1085,8 +1122,8 @@ console.log(document.getElementById("locationPopup").style.display);
 			//console.log("✅ 아파트 데이터 fetch 완료");
 			updateMarkers(window.map.getBounds())
 
-buildRegionFiltersFromApartments();
-attachRegionFilterEvents();
+			buildRegionFiltersFromApartments();
+			attachRegionFilterEvents();
 
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
@@ -1697,6 +1734,7 @@ await initIndexedDB();
 
 		const useBlank = document.getElementById("toggleBlankMap")?.checked;
 		createMap(useBlank);
+		injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
 
 
 		// ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
@@ -1887,27 +1925,34 @@ let apartmentDetailData = {};
 
 // JSON 데이터 로드
 async function loadApartmentsDetail() {
-    try {
-        //console.log("📌 JSON 데이터 로드 시작");
+  try {
+    // 매 호출마다 다른 쿼리스트링으로 캐시 우회
+    const ts = Date.now();
 
-        // 🔹 두 개의 JSON 파일 fetch()
-        const [res1, res2] = await Promise.all([
-            fetch("apartments1.json").then(res => res.json()),
-            fetch("apartments2.json").then(res => res.json())
-        ]);
+    // 두 JSON을 캐시 없이 병렬 로드
+    const [res1, res2] = await Promise.all([
+      fetch(`apartments1.json?t=${ts}`, { cache: "no-store" }),
+      fetch(`apartments2.json?t=${ts}`, { cache: "no-store" })
+    ]);
 
-        // 🔹 JSON 병합 (Object.assign() 사용)
-        apartmentDetailData = Object.assign({}, res1, res2);
-
-        //console.log("✅ 아파트 데이터 로드 완료:", apartmentDetailData);
-
-        // 🔹 마커 업데이트
-        updateMarkers(window.map.getBounds());
-
-    } catch (error) {
-        console.error("❌ 아파트 데이터 불러오기 실패:", error);
+    if (!res1.ok || !res2.ok) {
+      throw new Error(`fetch failed: ${res1.status}/${res2.status}`);
     }
+
+    const [json1, json2] = await Promise.all([res1.json(), res2.json()]);
+
+    // 병합
+    apartmentDetailData = Object.assign({}, json1, json2);
+
+    // 마커 갱신
+    if (window.map && window.map.getBounds) {
+      updateMarkers(window.map.getBounds());
+    }
+  } catch (error) {
+    console.error("❌ 아파트 상세 데이터 불러오기 실패:", error);
+  }
 }
+
 // 맨 위 전역에 추가
 const aptMemoImageList = {};
 
@@ -5363,11 +5408,101 @@ function focusMapToSelectedRegion(zoomLevel = 15) {
     window.map.setZoom(zoomLevel);
   }
 }
+document.getElementById("unitFilter")
+  .addEventListener("input", () => updateMarkers(window.map.getBounds()));
 
 
 </script>
 
 
+<script>
+  // 지도 내부에 “최대화” 버튼을 주입
+  function injectMaximizeButton(){
+    const mapEl = document.getElementById('map');
+    if (!mapEl) return;
+
+    // 이미 있으면 중복 생성 방지
+    if (mapEl.querySelector('#mapMaxBtn')) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'mapMaxBtn';
+    btn.className = 'map-float-btn';
+    btn.title = '최대화';
+    btn.setAttribute('aria-label','지도 최대화');
+    btn.textContent = '⤢'; // 최대화 아이콘(축소 시 '⤡'로 바꿔줌)
+    mapEl.appendChild(btn);
+
+    // 클릭 시 전체화면 시도 → 실패 시 기존 toggleFullscreen()로 폴백
+    btn.addEventListener('click', async () => {
+      const mapNode = document.getElementById('map');
+
+      // 이미 전체화면이면 종료
+      if (document.fullscreenElement) {
+        await document.exitFullscreen().catch(()=>{});
+        return;
+      }
+
+      // Fullscreen API 우선 사용(모바일 최적화: navigationUI 숨김)
+      if (mapNode.requestFullscreen) {
+        try {
+          await mapNode.requestFullscreen({ navigationUI: "hide" });
+        } catch(e){
+          // 브라우저 정책 등으로 실패 시 기존 고정포지션 방식 사용
+          if (typeof toggleFullscreen === 'function') {
+            toggleFullscreen();
+            onEnterPseudoFullscreen();
+          }
+        }
+      } else {
+        // API 미지원 폴백
+        if (typeof toggleFullscreen === 'function') {
+          toggleFullscreen();
+          onEnterPseudoFullscreen();
+        }
+      }
+    });
+  }
+
+  // Fullscreen 변경 시 UI/사이즈 동기화
+  document.addEventListener('fullscreenchange', () => {
+    const isFull = !!document.fullscreenElement;
+    document.body.classList.toggle('fullscreen-active', isFull);
+
+    const btn = document.getElementById('mapMaxBtn');
+    if (btn) btn.textContent = isFull ? '⤡' : '⤢'; // 축소/확대 아이콘 토글
+
+    // 지도의 실제 픽셀 크기 갱신
+    const mapEl = document.getElementById('map');
+    if (window.map && mapEl) {
+      // layout 안정 후 사이즈 반영
+      setTimeout(() => {
+        window.map.setSize(new naver.maps.Size(mapEl.clientWidth, mapEl.clientHeight));
+      }, 150);
+    }
+  });
+
+  // 폴백(고정포지션 전체화면) 진입 시 UI/사이즈 동기화
+  function onEnterPseudoFullscreen(){
+    document.body.classList.add('fullscreen-active');
+    const btn = document.getElementById('mapMaxBtn');
+    if (btn) btn.textContent = '⤡';
+
+    const mapEl = document.getElementById('map');
+    if (window.map && mapEl) {
+      setTimeout(() => {
+        window.map.setSize(new naver.maps.Size(mapEl.clientWidth, mapEl.clientHeight));
+      }, 150);
+    }
+  }
+
+  // 폴백 해제용: 기존 toggleFullscreen()은 다시 누르면 복귀하므로,
+  // 필요 시 외부에서 document.body.classList.remove('fullscreen-active') 호출 가능.
+
+  // 🔸 createMap()가 #map을 비우고 다시 그리므로, 매번 주입 필요
+  //    => createMap()의 마지막에 호출되도록 1줄 추가하세요.
+  //    await findWay(); setupRightClickEvent(); ... 뒤 아무 곳에나 OK
+  //    injectMaximizeButton();
+</script>
 
 
 
