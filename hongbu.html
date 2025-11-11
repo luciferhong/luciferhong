@@ -39,10 +39,17 @@
   body.fullscreen-active > h1,
   body.fullscreen-active > #controls { display: none !important; }
 
-  /* 모바일 브라우저 상단/하단 UI 변동 대응: svh 권장 */
-  @supports (height: 100svh) {
-    #map { height: calc(100svh - 150px); }
-  }
+html, body { margin:0; padding:0; overflow-x:hidden; }
+
+/* 일반 상태: 주소창 포함 높이 변동 대응 */
+@supports (height: 100svh) {
+  #map { height: calc(100svh - 150px) !important; }
+}
+
+/* 전체화면(폴백/네이티브 공통)일 때는 보이는 화면 전부 채우기 */
+@supports (height: 100dvh) {
+  body.fullscreen-active #map { height: 100dvh !important; }
+}
 
 /* 기존 전역 버튼은 숨김 */
 #locationButton, #stopTrackingButton { display: none !important; }
@@ -123,11 +130,23 @@
 			box-shadow: 0px 0px 5px rgba(74, 144, 226, 0.5);
 		}
 
-	#controls {
-    display: flex; /* ✅ 가로 정렬 */
-    align-items: center; /* ✅ 내부 요소 세로 정렬 */
-    gap: 10px; /* ✅ 요소 간격 조정 */
-	}
+	/* 기존 #controls 규칙에 아래 3줄만 추가 */
+#controls{
+  display: flex;          /* 이미 flex면 유지 */
+  flex-wrap: wrap;        /* 줄바꿈 허용 */
+  row-gap: 6px;           /* 줄바꿈 시 세로 간격 */
+  column-gap: 8px;        /* 같은 줄 내 항목 간격(선택) */
+}
+
+#controls button { flex: 0 0 auto; } /* 🔹 버튼이 눌려서 줄어드는 것 방지 */
+#controls label{
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+
 
 	#scaleControls {
 		display: flex; /* ✅ 가로 정렬 */
@@ -368,10 +387,11 @@ buttonContainer {
 <button id="siseExportBtn" style="display: none;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: none;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: none;">시세지도 초기화</button>
-<div style="margin-top: 0px;">
-<button id="siseVer2ImportBtn" style="display: block;">시세지도Ver2에서 가져오기</button>
-<button id="siseVer2ResetBtn" style="display: block;">시세지도Ver2데이터 초기화</button>
+<div style="flex-basis:100%; display:flex; flex-wrap:wrap; gap:8px; margin-top:0;">
+  <button id="siseVer2ImportBtn" style="display:block;">시세지도Ver2에서 가져오기</button>
+  <button id="siseVer2ResetBtn"  style="display:block;">시세지도Ver2데이터 초기화</button>
 </div>
+
 
 <!-- ✅ 인구 데이터 팝업 버튼 -->
 
@@ -1907,33 +1927,35 @@ let isFullscreen = false; // 현재 전체 화면 여부 저장
 let originalHeight = document.getElementById("map").style.height; // 기존 지도 높이 저장
 
 function toggleFullscreen() {
-    let mapElement = document.getElementById("map");
+  const mapElement = document.getElementById("map");
 
-    if (!isFullscreen) {
-        // 🔹 전체 화면 모드로 전환
-        originalHeight = mapElement.style.height; // 원래 높이 저장
-        mapElement.style.position = "fixed";
-        mapElement.style.top = "0";
-        mapElement.style.left = "0";
-        mapElement.style.width = "100%";
-        mapElement.style.height = "100vh";
-        mapElement.style.zIndex = "9999";
-        document.body.style.overflow = "hidden"; // 스크롤 방지
-        isFullscreen = true;
-    } else {
-        // 🔹 원래 상태로 복귀
-        mapElement.style.position = "";
-        mapElement.style.top = "";
-        mapElement.style.left = "";
-        mapElement.style.width = "100%";
-        mapElement.style.height = originalHeight; // 저c장된 높이 복원
-        mapElement.style.zIndex = "";
-        document.body.style.overflow = ""; // 스크롤 가능하게 설정
-        isFullscreen = false;
-    }
+  if (!isFullscreen) {
+    originalHeight = mapElement.style.height;
+    mapElement.style.position = "fixed";
+    mapElement.style.top = "0";
+    mapElement.style.left = "0";
+    mapElement.style.width = "100%";
+    mapElement.style.height = "100dvh"; // ← 100vh → 100dvh
+    mapElement.style.zIndex = "9999";
+    document.body.style.overflow = "hidden";
+    document.body.classList.add("fullscreen-active");  // ← 추가
+    isFullscreen = true;
+  } else {
+    mapElement.style.position = "";
+    mapElement.style.top = "";
+    mapElement.style.left = "";
+    mapElement.style.width = "100%";
+    mapElement.style.height = originalHeight || "";     // CSS로 복귀
+    mapElement.style.zIndex = "";
+    document.body.style.overflow = "";
+    document.body.classList.remove("fullscreen-active"); // ← 추가
+    isFullscreen = false;
+  }
 
-    // 지도 크기 갱신
+  // 레이아웃 안정 후 지도 크기 반영
+  setTimeout(() => {
     window.map.setSize(new naver.maps.Size(mapElement.clientWidth, mapElement.clientHeight));
+  }, 200);
 }
 
 
