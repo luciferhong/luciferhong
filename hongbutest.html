@@ -43,6 +43,27 @@
   @supports (height: 100svh) {
     #map { height: calc(100svh - 150px); }
   }
+
+/* 기존 전역 버튼은 숨김 */
+#locationButton, #stopTrackingButton { display: none !important; }
+
+/* 지도 내부용 현재위치/중지 버튼 */
+.map-locate-btn, .map-stoptrack-btn{
+  position: absolute;
+  left: 8px;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #bbb;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+  font-size: 18px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; z-index: 10000;
+}
+.map-locate-btn { top: 10px; }      /* 현재 위치 (좌상단 아이콘 아래) */
+.map-stoptrack-btn { top: 50px; }  /* 추적 중지 */
+#mapStopBtn { display: none !important; }
+
 </style>
 
 
@@ -5413,63 +5434,68 @@ document.getElementById("unitFilter")
 
 </script>
 <script>
+
   let pseudoFullscreenActive = false;
 
   function injectMaximizeButton(){
     const mapEl = document.getElementById('map');
     if (!mapEl) return;
-    if (mapEl.querySelector('#mapMaxBtn')) return;
 
-    const btn = document.createElement('button');
-    btn.id = 'mapMaxBtn';
-    btn.className = 'map-float-btn';
-    btn.title = '최대화';
-    btn.setAttribute('aria-label','지도 최대화');
-    btn.textContent = '⤢';
-    mapEl.appendChild(btn);
+    /* 최대화 버튼 */
+    if (!mapEl.querySelector('#mapMaxBtn')) {
+      const maxBtn = document.createElement('button');
+      maxBtn.id = 'mapMaxBtn';
+      maxBtn.className = 'map-float-btn';
+      maxBtn.title = '최대화';
+      maxBtn.setAttribute('aria-label','지도 최대화');
+      maxBtn.textContent = document.fullscreenElement || pseudoFullscreenActive ? '⤡' : '⤢';
+      mapEl.appendChild(maxBtn);
 
-    btn.addEventListener('click', async () => {
-      const mapNode = document.getElementById('map');
-
-      // 이미 네이티브 전체화면이면 해제
-      if (document.fullscreenElement) {
-        await document.exitFullscreen().catch(()=>{});
-        return;
-      }
-      // 폴백 전체화면 중이면 해제
-      if (pseudoFullscreenActive) {
-        if (typeof toggleFullscreen === 'function') {
-          try { toggleFullscreen(); } catch(e){}
+      maxBtn.addEventListener('click', async () => {
+        const mapNode = document.getElementById('map');
+        if (document.fullscreenElement) { await document.exitFullscreen().catch(()=>{}); return; }
+        if (pseudoFullscreenActive) { if (typeof toggleFullscreen==='function'){ try{toggleFullscreen();}catch(e){} } onExitPseudoFullscreen(); return; }
+        if (mapNode && mapNode.requestFullscreen) {
+          try { await mapNode.requestFullscreen({ navigationUI:'hide' }); }
+          catch(e){ if (typeof toggleFullscreen==='function'){ try{toggleFullscreen();}catch(_){} onEnterPseudoFullscreen(); } }
+        } else {
+          if (typeof toggleFullscreen==='function'){ try{toggleFullscreen();}catch(_){} onEnterPseudoFullscreen(); }
         }
-        onExitPseudoFullscreen();
-        return;
-      }
+      });
+    }
 
-      // 전체화면 진입 시도
-      if (mapNode && mapNode.requestFullscreen) {
-        try {
-          await mapNode.requestFullscreen({ navigationUI: 'hide' });
-        } catch(e){
-          if (typeof toggleFullscreen === 'function') {
-            try { toggleFullscreen(); } catch(_){}
-            onEnterPseudoFullscreen();
-          }
-        }
-      } else {
-        if (typeof toggleFullscreen === 'function') {
-          try { toggleFullscreen(); } catch(_){}
-          onEnterPseudoFullscreen();
-        }
-      }
-    });
+    /* 현재 위치 버튼 */
+    if (!mapEl.querySelector('#mapLocateBtn')) {
+      const locBtn = document.createElement('button');
+      locBtn.id = 'mapLocateBtn';
+      locBtn.className = 'map-locate-btn';
+      locBtn.title = '현재 위치';
+      locBtn.setAttribute('aria-label','현재 위치 찾기');
+      locBtn.textContent = '📍';
+      mapEl.appendChild(locBtn);
+      locBtn.addEventListener('click', () => { if (typeof clickLocationButton === 'function') clickLocationButton(); });
+    }
+
+    /* 위치 추적 중지 버튼 */
+    if (!mapEl.querySelector('#mapStopBtn')) {
+      const stopBtn = document.createElement('button');
+      stopBtn.id = 'mapStopBtn';
+      stopBtn.className = 'map-stoptrack-btn';
+      stopBtn.title = '위치 추적 중지';
+      stopBtn.setAttribute('aria-label','위치 추적 중지');
+      stopBtn.textContent = '🛑';
+      mapEl.appendChild(stopBtn);
+      stopBtn.addEventListener('click', () => { if (typeof stopTracking === 'function') stopTracking(); });
+    }
   }
 
+  /* 네이티브 전체화면 상태 동기화 */
   document.addEventListener('fullscreenchange', () => {
     const isFull = !!document.fullscreenElement;
     document.body.classList.toggle('fullscreen-active', isFull);
     const btn = document.getElementById('mapMaxBtn');
     if (btn) btn.textContent = isFull ? '⤡' : '⤢';
-    if (!isFull) pseudoFullscreenActive = false; // 네이티브 해제 시 플래그 초기화
+    if (!isFull) pseudoFullscreenActive = false;
     resizeMapToContainer();
   });
 
@@ -5480,15 +5506,13 @@ document.getElementById("unitFilter")
     if (btn) btn.textContent = '⤡';
     resizeMapToContainer();
   }
-
   function onExitPseudoFullscreen(){
     pseudoFullscreenActive = false;
-    document.body.classList.remove('fullscreen-active'); // ← 메뉴 복구 핵심
+    document.body.classList.remove('fullscreen-active');
     const btn = document.getElementById('mapMaxBtn');
     if (btn) btn.textContent = '⤢';
     resizeMapToContainer();
   }
-
   function resizeMapToContainer(){
     const mapEl = document.getElementById('map');
     if (window.map && mapEl) {
@@ -5497,8 +5521,6 @@ document.getElementById("unitFilter")
       }, 120);
     }
   }
-
-  // 회전/리사이즈 대응
   window.addEventListener('orientationchange', resizeMapToContainer);
   window.addEventListener('resize', resizeMapToContainer);
 </script>
