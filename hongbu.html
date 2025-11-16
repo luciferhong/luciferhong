@@ -200,7 +200,7 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
     font-size: 16px;
     box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
     display: none;
-    z-index: 10000;
+    z-index: 1000000;
      will-change: transform; /* GPU 렌더링 힌트 */
   contain: layout paint;  /* 레이아웃 변화 제한 */
     max-width: 90%;
@@ -287,6 +287,26 @@ buttonContainer {
   max-width: 90%;
   max-height: 90%;
   border-radius: 8px;
+}
+
+#mapWrapper.fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 900000; /* 팝업(999999)보다만 낮게 */
+}
+#map.fullscreen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 900000;
+}
+
+body.map-fullscreen {
+  overflow: hidden;
+  height: 100%;
 }
 
  @media (max-width: 768px) {
@@ -1925,37 +1945,13 @@ observer.observe(document.getElementById("map"));
 
 let isFullscreen = false; // 현재 전체 화면 여부 저장
 let originalHeight = document.getElementById("map").style.height; // 기존 지도 높이 저장
-
 function toggleFullscreen() {
-  const mapElement = document.getElementById("map");
+  const mapEl = document.getElementById('map');
+  if (!mapEl) return;
 
-  if (!isFullscreen) {
-    originalHeight = mapElement.style.height;
-    mapElement.style.position = "fixed";
-    mapElement.style.top = "0";
-    mapElement.style.left = "0";
-    mapElement.style.width = "100%";
-    mapElement.style.height = "100dvh"; // ← 100vh → 100dvh
-    mapElement.style.zIndex = "9999";
-    document.body.style.overflow = "hidden";
-    document.body.classList.add("fullscreen-active");  // ← 추가
-    isFullscreen = true;
-  } else {
-    mapElement.style.position = "";
-    mapElement.style.top = "";
-    mapElement.style.left = "";
-    mapElement.style.width = "100%";
-    mapElement.style.height = originalHeight || "";     // CSS로 복귀
-    mapElement.style.zIndex = "";
-    document.body.style.overflow = "";
-    document.body.classList.remove("fullscreen-active"); // ← 추가
-    isFullscreen = false;
-  }
-
-  // 레이아웃 안정 후 지도 크기 반영
-  setTimeout(() => {
-    window.map.setSize(new naver.maps.Size(mapElement.clientWidth, mapElement.clientHeight));
-  }, 200);
+  const willFull = !mapEl.classList.contains('fullscreen');
+  mapEl.classList.toggle('fullscreen', willFull);
+  document.body.classList.toggle('map-fullscreen', willFull);
 }
 
 
@@ -2121,7 +2117,11 @@ apartmentInfo.setAttribute("data-id", apartmentId);
 
 
   infoDiv.innerHTML = infoHtml;
-  infoDiv.style.display = "block";
+ infoDiv.style.display = "block";
+
+const cs = window.getComputedStyle(infoDiv);
+console.log("[DBG] apartmentInfo z-index:", cs.zIndex, "display:", cs.display, "position:", cs.position);
+
 
   loadNote(apartmentId);
 
@@ -5457,69 +5457,115 @@ document.getElementById("unitFilter")
 </script>
 <script>
 
+
+  // 🔹 네이티브 전체화면은 전혀 쓰지 않고,
+  //    pseudoFullscreenActive + toggleFullscreen() 조합만 사용
   let pseudoFullscreenActive = false;
 
-  function injectMaximizeButton(){
+  function injectMaximizeButton() {
     const mapEl = document.getElementById('map');
     if (!mapEl) return;
 
-    /* 최대화 버튼 */
+    /* 1) 전체화면(최대화) 버튼 */
     if (!mapEl.querySelector('#mapMaxBtn')) {
       const maxBtn = document.createElement('button');
       maxBtn.id = 'mapMaxBtn';
       maxBtn.className = 'map-float-btn';
-      maxBtn.title = '최대화';
-      maxBtn.setAttribute('aria-label','지도 최대화');
-      maxBtn.textContent = document.fullscreenElement || pseudoFullscreenActive ? '⤡' : '⤢';
+      maxBtn.title = '전체화면';
+      maxBtn.setAttribute('aria-label', '지도 전체화면');
+      // 네이티브는 안 쓰므로 pseudoFullscreenActive만 기준
+      maxBtn.textContent = pseudoFullscreenActive ? '⤡' : '⤢';
       mapEl.appendChild(maxBtn);
 
-      maxBtn.addEventListener('click', async () => {
-        const mapNode = document.getElementById('map');
-        if (document.fullscreenElement) { await document.exitFullscreen().catch(()=>{}); return; }
-        if (pseudoFullscreenActive) { if (typeof toggleFullscreen==='function'){ try{toggleFullscreen();}catch(e){} } onExitPseudoFullscreen(); return; }
-        if (mapNode && mapNode.requestFullscreen) {
-          try { await mapNode.requestFullscreen({ navigationUI:'hide' }); }
-          catch(e){ if (typeof toggleFullscreen==='function'){ try{toggleFullscreen();}catch(_){} onEnterPseudoFullscreen(); } }
-        } else {
-          if (typeof toggleFullscreen==='function'){ try{toggleFullscreen();}catch(_){} onEnterPseudoFullscreen(); }
+      maxBtn.addEventListener('click', () => {
+        // 이미 가짜 전체화면이면 → 해제
+        if (pseudoFullscreenActive) {
+          if (typeof toggleFullscreen === 'function') {
+            try { toggleFullscreen(); } catch (e) { console.warn(e); }
+          }
+          onExitPseudoFullscreen();
+          return;
         }
+
+        // 평상시 → 가짜 전체화면 진입
+        if (typeof toggleFullscreen === 'function') {
+          try { toggleFullscreen(); } catch (e) { console.warn(e); }
+        }
+        onEnterPseudoFullscreen();
       });
     }
 
-    /* 현재 위치 버튼 */
+    /* 2) 현재 위치 버튼 */
     if (!mapEl.querySelector('#mapLocateBtn')) {
       const locBtn = document.createElement('button');
       locBtn.id = 'mapLocateBtn';
       locBtn.className = 'map-locate-btn';
       locBtn.title = '현재 위치';
-      locBtn.setAttribute('aria-label','현재 위치 찾기');
+      locBtn.setAttribute('aria-label', '현재 위치 찾기');
       locBtn.textContent = '📍';
+
       mapEl.appendChild(locBtn);
-      locBtn.addEventListener('click', () => { if (typeof clickLocationButton === 'function') clickLocationButton(); });
+      locBtn.addEventListener('click', () => {
+        if (typeof clickLocationButton === 'function') clickLocationButton();
+      });
     }
 
-    /* 위치 추적 중지 버튼 */
+    /* 3) 위치 추적 중지 버튼 */
     if (!mapEl.querySelector('#mapStopBtn')) {
       const stopBtn = document.createElement('button');
       stopBtn.id = 'mapStopBtn';
       stopBtn.className = 'map-stoptrack-btn';
       stopBtn.title = '위치 추적 중지';
-      stopBtn.setAttribute('aria-label','위치 추적 중지');
+      stopBtn.setAttribute('aria-label', '위치 추적 중지');
       stopBtn.textContent = '🛑';
+
       mapEl.appendChild(stopBtn);
-      stopBtn.addEventListener('click', () => { if (typeof stopTracking === 'function') stopTracking(); });
+      stopBtn.addEventListener('click', () => {
+        if (typeof stopTracking === 'function') stopTracking();
+      });
     }
   }
 
-  /* 네이티브 전체화면 상태 동기화 */
-  document.addEventListener('fullscreenchange', () => {
-    const isFull = !!document.fullscreenElement;
-    document.body.classList.toggle('fullscreen-active', isFull);
+  // ✅ 가짜 전체화면 진입/해제 시 UI 상태만 관리
+  function onEnterPseudoFullscreen() {
+    pseudoFullscreenActive = true;
+    document.body.classList.add('fullscreen-active'); // 이미 CSS에서 이 클래스를 쓰고 있으므로 유지
     const btn = document.getElementById('mapMaxBtn');
-    if (btn) btn.textContent = isFull ? '⤡' : '⤢';
-    if (!isFull) pseudoFullscreenActive = false;
+    if (btn) btn.textContent = '⤡';  // 나가기 아이콘
     resizeMapToContainer();
-  });
+  }
+
+  function onExitPseudoFullscreen() {
+    pseudoFullscreenActive = false;
+    document.body.classList.remove('fullscreen-active');
+    const btn = document.getElementById('mapMaxBtn');
+    if (btn) btn.textContent = '⤢';  // 들어가기 아이콘
+    resizeMapToContainer();
+  }
+
+  function resizeMapToContainer() {
+    const mapEl = document.getElementById('map');
+    if (mapEl && window.map) {
+      // inline style로 이상하게 커지는 것 방지
+      mapEl.style.height = 'calc(100svh - 150px)';
+      mapEl.style.maxHeight = 'calc(100svh - 150px)';
+
+      setTimeout(() => {
+        try {
+          window.map.setSize(new naver.maps.Size(mapEl.clientWidth, mapEl.clientHeight));
+        } catch (e) {
+          console.warn(e);
+        }
+      }, 150);
+    }
+  }
+
+  window.addEventListener('orientationchange', resizeMapToContainer);
+  window.addEventListener('resize', resizeMapToContainer);
+
+
+
+
 
   function onEnterPseudoFullscreen(){
     pseudoFullscreenActive = true;
@@ -5558,4 +5604,5 @@ document.getElementById("unitFilter")
 
 </body>
 </html>
+
 
