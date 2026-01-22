@@ -3,182 +3,336 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF to JPG</title>
+  <title>[루시퍼홍] PDF Tool (JPG 변환 / 암호 제거)</title>
 
+  <!-- pdf.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+  <!-- JSZip + FileSaver -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <!-- pdf-lib (새 PDF 만들기용) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 
   <style>
     body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
     input, button { margin: 10px; }
-    #progress { font-size: 18px; margin-top: 20px; }
-    #downloadContainer { margin-top: 20px; display: flex; flex-direction: column; align-items: center; }
-    #downloadBtn { display: none; padding: 10px 20px; font-size: 16px; cursor: pointer; }
+    #progress { font-size: 16px; margin-top: 10px; white-space: pre-line; }
+
+    .btnrow { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
+    button { padding: 10px 16px; font-size: 14px; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
 
     #passwordContainer { display: none; margin-top: 10px; }
     #pdfPassword { padding: 8px 10px; font-size: 14px; width: 240px; }
+
+    #fileName {
+      margin-top: 6px;
+      font-size: 13px;
+      color: #555;
+      word-break: break-all;
+    }
   </style>
 </head>
 
 <body>
-  <h1>[루시퍼홍] PDF to JPG</h1>
+  <h1>[루시퍼홍] PDF Tool</h1>
 
   <input type="file" id="pdfInput" accept="application/pdf" />
+  <div id="fileName"></div>
+
+  <div class="btnrow">
+    <button id="convertBtn" disabled>JPG 변환(Zip)</button>
+    <button id="unlockBtn" disabled>암호 제거(PDF)</button>
+  </div>
+
   <div id="passwordContainer">
-    <input type="password" id="pdfPassword" placeholder="PDF 비밀번호 입력" />
-    <button id="passwordBtn">비밀번호 적용</button>
+    <!-- ✅ 별표(*) 말고 그대로 보이게 -->
+    <input type="text" id="pdfPassword" placeholder="PDF 비밀번호 입력" />
+    <button id="passwordApplyBtn">비밀번호 적용</button>
+  </div>
+
+  <div class="btnrow">
+    <button id="downloadZipBtn" style="display:none;">ZIP 다운로드</button>
+    <button id="downloadUnlockedBtn" style="display:none;">암호 제거 PDF 다운로드</button>
   </div>
 
   <div id="progress">파일을 선택하세요</div>
 
-  <div id="downloadContainer">
-    <button id="downloadBtn">ZIP 다운로드</button>
-  </div>
-
   <script>
-    document.addEventListener('DOMContentLoaded', () => {
-      // ✅ worker 설정 (중요)
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.worker.min.js";
+    // ✅ pdf.js worker 설정
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.worker.min.js";
 
-      const pdfInput = document.getElementById('pdfInput');
-      const progressEl = document.getElementById('progress');
-      const downloadBtn = document.getElementById('downloadBtn');
+    const pdfInput = document.getElementById('pdfInput');
+    const fileNameEl = document.getElementById('fileName');
+    const progressEl = document.getElementById('progress');
 
-      const passwordContainer = document.getElementById('passwordContainer');
-      const pdfPasswordInput = document.getElementById('pdfPassword');
-      const passwordBtn = document.getElementById('passwordBtn');
+    const convertBtn = document.getElementById('convertBtn');
+    const unlockBtn = document.getElementById('unlockBtn');
 
-      let latestZipBlob = null;
+    const passwordContainer = document.getElementById('passwordContainer');
+    const pdfPasswordInput = document.getElementById('pdfPassword');
+    const passwordApplyBtn = document.getElementById('passwordApplyBtn');
 
-      function showPasswordUI(msg) {
-        passwordContainer.style.display = 'block';
-        progressEl.innerText = msg || "비밀번호가 필요한 PDF입니다. 비밀번호를 입력하세요.";
-        pdfPasswordInput.value = "";
-        pdfPasswordInput.focus();
+    const downloadZipBtn = document.getElementById('downloadZipBtn');
+    const downloadUnlockedBtn = document.getElementById('downloadUnlockedBtn');
+
+    let currentFile = null;
+    let currentPdfData = null;      // Uint8Array
+    let latestZipBlob = null;
+    let latestUnlockedBlob = null;
+
+    let baseFileName = "converted";
+
+    // ✅ pdf.js의 "현재" updatePassword 함수(누적 방지)
+    let activeUpdatePassword = null;
+
+    function setStatus(msg) {
+      progressEl.innerText = msg;
+    }
+
+    function getBaseName(fileName) {
+      return fileName.replace(/\.[^.]+$/, '');
+    }
+
+    function showPasswordUI(message) {
+      passwordContainer.style.display = 'block';
+      setStatus(message || "비밀번호가 필요한 PDF입니다. 비밀번호를 입력하세요.");
+      pdfPasswordInput.focus();
+    }
+
+    function hidePasswordUI() {
+      passwordContainer.style.display = 'none';
+    }
+
+    function resetUIOnNewFile() {
+      hidePasswordUI();
+      pdfPasswordInput.value = "";
+      activeUpdatePassword = null;
+
+      latestZipBlob = null;
+      latestUnlockedBlob = null;
+
+      downloadZipBtn.style.display = 'none';
+      downloadUnlockedBtn.style.display = 'none';
+      downloadZipBtn.onclick = null;
+      downloadUnlockedBtn.onclick = null;
+    }
+
+    function disableActions(disabled) {
+      convertBtn.disabled = disabled;
+      unlockBtn.disabled = disabled;
+    }
+
+    // ✅ 비밀번호 적용 버튼: 항상 "현재" PDF에만 적용
+    passwordApplyBtn.onclick = () => {
+      if (typeof activeUpdatePassword === "function") {
+        activeUpdatePassword(pdfPasswordInput.value || "");
+      } else {
+        setStatus("현재 비밀번호를 요구하는 작업이 없습니다.");
       }
-      function hidePasswordUI() {
-        passwordContainer.style.display = 'none';
-        pdfPasswordInput.value = "";
-      }
-
-      async function openPdf(pdfData) {
-        return new Promise((resolve, reject) => {
-          const task = pdfjsLib.getDocument({ data: pdfData });
-
-          task.onPassword = (updatePassword, reason) => {
-            showPasswordUI(reason === 2 ? "비밀번호가 틀렸습니다. 다시 입력하세요." : "비밀번호가 걸린 PDF입니다. 비밀번호를 입력하세요.");
-
-            const handler = () => {
-              updatePassword(pdfPasswordInput.value || "");
-              passwordBtn.removeEventListener('click', handler);
-            };
-            passwordBtn.addEventListener('click', handler);
-          };
-
-          task.promise.then(resolve).catch(reject);
-        });
-      }
-
-      async function convert(pdf) {
-        const zip = new JSZip();
-
-        for (let i = 1; i <= pdf.numPages; i++) {
-          progressEl.innerText = `변환 중... (${i}/${pdf.numPages})`;
-
-          const page = await pdf.getPage(i);
-          const viewport = page.getViewport({ scale: 2.0 });
-
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-
-          await page.render({ canvasContext: ctx, viewport }).promise;
-
-          const base64 = canvas.toDataURL('image/jpeg').split(',')[1];
-          zip.file(`page_${i}.jpg`, base64, { base64: true });
-        }
-
-        return zip;
-      }
-
-      // ✅ 디버그용: 이벤트가 붙는지 바로 확인
-      console.log("✅ pdfInput found?", !!pdfInput);
-
-      pdfInput.addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-
-  // ✅ 완전 초기화 (이게 핵심)
-  hidePasswordUI();
-  pdfPasswordInput.value = "";
-  progressEl.innerText = "PDF를 불러오는 중...";
-  downloadBtn.style.display = 'none';
-  latestZipBlob = null;
-
-  // 🔥 같은 파일 재선택도 change 이벤트 발생하게
-  e.target.value = "";
-
-  try {
-    const pdfData = new Uint8Array(await file.arrayBuffer());
-
-    // ✅ 매번 새 loadingTask 생성
-    const pdf = await new Promise((resolve, reject) => {
-      const task = pdfjsLib.getDocument({ data: pdfData });
-
-      let passwordHandler = null;
-
-      task.onPassword = (updatePassword, reason) => {
-        showPasswordUI(
-          reason === 2
-            ? "비밀번호가 틀렸습니다. 다시 입력하세요."
-            : "비밀번호가 걸린 PDF입니다. 비밀번호를 입력하세요."
-        );
-
-        // ✅ 이전 핸들러 제거
-        if (passwordHandler) {
-          passwordBtn.removeEventListener('click', passwordHandler);
-        }
-
-        passwordHandler = () => {
-          updatePassword(pdfPasswordInput.value || "");
-        };
-
-        passwordBtn.addEventListener('click', passwordHandler);
-      };
-
-      task.promise.then(resolve).catch(reject);
-    });
-
-    hidePasswordUI();
-    progressEl.innerText = "PDF를 변환 중...";
-
-    const zip = await convert(pdf);
-
-    progressEl.innerText = "변환 완료!";
-    downloadBtn.style.display = 'block';
-
-    downloadBtn.onclick = async () => {
-      if (!latestZipBlob) {
-        downloadBtn.disabled = true;
-        downloadBtn.innerText = "ZIP 생성 중...";
-        latestZipBlob = await zip.generateAsync({ type: "blob" });
-        downloadBtn.disabled = false;
-        downloadBtn.innerText = "ZIP 다운로드";
-      }
-      saveAs(latestZipBlob, "converted_images.zip");
     };
 
-  } catch (err) {
-    console.error(err);
-    hidePasswordUI();
-    progressEl.innerText = "오류: PDF를 열거나 변환할 수 없습니다.";
-  }
-});
+    // 엔터키로도 적용
+    pdfPasswordInput.onkeydown = (e) => {
+      if (e.key === "Enter") passwordApplyBtn.click();
+    };
 
+    // ✅ pdf.js로 PDF 열기 (암호 필요 시 onPassword에서 updatePassword를 activeUpdatePassword에 연결)
+    function openPdfWithPdfjs(pdfData) {
+      return new Promise((resolve, reject) => {
+        const task = pdfjsLib.getDocument({ data: pdfData });
+
+        task.onPassword = (updatePassword, reason) => {
+          activeUpdatePassword = updatePassword;
+          showPasswordUI(
+            reason === 2
+              ? "비밀번호가 틀렸습니다. 다시 입력하세요."
+              : "비밀번호가 걸린 PDF입니다. 비밀번호를 입력하세요."
+          );
+        };
+
+        task.promise
+          .then((pdf) => {
+            activeUpdatePassword = null; // 성공 시 해제
+            resolve(pdf);
+          })
+          .catch((err) => {
+            activeUpdatePassword = null;
+            reject(err);
+          });
+      });
+    }
+
+    // ✅ 페이지 렌더링 유틸
+    async function renderPageToJpegBase64(page, scale = 2.0, quality = 0.92) {
+      const viewport = page.getViewport({ scale });
+
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      const base64 = dataUrl.split(',')[1];
+
+      return { base64, width: canvas.width, height: canvas.height };
+    }
+
+    // ✅ JPG ZIP 만들기
+    async function convertPdfToZipJpg(pdf) {
+      const zip = new JSZip();
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        setStatus(`JPG 변환 중... (${i}/${pdf.numPages})`);
+        const page = await pdf.getPage(i);
+        const { base64 } = await renderPageToJpegBase64(page, 2.0, 0.92);
+        zip.file(`page_${i}.jpg`, base64, { base64: true });
+      }
+
+      return zip.generateAsync({ type: "blob" });
+    }
+
+    // ✅ 암호 제거(=이미지 PDF로 재생성)
+    // - pdf.js로 열어서 렌더링(암호 입력 가능)
+    // - pdf-lib로 새 PDF 생성 후, 각 페이지를 이미지로 붙임
+    async function createUnlockedPdfByFlattening(pdf) {
+  const { PDFDocument } = PDFLib;
+  const out = await PDFDocument.create();
+
+  // ✅ 원본과 비슷하게 보이게 하는 추천 값
+  const SCALE = 1.7;       // 1.5~2.0 사이 조절
+  const QUALITY = 0.9;     // 0.85~0.92 사이 조절
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    setStatus(`암호 제거 PDF 생성 중... (${i}/${pdf.numPages})`);
+    const page = await pdf.getPage(i);
+
+    // ✅ 원본 PDF의 '포인트(pt)' 크기(스케일 1) 가져오기
+    const vp1 = page.getViewport({ scale: 1.0 }); // 단위는 PDF 포인트 기반처럼 취급 가능
+    const pagePtW = vp1.width;
+    const pagePtH = vp1.height;
+
+    // ✅ 렌더링은 더 크게(선명도 위해) 하지만,
+    // ✅ 새 PDF 페이지 크기는 원본 pt로 유지
+    const viewport = page.getViewport({ scale: SCALE });
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+
+    await page.render({ canvasContext: ctx, viewport }).promise;
+
+    // JPG 생성
+    const dataUrl = canvas.toDataURL('image/jpeg', QUALITY);
+    const base64 = dataUrl.split(',')[1];
+    const jpgBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+
+    const embedded = await out.embedJpg(jpgBytes);
+
+    // ✅ 페이지는 원본 pt 크기로 생성 (확대/축소 느낌 최소화)
+    const p = out.addPage([pagePtW, pagePtH]);
+
+    // ✅ 이미지가 페이지를 꽉 채우도록 그리기
+    p.drawImage(embedded, { x: 0, y: 0, width: pagePtW, height: pagePtH });
+  }
+
+  const bytes = await out.save();
+  return new Blob([bytes], { type: "application/pdf" });
+}
+
+
+    // ✅ JPG 변환 버튼
+    async function handleConvert() {
+      if (!currentPdfData) return;
+
+      disableActions(true);
+      downloadZipBtn.style.display = 'none';
+      latestZipBlob = null;
+
+      try {
+        hidePasswordUI();
+        setStatus("PDF 여는 중...");
+        const pdf = await openPdfWithPdfjs(currentPdfData);
+
+        hidePasswordUI();
+        setStatus("ZIP 생성 중...");
+        latestZipBlob = await convertPdfToZipJpg(pdf);
+
+        setStatus("완료! ZIP 다운로드를 누르세요.");
+        downloadZipBtn.style.display = 'inline-block';
+        const zipName = `${baseFileName}_images.zip`;
+        downloadZipBtn.onclick = () => saveAs(latestZipBlob, zipName);
+
+      } catch (err) {
+        console.error(err);
+        setStatus("오류: JPG 변환에 실패했습니다. (콘솔 확인)");
+      } finally {
+        disableActions(false);
+      }
+    }
+
+    // ✅ 암호 제거 버튼 (이미지 PDF 재생성 방식)
+    async function handleUnlock() {
+      if (!currentPdfData) return;
+
+      disableActions(true);
+      downloadUnlockedBtn.style.display = 'none';
+      latestUnlockedBlob = null;
+
+      try {
+        hidePasswordUI();
+        setStatus("PDF 여는 중(암호 확인)...");
+        const pdf = await openPdfWithPdfjs(currentPdfData);
+
+        hidePasswordUI();
+        setStatus("암호 제거 PDF 생성 중...");
+        latestUnlockedBlob = await createUnlockedPdfByFlattening(pdf);
+
+        setStatus("완료! 암호 제거 PDF 다운로드를 누르세요.");
+        downloadUnlockedBtn.style.display = 'inline-block';
+        const unlockedName = `${baseFileName}_unlocked.pdf`;
+        downloadUnlockedBtn.onclick = () => saveAs(latestUnlockedBlob, unlockedName);
+
+      } catch (err) {
+        console.error(err);
+        // pdf.js가 암호 요구하면 UI가 이미 뜨지만, 혹시 다른 에러면 안내
+        if (passwordContainer.style.display !== 'block') {
+          showPasswordUI("암호 제거에 실패했습니다. 비밀번호/파일 상태를 확인하세요.");
+        }
+      } finally {
+        disableActions(false);
+      }
+    }
+
+    // 파일 선택
+    pdfInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      currentFile = file;
+      fileNameEl.innerText = `선택된 파일: ${file.name}`;
+      baseFileName = getBaseName(file.name);
+
+      resetUIOnNewFile();
+
+      setStatus("파일 로딩 중...");
+      currentPdfData = new Uint8Array(await file.arrayBuffer());
+
+      setStatus("준비 완료: 아래 버튼을 선택하세요.");
+      convertBtn.disabled = false;
+      unlockBtn.disabled = false;
+
+      // 같은 파일 재선택 가능하게 input 값 비움
+      e.target.value = "";
     });
+
+    convertBtn.addEventListener('click', handleConvert);
+    unlockBtn.addEventListener('click', handleUnlock);
   </script>
 </body>
 </html>
