@@ -1463,18 +1463,20 @@ function _label_calcFitFontSize({
 }
 
 
-function addEmdLabel(latlng, text, bbox) {
+function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
   if (!text || !bbox || !window.map) return;
 
-  const fs = _label_calcFitFontSize({
-    bbox,
-    text,
-    map: window.map,
-    paddingPx: 8,
-    min: 9,
-    max: 38,
-    hideIfTooSmall: true
-  });
+  const fs = (typeof forcedFontSizePx === "number")
+    ? forcedFontSizePx
+    : _label_calcFitFontSize({
+        bbox,
+        text,
+        map: window.map,
+        paddingPx: 8,
+        min: 9,
+        max: 38,
+        hideIfTooSmall: true
+      });
 
   if (fs <= 0) return;
 
@@ -1661,42 +1663,64 @@ function shouldShowEmdBoundary() {
 function redrawEmdByBounds() {
   try { prepareEmdPreparedOnce(); } catch(e) { console.error('redrawEmdByBounds prepare 실패:', e); return; }
 
-	if (!window.map) return;
+  if (!window.map) return;
 
-	const z = window.map.getZoom();
-	// ✅ 법정동경계 체크 + 줌 15 이상일 때만 표시
-	if (!shouldShowEmdBoundary()) {
-		clearEmdPolygons();
-		clearEmdLabels();
-		return;
-	}
+  const z = window.map.getZoom();
+  // ✅ 법정동경계 체크 + 줌 15 이상일 때만 표시
+  if (!shouldShowEmdBoundary()) {
+    clearEmdPolygons();
+    clearEmdLabels();
+    return;
+  }
 
-	const bounds = window.map.getBounds();
-	if (!bounds) return;
+  const bounds = window.map.getBounds();
+  if (!bounds) return;
 
-	clearEmdPolygons();
-	clearEmdLabels();
+  clearEmdPolygons();
+  clearEmdLabels();
 
-	// 현재 화면에 걸치는 것만 렌더링
-	let labelCount = 0;
-	const labelCap = 200; // 화면 내 라벨 최대치 (성능 보호)
-	for (const f of emdPrepared) {
-		if (!bboxIntersects(bounds, f.bbox)) continue;
-		drawEmdGeometry(f.geometry);
-	
-		// 라벨: 줌이 충분히 클 때만 + 너무 많으면 제한
-		if (z >= 15 && labelCount < labelCap) {
-			const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
-			if (name) {
-				addEmdLabel(getLabelLatLngByPolylabel(f.geometry, f.bbox), name, f.bbox);
-				labelCount++;
-			}
-		}}
+  // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
+  const labelCap = 200; // 화면 내 라벨 최대치 (성능 보호)
+  const labelCandidates = [];
 
-	//console.log("🧭 bounds 렌더링 완료:", emdPolygons.length);
+  for (const f of emdPrepared) {
+    if (!bboxIntersects(bounds, f.bbox)) continue;
+
+    // 경계 그리기
+    drawEmdGeometry(f.geometry);
+
+    // 라벨 후보 수집
+    if (z >= 15 && labelCandidates.length < labelCap) {
+      const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
+      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+    }
+  }
+
+  // 2) 후보들 중 'fit 가능한' 최소 폰트 크기 산출 (← 사용자가 원하는 "가장 작은 텍스트 크기")
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map: window.map,
+      paddingPx: 8,
+      min: 9,
+      max: 38,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+
+  if (!isFinite(minFit) || minFit <= 0) return;
+
+  // 3) 모든 라벨을 '최소 폰트'로 통일해서 렌더링 (항상 bbox 안에 들어감)
+  for (const c of labelCandidates) {
+    const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    addEmdLabel(latlng, c.name, c.bbox, minFit);
+  }
 }
 
-// ==============================
+
 // ✅ SIG helpers
 // ==============================
 function clearSigPolygons() {
@@ -1713,18 +1737,20 @@ function clearSigLabels() {
 	}
 }
 
-function addSigLabel(latlng, text, bbox) {
+function addSigLabel(latlng, text, bbox, forcedFontSizePx) {
   if (!text || !bbox || !window.map) return;
 
-  const fs = _label_calcFitFontSize({
-    bbox,
-    text,
-    map: window.map,
-    paddingPx: 10,
-    min: 10,
-    max: 34,
-    hideIfTooSmall: true
-  });
+  const fs = (typeof forcedFontSizePx === "number")
+    ? forcedFontSizePx
+    : _label_calcFitFontSize({
+        bbox,
+        text,
+        map: window.map,
+        paddingPx: 10,
+        min: 10,
+        max: 34,
+        hideIfTooSmall: true
+      });
 
   if (fs <= 0) return;
 
@@ -1741,6 +1767,7 @@ function addSigLabel(latlng, text, bbox) {
 
   sigLabels.push(marker);
 }
+
 
 async function loadSigBoundaryOnce() {
   if (sigPrepared) return;
@@ -1786,30 +1813,51 @@ function drawSigGeometry(geometry) {
 function redrawSigByBounds() {
   try { prepareSigPreparedOnce(); } catch(e) { console.error('redrawSigByBounds prepare 실패:', e); return; }
 
-	if (!window.map || !sigPrepared) return;
+  if (!window.map || !sigPrepared) return;
 
-	const bounds = window.map.getBounds();
-	if (!bounds) return;
+  const bounds = window.map.getBounds();
+  if (!bounds) return;
 
-	clearSigPolygons();
-	clearSigLabels();
+  clearSigPolygons();
+  clearSigLabels();
 
-	let labelCount = 0;
-	const labelCap = 60; // 성능 보호
+  // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
+  const labelCap = 60; // 성능 보호
+  const labelCandidates = [];
 
-	for (const f of sigPrepared) {
-		if (!bboxIntersects(bounds, f.bbox)) continue;
-		drawSigGeometry(f.geometry);
+  for (const f of sigPrepared) {
+    if (!bboxIntersects(bounds, f.bbox)) continue;
 
-		if (labelCount < labelCap) {
-			const name = f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
-			if (name) {
-				const center = getLabelLatLngByPolylabel(f.geometry, f.bbox);
-				addSigLabel(center, name, f.bbox);
-				labelCount++;
-			}
-		}
-	}
+    drawSigGeometry(f.geometry);
+
+    if (labelCandidates.length < labelCap) {
+      const name = f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
+      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+    }
+  }
+
+  // 2) 후보들 중 최소 fit 폰트 크기 산출
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map: window.map,
+      paddingPx: 10,
+      min: 10,
+      max: 34,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+
+  if (!isFinite(minFit) || minFit <= 0) return;
+
+  // 3) 모든 SIG 라벨을 '최소 폰트'로 통일
+  for (const c of labelCandidates) {
+    const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    addSigLabel(center, c.name, c.bbox, minFit);
+  }
 }
 
 
