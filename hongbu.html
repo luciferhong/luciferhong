@@ -2682,28 +2682,166 @@ function updateMarkers(bounds) {
 
 let schoolMarkers = []; // ✅ 지도에 표시된 학교 마커 저장
 
-async function loadSchools() {
-    try {
-        const response = await fetch("eliSchools.json");
-        const schools = await response.json();
-        
-        //console.log("✅ 학교 데이터 로드 완료", schools);
+// ================================
+// ✅ 학교 배정범위(폴리곤) 토글 표시 (eliSchools.json에 미리 포함된 schoolVertexLists 사용)
+// ================================
+let activeSchoolZoneId = null;
+let activeSchoolZonePolygons = [];
 
-        window.schoolData = schools; // ✅ 전체 학교 데이터 저장
+function clearActiveSchoolZone() {
+    activeSchoolZonePolygons.forEach(p => { try { p.setMap(null); } catch (e) {} });
+    activeSchoolZonePolygons = [];
+    activeSchoolZoneId = null;
+}
 
-        // ✅ 초기 마커 업데이트
-        updateSchoolMarkers(window.map.getBounds());
+function _getSchoolZoneId(school) {
+    // 데이터에 따라 키가 다를 수 있어 최대한 안전하게 처리
+    return String(
+        school?.schoolCode ??
+        school?.markerId ??
+        school?.id ??
+        school?.schoolName ??
+        ""
+    );
+}
 
-        // ✅ 지도 이동 시 현재 범위 내 학교 마커 업데이트
-        naver.maps.Event.addListener(window.map, "idle", function () {
-            const bounds = window.map.getBounds();
-            updateSchoolMarkers(bounds);
+function drawSchoolZoneById(schoolId) {
+    const id = String(schoolId);
+    const vertexLists = window.schoolZoneMap?.get(id);
+
+    if (!vertexLists || !vertexLists.length) {
+        //alert("이 학교는 배정범위 데이터가 없습니다. (eliSchools.json에 schoolVertexLists가 있어야 합니다)");
+        return;
+    }
+
+    clearActiveSchoolZone();
+    activeSchoolZoneId = id;
+
+    const bounds = new naver.maps.LatLngBounds();
+
+    // vertexLists: [ [ [lat,lng], ... ], ... ] (조각이 여러 개일 수 있음)
+    vertexLists.forEach(ring => {
+        const path = (ring || []).map(([lat, lng]) => {
+            const ll = new naver.maps.LatLng(lat, lng);
+            bounds.extend(ll);
+            return ll;
         });
 
-    } catch (error) {
-        console.error("❌ 학교 데이터 로드 실패:", error);
-    }
+        const poly = new naver.maps.Polygon({
+            map: window.map,
+            paths: path,
+            strokeColor: "#00BC38",
+            strokeOpacity: 0.9,
+            strokeWeight: 2,
+            fillColor: "#00BC38",
+            fillOpacity: 0.15,
+            clickable: false,
+            zIndex: 999999
+        });
+
+        activeSchoolZonePolygons.push(poly);
+    });
+
+    // ✅ 범위가 화면에 잘 보이도록 맞추기 (원치 않으면 주석 처리)
+    //window.map.fitBounds(bounds);
 }
+
+function toggleSchoolZoneBySchool(school) {
+    const id = _getSchoolZoneId(school);
+    if (!id) return;
+
+    // 같은 학교 다시 클릭하면 제거
+    if (activeSchoolZoneId === id) {
+        clearActiveSchoolZone();
+        return;
+    }
+
+    // 다른 학교면 교체
+    drawSchoolZoneById(id);
+}
+function normalizeVertexLists(v) {
+  // 이미 배열이면 그대로
+  if (Array.isArray(v)) return v;
+
+  // 문자열이면 JSON 파싱 시도
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.warn("⚠️ schoolVertexLists JSON.parse 실패", e);
+      return [];
+    }
+  }
+
+  return [];
+}
+
+async function loadSchools() {
+  try {
+    // ✅ 분할 파일 4개 로드 (GitHub Pages 같은 정적호스팅 기준)
+    const PARTS = ["eliSchools_1.json", "eliSchools_2.json", "eliSchools_3.json", "eliSchools_4.json"];
+
+    // ✅ 파일 하나를 "배열 or 래퍼({schools:[]})" 모두 지원해서 배열로 통일
+    async function fetchAsArray(url) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`학교 파일 로드 실패: ${url} (HTTP ${res.status})`);
+      const data = await res.json().catch(() => null);
+
+      if (Array.isArray(data)) return data;
+      if (Array.isArray(data?.schools)) return data.schools;
+      if (Array.isArray(data?.schoolList)) return data.schoolList;
+      return [];
+    }
+
+    // ✅ 4개 파일 병합 (네트워크 부담 줄이려면 순차 로드)
+    const merged = [];
+    for (const f of PARTS) {
+      const arr = await fetchAsArray(f);
+      console.log(`✅ loaded ${f}: ${arr.length}`);
+      merged.push(...arr);
+    }
+
+    // ✅ 중복 제거 (schoolCode/markerId 우선)
+    const uniqMap = new Map();
+    for (const s of merged) {
+      const id = String(s?.schoolCode ?? s?.markerId ?? s?.id ?? s?.schoolName ?? "");
+      if (!id) continue;
+      if (!uniqMap.has(id)) uniqMap.set(id, s);
+    }
+    const schools = Array.from(uniqMap.values());
+
+    console.log(`🎯 schools merged: ${merged.length} → unique: ${schools.length}`);
+
+    // ✅ 전체 학교 데이터 저장
+    window.schoolData = schools;
+
+    // ✅ 배정범위(폴리곤) 빠른 조회용 Map: id -> schoolVertexLists
+    window.schoolZoneMap = new Map(
+      schools.map(s => [
+        String(s.schoolCode ?? s.markerId ?? s.id ?? s.schoolName ?? ""),
+        normalizeVertexLists(s.schoolVertexLists)
+      ])
+    );
+
+    // ✅ 초기 마커 업데이트
+    updateSchoolMarkers(window.map.getBounds());
+
+    // ✅ 지도 이동 시 현재 범위 내 학교 마커 업데이트
+    naver.maps.Event.addListener(window.map, "idle", function () {
+      updateSchoolMarkers(window.map.getBounds());
+    });
+
+    // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거
+    naver.maps.Event.addListener(window.map, "click", function () {
+      clearActiveSchoolZone();
+    });
+
+  } catch (error) {
+    console.error("❌ 학교 데이터 로드 실패:", error);
+  }
+}
+
 
 function updateSchoolMarkers() {
     const showSchools = document.getElementById("toggleSchools").checked;
@@ -2745,7 +2883,19 @@ function updateSchoolMarkers() {
         text-overflow: ellipsis;
         text-align: center;
     `;
-    infoBox.textContent = `${school.schoolName.replace(/등학교/g, "")} (${school.studentCountPerClassroom}/${school.totalStudentCount})`;
+   const rawPerClass = school.studentCountPerClassroom;
+const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
+
+const total = (school.totalStudentCount ?? "");
+
+const suffix =
+  (perClass !== "" || total !== "")
+    ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})`
+    : "";
+
+infoBox.textContent =
+  `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
+
 
     markerElement.appendChild(markerIcon);
     markerElement.appendChild(infoBox);
@@ -2758,6 +2908,11 @@ function updateSchoolMarkers() {
 
     // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
     addMarkerRightClickEvent(marker, markerElement);
+
+    // ✅ 좌클릭: 배정범위(폴리곤) 토글
+    naver.maps.Event.addListener(marker, "click", () => {
+        toggleSchoolZoneBySchool(school);
+    });
 
     schoolMarkers.push(marker);
 });
