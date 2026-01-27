@@ -78,7 +78,6 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
 /* ✅ 법정동(EMD) 라벨 */
 /* ✅ 법정동(EMD) 라벨 - 글자만 */
 .emd-label{
-  font-size: var(--label-font-size, 30px);  /* JS can override */
 /* 12px * 4 */
   font-weight: 800;
   color: #0b1b3a;
@@ -99,7 +98,6 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
 
 /* 시군구(SIG) 라벨 - 글자만 */
 .sig-label{
-  font-size: var(--label-font-size, 26px);  /* JS can override */
 font-weight: 800;
   color: #111;
   background: transparent;
@@ -1399,15 +1397,12 @@ function getLabelLatLngByPolylabel(geometry, bbox) {
 
 
 
-
-// =========================
-// ✅ 경계 라벨 글자 크기 자동 조절 (bbox + 화면해상도 기반)
-// - bbox(경계의 [minLng,minLat,maxLng,maxLat])를 화면 픽셀 크기로 변환한 뒤
-// - 텍스트 길이에 맞춰 font-size를 계산해서 경계 밖으로 튀는 현상을 줄입니다.
-// =========================
-function _labelClamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
-
-function _getBboxPixelSize(bbox, map){
+/* === LABEL AUTO-FIT (bbox → pixel → font-size) === */
+/* === LABEL AUTO-FIT (bbox → pixel → font-size) ===
+   - 항상 경계(bbox) 안에 텍스트가 들어가도록 font-size를 자동으로 맞춥니다.
+   - bbox는 [minLng, minLat, maxLng, maxLat]
+*/
+function _label_getBboxPixelSize(bbox, map){
   try{
     const proj = map && map.getProjection && map.getProjection();
     if (!proj) return null;
@@ -1415,40 +1410,73 @@ function _getBboxPixelSize(bbox, map){
     const sw = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[1], bbox[0]));
     const ne = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[3], bbox[2]));
     return { width: Math.abs(ne.x - sw.x), height: Math.abs(ne.y - sw.y) };
-  } catch(e){
+  }catch(e){
     return null;
   }
 }
 
-function _calcDynamicLabelFontSize({ bbox, text, map, min=10, max=30, paddingRatio=0.86 }){
-  if (!bbox || !text || !map) return min;
+function _label_measureTextPx(text, fontSizePx, fontWeight = 800, fontFamily = "sans-serif") {
+  const canvas = _label_measureTextPx._canvas || (_label_measureTextPx._canvas = document.createElement("canvas"));
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontWeight} ${fontSizePx}px ${fontFamily}`;
+  const w = ctx.measureText(text).width;
+  const h = fontSizePx * 1.15; // 한글/영문 모두 보수적으로 커버
+  return { w, h };
+}
 
-  const px = _getBboxPixelSize(bbox, map);
+// ✅ 핵심: bbox 픽셀 박스 안에 텍스트가 "반드시" 들어가도록 font-size를 fit
+function _label_calcFitFontSize({
+  bbox,
+  text,
+  map,
+  paddingPx = 8,
+  min = 8,
+  max = 40,
+  fontWeight = 800,
+  fontFamily = "sans-serif",
+  hideIfTooSmall = true
+}) {
+  const px = _label_getBboxPixelSize(bbox, map);
   if (!px) return min;
 
-  // 경계 박스의 짧은 축을 기준으로(세로로 얇은 동도 대응)
-  const base = Math.max(10, Math.min(px.width, px.height) * paddingRatio);
+  const availW = Math.max(0, px.width  - paddingPx * 2);
+  const availH = Math.max(0, px.height - paddingPx * 2);
 
-  // 한글 기준 글자 폭 보정값(대략)
-  const perChar = 0.62;
+  // bbox가 너무 작으면 숨김
+  if (hideIfTooSmall && (availW < 10 || availH < 10)) return 0;
 
-  // base 안에 text가 들어가도록 계산 (너무 커지면 clamp)
-  const size = base / (Math.max(1, text.length) * perChar);
+  // 이분 탐색으로 "들어가는" 최대 font-size 찾기
+  let lo = min, hi = max, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const m = _label_measureTextPx(text, mid, fontWeight, fontFamily);
+    if (m.w <= availW && m.h <= availH) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
 
-  return _labelClamp(size, min, max);
+  if (best === 0) return hideIfTooSmall ? 0 : min;
+  return best;
 }
 
 
 function addEmdLabel(latlng, text, bbox) {
-  if (!text) return;
+  if (!text || !bbox || !window.map) return;
 
-  const fontSize = _calcDynamicLabelFontSize({
+  const fs = _label_calcFitFontSize({
     bbox,
     text,
     map: window.map,
-    min: 11,
-    max: 28
+    paddingPx: 8,
+    min: 9,
+    max: 38,
+    hideIfTooSmall: true
   });
+
+  if (fs <= 0) return;
 
   const marker = new naver.maps.Marker({
     position: latlng,
@@ -1456,9 +1484,7 @@ function addEmdLabel(latlng, text, bbox) {
     clickable: false,
     zIndex: 999999,
     icon: {
-      // ✅ inline font-size로 강제(테마/CSS 영향 최소화)
-      content: `<div class="emd-label" style="font-size:${fontSize}px">${text}</div>`,
-      // 가운데 정렬용 anchor (중요!)
+      content: `<div class="emd-label" style="font-size:${fs}px">${text}</div>`,
       anchor: new naver.maps.Point(0, 0)
     }
   });
@@ -1688,15 +1714,19 @@ function clearSigLabels() {
 }
 
 function addSigLabel(latlng, text, bbox) {
-  if (!text) return;
+  if (!text || !bbox || !window.map) return;
 
-  const fontSize = _calcDynamicLabelFontSize({
+  const fs = _label_calcFitFontSize({
     bbox,
     text,
     map: window.map,
-    min: 12,
-    max: 26
+    paddingPx: 10,
+    min: 10,
+    max: 34,
+    hideIfTooSmall: true
   });
+
+  if (fs <= 0) return;
 
   const marker = new naver.maps.Marker({
     position: latlng,
@@ -1704,10 +1734,11 @@ function addSigLabel(latlng, text, bbox) {
     clickable: false,
     zIndex: 999998,
     icon: {
-      content: `<div class="sig-label" style="font-size:${fontSize}px">${text}</div>`,
+      content: `<div class="sig-label" style="font-size:${fs}px">${text}</div>`,
       anchor: new naver.maps.Point(0, 0)
     }
   });
+
   sigLabels.push(marker);
 }
 
