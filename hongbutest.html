@@ -78,7 +78,8 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
 /* ✅ 법정동(EMD) 라벨 */
 /* ✅ 법정동(EMD) 라벨 - 글자만 */
 .emd-label{
-  font-size: 30px;          /* 12px * 4 */
+  font-size: var(--label-font-size, 30px);  /* JS can override */
+/* 12px * 4 */
   font-weight: 800;
   color: #0b1b3a;
 
@@ -98,8 +99,8 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
 
 /* 시군구(SIG) 라벨 - 글자만 */
 .sig-label{
-  font-size: 26px;
-  font-weight: 800;
+  font-size: var(--label-font-size, 26px);  /* JS can override */
+font-weight: 800;
   color: #111;
   background: transparent;
   border: none;
@@ -1398,8 +1399,56 @@ function getLabelLatLngByPolylabel(geometry, bbox) {
 
 
 
-function addEmdLabel(latlng, text) {
+
+// =========================
+// ✅ 경계 라벨 글자 크기 자동 조절 (bbox + 화면해상도 기반)
+// - bbox(경계의 [minLng,minLat,maxLng,maxLat])를 화면 픽셀 크기로 변환한 뒤
+// - 텍스트 길이에 맞춰 font-size를 계산해서 경계 밖으로 튀는 현상을 줄입니다.
+// =========================
+function _labelClamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
+function _getBboxPixelSize(bbox, map){
+  try{
+    const proj = map && map.getProjection && map.getProjection();
+    if (!proj) return null;
+
+    const sw = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[1], bbox[0]));
+    const ne = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[3], bbox[2]));
+    return { width: Math.abs(ne.x - sw.x), height: Math.abs(ne.y - sw.y) };
+  } catch(e){
+    return null;
+  }
+}
+
+function _calcDynamicLabelFontSize({ bbox, text, map, min=10, max=30, paddingRatio=0.86 }){
+  if (!bbox || !text || !map) return min;
+
+  const px = _getBboxPixelSize(bbox, map);
+  if (!px) return min;
+
+  // 경계 박스의 짧은 축을 기준으로(세로로 얇은 동도 대응)
+  const base = Math.max(10, Math.min(px.width, px.height) * paddingRatio);
+
+  // 한글 기준 글자 폭 보정값(대략)
+  const perChar = 0.62;
+
+  // base 안에 text가 들어가도록 계산 (너무 커지면 clamp)
+  const size = base / (Math.max(1, text.length) * perChar);
+
+  return _labelClamp(size, min, max);
+}
+
+
+function addEmdLabel(latlng, text, bbox) {
   if (!text) return;
+
+  const fontSize = _calcDynamicLabelFontSize({
+    bbox,
+    text,
+    map: window.map,
+    min: 11,
+    max: 28
+  });
 
   const marker = new naver.maps.Marker({
     position: latlng,
@@ -1407,7 +1456,8 @@ function addEmdLabel(latlng, text) {
     clickable: false,
     zIndex: 999999,
     icon: {
-      content: `<div class="emd-label">${text}</div>`,
+      // ✅ inline font-size로 강제(테마/CSS 영향 최소화)
+      content: `<div class="emd-label" style="font-size:${fontSize}px">${text}</div>`,
       // 가운데 정렬용 anchor (중요!)
       anchor: new naver.maps.Point(0, 0)
     }
@@ -1612,7 +1662,7 @@ function redrawEmdByBounds() {
 		if (z >= 15 && labelCount < labelCap) {
 			const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
 			if (name) {
-				addEmdLabel(getLabelLatLngByPolylabel(f.geometry, f.bbox), name);
+				addEmdLabel(getLabelLatLngByPolylabel(f.geometry, f.bbox), name, f.bbox);
 				labelCount++;
 			}
 		}}
@@ -1637,19 +1687,28 @@ function clearSigLabels() {
 	}
 }
 
-function addSigLabel(latlng, text) {
-	if (!text) return;
-	const marker = new naver.maps.Marker({
-		position: latlng,
-		map: window.map,
-		clickable: false,
-		zIndex: 999998,
-		icon: {
-			content: `<div class="sig-label">${text}</div>`,
-			anchor: new naver.maps.Point(0, 0)
-		}
-	});
-	sigLabels.push(marker);
+function addSigLabel(latlng, text, bbox) {
+  if (!text) return;
+
+  const fontSize = _calcDynamicLabelFontSize({
+    bbox,
+    text,
+    map: window.map,
+    min: 12,
+    max: 26
+  });
+
+  const marker = new naver.maps.Marker({
+    position: latlng,
+    map: window.map,
+    clickable: false,
+    zIndex: 999998,
+    icon: {
+      content: `<div class="sig-label" style="font-size:${fontSize}px">${text}</div>`,
+      anchor: new naver.maps.Point(0, 0)
+    }
+  });
+  sigLabels.push(marker);
 }
 
 async function loadSigBoundaryOnce() {
@@ -1715,7 +1774,7 @@ function redrawSigByBounds() {
 			const name = f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
 			if (name) {
 				const center = getLabelLatLngByPolylabel(f.geometry, f.bbox);
-				addSigLabel(center, name);
+				addSigLabel(center, name, f.bbox);
 				labelCount++;
 			}
 		}
