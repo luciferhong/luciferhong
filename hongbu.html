@@ -6,7 +6,10 @@
 
     <link rel="icon" href="route.png" type="image/png">
     <title>[루시퍼홍] 홍부가 기가막혀</title>
-	<script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
+	<script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8">
+let sigGeojsonRaw = null;
+let emdGeojsonRaw = null;
+</script>
 	<script type="text/javascript" src="MarkerClustering.js"></script>
 	<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
@@ -71,6 +74,41 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
 .map-stoptrack-btn { top: 50px; }  /* 추적 중지 */
 #mapStopBtn { display: none !important; }
 
+
+/* ✅ 법정동(EMD) 라벨 */
+/* ✅ 법정동(EMD) 라벨 - 글자만 */
+.emd-label{
+/* 12px * 4 */
+  font-weight: 800;
+  color: #0b1b3a;
+
+  background: transparent;  /* 배경 제거 */
+  border: none;             /* 테두리 제거 */
+  border-radius: 0;         /* 반원/둥근모양 제거 */
+  padding: 0;               /* 여백 제거 */
+  box-shadow: none;         /* 그림자 제거 */
+
+  white-space: nowrap;
+  pointer-events: none;
+
+  /* 배경 없이도 잘 보이게(선택) */
+  text-shadow: 0 0 2px rgba(255,255,255,0.9), 0 0 6px rgba(255,255,255,0.7);
+}
+
+
+/* 시군구(SIG) 라벨 - 글자만 */
+.sig-label{
+font-weight: 800;
+  color: #111;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 0 2px rgba(255,255,255,0.9), 0 0 6px rgba(255,255,255,0.7);
+}
 </style>
 
 
@@ -338,6 +376,7 @@ body.map-fullscreen {
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label><input type="checkbox" id="toggleSchools" >초</label>
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
+	<label><input type="checkbox" id="toggleEmdBoundary">법정동경계</label>
 	<label><input type="checkbox" id="toggleFacilities">환경</label>
 	<label><input type="checkbox" id="toggleStarbucks">스벅</label>
 	<label><input type="checkbox" id="toggleMemoIcon" checked>메모 아이콘 표시</label>
@@ -951,6 +990,9 @@ let imageModalShowYn = false;
 
 		window.map = new naver.maps.Map("map", mapOptions);
 
+		// ✅ 법정동(EMD) 경계: 현재 화면(bounds) 내만 렌더링 (성능 최적화)
+		ensureEmdLayerBoundToMap().catch(console.warn);
+
 		// 🔽 저장된 지도 위치 복원
 		try {
 		  const pos = await getHongbuSetting("mapPosition");
@@ -1154,6 +1196,738 @@ console.log(document.getElementById("locationPopup").style.display);
 	let apartmentData = []; // ✅ 전체 아파트 데이터 저장
 	let apartmentMarkers = []; // ✅ 지도에 표시된 마커 저장
 	let markerCluster = null; // ✅ 마커 클러스터링 객체
+
+
+// =========================
+// ✅ 법정동(EMD) 경계 표시 (GeoJSON) - 화면 범위(bounds) 내만 렌더링
+// 사용법:
+// 1) shp를 EPSG:4326(WGS84) GeoJSON으로 변환 후 같은 폴더에 emd_wgs84.geojson 배치
+// 2) 아래 GEOJSON_URL만 맞추면 동작
+// =========================
+const EMD_GEOJSON_PARTS = ["emd_wgs84_utf8_part01.geojson", "emd_wgs84_utf8_part02.geojson", "emd_wgs84_utf8_part03.geojson", "emd_wgs84_utf8_part04.geojson"];
+// ✅ UTF-8 GeoJSON (A2 한글 포함)  // ✅ 파일명/경로 맞춰주세요
+
+let emdGeojson = null;
+let emdPrepared = null;   // { bbox:[minLng,minLat,maxLng,maxLat], geometry, properties }[]
+
+// ==============================
+// ✅ SIG(시군구) 경계 표시 (줌 14 이하)
+// ==============================
+const SIG_GEOJSON_PARTS = ["sig_wgs84_utf8_part01.geojson", "sig_wgs84_utf8_part02.geojson"];
+let sigPrepared = null;
+let sigPolygons = [];
+let sigLabels = [];
+
+let emdPolygons = [];     // 현재 지도에 그려진 polygon 객체들
+
+let emdLabels = [];      // 현재 지도에 표시된 라벨(커스텀 오버레이/마커)
+function clearEmdLabels() {
+	if (!emdLabels || emdLabels.length === 0) return;
+	emdLabels.forEach(o => { try { o.setMap && o.setMap(null); } catch(e){} });
+	emdLabels = [];
+}
+
+// bbox 중심을 라벨 위치로 사용 (빠르고 충분히 정확)
+function getLabelLatLngByBbox(bbox){
+	const lng = (bbox[0] + bbox[2]) / 2;
+	const lat = (bbox[1] + bbox[3]) / 2;
+	return new naver.maps.LatLng(lat, lng);
+}
+
+
+// ✅ 라벨 위치(시각적 중심) 계산: polylabel(도형 내부에서 가장 넓은 지점)
+// - centroid/bbox 중심보다 겹침이 덜하고, 오목/세로로 긴 도형에서도 안정적
+function _emd_pointToPolygonDist(x, y, polygon) {
+	let inside = false;
+	let minDistSq = Infinity;
+
+	for (let k = 0; k < polygon.length; k++) {
+		const ring = polygon[k];
+		for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+			const ax = ring[i][0], ay = ring[i][1];
+			const bx = ring[j][0], by = ring[j][1];
+
+			// ray casting
+			const intersect = ((ay > y) !== (by > y)) && (x < (bx - ax) * (y - ay) / (by - ay + 0.0) + ax);
+			if (intersect) inside = !inside;
+
+			// distance to segment
+			const dx = bx - ax, dy = by - ay;
+			let t = ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy);
+			t = Math.max(0, Math.min(1, t));
+			const px = ax + t * dx, py = ay + t * dy;
+			const distSq = (x - px) * (x - px) + (y - py) * (y - py);
+			if (distSq < minDistSq) minDistSq = distSq;
+		}
+	}
+	const dist = Math.sqrt(minDistSq);
+	return inside ? dist : -dist;
+}
+
+function _emd_ringAreaAbs(ring) {
+	let a = 0;
+	for (let i = 0; i < ring.length; i++) {
+		const x1 = ring[i][0], y1 = ring[i][1];
+		const x2 = ring[(i + 1) % ring.length][0], y2 = ring[(i + 1) % ring.length][1];
+		a += (x1 * y2 - x2 * y1);
+	}
+	return Math.abs(a * 0.5);
+}
+
+function _emd_polylabel(polygon, precision = 1e-5) {
+	const outer = polygon[0];
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	for (const p of outer) {
+		const x = p[0], y = p[1];
+		if (x < minX) minX = x;
+		if (y < minY) minY = y;
+		if (x > maxX) maxX = x;
+		if (y > maxY) maxY = y;
+	}
+
+	const width = maxX - minX;
+	const height = maxY - minY;
+	const cellSize = Math.min(width, height);
+	if (!isFinite(cellSize) || cellSize === 0) return outer[0];
+
+	function Cell(x, y, h, d) {
+		this.x = x; this.y = y; this.h = h;
+		this.d = d;
+		this.max = this.d + this.h * Math.SQRT2;
+	}
+
+	let h = cellSize / 2;
+	let cells = [];
+
+	for (let x = minX; x < maxX; x += cellSize) {
+		for (let y = minY; y < maxY; y += cellSize) {
+			const cx = x + h, cy = y + h;
+			const d = _emd_pointToPolygonDist(cx, cy, polygon);
+			cells.push(new Cell(cx, cy, h, d));
+		}
+	}
+
+	// initial best: bbox center and first point
+	let best = new Cell((minX + maxX) / 2, (minY + maxY) / 2, 0, _emd_pointToPolygonDist((minX + maxX) / 2, (minY + maxY) / 2, polygon));
+	const fp = outer[0];
+	const fpCell = new Cell(fp[0], fp[1], 0, _emd_pointToPolygonDist(fp[0], fp[1], polygon));
+	if (fpCell.d > best.d) best = fpCell;
+
+	// sort by max descending (simple priority queue)
+	cells.sort((a, b) => b.max - a.max);
+
+	while (cells.length) {
+		const cell = cells.shift();
+		if (cell.d > best.d) best = cell;
+		if (cell.max - best.d <= precision) continue;
+
+		const h2 = cell.h / 2;
+		const children = [
+			[cell.x - h2, cell.y - h2],
+			[cell.x + h2, cell.y - h2],
+			[cell.x - h2, cell.y + h2],
+			[cell.x + h2, cell.y + h2],
+		];
+
+		for (const c of children) {
+			const cx = c[0], cy = c[1];
+			const d = _emd_pointToPolygonDist(cx, cy, polygon);
+			const child = new Cell(cx, cy, h2, d);
+
+			// insert keeping sort desc by max (fast enough for our scale)
+			let idx = 0;
+			while (idx < cells.length && cells[idx].max > child.max) idx++;
+			cells.splice(idx, 0, child);
+		}
+	}
+
+	return [best.x, best.y];
+}
+function _emd_clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function _emd_aspectFromBbox(bbox){
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const w = Math.max(1e-12, (maxLng - minLng));
+  const h = Math.max(1e-12, (maxLat - minLat));
+  return w > h ? (w / h) : (h / w); // 항상 >= 1
+}
+
+// ✅ 여기만 교체하면 됨
+function getLabelLatLngByPolylabel(geometry, bbox) {
+  const polys = (geometry.type === "MultiPolygon")
+    ? geometry.coordinates
+    : [geometry.coordinates];
+
+  // 1) 가장 큰 폴리곤 선택
+  let bestPoly = polys[0];
+  let bestArea = -1;
+
+  for (const p of polys) {
+    const ring = p[0];
+    let a = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[(i + 1) % ring.length];
+      a += (x1 * y2 - x2 * y1);
+    }
+    a = Math.abs(a * 0.5);
+    if (a > bestArea) {
+      bestArea = a;
+      bestPoly = p;
+    }
+  }
+
+  // 2) polylabel (안전한 내부점)
+  const pl = _emd_polylabel(bestPoly, 1e-5); // [lng, lat]
+
+  // 3) centroid (사람이 느끼는 중앙 성향)
+  const ct = _emd_ringCentroidLngLat(bestPoly[0]) || pl;
+
+  // 4) 도형이 길쭉할수록 centroid 쪽으로 더 당김
+  const ar = _emd_aspectFromBbox(bbox); // 종횡비
+  const t = _emd_clamp((ar - 1) / 3, 0.2, 0.8); // 🔥 자동 보정 핵심
+
+  const blended = _emd_lerp(pl, ct, t);
+
+  return new naver.maps.LatLng(blended[1], blended[0]);
+}
+
+
+
+
+/* === LABEL AUTO-FIT (bbox → pixel → font-size) === */
+/* === LABEL AUTO-FIT (bbox → pixel → font-size) ===
+   - 항상 경계(bbox) 안에 텍스트가 들어가도록 font-size를 자동으로 맞춥니다.
+   - bbox는 [minLng, minLat, maxLng, maxLat]
+*/
+function _label_getBboxPixelSize(bbox, map){
+  try{
+    const proj = map && map.getProjection && map.getProjection();
+    if (!proj) return null;
+
+    const sw = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[1], bbox[0]));
+    const ne = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[3], bbox[2]));
+    return { width: Math.abs(ne.x - sw.x), height: Math.abs(ne.y - sw.y) };
+  }catch(e){
+    return null;
+  }
+}
+
+function _label_measureTextPx(text, fontSizePx, fontWeight = 800, fontFamily = "sans-serif") {
+  const canvas = _label_measureTextPx._canvas || (_label_measureTextPx._canvas = document.createElement("canvas"));
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontWeight} ${fontSizePx}px ${fontFamily}`;
+  const w = ctx.measureText(text).width;
+  const h = fontSizePx * 1.15; // 한글/영문 모두 보수적으로 커버
+  return { w, h };
+}
+
+// ✅ 핵심: bbox 픽셀 박스 안에 텍스트가 "반드시" 들어가도록 font-size를 fit
+function _label_calcFitFontSize({
+  bbox,
+  text,
+  map,
+  paddingPx = 8,
+  min = 8,
+  max = 40,
+  fontWeight = 800,
+  fontFamily = "sans-serif",
+  hideIfTooSmall = true
+}) {
+  const px = _label_getBboxPixelSize(bbox, map);
+  if (!px) return min;
+
+  const availW = Math.max(0, px.width  - paddingPx * 2);
+  const availH = Math.max(0, px.height - paddingPx * 2);
+
+  // bbox가 너무 작으면 숨김
+  if (hideIfTooSmall && (availW < 10 || availH < 10)) return 0;
+
+  // 이분 탐색으로 "들어가는" 최대 font-size 찾기
+  let lo = min, hi = max, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const m = _label_measureTextPx(text, mid, fontWeight, fontFamily);
+    if (m.w <= availW && m.h <= availH) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+
+  if (best === 0) return hideIfTooSmall ? 0 : min;
+  return best;
+}
+
+
+function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
+  if (!text || !bbox || !window.map) return;
+
+  const fs = (typeof forcedFontSizePx === "number")
+    ? forcedFontSizePx
+    : _label_calcFitFontSize({
+        bbox,
+        text,
+        map: window.map,
+        paddingPx: 8,
+        min: 9,
+        max: 38,
+        hideIfTooSmall: true
+      });
+
+  if (fs <= 0) return;
+
+  const marker = new naver.maps.Marker({
+    position: latlng,
+    map: window.map,
+    clickable: false,
+    zIndex: 999999,
+    icon: {
+      content: `<div class="emd-label" style="font-size:${fs}px">${text}</div>`,
+      anchor: new naver.maps.Point(0, 0)
+    }
+  });
+
+  emdLabels.push(marker);
+}
+
+
+
+let emdRedrawTimer = null;
+let emdBoundMap = null; // 마지막으로 바인딩된 map 인스턴스
+
+function clearEmdPolygons() {
+  // ✅ 경계 폴리곤 제거
+  if (emdPolygons && emdPolygons.length) {
+    emdPolygons.forEach(p => {
+      try { p.setMap(null); } catch(e){}
+    });
+    emdPolygons = [];
+  }
+
+  // ✅ 지역명 라벨 제거 (← 네가 물어본 코드)
+  if (emdLabels && emdLabels.length) {
+    emdLabels.forEach(m => {
+      try { m.setMap(null); } catch(e){}
+    });
+    emdLabels = [];
+  }
+}
+
+
+function bboxIntersects(bounds, bbox) {
+	// bounds: naver.maps.LatLngBounds
+	const sw = bounds.getSW();
+	const ne = bounds.getNE();
+	const minLng = bbox[0], minLat = bbox[1], maxLng = bbox[2], maxLat = bbox[3];
+	// bbox가 bounds와 겹치지 않으면 false
+	if (maxLng < sw.lng()) return false;
+	if (minLng > ne.lng()) return false;
+	if (maxLat < sw.lat()) return false;
+	if (minLat > ne.lat()) return false;
+	return true;
+}
+
+function _prepareFeatureBBoxes(featureCollection) {
+  const feats = featureCollection?.features || [];
+  return feats.map(f => {
+    const geom = f.geometry;
+    const polys = (geom.type === "MultiPolygon") ? geom.coordinates : [geom.coordinates];
+    let minLng=Infinity, minLat=Infinity, maxLng=-Infinity, maxLat=-Infinity;
+    for (const poly of polys) {
+      const ring = poly[0];
+      for (const pt of ring) {
+        const lng = pt[0], lat = pt[1];
+        if (lng < minLng) minLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    return { geometry: geom, properties: f.properties || {}, bbox: [minLng, minLat, maxLng, maxLat] };
+  });
+}
+
+function prepareSigPreparedOnce() {
+  if (sigPrepared) return;
+  if (!sigGeojsonRaw) throw new Error("SIG GeoJSON not loaded");
+  sigPrepared = _prepareFeatureBBoxes(sigGeojsonRaw);
+}
+
+function prepareEmdPreparedOnce() {
+  if (emdPrepared) return;
+  if (!emdGeojsonRaw) throw new Error("EMD GeoJSON not loaded");
+  emdPrepared = _prepareFeatureBBoxes(emdGeojsonRaw);
+}
+
+
+
+function computeFeatureBbox(geom) {
+	let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+
+	function scanCoords(coordArray) {
+		// coordArray: [lng,lat]들의 중첩 배열
+		for (const item of coordArray) {
+			if (!item) continue;
+			if (typeof item[0] === "number" && typeof item[1] === "number") {
+				const lng = item[0], lat = item[1];
+				if (lng < minLng) minLng = lng;
+				if (lng > maxLng) maxLng = lng;
+				if (lat < minLat) minLat = lat;
+				if (lat > maxLat) maxLat = lat;
+			} else if (Array.isArray(item)) {
+				scanCoords(item);
+			}
+		}
+	}
+
+	scanCoords(geom.coordinates);
+
+	if (!isFinite(minLng) || !isFinite(minLat) || !isFinite(maxLng) || !isFinite(maxLat)) {
+		return null;
+	}
+	return [minLng, minLat, maxLng, maxLat];
+}
+
+async function loadEmdBoundaryOnce() {
+  if (emdPrepared) return;
+
+  const parts = EMD_GEOJSON_PARTS;
+  const results = await Promise.all(parts.map(p => fetch(p).then(r => {
+    if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
+    return r.json();
+  })));
+
+  // Merge FeatureCollections
+  const merged = { type: "FeatureCollection", features: [] };
+  for (const fc of results) {
+    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
+      merged.features.push(...fc.features);
+    }
+  }
+
+  // Store raw FC for downstream prepare step
+  emdGeojsonRaw = merged;
+}
+
+
+function drawEmdGeometry(geom) {
+	// Polygon, MultiPolygon 지원 (외곽 ring만 사용)
+	const type = geom.type;
+	const coords = geom.coordinates;
+
+	const polygons = (type === "MultiPolygon") ? coords : [coords];
+
+	polygons.forEach(poly => {
+		if (!poly || !poly[0] || poly[0].length < 3) return;
+		const ring = poly[0];
+
+		const path = ring.map(c => new naver.maps.LatLng(c[1], c[0]));
+
+		const polygon = new naver.maps.Polygon({
+		  map: window.map,
+		  paths: path,
+		  strokeColor: "#000000",   // ✅ 검은색
+		  strokeOpacity: 0.9,
+		  strokeWeight: 2,
+		  fillColor: "#000000",     // (선택) 채움도 검정
+		  fillOpacity: 0.05         // (선택) 아주 연하게
+		});
+
+
+		emdPolygons.push(polygon);
+	});
+}
+
+
+function isBoundaryCheckboxOn() {
+  const cb = document.getElementById("toggleEmdBoundary");
+  return !!(cb && cb.checked);
+}
+
+function shouldShowSigBoundary() {
+  if (!isBoundaryCheckboxOn()) return false;
+  if (!window.map) return false;
+  return window.map.getZoom() <= 14;
+}
+
+function shouldShowEmdBoundary() {
+  if (!isBoundaryCheckboxOn()) return false;
+  if (!window.map) return false;
+  return window.map.getZoom() >= 15;
+}
+
+function redrawEmdByBounds() {
+  try { prepareEmdPreparedOnce(); } catch(e) { console.error('redrawEmdByBounds prepare 실패:', e); return; }
+
+  if (!window.map) return;
+
+  const z = window.map.getZoom();
+  // ✅ 법정동경계 체크 + 줌 15 이상일 때만 표시
+  if (!shouldShowEmdBoundary()) {
+    clearEmdPolygons();
+    clearEmdLabels();
+    return;
+  }
+
+  const bounds = window.map.getBounds();
+  if (!bounds) return;
+
+  clearEmdPolygons();
+  clearEmdLabels();
+
+  // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
+  const labelCap = 200; // 화면 내 라벨 최대치 (성능 보호)
+  const labelCandidates = [];
+
+  for (const f of emdPrepared) {
+    if (!bboxIntersects(bounds, f.bbox)) continue;
+
+    // 경계 그리기
+    drawEmdGeometry(f.geometry);
+
+    // 라벨 후보 수집
+    if (z >= 15 && labelCandidates.length < labelCap) {
+      const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
+      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+    }
+  }
+
+  // 2) 후보들 중 'fit 가능한' 최소 폰트 크기 산출 (← 사용자가 원하는 "가장 작은 텍스트 크기")
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map: window.map,
+      paddingPx: 8,
+      min: 9,
+      max: 38,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+
+  if (!isFinite(minFit) || minFit <= 0) return;
+
+  
+  // ✅ 모바일에서는 라벨 최대 12px
+  let uniformFit = minFit;
+  if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+    uniformFit = Math.min(uniformFit, 18);
+  }
+// 3) 모든 라벨을 '최소 폰트'로 통일해서 렌더링 (항상 bbox 안에 들어감)
+  for (const c of labelCandidates) {
+    const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    addEmdLabel(latlng, c.name, c.bbox, uniformFit);
+  }
+}
+
+
+// ✅ SIG helpers
+// ==============================
+function clearSigPolygons() {
+	if (sigPolygons && sigPolygons.length) {
+		sigPolygons.forEach(p => { try { p.setMap(null); } catch(e){} });
+		sigPolygons = [];
+	}
+}
+
+function clearSigLabels() {
+	if (sigLabels && sigLabels.length) {
+		sigLabels.forEach(m => { try { m.setMap(null); } catch(e){} });
+		sigLabels = [];
+	}
+}
+
+function addSigLabel(latlng, text, bbox, forcedFontSizePx) {
+  if (!text || !bbox || !window.map) return;
+
+  const fs = (typeof forcedFontSizePx === "number")
+    ? forcedFontSizePx
+    : _label_calcFitFontSize({
+        bbox,
+        text,
+        map: window.map,
+        paddingPx: 10,
+        min: 10,
+        max: 34,
+        hideIfTooSmall: true
+      });
+
+  if (fs <= 0) return;
+
+  const marker = new naver.maps.Marker({
+    position: latlng,
+    map: window.map,
+    clickable: false,
+    zIndex: 999998,
+    icon: {
+      content: `<div class="sig-label" style="font-size:${fs}px">${text}</div>`,
+      anchor: new naver.maps.Point(0, 0)
+    }
+  });
+
+  sigLabels.push(marker);
+}
+
+
+async function loadSigBoundaryOnce() {
+  if (sigPrepared) return;
+
+  const parts = SIG_GEOJSON_PARTS;
+  const results = await Promise.all(parts.map(p => fetch(p).then(r => {
+    if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
+    return r.json();
+  })));
+
+  // Merge FeatureCollections
+  const merged = { type: "FeatureCollection", features: [] };
+  for (const fc of results) {
+    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
+      merged.features.push(...fc.features);
+    }
+  }
+
+  // Store raw FC for downstream prepare step
+  sigGeojsonRaw = merged;
+}
+
+
+function drawSigGeometry(geometry) {
+	const polys = (geometry.type === "MultiPolygon") ? geometry.coordinates : [geometry.coordinates];
+
+	polys.forEach(poly => {
+		const ring = poly[0];
+		const path = ring.map(c => new naver.maps.LatLng(c[1], c[0]));
+
+		const polygon = new naver.maps.Polygon({
+			map: window.map,
+			paths: path,
+			strokeColor: "#000000",
+			strokeOpacity: 1,
+			strokeWeight: 3,
+			fillOpacity: 0
+		});
+		sigPolygons.push(polygon);
+	});
+}
+
+function redrawSigByBounds() {
+  try { prepareSigPreparedOnce(); } catch(e) { console.error('redrawSigByBounds prepare 실패:', e); return; }
+
+  if (!window.map || !sigPrepared) return;
+
+  const bounds = window.map.getBounds();
+  if (!bounds) return;
+
+  clearSigPolygons();
+  clearSigLabels();
+
+  // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
+  const labelCap = 60; // 성능 보호
+  const labelCandidates = [];
+
+  for (const f of sigPrepared) {
+    if (!bboxIntersects(bounds, f.bbox)) continue;
+
+    drawSigGeometry(f.geometry);
+
+    if (labelCandidates.length < labelCap) {
+      const name = f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
+      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+    }
+  }
+
+  // 2) 후보들 중 최소 fit 폰트 크기 산출
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map: window.map,
+      paddingPx: 10,
+      min: 10,
+      max: 34,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+
+  if (!isFinite(minFit) || minFit <= 0) return;
+
+  
+  // ✅ 모바일에서는 라벨 최대 12px
+  let uniformFit = minFit;
+  if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+    uniformFit = Math.min(uniformFit, 18);
+  }
+// 3) 모든 SIG 라벨을 '최소 폰트'로 통일
+  for (const c of labelCandidates) {
+    const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    addSigLabel(center, c.name, c.bbox, uniformFit);
+  }
+}
+
+
+function redrawBoundaryByZoom() {
+	if (!window.map) return;
+
+	// 체크 해제면 모두 제거
+	if (!isBoundaryCheckboxOn()) {
+		clearSigPolygons(); clearSigLabels();
+		clearEmdPolygons(); clearEmdLabels();
+		return;
+	}
+
+	const z = window.map.getZoom();
+
+	// ✅ SIG: 12 < zoom <= 14
+	if (z > 12 && z <= 14) {
+		clearEmdPolygons(); clearEmdLabels();
+		loadSigBoundaryOnce().then(() => { try { redrawSigByBounds(); } catch(e){ console.error("SIG redraw 실패:", e);} });
+		return;
+	}
+
+	// ✅ EMD: zoom >= 15
+	if (z >= 15) {
+		clearSigPolygons(); clearSigLabels();
+		loadEmdBoundaryOnce().then(() => { try { redrawEmdByBounds(); } catch(e){ console.error("EMD redraw 실패:", e);} });
+		return;
+	}
+
+	// ✅ 그 외(zoom <= 12): 아무것도 표시하지 않음
+	clearSigPolygons(); clearSigLabels();
+	clearEmdPolygons(); clearEmdLabels();
+}
+
+
+function scheduleEmdRedraw() {
+	if (emdRedrawTimer) clearTimeout(emdRedrawTimer);
+	emdRedrawTimer = setTimeout(() => {
+		try { redrawBoundaryByZoom(); } catch (e) { console.error("Boundary redraw 실패:", e); }
+	}, 120);
+}
+
+async function ensureEmdLayerBoundToMap() {
+	// GeoJSON 한번만 로드
+	await loadEmdBoundaryOnce();
+
+	// createMap()은 지도를 '재생성'하므로, map 인스턴스가 바뀔 때마다 이벤트를 다시 바인딩해야 함
+	if (emdBoundMap !== window.map) {
+		emdBoundMap = window.map;
+
+		// 줌/이동이 끝나는 시점(idle)에만 bounds 필터 렌더링
+		naver.maps.Event.addListener(window.map, "idle", scheduleEmdRedraw);
+		naver.maps.Event.addListener(window.map, "zoom_changed", scheduleEmdRedraw);
+	}
+
+	// 초기 1회
+	scheduleEmdRedraw();
+}
 
 	// ✅ 2. 아파트 데이터를 fetch()로 가져오기
 	async function loadApartments() { 
@@ -1930,6 +2704,15 @@ Object.values(apartmentMarkers).forEach(marker => {
 document.getElementById("toggleSchools").addEventListener("change", () => {
     updateSchoolMarkers(); // ✅ 즉시 업데이트
 });
+
+// ✅ 법정동경계 토글
+const toggleEmdBoundaryEl = document.getElementById("toggleEmdBoundary");
+if (toggleEmdBoundaryEl) {
+  toggleEmdBoundaryEl.addEventListener("change", () => {
+    // 체크/해제 즉시 반영
+    scheduleEmdRedraw();
+  });
+}
 
 // ✅ 최소 세대수(unitFilter) 변경 시 지도 즉시 반영
 const unitFilterInput = document.getElementById("unitFilter");
@@ -3512,11 +4295,10 @@ console.log(activeMarker)
         let step = 0.0004;
 
         switch (event.key) {
-
-            case "w": case "ㅈ": case "W": lat += step; break;
-            case "s": case "ㄴ": case "S": lat -= step; break;
-            case "a": case "ㅁ": case "A": lng -= step; break;
-            case "d": case "ㅇ": case "D":lng += step; break;
+            case "w": case "ㅈ": lat += step; break;
+            case "s": case "ㄴ": lat -= step; break;
+            case "a": case "ㅁ": lng -= step; break;
+            case "d": case "ㅇ": lng += step; break;
             case "Escape":
                 updateMarkerSelection(activeMarkerElement, false);
                 activeMarker = null;
@@ -5624,11 +6406,62 @@ document.getElementById("unitFilter")
 
   window.addEventListener('orientationchange', resizeMapToContainer);
   window.addEventListener('resize', resizeMapToContainer);
+
+
+// ===== EMD label position blend: polylabel + centroid (override) =====
+function _emd_lerp(a, b, t){
+  return [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t];
+}
+function _emd_ringCentroidLngLat(ring){
+  let area = 0, cx = 0, cy = 0;
+  const n = ring.length;
+  if (n < 3) return null;
+  for (let i=0;i<n;i++){
+    const [x1,y1]=ring[i];
+    const [x2,y2]=ring[(i+1)%n];
+    const a = x1*y2 - x2*y1;
+    area += a;
+    cx += (x1+x2)*a;
+    cy += (y1+y2)*a;
+  }
+  area *= 0.5;
+  if (Math.abs(area) < 1e-12) return null;
+  return [cx/(6*area), cy/(6*area)];
+}
+
+// New function used by redraw (same name as before to override)
+function getLabelLatLngByPolylabel(geometry, bbox){
+  const polys = (geometry.type === "MultiPolygon") ? geometry.coordinates : [geometry.coordinates];
+  let bestPoly = polys[0], bestArea = -1;
+  for (const p of polys){
+    const ring = p[0];
+    let a = 0;
+    for (let i=0;i<ring.length;i++){
+      const [x1,y1]=ring[i], [x2,y2]=ring[(i+1)%ring.length];
+      a += (x1*y2 - x2*y1);
+    }
+    a = Math.abs(a*0.5);
+    if (a > bestArea){ bestArea = a; bestPoly = p; }
+  }
+  const p = _emd_polylabel(bestPoly, 1e-5);
+  const c = _emd_ringCentroidLngLat(bestPoly[0]);
+  let lnglat = p;
+  if (p && c){
+    const t = 0.35; // blend factor
+    lnglat = _emd_lerp(p, c, t);
+  }
+  if (!lnglat && bbox){
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    lnglat = [(minLng+maxLng)/2, (minLat+maxLat)/2];
+  }
+  if (!lnglat) return null;
+  return new naver.maps.LatLng(lnglat[1], lnglat[0]);
+}
+
 </script>
 
 
 
 </body>
 </html>
-
 
