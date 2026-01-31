@@ -660,7 +660,7 @@ let imageModalShowYn = false;
 				// 🔹 `this`를 `MapHandler` 인스턴스로 유지
 				document.getElementById("gpxFileInput").addEventListener("change", this.handleFileChange.bind(this));
 
-				document.getElementById("clearMap").addEventListener("click", () => this.clearMap());
+				document.getElementById("clearMap").addEventListener("click", () => this.clearMap({ forgetStoredGpx: true }));
 				
 				document.addEventListener("keydown", (e) => {
 					if (e.key === "Escape") {
@@ -703,7 +703,7 @@ let imageModalShowYn = false;
 					const userConfirmed = confirm("이전에 그린 경로가 삭제됩니다. 계속하시겠습니까?");
 					if (!userConfirmed) return;
 
-					this.clearMap(); // 기존 경로 초기화
+					this.clearMap({ forgetStoredGpx: false }); // 기존 경로 초기화
 				}
 
 				this.currentPath = [];
@@ -780,7 +780,8 @@ let imageModalShowYn = false;
                 });
                 this.markers.push(marker);
             }
-			clearMap() {
+			clearMap(options = {}) {
+				const { forgetStoredGpx = false } = options;
 				if (!Array.isArray(this.shapes)) {
 					this.shapes = []; // shapes가 배열이 아니면 초기화
 				}
@@ -815,11 +816,17 @@ let imageModalShowYn = false;
 				this.markers = [];
 				this.currentPath = [];
 				this.currentPolyline = null;
+			
+
+				// ✅ 마지막 불러온 GPX 기록도 삭제 (사용자가 "경로 초기화"를 눌렀을 때만)
+				if (forgetStoredGpx) {
+					deleteHongbuSetting("lastGpxPath").catch(console.warn);
+				}
 			}
 
 		loadGPX(file) {
 
-			this.clearMap();
+			this.clearMap({ forgetStoredGpx: false });
 			const reader = new FileReader();
 			reader.onload = (event) => {
 				const parser = new DOMParser();
@@ -840,6 +847,14 @@ let imageModalShowYn = false;
 
 				this.drawGPXPath(path);
 				this.updateEndMarker(path); // 🔹 GPX 로드 후 도착 마커 업데이트
+
+				// ✅ 마지막 불러온 GPX 경로 저장 (IndexedDB settings)
+				try {
+					const serial = path.map(p => ({ lat: p.y, lon: p.x }));
+					setHongbuSetting("lastGpxPath", serial).catch(console.warn);
+				} catch (e) {
+					console.warn("lastGpxPath 저장 실패:", e);
+				}
 			};
 			reader.readAsText(file);
 		}
@@ -1026,6 +1041,20 @@ let imageModalShowYn = false;
 				  naver.maps.Event.clearListeners(window.map, "rightclick"); // 이전 이벤트 제거
 			}
 		window.mapHandler = new MapHandler(window.map);
+
+		// ✅ 마지막 불러온 GPX 자동 복원 (안드로이드 앱 전환/새로고침 대비)
+		try {
+			const saved = await getHongbuSetting("lastGpxPath");
+			if (Array.isArray(saved) && saved.length >= 2) {
+				const path = saved.map(p => new naver.maps.LatLng(p.lat, p.lon));
+				window.mapHandler.clearMap({ forgetStoredGpx: false });
+				window.mapHandler.drawGPXPath(path);
+				window.mapHandler.updateEndMarker(path);
+			}
+		} catch (e) {
+			console.warn("lastGpxPath 복원 실패:", e);
+		}
+
 		/*
 		if(window.matchMedia("(max-width: 768px)").matches){
 			setTimeout(() => {
@@ -1042,6 +1071,10 @@ let imageModalShowYn = false;
 		await loadFacilities();
 		await loadStarbucks();
 		await findWay();
+
+    // ✅ UI 옵션 상태에 맞게 화면 즉시 반영
+    refreshByUIState();
+
 		setupRightClickEvent(); // 길찾기용 우클릭 이벤트
 		
 
@@ -2937,6 +2970,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 await initIndexedDB();
 
+    // ✅ 저장된 UI 옵션 복원 + 자동 저장 설정
+    await restoreUIStateFromDB();
+    initUIStateAutoSave();
+
+
 		const useBlank = document.getElementById("toggleBlankMap")?.checked;
 		createMap(useBlank);
 		injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
@@ -2949,15 +2987,28 @@ await initIndexedDB();
 		
 
 		// ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-		naver.maps.Event.addListener(window.map, "idle", () => {
-			const bounds = window.map.getBounds();
-			updateMarkers(bounds);
-			const center = window.map.getCenter();
-			const zoom   = window.map.getZoom();
-			setHongbuSetting("mapPosition", { lat: center.lat(), lng: center.lng(), zoom })
-			  .catch(console.warn);
+		// ✅ 지도 위치(센터/줌) 저장: idle + zoom/drag 이벤트 (모바일 즉시 새로고침 대비)
+			let __saveMapPosTimer = null;
+			const saveMapPositionDebounced = (delayMs = 150) => {
+				if (__saveMapPosTimer) clearTimeout(__saveMapPosTimer);
+				__saveMapPosTimer = setTimeout(() => {
+					try {
+						const center = window.map.getCenter();
+						const zoom   = window.map.getZoom();
+						setHongbuSetting("mapPosition", { lat: center.lat(), lng: center.lng(), zoom })
+						  .catch(console.warn);
+					} catch (e) {}
+				}, delayMs);
+			};
 
-		});
+			naver.maps.Event.addListener(window.map, "idle", () => {
+				const bounds = window.map.getBounds();
+				updateMarkers(bounds);
+				saveMapPositionDebounced();
+			});
+
+			naver.maps.Event.addListener(window.map, "zoom_changed", () => saveMapPositionDebounced(0));
+			naver.maps.Event.addListener(window.map, "dragend", () => saveMapPositionDebounced(0));
 
 		console.log("✅ 네이버 지도 초기화 완료.");
 
@@ -4042,6 +4093,135 @@ function getHongbuSetting(key) {
     };
     request.onerror = (e) => reject(e);
   });
+}
+
+
+// ✅ hongbu.settings 삭제
+function deleteHongbuSetting(key) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("hongbu", 5);
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const tx = db.transaction(["settings"], "readwrite");
+      const store = tx.objectStore("settings");
+      store.delete(key);
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = (e) => { db.close(); reject(e); };
+    };
+    request.onerror = (e) => reject(e);
+  });
+}
+
+
+// ================================
+// ✅ UI 옵션(체크박스/필터 등) 저장/복원 (IndexedDB settings)
+// - 새로고침/앱전환(리로드)에도 현재 옵션 상태 유지
+// ================================
+const UI_STATE_KEY = "uiState_v1";
+
+// file input은 상태 저장 제외
+function _isSkippableUiEl(el) {
+  if (!el || !el.id) return true;
+  const type = (el.getAttribute("type") || "").toLowerCase();
+  return type === "file" || el.id === "gpxFileInput" || el.id === "memoRestoreInput";
+}
+
+// DOM에서 현재 UI 상태 수집
+function collectUIState() {
+  const state = {};
+  const nodes = document.querySelectorAll("input[id], select[id], textarea[id]");
+  nodes.forEach(el => {
+    if (_isSkippableUiEl(el)) return;
+    const tag = el.tagName.toLowerCase();
+    if (tag === "input") {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (type === "checkbox") state[el.id] = !!el.checked;
+      else if (type === "radio") { if (el.checked) state[el.name || el.id] = el.value; }
+      else state[el.id] = el.value;
+    } else {
+      state[el.id] = el.value;
+    }
+  });
+  return state;
+}
+
+// UI 상태를 DOM에 반영
+function applyUIState(state) {
+  if (!state || typeof state !== "object") return;
+
+  Object.entries(state).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (!el || _isSkippableUiEl(el)) return;
+
+    const tag = el.tagName.toLowerCase();
+    if (tag === "input") {
+      const type = (el.getAttribute("type") || "text").toLowerCase();
+      if (type === "checkbox") {
+        el.checked = !!val;
+      } else if (type === "radio") {
+        // name 기준으로 복원
+        const group = document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`);
+        group.forEach(r => { r.checked = (r.value === val); });
+      } else {
+        el.value = val;
+      }
+    } else {
+      // select/textarea
+      try {
+        el.value = val;
+      } catch (e) {}
+    }
+  });
+}
+
+// IndexedDB에 UI 상태 저장
+let _uiSaveTimer = null;
+function saveUIStateDebounced(delayMs = 250) {
+  if (_uiSaveTimer) clearTimeout(_uiSaveTimer);
+  _uiSaveTimer = setTimeout(() => {
+    const state = collectUIState();
+    setHongbuSetting(UI_STATE_KEY, state).catch(console.warn);
+  }, delayMs);
+}
+
+// IndexedDB에서 UI 상태 불러오기 + 적용
+async function restoreUIStateFromDB() {
+  try {
+    const saved = await getHongbuSetting(UI_STATE_KEY);
+    if (saved && typeof saved === "object") {
+      applyUIState(saved);
+    }
+  } catch (e) {
+    console.warn("UI 상태 복원 실패:", e);
+  }
+}
+
+// UI 변경 자동 저장 (이벤트 위임)
+function initUIStateAutoSave() {
+  // input/textarea/select 변경을 모두 캐치
+  document.addEventListener("change", (e) => {
+    const el = e.target;
+    if (!el || !el.id || _isSkippableUiEl(el)) return;
+    saveUIStateDebounced();
+  }, true);
+
+  document.addEventListener("input", (e) => {
+    const el = e.target;
+    if (!el || !el.id || _isSkippableUiEl(el)) return;
+    saveUIStateDebounced();
+  }, true);
+}
+
+// 지도/마커 등이 준비된 뒤, 현재 UI 상태에 맞게 즉시 화면 반영
+function refreshByUIState() {
+  if (!window.map) return;
+  try { updateMarkers(window.map.getBounds()); } catch (e) {}
+  try { updateSchoolMarkers(); } catch (e) {}
+  try { updateMiddleSchoolMarkers?.(); } catch (e) {}
+  try { updateFacilityMarkers?.(); } catch (e) {}
+  try { updateStarbucksMarkers?.(); } catch (e) {}
+  try { scheduleEmdRedraw?.(); } catch (e) {}
+  try { scheduleAdmRedraw?.(); } catch (e) {}
 }
 
 
