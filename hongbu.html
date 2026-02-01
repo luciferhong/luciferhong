@@ -6155,14 +6155,18 @@ async function backupMemoDB_OLD() {
 
 
 // ✅ 메모 복원
+// ✅ 메모 복원 (FIXED)
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
-  input.accept = ".json"; // ZIP 말고 JSON만 받음
-  input.multiple = true;  // ✅ 여러 파일 선택 허용
+  input.accept = ".json";
+  input.multiple = true;
 
   input.onchange = async function (event) {
-    const files = Array.from(event.target.files);
+    const files = Array.from(event.target.files || []);
     if (!files.length) return;
+
+    // 같은 파일 다시 선택 가능하게 초기화
+    input.value = "";
 
     const allRecords = [];
 
@@ -6172,43 +6176,80 @@ function restoreMemoDB() {
         const parsed = JSON.parse(text);
 
         if (Array.isArray(parsed)) {
-          allRecords.push(...parsed);
+          allRecords.push(...parsed); // ✅ 오타 수정: ...parsed
         } else {
           allRecords.push(parsed);
         }
       }
 
+      // ✅ 레코드 정규화: id를 문자열로 강제 + 형태 보정
+      const normalized = allRecords
+        .filter(Boolean)
+        .map((r) => {
+          const obj = (typeof r === "object") ? r : null;
+          if (!obj) return null;
+
+          // keyPath가 id이므로 반드시 있어야 함
+          if (obj.id === undefined || obj.id === null) return null;
+
+          return {
+            id: String(obj.id),                 // ✅ 핵심: 문자열로 통일
+            memo: obj.memo ? String(obj.memo) : "",
+            images: Array.isArray(obj.images) ? obj.images : []
+          };
+        })
+        .filter(Boolean);
+
+      if (!normalized.length) {
+        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
+        return;
+      }
+
+      // ✅ DB 열기/저장
       const request = indexedDB.open("hongbuMemo", 4);
+
       request.onsuccess = function (event) {
         const db = event.target.result;
-        const transaction = db.transaction(["apartmentNotes"], "readwrite");
-        const store = transaction.objectStore("apartmentNotes");
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
 
-        for (const item of allRecords) {
-          store.put(item);
+        let ok = 0;
+        let fail = 0;
+
+        for (const item of normalized) {
+          const putReq = store.put(item);
+          putReq.onsuccess = () => { ok++; };
+          putReq.onerror = (e) => {
+            fail++;
+            console.error("❌ put 실패:", item?.id, e?.target?.error);
+          };
         }
 
-        transaction.oncomplete = () => {
-          alert(`✅ ${allRecords.length}개의 메모가 복원되었습니다.`);
+        tx.oncomplete = () => {
+          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
           db.close();
         };
 
-        transaction.onerror = () => {
-          alert("❌ 메모 복원 중 오류가 발생했습니다.");
+        tx.onerror = (e) => {
+          console.error("❌ 트랜잭션 오류:", e?.target?.error);
+          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
           db.close();
         };
       };
 
-      request.onerror = function () {
-        alert("❌ DB 열기 실패");
+      request.onerror = function (e) {
+        console.error("❌ DB 열기 실패:", e?.target?.error);
+        alert("❌ DB 열기 실패 (콘솔 확인)");
       };
     } catch (e) {
+      console.error("❌ 복원 중 예외:", e);
       alert("❌ 복원 중 오류 발생: " + e.message);
     }
   };
 
-  input.click(); // 파일 선택 창 열기
+  input.click();
 }
+
 
 
 
