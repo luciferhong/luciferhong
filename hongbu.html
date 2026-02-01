@@ -6153,9 +6153,7 @@ async function backupMemoDB_OLD() {
 
 
 
-
-// ✅ 메모 복원
-// ✅ 메모 복원 (FIXED)
+// ✅ 메모 복원 (정상 동작 버전)
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
   input.accept = ".json";
@@ -6168,34 +6166,26 @@ function restoreMemoDB() {
     // 같은 파일 다시 선택 가능하게 초기화
     input.value = "";
 
-    const allRecords = [];
-
     try {
+      // 1) 파일들 읽어서 전부 flatten
+      let records = [];
       for (const file of files) {
         const text = await file.text();
         const parsed = JSON.parse(text);
 
-        if (Array.isArray(parsed)) {
-          allRecords.push(...parsed); // ✅ 오타 수정: ...parsed
-        } else {
-          allRecords.push(parsed);
-        }
+        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
+        else records.push(parsed);
       }
 
-      // ✅ 레코드 정규화: id를 문자열로 강제 + 형태 보정
-      const normalized = allRecords
-        .filter(Boolean)
+      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
+      const normalized = records
+        .filter((r) => r && typeof r === "object")
         .map((r) => {
-          const obj = (typeof r === "object") ? r : null;
-          if (!obj) return null;
-
-          // keyPath가 id이므로 반드시 있어야 함
-          if (obj.id === undefined || obj.id === null) return null;
-
+          if (r.id === undefined || r.id === null) return null;
           return {
-            id: String(obj.id),                 // ✅ 핵심: 문자열로 통일
-            memo: obj.memo ? String(obj.memo) : "",
-            images: Array.isArray(obj.images) ? obj.images : []
+            id: String(r.id),
+            memo: r.memo ? String(r.memo) : "",
+            images: Array.isArray(r.images) ? r.images : [],
           };
         })
         .filter(Boolean);
@@ -6205,45 +6195,44 @@ function restoreMemoDB() {
         return;
       }
 
-      // ✅ DB 열기/저장
+      // 3) IndexedDB put
       const request = indexedDB.open("hongbuMemo", 4);
 
-      request.onsuccess = function (event) {
-        const db = event.target.result;
+      request.onsuccess = function (e) {
+        const db = e.target.result;
         const tx = db.transaction(["apartmentNotes"], "readwrite");
         const store = tx.objectStore("apartmentNotes");
 
-        let ok = 0;
-        let fail = 0;
+        let ok = 0, fail = 0;
 
-        for (const item of normalized) {
+        normalized.forEach((item) => {
           const putReq = store.put(item);
-          putReq.onsuccess = () => { ok++; };
-          putReq.onerror = (e) => {
+          putReq.onsuccess = () => ok++;
+          putReq.onerror = (err) => {
             fail++;
-            console.error("❌ put 실패:", item?.id, e?.target?.error);
+            console.error("❌ put 실패:", item.id, err?.target?.error);
           };
-        }
+        });
 
         tx.oncomplete = () => {
           alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
           db.close();
         };
 
-        tx.onerror = (e) => {
-          console.error("❌ 트랜잭션 오류:", e?.target?.error);
+        tx.onerror = (err) => {
+          console.error("❌ 트랜잭션 오류:", err?.target?.error);
           alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
           db.close();
         };
       };
 
-      request.onerror = function (e) {
-        console.error("❌ DB 열기 실패:", e?.target?.error);
+      request.onerror = function (err) {
+        console.error("❌ DB 열기 실패:", err?.target?.error);
         alert("❌ DB 열기 실패 (콘솔 확인)");
       };
-    } catch (e) {
-      console.error("❌ 복원 중 예외:", e);
-      alert("❌ 복원 중 오류 발생: " + e.message);
+    } catch (err) {
+      console.error("❌ 복원 중 예외:", err);
+      alert("❌ 복원 중 오류 발생: " + err.message);
     }
   };
 
