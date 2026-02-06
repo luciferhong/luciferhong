@@ -9,117 +9,6 @@
 	<script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8">
 let sigGeojsonRaw = null;
 let emdGeojsonRaw = null;
-/* =========================
-   ✅ 백지도 / 지형도 / 지적편집도
-   - 셋 중 하나만 체크 (배타)
-   - 체크 해제는 허용
-========================= */
-(function bindExclusiveBaseMapToggles(){
-  const ids = ["toggleBlankMap","toggleTerrain","toggleCadastral"];
-  const $ = id => document.getElementById(id);
-
-  function setExclusive(activeId){
-    ids.forEach(id => {
-      if (id !== activeId && $(id)) $(id).checked = false;
-    });
-  }
-
-  async function onChange(activeId){
-    const el = $(activeId);
-    if (!el) return;
-
-    if (el.checked) setExclusive(activeId);
-
-    if (activeId === "toggleBlankMap") {
-      // 🔥 백지도: 기존 마커 전부 제거 후 재생성
-      try {
-        Object.values(apartmentMarkers || {}).forEach(m => {
-          if (m?.movementLine) {
-            m.movementLine.setMap(null);
-            m.movementLine = null;
-          }
-          m?.setMap?.(null);
-        });
-      } catch(e){}
-
-      apartmentMarkers = {};
-      window.apartmentMarkers = apartmentMarkers;
-
-      try { markerCluster?.setMarkers?.([]); } catch(e){}
-
-      if (window.map && typeof updateMarkers === "function") {
-        updateMarkers(window.map.getBounds());
-      }
-	  // ✅ 백지도 켤 때: 지형/지적 체크도 강제로 OFF
-document.getElementById("toggleTerrain").checked = false;
-document.getElementById("toggleCadastral").checked = false;
-// ✅ 지적편집도 레이어가 살아있으면 강제로 OFF
-try {
-  if (window.__cadastralLayer) window.__cadastralLayer.setMap(null);
-} catch(e) {}
-
-	  
-    } else {
-      // 지형도 / 지적편집도
-      if (typeof redrawMapByBaseToggles === "function") {
-        await redrawMapByBaseToggles(activeId);
-      }
-    }
-  }
-
-  ids.forEach(id => {
-    const el = $(id);
-    if (!el || el.__exclusiveBound) return;
-    el.__exclusiveBound = true;
-    el.addEventListener("change", () => onChange(id));
-  });
-})();
-
-/* =========================
-   ✅ 베이스맵 라디오 핸들러 (안전 삽입)
-========================= */
-(function(){
-  const radios = document.querySelectorAll('input[name="basemapMode"]');
-  if (!radios.length) return;
-
-  let cadastralLayer = null;
-
-  async function apply(mode){
-    const blank = (mode === "blank");
-
-    // 지도 재생성
-    if (typeof createMap === "function") {
-      await createMap(blank);
-    }
-
-    // 지도 타입 / 레이어
-    try {
-      if (mode === "terrain") {
-        map.setMapTypeId(naver.maps.MapTypeId.TERRAIN);
-      } else {
-        map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-      }
-
-      if (!cadastralLayer) cadastralLayer = new naver.maps.CadastralLayer();
-      cadastralLayer.setMap(mode === "cadastral" ? map : null);
-    } catch(e){}
-
-    // 마커 전부 재생성
-    try { clearApartmentMarkersAndCluster(); } catch(e){}
-    try {
-      window.apartmentMarkers = {};
-      apartmentMarkers = window.apartmentMarkers;
-    } catch(e){}
-    try { updateMarkers(map.getBounds()); } catch(e){}
-  }
-
-  radios.forEach(radio => {
-    radio.addEventListener("change", () => {
-      if (radio.checked) apply(radio.value);
-    });
-  });
-})();
-
 </script>
 	<script type="text/javascript" src="MarkerClustering.js"></script>
 	<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -500,12 +389,7 @@ body.map-fullscreen {
 	<label><input type="checkbox" id="toggleAdminBoundary">행정동경계</label>
 	<label class="only-pc"><input type="checkbox" id="toggleSiseMap">시세지도</label>
 	<label class="only-pc"><input type="checkbox" id="toggleFindWay">업무지구 길찾기</label>
-<label><input type="checkbox" id="toggleBlankMap">백지도</label>
-
-<!-- ✅ 추가 -->
-<label><input type="checkbox" id="toggleTerrain">지형도</label>
-<label><input type="checkbox" id="toggleCadastral">지적편집도</label>
-
+	<label><input type="checkbox" id="toggleBlankMap">백지도</label>
 
 <!-- 
 	<label class="only-pc" style="color: red; margin-left: auto; white-space: nowrap;">
@@ -1204,42 +1088,13 @@ let imageModalShowYn = false;
 		
 	}
 
-document.getElementById("toggleBlankMap").addEventListener("change", () => {
-  const isBlankMapActive = document.getElementById("toggleBlankMap").checked;
 
-  // 🔥 예전처럼 무조건 전부 제거
-  Object.values(apartmentMarkers).forEach(marker => {
-    try {
-      if (marker && marker.movementLine) {
-        marker.movementLine.setMap(null);
-        marker.movementLine = null;
-      }
-      if (marker && typeof marker.setMap === "function") {
-        naver.maps.Event.clearInstanceListeners(marker);
-        marker.setMap(null);
-      }
-    } catch (e) {}
-  });
-
-  apartmentMarkers = {};
-  window.apartmentMarkers = apartmentMarkers;
-
-  try { if (markerCluster) markerCluster.setMarkers([]); } catch (e) {}
-
-  prevBlankMapState = isBlankMapActive;
-
-  // ✅ 즉시 전체 재생성
-  updateMarkers(window.map.getBounds());
-});
-
-document.getElementById("toggleTerrain").addEventListener("change", () => {
-  redrawMapByBaseToggles("toggleTerrain");
-});
-
-document.getElementById("toggleCadastral").addEventListener("change", () => {
-  redrawMapByBaseToggles("toggleCadastral");
-});
-
+	document.getElementById("toggleBlankMap").addEventListener("change", async () => {
+		const useBlank = document.getElementById("toggleBlankMap").checked;
+		await createMap(useBlank);
+		injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
+		
+	});
 
 
 
@@ -2730,7 +2585,6 @@ function createDefaultMarker(apartment) {
 }
 
 let prevSiseMapState = null; // 🔹 전역 변수로 이전 시세지도 상태 저장
-let prevBlankMapState = null; // 🔹 전역 변수로 이전 백지도 상태 저장
 
 function removeLinesOutsideBounds(bounds) {
     Object.entries(apartmentMarkers).forEach(([id, marker]) => {
@@ -2880,28 +2734,7 @@ Object.keys(apartmentMarkers).forEach(id => {
 				});
 				apartmentMarkers = {}; // 캐시 초기화
 				prevSiseMapState = isSiseMapActive; // 상태 갱신
-			
-
-// ✅ 백지도 체크 상태가 바뀐 경우 → 모든 마커 제거 (스타일 재생성 목적)
-const isBlankMapActive = !!document.getElementById("toggleBlankMap")?.checked;
-if (prevBlankMapState !== isBlankMapActive) {
-    Object.values(apartmentMarkers).forEach(marker => {
-        try {
-            if (marker && marker.movementLine) {
-                marker.movementLine.setMap(null);
-                marker.movementLine = null;
-            }
-            if (marker && typeof marker.setMap === "function") {
-                naver.maps.Event && naver.maps.Event.clearInstanceListeners && naver.maps.Event.clearInstanceListeners(marker);
-                marker.setMap(null);
-            }
-        } catch (e) {}
-    });
-    apartmentMarkers = {}; // 캐시 초기화
-    // 클러스터도 비우기
-    try { if (markerCluster) markerCluster.setMarkers([]); } catch (e) {}
-    prevBlankMapState = isBlankMapActive; // 상태 갱신
-}}
+			}
 
 			// ✅ 새 마커 생성 or 재사용
 			filtered.forEach(apartment => {
@@ -7413,227 +7246,9 @@ function getLabelLatLngByPolylabel(geometry, bbox){
   return new naver.maps.LatLng(lnglat[1], lnglat[0]);
 }
 
-
-window.__cadastralLayer = window.__cadastralLayer || null;
-
-async function redrawMapByBaseToggles(changedId) {
-  const blankEl = document.getElementById("toggleBlankMap");
-  const terrainEl = document.getElementById("toggleTerrain");
-  const cadastralEl = document.getElementById("toggleCadastral");
-  if (!blankEl || !terrainEl || !cadastralEl) return;
-
-  // ✅ 3개 중 하나만 ON (변경된 것 기준으로 나머지 OFF)
-  if (changedId === "toggleBlankMap" && blankEl.checked) {
-    terrainEl.checked = false;
-    cadastralEl.checked = false;
-  } else if (changedId === "toggleTerrain" && terrainEl.checked) {
-    blankEl.checked = false;
-    cadastralEl.checked = false;
-  } else if (changedId === "toggleCadastral" && cadastralEl.checked) {
-    blankEl.checked = false;
-    terrainEl.checked = false;
-  }
-
-  // ✅ 지도 재생성 (백지도 여부만 createMap에 전달)
-  await createMap(blankEl.checked);
-  injectMaximizeButton();
-
-  // ✅ 생성 직후 타입/레이어 적용
-  try {
-    if (!window.__cadastralLayer) window.__cadastralLayer = new naver.maps.CadastralLayer();
-
-    if (blankEl.checked) {
-      // 백지도: 지적 레이어 OFF, 타입 NORMAL로 복귀(백지도면 mapTypes가 normal로 구성됨)
-      window.__cadastralLayer.setMap(null);
-      window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-    } else if (terrainEl.checked) {
-      window.__cadastralLayer.setMap(null);
-      window.map.setMapTypeId(naver.maps.MapTypeId.TERRAIN);
-    } else if (cadastralEl.checked) {
-      window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-      window.__cadastralLayer.setMap(window.map);
-    } else {
-      // 셋 다 OFF면 기본
-      window.__cadastralLayer.setMap(null);
-      window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-    }
-  } catch (e) {
-    console.warn("베이스맵 토글 적용 실패:", e);
-  }
-
-  // (있으면) 다른 UI 상태 반영
-  try { refreshByUIState(); } catch (e) {}
-}
-
 </script>
 
 
 
-<!-- =========================
-     [홍부 베이스맵 클린 패치]
-     문제 해결:
-     1) 백지도 체크 시 "마커만" 바뀌는 현상 제거 (createMap() 강제 호출)
-     2) 백지도/지형도/지적편집도 동시 체크 방지 (배타)
-     3) 새로고침 후에도 지형도/지적편집도 상태 복원
-     방식: 기존 리스너 충돌을 막기 위해 체크박스를 cloneNode로 교체 후, 단일 리스너만 바인딩
-========================= -->
-<script>
-(function(){
-  const IDS = ["toggleBlankMap","toggleTerrain","toggleCadastral"];
-  const KEY = "baseMapStateV1"; // settings 저장 키
-
-  const $ = (id) => document.getElementById(id);
-
-  function cloneSwap(id){
-    const el = $(id);
-    if (!el || !el.parentNode) return null;
-    const neo = el.cloneNode(true); // 기존 이벤트 전부 제거
-    el.parentNode.replaceChild(neo, el);
-    return neo;
-  }
-
-  async function saveState(state){
-    try{
-      if (typeof setHongbuSetting === "function") {
-        await setHongbuSetting(KEY, state);
-      } else {
-        localStorage.setItem(KEY, JSON.stringify(state));
-      }
-    }catch(e){
-      try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(_){}
-    }
-  }
-
-  async function loadState(){
-    try{
-      if (typeof getHongbuSetting === "function") {
-        const v = await getHongbuSetting(KEY);
-        if (v && typeof v === "object") return v;
-      }
-    }catch(e){}
-    try{
-      const s = localStorage.getItem(KEY);
-      return s ? JSON.parse(s) : null;
-    }catch(e){ return null; }
-  }
-
-  function getUIState(){
-    return {
-      blank: !!$("toggleBlankMap")?.checked,
-      terrain: !!$("toggleTerrain")?.checked,
-      cadastral: !!$("toggleCadastral")?.checked,
-    };
-  }
-
-  function setUIState(state){
-    const blankEl = $("toggleBlankMap");
-    const terrainEl = $("toggleTerrain");
-    const cadastralEl = $("toggleCadastral");
-    if (!blankEl || !terrainEl || !cadastralEl) return;
-
-    blankEl.checked = !!state?.blank;
-    terrainEl.checked = !!state?.terrain;
-    cadastralEl.checked = !!state?.cadastral;
-  }
-
-  function enforceExclusive(changed){
-    const blankEl = $("toggleBlankMap");
-    const terrainEl = $("toggleTerrain");
-    const cadastralEl = $("toggleCadastral");
-
-    if (!blankEl || !terrainEl || !cadastralEl) return;
-
-    // 하나 켜지면 나머지 끄기 (켜는 동작에서만)
-    if (changed === "toggleBlankMap" && blankEl.checked){
-      terrainEl.checked = false;
-      cadastralEl.checked = false;
-    } else if (changed === "toggleTerrain" && terrainEl.checked){
-      blankEl.checked = false;
-      cadastralEl.checked = false;
-    } else if (changed === "toggleCadastral" && cadastralEl.checked){
-      blankEl.checked = false;
-      terrainEl.checked = false;
-    }
-  }
-
-  async function applyBaseMap(changed){
-    // 배타 보장
-    enforceExclusive(changed);
-
-    const blank = !!$("toggleBlankMap")?.checked;
-    const terrain = !!$("toggleTerrain")?.checked;
-    const cadastral = !!$("toggleCadastral")?.checked;
-
-    // 저장
-    saveState({ blank, terrain, cadastral });
-
-    if (typeof createMap !== "function") {
-      console.warn("[베이스맵] createMap 함수가 없습니다.");
-      return;
-    }
-
-    // ✅ 핵심: 백지도/기본 타일은 createMap 인자로 결정되므로 무조건 재생성
-    await createMap(blank);
-
-    // ✅ 생성 직후 타입/레이어 적용
-    try{
-      if (!window.__cadastralLayer) window.__cadastralLayer = new naver.maps.CadastralLayer();
-
-      if (blank){
-        window.__cadastralLayer.setMap(null);
-        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-      } else if (terrain){
-        window.__cadastralLayer.setMap(null);
-        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.TERRAIN);
-      } else if (cadastral){
-        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-        window.__cadastralLayer.setMap(window.map);
-      } else {
-        window.__cadastralLayer.setMap(null);
-        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-      }
-    }catch(e){
-      console.warn("[베이스맵] 타입/레이어 적용 실패:", e);
-    }
-  }
-
-  async function init(){
-    // 1) 체크박스 교체(기존 리스너 제거)
-    const els = {};
-    IDS.forEach(id => { els[id] = cloneSwap(id); });
-
-    // 2) 단일 리스너 바인딩
-    IDS.forEach(id => {
-      const el = $(id);
-      if (!el) return;
-      el.addEventListener("change", () => applyBaseMap(id));
-    });
-
-    // 3) 상태 복원: createMap/map 준비될 때까지 대기 후 적용
-    const state = await loadState();
-    if (state) setUIState(state);
-
-    // map/createMap이 늦게 로드될 수 있어 폴링
-    let tries = 0;
-    const timer = setInterval(async () => {
-      tries++;
-      if (typeof createMap === "function") {
-        clearInterval(timer);
-        // 복원 상태 반영 (changed=null로 배타 강제 없이 그대로 적용)
-        await applyBaseMap(null);
-      }
-      if (tries > 80) { // 약 8초
-        clearInterval(timer);
-      }
-    }, 100);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
-  } else {
-    init();
-  }
-})();
-</script>
 </body>
 </html>
