@@ -150,25 +150,24 @@ font-weight: 800;
 			z-index: 1000; /* 🔹 지도 위에 표시 */
 		}
 
+/* ===== 필터 숫자 입력(최소세대수/준공년도) 공통 스타일 ===== */
+.filter-num{
+  width:60px;
+  height:24px;
+  font-size:14px;
+  text-align:center;
+  border:1px solid #9aa0a6;
+  border-radius:8px;
+  padding:3px 6px;
+  box-sizing:border-box;
+}
+.filter-num:focus{
+  outline:none;
+  border-color:#2D5DA7;
+  box-shadow:0 0 5px rgba(74,144,226,0.35);
+}
 
-		#unitFilter {
-			width: 45px; /* 숫자 3자리(최대 999) 입력 가능 */
-			height: 10px;
-			font-size: 16px;
-			text-align: center;
-			border: 2px solid #4A90E2; /* 파란색 테두리 */
-			border-radius: 8px;
-			padding: 5px;
-			outline: none;
-			transition: all 0.3s ease-in-out;
-		}
-
-		#unitFilter:focus {
-			border-color: #2D5DA7; /* 포커스 시 더 진한 파란색 */
-			box-shadow: 0px 0px 5px rgba(74, 144, 226, 0.5);
-		}
-
-	/* 기존 #controls 규칙에 아래 3줄만 추가 */
+/* 기존 #controls 규칙에 아래 3줄만 추가 */
 #controls{
   display: flex;          /* 이미 flex면 유지 */
   flex-wrap: wrap;        /* 줄바꿈 허용 */
@@ -371,8 +370,15 @@ body.map-fullscreen {
   </select>
 </label>
 
-    <label for="unitFilter">최소세대수: </label>
-    <input type="number" id="unitFilter" min="0" value="190">
+        <label>준공년도:
+      <input class="filter-num" type="number" id="yearFromFilter" min="1900" max="2100" placeholder="시작">
+      ~
+      <input class="filter-num" type="number" id="yearToFilter" min="1900" max="2100" placeholder="끝">
+    </label>
+
+<label>최소세대수:
+  <input class="filter-num" type="number" id="unitFilter" min="0" value="190" placeholder="최소">
+</label>
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label><input type="checkbox" id="toggleSchools" >초</label>
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
@@ -2207,6 +2213,7 @@ async function ensureEmdLayerBoundToMap() {
 
 			buildRegionFiltersFromApartments();
 			attachRegionFilterEvents();
+			restoreRegionFiltersFromUIState();
 
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
@@ -2568,7 +2575,7 @@ overflow: hidden; /* ✅ 넘치는 내용 숨김 */
 function createDefaultMarker(apartment) {
 
 	const useBlankMap = document.getElementById("toggleBlankMap")?.checked;
-console.log("useBlankMap : "+useBlankMap);
+//console.log("useBlankMap : "+useBlankMap);
 	if(!useBlankMap){ //백지도 아닐 때
 		return createDefaultMapMarker(apartment)
 	}else{
@@ -2624,6 +2631,30 @@ function removeAllLines() {
 }
 
 	// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
+function _hongbuExtractBuiltYear(apartment) {
+  // 가능한 필드들에서 연도 추출: 4자리(19xx/20xx) 우선, 그 다음 2자리(00.10 등)
+  const candidates = [
+    apartment?.builtYear, apartment?.buildYear, apartment?.year, apartment?.completionYear,
+    apartment?.title, apartment?.name
+  ].filter(v => v !== undefined && v !== null);
+
+  const str = String(candidates.find(v => String(v).trim() !== "") ?? "");
+
+  // 4자리 연도 우선
+  const m4 = str.match(/\b(19\d{2}|20\d{2})\b/);
+  if (m4) return parseInt(m4[1], 10);
+
+  // 2자리(예: 00.10, 22.03) 형태
+  const m2 = str.match(/\b(\d{2})\s*[\.\-\/]/);
+  if (m2) {
+    const yy = parseInt(m2[1], 10);
+    // 70~99 => 19xx, 00~69 => 20xx (필요하면 기준값 조정)
+    return (yy >= 70) ? (1900 + yy) : (2000 + yy);
+  }
+
+  return null;
+}
+
 function updateMarkers(bounds) {
 
 
@@ -2647,6 +2678,8 @@ function updateMarkers(bounds) {
 	removeLinesOutsideBounds(bounds)
 
 			const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
+			const fromYear = parseInt(document.getElementById("yearFromFilter")?.value, 10) || null;
+			const toYear = parseInt(document.getElementById("yearToFilter")?.value, 10) || null;
 			//const showApartments = document.getElementById("toggleApartments").checked;
 			const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
 
@@ -2659,10 +2692,29 @@ function updateMarkers(bounds) {
 
     const sidoOK = !selectedSido || (apartment.sido || '').trim() === selectedSido;
     const sigunguOK = !selectedSigungu || (apartment.sigungu || '').trim() === selectedSigungu;
+    const builtYear = _hongbuExtractBuiltYear(apartment);
+    const yearOK = (!fromYear || (builtYear && builtYear >= fromYear)) && (!toYear || (builtYear && builtYear <= toYear));
 //console.log("apartment.sido : "+apartment.sido)
 //console.log("apartment.sigungu : "+apartment.sigungu)
-    return inBounds && unitOK && sidoOK && sigunguOK;
+    return inBounds && unitOK && sidoOK && sigunguOK && yearOK;
   });
+
+
+// ✅ 필터 결과에 없는 기존 마커는 즉시 제거(연도/세대수/지역/범위 변경 시 즉시 반영)
+const keepIds = new Set(filtered.map(a => String(a.id)));
+Object.keys(apartmentMarkers).forEach(id => {
+  if (!keepIds.has(String(id))) {
+    const m = apartmentMarkers[id];
+    try {
+      if (m && typeof m.setMap === "function") {
+        naver.maps.Event && naver.maps.Event.clearInstanceListeners && naver.maps.Event.clearInstanceListeners(m);
+        m.setMap(null);
+      }
+    } catch (e) {}
+    delete apartmentMarkers[id];
+  }
+});
+
 
 /*
 			const filtered = apartmentData.filter(apartment =>
@@ -3164,6 +3216,57 @@ let unitFilterTimer = null;
 			}, 200);
 		});
 });
+
+// ✅ 준공년도(yearFromFilter/yearToFilter) 변경 시 지도 즉시 반영
+const yearFromFilterInput = document.getElementById("yearFromFilter");
+const yearToFilterInput = document.getElementById("yearToFilter");
+let yearFilterTimer = null;
+
+
+function clearApartmentMarkersAndCluster() {
+  const markers = window.apartmentMarkers || {};
+
+  // 1) 지도에서 마커 제거
+  Object.values(markers).forEach(m => {
+    try {
+      if (m && typeof m.setMap === "function") m.setMap(null);
+    } catch (e) {}
+  });
+
+  // 2) 클러스터/오버레이 목록도 비움 (있을 때만)
+  try {
+    if (window.markerCluster && typeof window.markerCluster.setMarkers === "function") {
+      window.markerCluster.setMarkers([]);
+    }
+  } catch (e) {}
+
+  // 3) 캐시 객체 초기화(중요: window에 붙은 걸 바꿔야 함)
+  window.apartmentMarkers = {};
+}
+
+function _applyYearFilterUpdate() {
+  if (!window.map) return;
+
+  // ✅ 필터 반영 위해 캐시 싹 초기화
+  clearApartmentMarkersAndCluster();
+
+  // bounds가 없으면 현재 지도 bounds 사용
+  const b = window.map.getBounds ? window.map.getBounds() : null;
+  updateMarkers(b);
+}
+
+["input", "change"].forEach(evt => {
+  yearFromFilterInput?.addEventListener(evt, () => {
+    if (yearFilterTimer) clearTimeout(yearFilterTimer);
+    yearFilterTimer = setTimeout(_applyYearFilterUpdate, 200);
+  });
+
+  yearToFilterInput?.addEventListener(evt, () => {
+    if (yearFilterTimer) clearTimeout(yearFilterTimer);
+    yearFilterTimer = setTimeout(_applyYearFilterUpdate, 200);
+  });
+});
+
 
 
 let observer = new ResizeObserver(() => {
@@ -4048,7 +4151,7 @@ function initMemoIndexedDB() {
 
     request.onsuccess = function (event) {
       const db = event.target.result;
-      console.log("📌 hongbuMemo 연결 성공 (DB: hongbu)");
+      //console.log("📌 hongbuMemo 연결 성공 (DB: hongbu)");
 
       // ✅ 바로 닫고 resolve (init 용이므로 이후 함수가 다시 열게 됨)
       db.close();
@@ -6616,6 +6719,10 @@ let inguData = [];
 let currentSort = { key: null, asc: true };
 
 document.getElementById("showInguBtn").addEventListener("click", async () => {
+  // ✅ 복원된 UI 상태(IndexedDB settings)에서 시도/시군구 선택값을 가져옴
+  const _savedUI = await getHongbuSetting(UI_STATE_KEY).catch(() => null);
+  const _savedSido = _savedUI && typeof _savedUI === "object" ? _savedUI["sidoSelect"] : null;
+  const _savedSigungu = _savedUI && typeof _savedUI === "object" ? _savedUI["sigunguSelect"] : null;
   if (inguData.length === 0) {
     const res = await fetch("ingu.txt");
     const text = await res.text();
@@ -6629,27 +6736,42 @@ document.getElementById("showInguBtn").addEventListener("click", async () => {
     // 시도 옵션 설정
     const sidoSet = new Set(inguData.map(d => d.시도).filter(Boolean));
     const sidoSelect = document.getElementById("sidoSelect");
-    sidoSelect.innerHTML = [...sidoSet].map(s => `<option value="${s}" ${s === '서울특별시' ? 'selected' : ''}>${s}</option>`).join("");
+    sidoSelect.innerHTML = [...sidoSet].map(s => {
+      const isSel = (_savedSido && s === _savedSido) || (!_savedSido && s === "서울특별시");
+      return `<option value="${s}" ${isSel ? "selected" : ""}>${s}</option>`;
+    }).join("");
+
+    // ✅ 저장된 시도가 옵션에 있으면 선택값을 강제로 맞춤(옵션 생성 타이밍 이슈 방지)
+    if (_savedSido && [...sidoSelect.options].some(o => o.value === _savedSido)) {
+      sidoSelect.value = _savedSido;
+    }
 
     sidoSelect.addEventListener("change", () => {
-      updateSigunguSelect();
+      updateSigunguSelect(_savedSigungu);
       updateTable();
     });
 
     document.getElementById("sigunguSelect").addEventListener("change", updateTable);
 
-    updateSigunguSelect();
+    updateSigunguSelect(_savedSigungu);
   }
 
   document.getElementById("inguModal").style.display = "block";
   updateTable();
 });
 
-function updateSigunguSelect() {
+function updateSigunguSelect(preferredSigungu) {
   const selectedSido = document.getElementById("sidoSelect").value;
   const sigunguSet = new Set(inguData.filter(d => d.시도 === selectedSido).map(d => d.시군구).filter(Boolean));
   const sigunguSelect = document.getElementById("sigunguSelect");
-  sigunguSelect.innerHTML = [...sigunguSet].map(s => `<option value="${s}" ${s === '종로구' ? 'selected' : ''}>${s}</option>`).join("");
+  sigunguSelect.innerHTML = [...sigunguSet].map(s => {
+    const isSel = (preferredSigungu && s === preferredSigungu) || (!preferredSigungu && s === "종로구");
+    return `<option value="${s}" ${isSel ? "selected" : ""}>${s}</option>`;
+  }).join("");
+  // ✅ 저장된 시군구가 옵션에 있으면 선택값을 강제로 맞춤
+  if (preferredSigungu && [...sigunguSelect.options].some(o => o.value === preferredSigungu)) {
+    sigunguSelect.value = preferredSigungu;
+  }
 }
 
 function updateTable() {
@@ -6711,6 +6833,34 @@ function updateHeaderArrows() {
 
 
 // ▼ 필터 셀렉트 참조
+
+async function restoreRegionFiltersFromUIState() {
+  const { sidoSel, sigunguSel } = getFilterEls();
+  if (!sidoSel || !sigunguSel) return;
+
+  let saved = null;
+  try { saved = await getHongbuSetting(UI_STATE_KEY); } catch(e) { saved = null; }
+  if (!saved || typeof saved !== 'object') return;
+
+  const savedSido = (saved['sidoFilter'] ?? saved['sidoSelect'] ?? '').toString().trim();
+  const savedSigungu = (saved['sigunguFilter'] ?? saved['sigunguSelect'] ?? '').toString().trim();
+
+  // 1) 시도 복원
+  if (savedSido && Array.from(sidoSel.options).some(o => o.value === savedSido)) {
+    sidoSel.value = savedSido;
+    // 시도 기준으로 시군구 옵션 재생성
+    buildRegionFiltersFromApartments();
+  }
+
+  // 2) 시군구 복원
+  if (savedSigungu && Array.from(sigunguSel.options).some(o => o.value === savedSigungu)) {
+    sigunguSel.value = savedSigungu;
+  }
+
+  // 3) 지도/마커에 즉시 반영
+  applyRegionFilterUpdate();
+}
+
 function getFilterEls() {
   return {
     sidoSel: document.getElementById('sidoFilter'),
@@ -6793,42 +6943,45 @@ function buildRegionFiltersFromApartments() {
 
 
 // ▼ 필터 변경 이벤트
+function applyRegionFilterUpdate() {
+  // 시도/시군구 필터가 바뀌면: 기존 마커(캐시)를 즉시 제거하고, 현재 bounds로 다시 그림
+  if (window.apartmentMarkers) {
+    Object.values(window.apartmentMarkers).forEach(m => {
+      try { if (m && typeof m.setMap === 'function') m.setMap(null); } catch(e) {}
+    });
+    window.apartmentMarkers = {};
+  }
+  try {
+    if (window.markerCluster && typeof window.markerCluster.setMarkers === 'function') {
+      window.markerCluster.setMarkers([]);
+    }
+  } catch(e) {}
+
+  // 선택된 지역으로 지도 이동(가능하면)
+  try { focusMapToSelectedRegion(15); } catch(e) {}
+
+  if (window.map && window.map.getBounds) {
+    updateMarkers(window.map.getBounds());
+  }
+}
+
+// ▼ 필터 변경 이벤트
 function attachRegionFilterEvents() {
   const { sidoSel, sigunguSel } = getFilterEls();
   if (!sidoSel || !sigunguSel) return;
 
-  // 시도 변경시: 시군구 목록 재구성 + 전체로 리셋
+  // 시도 변경시: 시군구 목록 재구성 + 즉시 반영
   sidoSel.addEventListener('change', () => {
     buildRegionFiltersFromApartments();
-    // 지도에 즉시 반영
-    //if (window.map) updateMarkers(window.map.getBounds());
+    applyRegionFilterUpdate();
   });
 
-  // 시군구 변경시: 지도에 즉시 반영
+  // 시군구 변경시: '전체' 포함 즉시 반영
   sigunguSel.addEventListener('change', () => {
-
-const isSigunguAll = (sigunguSel?.value || '').trim();
-
-  // 👉 시군구가 '전체'(빈 값)면 아무 동작도 하지 않음
-  if (!isSigunguAll) return;
-
-
-    if (window.map) {
-Object.values(apartmentMarkers).forEach(marker => {
-					if (marker instanceof naver.maps.Marker) {
-						naver.maps.Event.clearInstanceListeners(marker);
-						marker.setMap(null);
-					}
-				});
-				apartmentMarkers = {}; // 캐시 초기화
-				//prevSiseMapState = isSiseMapActive; // 상태 갱신
-focusMapToSelectedRegion(15);                 // ✅ 지도 이동
-  if (window.map && window.map.getBounds) {
-    updateMarkers(window.map.getBounds());      // ✅ 마커 갱신
-  }
-}
+    applyRegionFilterUpdate();
   });
 }
+
 
 function getFilterEls() {
   return {
