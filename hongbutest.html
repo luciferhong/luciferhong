@@ -9,6 +9,72 @@
 	<script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8">
 let sigGeojsonRaw = null;
 let emdGeojsonRaw = null;
+/* =========================
+   ✅ 백지도 / 지형도 / 지적편집도
+   - 셋 중 하나만 체크 (배타)
+   - 체크 해제는 허용
+========================= */
+(function bindExclusiveBaseMapToggles(){
+  const ids = ["toggleBlankMap","toggleTerrain","toggleCadastral"];
+  const $ = id => document.getElementById(id);
+
+  function setExclusive(activeId){
+    ids.forEach(id => {
+      if (id !== activeId && $(id)) $(id).checked = false;
+    });
+  }
+
+  async function onChange(activeId){
+    const el = $(activeId);
+    if (!el) return;
+
+    if (el.checked) setExclusive(activeId);
+
+    if (activeId === "toggleBlankMap") {
+      // 🔥 백지도: 기존 마커 전부 제거 후 재생성
+      try {
+        Object.values(apartmentMarkers || {}).forEach(m => {
+          if (m?.movementLine) {
+            m.movementLine.setMap(null);
+            m.movementLine = null;
+          }
+          m?.setMap?.(null);
+        });
+      } catch(e){}
+
+      apartmentMarkers = {};
+      window.apartmentMarkers = apartmentMarkers;
+
+      try { markerCluster?.setMarkers?.([]); } catch(e){}
+
+      if (window.map && typeof updateMarkers === "function") {
+        updateMarkers(window.map.getBounds());
+      }
+	  // ✅ 백지도 켤 때: 지형/지적 체크도 강제로 OFF
+document.getElementById("toggleTerrain").checked = false;
+document.getElementById("toggleCadastral").checked = false;
+// ✅ 지적편집도 레이어가 살아있으면 강제로 OFF
+try {
+  if (window.__cadastralLayer) window.__cadastralLayer.setMap(null);
+} catch(e) {}
+
+	  
+    } else {
+      // 지형도 / 지적편집도
+      if (typeof redrawMapByBaseToggles === "function") {
+        await redrawMapByBaseToggles(activeId);
+      }
+    }
+  }
+
+  ids.forEach(id => {
+    const el = $(id);
+    if (!el || el.__exclusiveBound) return;
+    el.__exclusiveBound = true;
+    el.addEventListener("change", () => onChange(id));
+  });
+})();
+
 </script>
 	<script type="text/javascript" src="MarkerClustering.js"></script>
 	<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -1093,129 +1159,129 @@ let imageModalShowYn = false;
 		
 	}
 
-
-	document.getElementById("toggleBlankMap").addEventListener("change", () => {
 // =========================
-// ✅ 베이스맵(백지도/지형도/지적편집도) 토글 (깜박임 최소화)
-// - 3개 중 하나만 체크 가능
-// - 백지도 ON/OFF가 바뀔 때만 createMap()으로 재생성
-// - 지형도/지적편집도는 기존 map에서 setMapTypeId / CadastralLayer만 토글
+// ✅ 베이스맵(백지도/지형도/지적편집도) 토글 (배타 + 지도복원)
+// - 셋 중 하나만 체크 가능(라디오처럼)
+// - 백지도 ON/OFF 전환 시에만 createMap()으로 재생성(기본지도 복원 포함)
+// - 지형도/지적편집도는 기존 map에서 타입/레이어만 전환
 // =========================
-window.__cadastralLayer = window.__cadastralLayer || null;
-window.__lastBlank = (typeof window.__lastBlank === "boolean")
-    ? window.__lastBlank
-    : (document.getElementById("toggleBlankMap")?.checked ?? false);
+(function bindBaseMapExclusiveToggles(){
+  if (window.__baseMapExclusiveBound) return;
+  window.__baseMapExclusiveBound = true;
 
-function _baseMap_getEls() {
-    return {
-        blankEl: document.getElementById("toggleBlankMap"),
-        terrainEl: document.getElementById("toggleTerrain"),
-        cadastralEl: document.getElementById("toggleCadastral"),
-    };
-}
+  const blankEl = document.getElementById("toggleBlankMap");
+  const terrainEl = document.getElementById("toggleTerrain");
+  const cadastralEl = document.getElementById("toggleCadastral");
 
-function _baseMap_makeExclusive(changedId) {
-    const { blankEl, terrainEl, cadastralEl } = _baseMap_getEls();
-    if (!blankEl || !terrainEl || !cadastralEl) return;
+  if (!blankEl || !terrainEl || !cadastralEl) return;
 
-    const changed = document.getElementById(changedId);
-    if (!changed) return;
+  window.__cadastralLayer = window.__cadastralLayer || null;
+  window.__lastBlank = (typeof window.__lastBlank === "boolean") ? window.__lastBlank : !!blankEl.checked;
 
-    // ✅ 체크된 경우에만 배타 적용 (해제는 허용)
-    if (!changed.checked) return;
+  let __lock = false;
 
-    if (changedId === "toggleBlankMap") {
-        terrainEl.checked = false;
-        cadastralEl.checked = false;
-    } else if (changedId === "toggleTerrain") {
-        blankEl.checked = false;
-        cadastralEl.checked = false;
-    } else if (changedId === "toggleCadastral") {
-        blankEl.checked = false;
-        terrainEl.checked = false;
-    }
-}
+  function _makeExclusive(changedEl){
+    if (!changedEl || !changedEl.checked) return;
+    [blankEl, terrainEl, cadastralEl].forEach(el => {
+      if (el !== changedEl) el.checked = false;
+    });
+  }
 
-function applyBaseMapMode() {
-    const { blankEl, terrainEl, cadastralEl } = _baseMap_getEls();
-    if (!blankEl || !terrainEl || !cadastralEl) return;
+  function _clearAllApartmentMarkers(){
+    try {
+      Object.values(apartmentMarkers || {}).forEach(marker => {
+        try {
+          if (marker && marker.movementLine) {
+            marker.movementLine.setMap(null);
+            marker.movementLine = null;
+          }
+          if (marker && typeof marker.setMap === "function") {
+            naver.maps.Event.clearInstanceListeners(marker);
+            marker.setMap(null);
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+
+    apartmentMarkers = {};
+    window.apartmentMarkers = apartmentMarkers;
+
+    try { if (markerCluster) markerCluster.setMarkers([]); } catch (e) {}
+  }
+
+  function _applyOnExistingMap(){
     if (!window.map) return;
 
+    // cadastral layer 준비
     try {
-        if (!window.__cadastralLayer) {
-            window.__cadastralLayer = new naver.maps.CadastralLayer();
+      if (!window.__cadastralLayer) window.__cadastralLayer = new naver.maps.CadastralLayer();
+    } catch (e) {}
+
+    // 항상 먼저 레이어 OFF
+    try { window.__cadastralLayer && window.__cadastralLayer.setMap(null); } catch (e) {}
+
+    // 지도 타입 적용(백지도는 createMap에서 처리하므로 여기선 terrain/normal만)
+    try {
+      if (terrainEl.checked) {
+        window.map.setMapTypeId(naver.maps.MapTypeId.TERRAIN);
+      } else {
+        window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
+      }
+    } catch (e) {}
+
+    // 지적편집도 레이어
+    try {
+      if (cadastralEl.checked && window.__cadastralLayer) {
+        window.__cadastralLayer.setMap(window.map);
+      }
+    } catch (e) {}
+  }
+
+  async function _apply(changedEl){
+    if (__lock) return;
+    __lock = true;
+    try {
+      _makeExclusive(changedEl);
+
+      const nowBlank = !!blankEl.checked;
+
+      // ✅ 백지도 ON/OFF는 지도 자체가 달라서 createMap으로만 전환/복원
+      if (nowBlank !== window.__lastBlank) {
+        window.__lastBlank = nowBlank;
+
+        // (선택) 기존 마커/클러스터 제거 후 재생성 안정화
+        _clearAllApartmentMarkers();
+
+        try {
+          await createMap(nowBlank);
+        } catch (e) {
+          console.warn("createMap 실패:", e);
         }
 
-        if (blankEl.checked) {
-            // 백지도: 레이어 OFF, 기본 타입
-            window.__cadastralLayer.setMap(null);
-            try { window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL); } catch (e) {}
-        } else if (terrainEl.checked) {
-            // 지형도
-            window.__cadastralLayer.setMap(null);
-            window.map.setMapTypeId(naver.maps.MapTypeId.TERRAIN);
-        } else if (cadastralEl.checked) {
-            // 지적편집도(레이어)
-            window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
-            window.__cadastralLayer.setMap(window.map);
-        } else {
-            // 셋 다 OFF면 기본
-            window.__cadastralLayer.setMap(null);
-            try { window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL); } catch (e) {}
-        }
-    } catch (e) {
-        console.warn("applyBaseMapMode 실패:", e);
+        // createMap 내부에서 refreshByUIState() + idle 업데이트가 걸리지만,
+        // 즉시 화면 반영이 필요하면 한 번 더 호출
+        try { refreshByUIState(); } catch (e) {}
+        return;
+      }
+
+      // ✅ 백지도 상태 변화가 없으면 현재 map에서만 타입/레이어 스위칭
+      _applyOnExistingMap();
+
+      // ✅ 마커 스타일(백지도 여부)에 맞춰 즉시 갱신
+      try { updateMarkers(window.map.getBounds()); } catch (e) {}
+    } finally {
+      __lock = false;
     }
-}
+  }
 
-async function redrawMapByBaseToggles(changedId) {
-    const { blankEl } = _baseMap_getEls();
-    if (!blankEl) return;
+  blankEl.addEventListener("change", () => _apply(blankEl));
+  terrainEl.addEventListener("change", () => _apply(terrainEl));
+  cadastralEl.addEventListener("change", () => _apply(cadastralEl));
 
-    // 1) 배타 처리
-    _baseMap_makeExclusive(changedId);
-
-    // 2) 백지도 on/off 변화가 있을 때만 재생성 (깜박임 최소화)
-    const nextBlank = !!blankEl.checked;
-    const needRecreate = (!window.map) || (nextBlank !== window.__lastBlank);
-
-    if (needRecreate) {
-        window.__lastBlank = nextBlank;
-        await createMap(nextBlank);
-        injectMaximizeButton();
-    }
-
-    // 3) 현재 map에 타입/레이어 적용
-    applyBaseMapMode();
-
-    // 4) 기타 UI 상태 반영(있으면)
-    try { refreshByUIState(); } catch (e) {}
-}
-
-// ✅ 새 체크박스 이벤트 연결
-(function bindBaseMapToggleEvents(){
-    const t = document.getElementById("toggleTerrain");
-    const c = document.getElementById("toggleCadastral");
-    if (t && !t.__boundBaseMap) {
-        t.__boundBaseMap = true;
-        t.addEventListener("change", () => redrawMapByBaseToggles("toggleTerrain"));
-    }
-    if (c && !c.__boundBaseMap) {
-        c.__boundBaseMap = true;
-        c.addEventListener("change", () => redrawMapByBaseToggles("toggleCadastral"));
-    }
+  // 초기 상태 정리(동시에 체크된 경우 정리 + 기본지도 강제)
+  setTimeout(() => _apply(blankEl), 0);
 })();
 
-  redrawMapByBaseToggles("toggleBlankMap");
-});
-
-document.getElementById("toggleTerrain").addEventListener("change", () => {
-  redrawMapByBaseToggles("toggleTerrain");
-});
-
-document.getElementById("toggleCadastral").addEventListener("change", () => {
-  redrawMapByBaseToggles("toggleCadastral");
-});
 
 
 
@@ -2707,6 +2773,7 @@ function createDefaultMarker(apartment) {
 }
 
 let prevSiseMapState = null; // 🔹 전역 변수로 이전 시세지도 상태 저장
+let prevBlankMapState = null; // 🔹 전역 변수로 이전 백지도 상태 저장
 
 function removeLinesOutsideBounds(bounds) {
     Object.entries(apartmentMarkers).forEach(([id, marker]) => {
@@ -2856,7 +2923,28 @@ Object.keys(apartmentMarkers).forEach(id => {
 				});
 				apartmentMarkers = {}; // 캐시 초기화
 				prevSiseMapState = isSiseMapActive; // 상태 갱신
-			}
+			
+
+// ✅ 백지도 체크 상태가 바뀐 경우 → 모든 마커 제거 (스타일 재생성 목적)
+const isBlankMapActive = !!document.getElementById("toggleBlankMap")?.checked;
+if (prevBlankMapState !== isBlankMapActive) {
+    Object.values(apartmentMarkers).forEach(marker => {
+        try {
+            if (marker && marker.movementLine) {
+                marker.movementLine.setMap(null);
+                marker.movementLine = null;
+            }
+            if (marker && typeof marker.setMap === "function") {
+                naver.maps.Event && naver.maps.Event.clearInstanceListeners && naver.maps.Event.clearInstanceListeners(marker);
+                marker.setMap(null);
+            }
+        } catch (e) {}
+    });
+    apartmentMarkers = {}; // 캐시 초기화
+    // 클러스터도 비우기
+    try { if (markerCluster) markerCluster.setMarkers([]); } catch (e) {}
+    prevBlankMapState = isBlankMapActive; // 상태 갱신
+}}
 
 			// ✅ 새 마커 생성 or 재사용
 			filtered.forEach(apartment => {
