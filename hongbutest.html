@@ -7469,5 +7469,171 @@ async function redrawMapByBaseToggles(changedId) {
 
 
 
+<!-- =========================
+     [홍부 베이스맵 클린 패치]
+     문제 해결:
+     1) 백지도 체크 시 "마커만" 바뀌는 현상 제거 (createMap() 강제 호출)
+     2) 백지도/지형도/지적편집도 동시 체크 방지 (배타)
+     3) 새로고침 후에도 지형도/지적편집도 상태 복원
+     방식: 기존 리스너 충돌을 막기 위해 체크박스를 cloneNode로 교체 후, 단일 리스너만 바인딩
+========================= -->
+<script>
+(function(){
+  const IDS = ["toggleBlankMap","toggleTerrain","toggleCadastral"];
+  const KEY = "baseMapStateV1"; // settings 저장 키
+
+  const $ = (id) => document.getElementById(id);
+
+  function cloneSwap(id){
+    const el = $(id);
+    if (!el || !el.parentNode) return null;
+    const neo = el.cloneNode(true); // 기존 이벤트 전부 제거
+    el.parentNode.replaceChild(neo, el);
+    return neo;
+  }
+
+  async function saveState(state){
+    try{
+      if (typeof setHongbuSetting === "function") {
+        await setHongbuSetting(KEY, state);
+      } else {
+        localStorage.setItem(KEY, JSON.stringify(state));
+      }
+    }catch(e){
+      try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(_){}
+    }
+  }
+
+  async function loadState(){
+    try{
+      if (typeof getHongbuSetting === "function") {
+        const v = await getHongbuSetting(KEY);
+        if (v && typeof v === "object") return v;
+      }
+    }catch(e){}
+    try{
+      const s = localStorage.getItem(KEY);
+      return s ? JSON.parse(s) : null;
+    }catch(e){ return null; }
+  }
+
+  function getUIState(){
+    return {
+      blank: !!$("toggleBlankMap")?.checked,
+      terrain: !!$("toggleTerrain")?.checked,
+      cadastral: !!$("toggleCadastral")?.checked,
+    };
+  }
+
+  function setUIState(state){
+    const blankEl = $("toggleBlankMap");
+    const terrainEl = $("toggleTerrain");
+    const cadastralEl = $("toggleCadastral");
+    if (!blankEl || !terrainEl || !cadastralEl) return;
+
+    blankEl.checked = !!state?.blank;
+    terrainEl.checked = !!state?.terrain;
+    cadastralEl.checked = !!state?.cadastral;
+  }
+
+  function enforceExclusive(changed){
+    const blankEl = $("toggleBlankMap");
+    const terrainEl = $("toggleTerrain");
+    const cadastralEl = $("toggleCadastral");
+
+    if (!blankEl || !terrainEl || !cadastralEl) return;
+
+    // 하나 켜지면 나머지 끄기 (켜는 동작에서만)
+    if (changed === "toggleBlankMap" && blankEl.checked){
+      terrainEl.checked = false;
+      cadastralEl.checked = false;
+    } else if (changed === "toggleTerrain" && terrainEl.checked){
+      blankEl.checked = false;
+      cadastralEl.checked = false;
+    } else if (changed === "toggleCadastral" && cadastralEl.checked){
+      blankEl.checked = false;
+      terrainEl.checked = false;
+    }
+  }
+
+  async function applyBaseMap(changed){
+    // 배타 보장
+    enforceExclusive(changed);
+
+    const blank = !!$("toggleBlankMap")?.checked;
+    const terrain = !!$("toggleTerrain")?.checked;
+    const cadastral = !!$("toggleCadastral")?.checked;
+
+    // 저장
+    saveState({ blank, terrain, cadastral });
+
+    if (typeof createMap !== "function") {
+      console.warn("[베이스맵] createMap 함수가 없습니다.");
+      return;
+    }
+
+    // ✅ 핵심: 백지도/기본 타일은 createMap 인자로 결정되므로 무조건 재생성
+    await createMap(blank);
+
+    // ✅ 생성 직후 타입/레이어 적용
+    try{
+      if (!window.__cadastralLayer) window.__cadastralLayer = new naver.maps.CadastralLayer();
+
+      if (blank){
+        window.__cadastralLayer.setMap(null);
+        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
+      } else if (terrain){
+        window.__cadastralLayer.setMap(null);
+        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.TERRAIN);
+      } else if (cadastral){
+        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
+        window.__cadastralLayer.setMap(window.map);
+      } else {
+        window.__cadastralLayer.setMap(null);
+        window.map && window.map.setMapTypeId && window.map.setMapTypeId(naver.maps.MapTypeId.NORMAL);
+      }
+    }catch(e){
+      console.warn("[베이스맵] 타입/레이어 적용 실패:", e);
+    }
+  }
+
+  async function init(){
+    // 1) 체크박스 교체(기존 리스너 제거)
+    const els = {};
+    IDS.forEach(id => { els[id] = cloneSwap(id); });
+
+    // 2) 단일 리스너 바인딩
+    IDS.forEach(id => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener("change", () => applyBaseMap(id));
+    });
+
+    // 3) 상태 복원: createMap/map 준비될 때까지 대기 후 적용
+    const state = await loadState();
+    if (state) setUIState(state);
+
+    // map/createMap이 늦게 로드될 수 있어 폴링
+    let tries = 0;
+    const timer = setInterval(async () => {
+      tries++;
+      if (typeof createMap === "function") {
+        clearInterval(timer);
+        // 복원 상태 반영 (changed=null로 배타 강제 없이 그대로 적용)
+        await applyBaseMap(null);
+      }
+      if (tries > 80) { // 약 8초
+        clearInterval(timer);
+      }
+    }, 100);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
 </body>
 </html>
