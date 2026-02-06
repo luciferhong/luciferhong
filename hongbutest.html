@@ -168,7 +168,25 @@ font-weight: 800;
 			box-shadow: 0px 0px 5px rgba(74, 144, 226, 0.5);
 		}
 
-	/* 기존 #controls 규칙에 아래 3줄만 추가 */
+	
+        /* ✅ 준공년도 필터 */
+        #yearFromFilter, #yearToFilter {
+            width: 55px;
+            height: 10px;
+            font-size: 16px;
+            text-align: center;
+            border: 2px solid #4A90E2;
+            border-radius: 8px;
+            padding: 5px;
+            outline: none;
+            transition: all 0.3s ease-in-out;
+        }
+        #yearFromFilter:focus, #yearToFilter:focus {
+            border-color: #2D5DA7;
+            box-shadow: 0px 0px 5px rgba(74, 144, 226, 0.5);
+        }
+
+/* 기존 #controls 규칙에 아래 3줄만 추가 */
 #controls{
   display: flex;          /* 이미 flex면 유지 */
   flex-wrap: wrap;        /* 줄바꿈 허용 */
@@ -370,6 +388,13 @@ body.map-fullscreen {
     <option value="">전체</option>
   </select>
 </label>
+    <label>연도:
+      <input type="number" id="yearFromFilter" min="1900" max="2100" placeholder="시작" style="width:55px;">
+      ~
+      <input type="number" id="yearToFilter" min="1900" max="2100" placeholder="끝" style="width:55px;">
+    </label>
+
+
 
     <label for="unitFilter">최소세대수: </label>
     <input type="number" id="unitFilter" min="0" value="190">
@@ -2623,7 +2648,21 @@ function removeAllLines() {
     });
 }
 
-	// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
+
+// ✅ 준공년도(YY.MM / YYYY.MM 등) → 연도(YYYY) 변환
+function parseAptBuildYearToFullYear(yearStr) {
+    if (!yearStr) return null;
+    const m = String(yearStr).match(/(\d{2,4})\.(\d{2})/);
+    if (!m) return null;
+    let y = parseInt(m[1], 10);
+    if (!Number.isFinite(y)) return null;
+    // 2자리 연도면 19xx/20xx 보정(대부분 아파트는 1970~2030 범위)
+    if (y < 100) y = (y <= 30) ? (2000 + y) : (1900 + y);
+    return y;
+}
+
+
+// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
 function updateMarkers(bounds) {
 
 
@@ -2647,7 +2686,11 @@ function updateMarkers(bounds) {
 	removeLinesOutsideBounds(bounds)
 
 			const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
-			//const showApartments = document.getElementById("toggleApartments").checked;
+			const _fromYearRaw = parseInt(document.getElementById("yearFromFilter")?.value, 10);
+const _toYearRaw   = parseInt(document.getElementById("yearToFilter")?.value, 10);
+const fromYear = Number.isFinite(_fromYearRaw) ? _fromYearRaw : null;
+const toYear   = Number.isFinite(_toYearRaw) ? _toYearRaw : null;
+//const showApartments = document.getElementById("toggleApartments").checked;
 			const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
 
 			if (!showApartments || window.map.getZoom() < 14) return;
@@ -2661,7 +2704,9 @@ function updateMarkers(bounds) {
     const sigunguOK = !selectedSigungu || (apartment.sigungu || '').trim() === selectedSigungu;
 //console.log("apartment.sido : "+apartment.sido)
 //console.log("apartment.sigungu : "+apartment.sigungu)
-    return inBounds && unitOK && sidoOK && sigunguOK;
+    const buildYear = parseAptBuildYearToFullYear(apartment.year);
+const yearOK = (!fromYear || (buildYear && buildYear >= fromYear)) && (!toYear || (buildYear && buildYear <= toYear));
+return inBounds && unitOK && yearOK && sidoOK && sigunguOK;
   });
 
 /*
@@ -3143,6 +3188,34 @@ if (toggleAdminBoundaryEl) {
   });
 }
 
+
+// ✅ 준공년도 필터(yearFrom/yearTo) 변경 시 지도 즉시 반영
+const yearFromInput = document.getElementById("yearFromFilter");
+const yearToInput = document.getElementById("yearToFilter");
+let yearFilterTimer = null;
+
+function _applyYearFilterUpdate() {
+    if (!window.map) return;
+
+    // 입력 중 과도한 호출을 막기 위한 약간의 딜레이(0.2초)
+    if (yearFilterTimer) clearTimeout(yearFilterTimer);
+    yearFilterTimer = setTimeout(() => {
+        Object.values(apartmentMarkers).forEach(marker => {
+            if (marker instanceof naver.maps.Marker) {
+                marker.setMap(null);
+            }
+        });
+        apartmentMarkers = {}; // ✅ 마커 캐시도 초기화
+        updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
+    }, 200);
+}
+
+["input", "change"].forEach(evt => {
+    if (yearFromInput) yearFromInput.addEventListener(evt, _applyYearFilterUpdate);
+    if (yearToInput) yearToInput.addEventListener(evt, _applyYearFilterUpdate);
+});
+
+
 // ✅ 최소 세대수(unitFilter) 변경 시 지도 즉시 반영
 const unitFilterInput = document.getElementById("unitFilter");
 let unitFilterTimer = null;
@@ -3154,15 +3227,15 @@ let unitFilterTimer = null;
         // 입력 중 과도한 호출을 막기 위한 약간의 딜레이(0.2초)
         if (unitFilterTimer) clearTimeout(unitFilterTimer);
         unitFilterTimer = setTimeout(() => {
- Object.values(apartmentMarkers).forEach(marker => {
-        if (marker instanceof naver.maps.Marker) {
-            marker.setMap(null);
-        }
-    });
-    apartmentMarkers = {}; // ✅ 마커 캐시도 초기화
-            updateMarkers(window.map.getBounds());
-        }, 200);
-    });
+		Object.values(apartmentMarkers).forEach(marker => {
+			if (marker instanceof naver.maps.Marker) {
+				marker.setMap(null);
+			}
+		});
+		apartmentMarkers = {}; // ✅ 마커 캐시도 초기화
+				updateMarkers(window.map.getBounds());
+			}, 200);
+		});
 });
 
 
@@ -6150,65 +6223,108 @@ async function backupMemoDB_OLD() {
   };
 }
 
+function refreshApartmentMarkers() {
+  if (!window.map) return;
+
+  // 기존 아파트 마커 제거 + 캐시 초기화
+  Object.values(apartmentMarkers).forEach(m => {
+    if (m instanceof naver.maps.Marker) m.setMap(null);
+  });
+  apartmentMarkers = {};
+
+  // 현재 지도 bounds 기준으로 재생성
+  updateMarkers(window.map.getBounds());
+}
 
 
 
-
-// ✅ 메모 복원
+// ✅ 메모 복원 (정상 동작 버전)
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
-  input.accept = ".json"; // ZIP 말고 JSON만 받음
-  input.multiple = true;  // ✅ 여러 파일 선택 허용
+  input.accept = ".json";
+  input.multiple = true;
 
   input.onchange = async function (event) {
-    const files = Array.from(event.target.files);
+    const files = Array.from(event.target.files || []);
     if (!files.length) return;
 
-    const allRecords = [];
+    // 같은 파일 다시 선택 가능하게 초기화
+    input.value = "";
 
     try {
+      // 1) 파일들 읽어서 전부 flatten
+      let records = [];
       for (const file of files) {
         const text = await file.text();
         const parsed = JSON.parse(text);
 
-        if (Array.isArray(parsed)) {
-          allRecords.push(...parsed);
-        } else {
-          allRecords.push(parsed);
-        }
+        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
+        else records.push(parsed);
       }
 
+      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
+      const normalized = records
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          if (r.id === undefined || r.id === null) return null;
+          return {
+            id: String(r.id),
+            memo: r.memo ? String(r.memo) : "",
+            images: Array.isArray(r.images) ? r.images : [],
+          };
+        })
+        .filter(Boolean);
+
+      if (!normalized.length) {
+        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
+        return;
+      }
+
+      // 3) IndexedDB put
       const request = indexedDB.open("hongbuMemo", 4);
-      request.onsuccess = function (event) {
-        const db = event.target.result;
-        const transaction = db.transaction(["apartmentNotes"], "readwrite");
-        const store = transaction.objectStore("apartmentNotes");
 
-        for (const item of allRecords) {
-          store.put(item);
-        }
+      request.onsuccess = function (e) {
+        const db = e.target.result;
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
 
-        transaction.oncomplete = () => {
-          alert(`✅ ${allRecords.length}개의 메모가 복원되었습니다.`);
+        let ok = 0, fail = 0;
+
+        normalized.forEach((item) => {
+          const putReq = store.put(item);
+          putReq.onsuccess = () => ok++;
+          putReq.onerror = (err) => {
+            fail++;
+            console.error("❌ put 실패:", item.id, err?.target?.error);
+          };
+        });
+
+        tx.oncomplete = () => {
+          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
           db.close();
+		  refreshApartmentMarkers();
         };
 
-        transaction.onerror = () => {
-          alert("❌ 메모 복원 중 오류가 발생했습니다.");
+        tx.onerror = (err) => {
+          console.error("❌ 트랜잭션 오류:", err?.target?.error);
+          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
           db.close();
         };
       };
 
-      request.onerror = function () {
-        alert("❌ DB 열기 실패");
+      request.onerror = function (err) {
+        console.error("❌ DB 열기 실패:", err?.target?.error);
+        alert("❌ DB 열기 실패 (콘솔 확인)");
       };
-    } catch (e) {
-      alert("❌ 복원 중 오류 발생: " + e.message);
+    } catch (err) {
+      console.error("❌ 복원 중 예외:", err);
+      alert("❌ 복원 중 오류 발생: " + err.message);
     }
   };
 
-  input.click(); // 파일 선택 창 열기
+  input.click();
 }
+
 
 
 
