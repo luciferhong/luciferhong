@@ -2466,12 +2466,11 @@ function createDefaultMapMarker(apartment) {
 
 
 
-	getMemoFromIndexedDB(apartment.id).then(memo => {
-		const hasMemo = memo?.memo?.trim()?.length > 0;
-		const hasImages = Array.isArray(memo?.images) && memo.images.length > 0;
+	// ✅ 메모 아이콘 (키셋 기반 빠른 체크: 마커마다 DB 조회하지 않음)
+	(function(){
 		const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
-
-		if (showMemoIcon && (hasMemo || hasImages)) {
+		if (!showMemoIcon) return;
+		if (window.__hongbuMemoKeySetReady && window.__hongbuMemoKeySet?.has(String(apartment.id))) {
 			const memoIcon = document.createElement("img");
 			memoIcon.src = "memo.png"; // 🔺 이미지 파일명
 			memoIcon.style = `
@@ -2486,12 +2485,7 @@ function createDefaultMapMarker(apartment) {
 			markerElement.style.position = "relative";
 			markerElement.appendChild(memoIcon);
 		}
-	});
-
-
-
-
-		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
+	})();// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
     
 
     const marker = new naver.maps.Marker({
@@ -2574,12 +2568,11 @@ overflow: hidden; /* ✅ 넘치는 내용 숨김 */
 
 
 
-	getMemoFromIndexedDB(apartment.id).then(memo => {
-		const hasMemo = memo?.memo?.trim()?.length > 0;
-		const hasImages = Array.isArray(memo?.images) && memo.images.length > 0;
+	// ✅ 메모 아이콘 (키셋 기반 빠른 체크: 마커마다 DB 조회하지 않음)
+	(function(){
 		const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
-
-		if (showMemoIcon && (hasMemo || hasImages)) {
+		if (!showMemoIcon) return;
+		if (window.__hongbuMemoKeySetReady && window.__hongbuMemoKeySet?.has(String(apartment.id))) {
 			const memoIcon = document.createElement("img");
 			memoIcon.src = "memo.png"; // 🔺 이미지 파일명
 			memoIcon.style = `
@@ -2594,12 +2587,7 @@ overflow: hidden; /* ✅ 넘치는 내용 숨김 */
 			markerElement.style.position = "relative";
 			markerElement.appendChild(memoIcon);
 		}
-	});
-
-
-
-
-		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
+	})();// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
     
 
     const marker = new naver.maps.Marker({
@@ -3119,18 +3107,27 @@ await initIndexedDB();
 
 
 
-await loadApartments();
-    await loadSchools();
-    await loadMiddleSchools();
-	await loadApartmentsDetail();
-    await loadFacilities();
-    await loadStarbucks();
-	
+// ✅ 0) 메모 DB + 메모 존재 키셋을 가장 먼저 준비 (아파트 마커/메모 아이콘이 최우선)
 	await initMemoIndexedDB();
-	await loadApartments();
-	await findWay();
+	await loadMemoKeySetOnce();
 
-	if (window.map) {
+	// ✅ 1) 아파트(마커) 먼저 로드
+	await loadApartments();
+
+	// ✅ 2) 나머지는 병렬 로드 (초/중/환경/스벅/상세/길찾기 등)
+	Promise.allSettled([
+		loadApartmentsDetail(),
+		loadSchools(),
+		loadMiddleSchools(),
+		loadFacilities(),
+		loadStarbucks(),
+		findWay(),
+	]).then((results) => {
+		const ok = results.filter(r => r.status === "fulfilled").length;
+		const fail = results.filter(r => r.status === "rejected").length;
+		console.log(`✅ 백그라운드 로딩 완료: ok=${ok}, fail=${fail}`);
+	}).catch(console.warn);
+if (window.map) {
         setupRightClickEvent();
     } else {
         // ✅ 지도 로드 후 이벤트를 추가하는 방식
@@ -4229,6 +4226,76 @@ function initMemoIndexedDB() {
     };
   });
 }
+// ✅ 메모 존재 여부(아이콘 표시용) 키셋을 한번만 로드해서 마커 생성 시 DB를 매번 열지 않도록 최적화
+window.__hongbuMemoKeySet = window.__hongbuMemoKeySet || new Set();
+window.__hongbuMemoKeySetReady = window.__hongbuMemoKeySetReady || false;
+
+async function loadMemoKeySetOnce() {
+  if (window.__hongbuMemoKeySetReady) return window.__hongbuMemoKeySet;
+  await initMemoIndexedDB();
+
+  return new Promise((resolve) => {
+    const req = indexedDB.open("hongbuMemo", 4);
+    req.onerror = () => {
+      window.__hongbuMemoKeySet = new Set();
+      window.__hongbuMemoKeySetReady = true;
+      resolve(window.__hongbuMemoKeySet);
+    };
+    req.onsuccess = (event) => {
+      const db = event.target.result;
+      try {
+        const tx = db.transaction(["apartmentNotes"], "readonly");
+        const store = tx.objectStore("apartmentNotes");
+
+        // getAllKeys 지원 시 가장 빠름
+        if (store.getAllKeys) {
+          const kreq = store.getAllKeys();
+          kreq.onsuccess = () => {
+            const keys = (kreq.result || []).map(k => String(k));
+            window.__hongbuMemoKeySet = new Set(keys);
+            window.__hongbuMemoKeySetReady = true;
+            try { db.close(); } catch(e) {}
+            resolve(window.__hongbuMemoKeySet);
+          };
+          kreq.onerror = () => {
+            window.__hongbuMemoKeySet = new Set();
+            window.__hongbuMemoKeySetReady = true;
+            try { db.close(); } catch(e) {}
+            resolve(window.__hongbuMemoKeySet);
+          };
+        } else {
+          // fallback: cursor
+          const s = new Set();
+          const cur = store.openCursor();
+          cur.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              s.add(String(cursor.key));
+              cursor.continue();
+            } else {
+              window.__hongbuMemoKeySet = s;
+              window.__hongbuMemoKeySetReady = true;
+              try { db.close(); } catch(e) {}
+              resolve(window.__hongbuMemoKeySet);
+            }
+          };
+          cur.onerror = () => {
+            window.__hongbuMemoKeySet = new Set();
+            window.__hongbuMemoKeySetReady = true;
+            try { db.close(); } catch(e) {}
+            resolve(window.__hongbuMemoKeySet);
+          };
+        }
+      } catch (e) {
+        window.__hongbuMemoKeySet = new Set();
+        window.__hongbuMemoKeySetReady = true;
+        try { db.close(); } catch(e) {}
+        resolve(window.__hongbuMemoKeySet);
+      }
+    };
+  });
+}
+
 
 
 // ✅ hongbu.settings 저장
@@ -5912,6 +5979,7 @@ let deletedImages = []; // 삭제된 이미지 목록
               if (existing) {
                 const delReq = store.delete(id);
                 delReq.onsuccess = function () {
+                   try { if (window.__hongbuMemoKeySetReady) window.__hongbuMemoKeySet.delete(String(id)); } catch(e) {}
                   // UI 초기화
                   aptMemoImageList[id] = [];
                   loadNote(id);
@@ -5945,6 +6013,7 @@ let deletedImages = []; // 삭제된 이미지 목록
 
             const putRequest = store.put(toSave);
             putRequest.onsuccess = function () {
+               try { if (window.__hongbuMemoKeySetReady) window.__hongbuMemoKeySet.add(String(id)); } catch(e) {}
               loadNote(id);
 
               // 마커 재생성(메모 아이콘 반영)
@@ -6516,8 +6585,7 @@ function deleteMemoDB() {
 
     const deleteRequest = indexedDB.deleteDatabase("hongbuMemo");
 
-    deleteRequest.onsuccess = function () {
-      alert("✅ 메모 DB 삭제 완료");
+    deleteRequest.onsuccess = function () {alert("✅ 메모 DB 삭제 완료");
       setTimeout(() => location.reload(), 300); // 너무 빨리 reload 되지 않게 약간 지연
     };
 
@@ -6550,6 +6618,7 @@ function deleteNote(id) {
     const deleteRequest = store.delete(id);
 
     deleteRequest.onsuccess = function () {
+       try { if (window.__hongbuMemoKeySetReady) window.__hongbuMemoKeySet.delete(String(id)); } catch(e) {}
       alert("해당 메모가 삭제되었습니다.");
       loadNote(id); // 삭제 후 화면 갱신
     };
