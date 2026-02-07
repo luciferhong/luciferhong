@@ -1046,20 +1046,46 @@ function closeImageModal(){
 		const currentCenter = window.map?.getCenter?.();
 		const currentZoom = window.map?.getZoom?.();
 
+		// ✅ 최초 로드시 "서울시청(기본좌표) → 마지막 위치"로 점프하는 현상 방지
+		// - 가능한 한 "지도 생성 시점"부터 마지막 위치로 시작
+		let __initialPos = null;           // {lat,lng,zoom}
+		let __initialPosApplied = false;   // center/zoom을 mapOptions에 반영했는지
+		try {
+			const raw = localStorage.getItem("hongbu_mapPosition_fallback_v1");
+			if (!currentCenter && raw) {
+				const p = JSON.parse(raw);
+				if (p && typeof p.lat === "number" && typeof p.lng === "number") {
+					__initialPos = p;
+					__initialPosApplied = true; // mapOptions에서 바로 반영 예정
+				}
+			}
+		} catch(e) {}
+
+		// localStorage 폴백이 없으면 IndexedDB에서 먼저 읽어서 "점프" 자체를 없앰(조금 느려질 수 있음)
+		if (!currentCenter && !__initialPos) {
+			try {
+				const p = await getHongbuSetting("mapPosition");
+				if (p && typeof p.lat === "number" && typeof p.lng === "number") {
+					__initialPos = p;
+					__initialPosApplied = true;
+				}
+			} catch(e) {}
+		}
+
 		mapElement.innerHTML = "";
 
 		const mapOptions = useBlankMap
 			? {
-				center: currentCenter || new naver.maps.LatLng(37.5665, 126.9780),
-				zoom: currentZoom || 15,
+				center: currentCenter || (__initialPos ? new naver.maps.LatLng(__initialPos.lat, __initialPos.lng) : new naver.maps.LatLng(37.5665, 126.9780)),
+				zoom: (typeof currentZoom === "number" ? currentZoom : (__initialPos && typeof __initialPos.zoom === "number" ? __initialPos.zoom : 15)),
 				mapTypes: new naver.maps.MapTypeRegistry({
 					'normal': naver.maps.NaverStyleMapTypeOptions.getVectorMap()
 				}),
 				mapTypeId: 'normal'
 			}
 			: {
-				center: currentCenter || new naver.maps.LatLng(37.5665, 126.9780),
-				zoom: currentZoom || 15
+				center: currentCenter || (__initialPos ? new naver.maps.LatLng(__initialPos.lat, __initialPos.lng) : new naver.maps.LatLng(37.5665, 126.9780)),
+				zoom: (typeof currentZoom === "number" ? currentZoom : (__initialPos && typeof __initialPos.zoom === "number" ? __initialPos.zoom : 15))
 			};
 
 		window.map = new naver.maps.Map("map", mapOptions);
@@ -1085,9 +1111,12 @@ function closeImageModal(){
 		  }
 
 		  if (pos && pos.lat && pos.lng) {
-			window.map.setCenter(new naver.maps.LatLng(pos.lat, pos.lng));
-			if (typeof pos.zoom === "number") {
-			  window.map.setZoom(pos.zoom);
+			// ✅ 이미 mapOptions 단계에서 마지막 위치를 적용했다면(점프 방지), 여기서 다시 센터를 덮어쓰지 않음
+			if (!currentCenter && !__initialPosApplied) {
+				window.map.setCenter(new naver.maps.LatLng(pos.lat, pos.lng));
+				if (typeof pos.zoom === "number") {
+				  window.map.setZoom(pos.zoom);
+				}
 			}
 			// ✅ 복원 적용됨 표시
 			try { __markMapPosRestored(); } catch(e) {}
@@ -1102,12 +1131,14 @@ function closeImageModal(){
 		apartmentMarkers = [];
 			// 지도 이벤트 등록
 			naver.maps.Event.addListener(window.map, "idle", () => {
-				updateMarkers(window.map.getBounds());
-				updateSchoolMarkers();
-				updateMiddleSchoolMarkers();
-				updateStarbucksMarkers();
-				updateFacilityMarkers();
-			});
+					// ✅ 아파트 마커는 항상
+					updateMarkers(window.map.getBounds());
+					// ✅ 나머지는 로드 완료 + 토글 ON일 때만
+					if (window.__schoolsReady) updateSchoolMarkers();
+					if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
+					if (window.__starbucksReady) updateStarbucksMarkers();
+					if (window.__facilitiesReady) updateFacilityMarkers();
+				});
 
 			// 경로 그리기 핸들러 재등록
 			//new MapHandler(window.map);
@@ -1138,19 +1169,55 @@ function closeImageModal(){
 		}
 		*/
 
-		// 데이터 재로드
-		await loadApartments();
-		await loadSchools();
-		await loadMiddleSchools();
-		await loadApartmentsDetail();
-		await loadFacilities();
-		await loadStarbucks();
-		await findWay();
+		
+// 데이터 로드 (우선순위: 아파트 마커 + 메모 → 2개 완료 후 나머지 병렬)
+// 1) 아파트(마커) 먼저
+await loadApartments();
 
-    // ✅ UI 옵션 상태에 맞게 화면 즉시 반영
-    refreshByUIState();
+// 2) 메모는 '내용'을 미리 로드하지 않음. (메모 아이콘 표기는 마커 생성 시 IDB에서 키 존재 여부를 지연 조회)
 
-		setupRightClickEvent(); // 길찾기용 우클릭 이벤트
+// ✅ 아파트+메모 준비가 끝난 시점에서 즉시 1차 렌더 (마커/메모아이콘 우선)
+try { refreshByUIState(); } catch(e) {}
+try { if (window.map && window.map.getBounds) updateMarkers(window.map.getBounds()); } catch(e) {}
+
+// 3) 그 다음 나머지는 병렬 로드 (상세/초/중/환경/스벅/길찾기)
+window.__aptDetailReady = false;
+window.__schoolsReady = false;
+window.__middleSchoolsReady = false;
+window.__facilitiesReady = false;
+window.__starbucksReady = false;
+window.__findWayReady = false;
+
+window.__aptDetailLoading = true;
+        const pAptDetail = loadApartmentsDetail()
+    .then(() => { window.__aptDetailReady = true; })
+            .finally(() => { window.__aptDetailLoading = false; })
+    .catch((e) => { console.warn("아파트 상세 로드 실패:", e); window.__aptDetailReady = false; });
+
+window.__aptDetailPromise = pAptDetail;
+
+        const pOthers = Promise.allSettled([
+    loadSchools().then(() => { window.__schoolsReady = true; }).catch(()=>{}),
+    loadMiddleSchools().then(() => { window.__middleSchoolsReady = true; }).catch(()=>{}),
+    loadFacilities().then(() => { window.__facilitiesReady = true; }).catch(()=>{}),
+    loadStarbucks().then(() => { window.__starbucksReady = true; }).catch(()=>{}),
+    findWay().then(() => { window.__findWayReady = true; }).catch(()=>{}),
+    pAptDetail
+]);
+
+pOthers.then(() => {
+    // 병렬 로드가 끝난 뒤 토글 상태에 맞춰 갱신
+    try { refreshByUIState(); } catch(e) {}
+    if (window.map && window.map.getBounds) {
+        try { updateMarkers(window.map.getBounds()); } catch(e) {}
+        try { if (window.__schoolsReady) updateSchoolMarkers(); } catch(e) {}
+        try { if (window.__middleSchoolsReady) updateMiddleSchoolMarkers(); } catch(e) {}
+        try { if (window.__starbucksReady) updateStarbucksMarkers(); } catch(e) {}
+        try { if (window.__facilitiesReady) updateFacilityMarkers(); } catch(e) {}
+    }
+});
+
+setupRightClickEvent(); // 길찾기용 우클릭 이벤트
 		
 
 		//모바일이면 현재 위치로 이동
@@ -2418,6 +2485,107 @@ function updateMarkerStyleAndSave(id, selectedColor, textColor, fontSize) {
 }
 
 
+// ================================
+// ✅ 메모 아이콘 '표기'만 지연 조회(내용은 클릭 시에만 로드)
+// - 초기 로딩에서 메모를 미리 읽지 않음
+// - 마커가 생성/갱신될 때 해당 id의 메모 존재 여부만 IndexedDB에서 확인(getKey/get)
+// - 결과는 캐시(Map)하여 반복 조회 방지
+// ================================
+window.__memoPresenceCache = window.__memoPresenceCache || new Map();
+window.__memoPresencePending = window.__memoPresencePending || new Map();
+window.__memoDbPromise = window.__memoDbPromise || null;
+
+function openHongbuMemoDBOnce() {
+  if (window.__memoDbPromise) return window.__memoDbPromise;
+  window.__memoDbPromise = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open("hongbuMemo", 4);
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror = (e) => reject(e.target.error);
+      // 업그레이드는 기존 initMemoIndexedDB가 담당. 여기서는 읽기 전용 용도.
+      req.onupgradeneeded = (e) => resolve(e.target.result);
+    } catch (err) {
+      reject(err);
+    }
+  });
+  return window.__memoDbPromise;
+}
+
+async function memoExistsLazy(id) {
+  id = String(id);
+  if (window.__memoPresenceCache.has(id)) return window.__memoPresenceCache.get(id);
+
+  if (window.__memoPresencePending.has(id)) return window.__memoPresencePending.get(id);
+
+  const p = (async () => {
+    try {
+      const db = await openHongbuMemoDBOnce();
+      return await new Promise((resolve) => {
+        try {
+          const tx = db.transaction(["apartmentNotes"], "readonly");
+          const store = tx.objectStore("apartmentNotes");
+
+          const req = (store.getKey ? store.getKey(id) : store.get(id));
+          req.onsuccess = () => {
+            const exists = store.getKey ? (req.result !== undefined && req.result !== null) : !!req.result;
+            window.__memoPresenceCache.set(id, exists);
+            resolve(exists);
+          };
+          req.onerror = () => {
+            // 에러면 없는 것으로 처리(표기만) - 클릭 시 loadNote에서 다시 시도
+            window.__memoPresenceCache.set(id, false);
+            resolve(false);
+          };
+        } catch (e) {
+          window.__memoPresenceCache.set(id, false);
+          resolve(false);
+        }
+      });
+    } catch (e) {
+      window.__memoPresenceCache.set(id, false);
+      return false;
+    } finally {
+      window.__memoPresencePending.delete(id);
+    }
+  })();
+
+  window.__memoPresencePending.set(id, p);
+  return p;
+}
+
+function applyMemoIconLazy(id, markerElement) {
+  try {
+    id = String(id);
+    if (!markerElement) return;
+
+    // 중복 방지
+    if (markerElement.__memoIconChecked) return;
+    markerElement.__memoIconChecked = true;
+
+    memoExistsLazy(id).then((exists) => {
+      if (!exists) return;
+
+      // 이미 붙어 있으면 패스
+      if (markerElement.querySelector && markerElement.querySelector("img.__hongbu_memo_icon")) return;
+
+      const memoIcon = document.createElement("img");
+      memoIcon.className = "__hongbu_memo_icon";
+      memoIcon.src = "memo.png";
+      memoIcon.style = `
+        position: absolute;
+        top: -16px;
+        left: -20px;
+        width: 28px;
+        height: 28px;
+        z-index: 10;
+        pointer-events: none;
+      `;
+      markerElement.style.position = "relative";
+      markerElement.appendChild(memoIcon);
+    });
+  } catch (e) {}
+}
+
 
 function createDefaultMapMarker(apartment) {
 		let yearValue = parseInt(apartment.year.slice(2), 10);
@@ -2486,123 +2654,7 @@ function createDefaultMapMarker(apartment) {
 	(function(){
 		const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
 		if (!showMemoIcon) return;
-		if (window.__hongbuMemoKeySetReady && window.__hongbuMemoKeySet?.has(String(apartment.id))) {
-			const memoIcon = document.createElement("img");
-			memoIcon.src = "memo.png"; // 🔺 이미지 파일명
-			memoIcon.style = `
-				position: absolute;
-				top: -16px;
-				left: -20px;
-				width: 28px;
-				height: 28px;
-				z-index: 10;
-				pointer-events: none;
-			`;
-			markerElement.style.position = "relative";
-			markerElement.appendChild(memoIcon);
-		}
-	})();// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
-    
-
-    const marker = new naver.maps.Marker({
-        position: new naver.maps.LatLng(apartment.lat, apartment.lng),
-        map: window.map,
-        icon: {
-            content: markerElement,
-            anchor: new naver.maps.Point(10, 30)
-        }
-    });
-	marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
-
-	naver.maps.Event.addListener(marker, "click",  function(e) {
-		showApartmentInfo(apartment.id, {
-			x: e.offset.x,
-			y: e.offset.y
-		});
-	});
-
-	addMarkerRightClickEvent(marker, markerElement); // ✅ 마커 선택 이벤트 등록
-
-	return marker;
-}
-
-
-function createWhiteMapMarker(apartment) {
-	let yearValue = parseInt(apartment.year.slice(2), 10);
-		let bgColor = "black"; // yellow
-		let fongColor = "white";
-
-		
-
-
-    const markerElement = document.createElement("div");
-    markerElement.className = "siseMapMarker";
-    markerElement.style = `
-    background: #fff;
-    border: 2px solid black;
-    padding: 0px;
-    font-size: 12px;
-    text-align: center;
-    border-radius: 6px;
-    display: inline-block;  /* ✅ 자동 너비 설정 */
-    max-width: 200px;        /* ✅ 필요하면 최대 너비 제한 */
-min-width: 40px;
-    word-break: keep-all;   /* ✅ 줄바꿈 방지 */
-`;
-
-
-    markerElement.setAttribute("data-apartment-id", apartment.id);
-
-    const nameElement = document.createElement("div");
-    nameElement.innerHTML = `${apartment.name}<br>${apartment.year.slice(-5)} ${apartment.units}세대`;
-    nameElement.style = `
-        font-weight: bold;
-        font-size: 12px;
-        margin: 5px;
-min-height: 7px;
-overflow: hidden; /* ✅ 넘치는 내용 숨김 */
-    white-space: nowrap; /* ✅ 한 줄 유지 */
-    text-overflow: ellipsis; /* ✅ 말줄임 (...) 처리 */
-    `;
-		const detailsElement = document.createElement("div");
-		detailsElement.style = `
-			font-size: 12px;
-			padding: 2px 5px;
-			min-width: 85px; /* ✅ 세부 정보도 최소 크기 동일 */
-			max-width: 85px;
-			display: flex;
-			justify-content: center;
-		`;
-
-
-		nameElement.textContent = " "
-		detailsElement.textContent = " "
-    markerElement.appendChild(nameElement);
-    markerElement.appendChild(detailsElement);
-	
-
-
-
-
-	// ✅ 메모 아이콘 (키셋 기반 빠른 체크: 마커마다 DB 조회하지 않음)
-	(function(){
-		const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
-		if (!showMemoIcon) return;
-		if (window.__hongbuMemoKeySetReady && window.__hongbuMemoKeySet?.has(String(apartment.id))) {
-			const memoIcon = document.createElement("img");
-			memoIcon.src = "memo.png"; // 🔺 이미지 파일명
-			memoIcon.style = `
-				position: absolute;
-				top: -16px;
-				left: -20px;
-				width: 28px;
-				height: 28px;
-				z-index: 10;
-				pointer-events: none;
-			`;
-			markerElement.style.position = "relative";
-			markerElement.appendChild(memoIcon);
-		}
+		applyMemoIconLazy(String(apartment.id), markerElement);
 	})();// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
     
 
@@ -3500,14 +3552,32 @@ async function compressImage(base64, maxSize = 600, quality = 0.8) {
   // ✅ 메모/이미지 메모리 폭증 방지: 현재 선택된 아파트 1개만 캐시 유지
   __currentMemoAptId = apartmentId;
   __memoKeepOnly(apartmentId);
-if (!apartmentDetailData[apartmentId]) {
-    alert("데이터를 찾을 수 없습니다.");
-    return;
+// ✅ 아파트 상세(apartments1/2.json)는 느릴 수 있음: 없으면 메모 UI만 먼저 열고, 상세는 로딩 후 갱신
+  const hasDetail = !!apartmentDetailData[apartmentId];
+  // 상세 로딩이 끝나면, 현재 열려있는 팝업이면 자동 갱신
+  if (!hasDetail && window.__aptDetailPromise) {
+    window.__aptDetailPromise.then(() => {
+      try {
+        const curId = document.getElementById('apartmentInfo')?.getAttribute('data-id');
+        if (String(curId) === String(apartmentId) && apartmentDetailData[apartmentId]) {
+          showApartmentInfo(apartmentId, markerPosition);
+        }
+      } catch(e) {}
+    });
   }
 
-  let apt = apartmentDetailData[apartmentId];
   let aptInfo = apartmentData.find(apartment => String(apartment.id) === apartmentId);
-  let leaseInfo = aptInfo ? aptInfo.lease : "정보 없음";
+
+  let apt = hasDetail ? apartmentDetailData[apartmentId] : {
+    아파트명: aptInfo?.name || `아파트 ${apartmentId}`,
+    입주시기: aptInfo?.year ? String(aptInfo.year) : "로딩중…",
+    총세대수: aptInfo?.units ?? "로딩중…",
+    타입정보: []
+  };
+
+  // 상세가 아직 없으면, 로딩중 안내(메모는 바로 보여줌)
+
+    let leaseInfo = aptInfo ? aptInfo.lease : "정보 없음";
   let typeInfo = apt.타입정보 || [];
 
 apartmentInfo.setAttribute("data-id", apartmentId);
@@ -3521,6 +3591,9 @@ apartmentInfo.setAttribute("data-id", apartmentId);
         네부 바로가기
       </button>
     </div>
+			${hasDetail ? "" : `<div style="margin-top:8px; padding:6px 8px; background:#fff3cd; color:#664d03; border:1px solid #ffecb5; border-radius:6px; font-size:13px;">
+				상세 데이터 불러오는 중… (메모는 먼저 표시됩니다)
+			</div>`}
     <p>입주시기: ${apt.입주시기}</p>
     <p>총세대수: ${apt.총세대수} (임대 : ${leaseInfo})</p>
     <table style="width: 100%; border-collapse: collapse;">
@@ -6058,7 +6131,7 @@ let deletedImages = []; // 삭제된 이미지 목록
               if (existing) {
                 const delReq = store.delete(id);
                 delReq.onsuccess = function () {
-                   try { if (window.__hongbuMemoKeySetReady) window.__hongbuMemoKeySet.delete(String(id)); } catch(e) {}
+                   try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false); } catch(e) {}
                   // UI 초기화
                   aptMemoImageList[id] = [];
                   loadNote(id);
@@ -6092,7 +6165,7 @@ let deletedImages = []; // 삭제된 이미지 목록
 
             const putRequest = store.put(toSave);
             putRequest.onsuccess = function () {
-               try { if (window.__hongbuMemoKeySetReady) window.__hongbuMemoKeySet.add(String(id)); } catch(e) {}
+               try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), true); } catch(e) {}
               loadNote(id);
 
               // 마커 재생성(메모 아이콘 반영)
@@ -6697,7 +6770,7 @@ function deleteNote(id) {
     const deleteRequest = store.delete(id);
 
     deleteRequest.onsuccess = function () {
-       try { if (window.__hongbuMemoKeySetReady) window.__hongbuMemoKeySet.delete(String(id)); } catch(e) {}
+       try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false); } catch(e) {}
       alert("해당 메모가 삭제되었습니다.");
       loadNote(id); // 삭제 후 화면 갱신
     };
