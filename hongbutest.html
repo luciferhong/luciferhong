@@ -1069,9 +1069,21 @@ function closeImageModal(){
 		// ✅ 행정동(ADM) 경계: 현재 화면(bounds) 내만 렌더링
 		ensureAdmLayerBoundToMap().catch(console.warn);
 
-		// 🔽 저장된 지도 위치 복원
+		// 🔽 저장된 지도 위치 복원 (IndexedDB 우선, 실패/미존재 시 localStorage 폴백)
 		try {
-		  const pos = await getHongbuSetting("mapPosition");
+		  let pos = await getHongbuSetting("mapPosition");
+
+		  // ✅ Android 탭 discard/프로세스 kill 대비: IndexedDB가 늦거나 실패할 때 폴백 사용
+		  if (!pos || !pos.lat || !pos.lng) {
+			try {
+			  const raw = localStorage.getItem("hongbu_mapPosition_fallback_v1");
+			  if (raw) {
+				const fb = JSON.parse(raw);
+				if (fb && fb.lat && fb.lng) pos = fb;
+			  }
+			} catch(e) {}
+		  }
+
 		  if (pos && pos.lat && pos.lng) {
 			window.map.setCenter(new naver.maps.LatLng(pos.lat, pos.lng));
 			if (typeof pos.zoom === "number") {
@@ -3080,16 +3092,33 @@ await initIndexedDB();
 		
 
 		// ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-		// ✅ 지도 위치(센터/줌) 저장: idle + zoom/drag 이벤트 (모바일 즉시 새로고침 대비)
+		// ✅ 지도 위치(센터/줌) 저장: idle + zoom/drag + 백그라운드/종료 훅
 			let __saveMapPosTimer = null;
+
+			// ✅ Android에서 프로세스가 갑자기 죽는 경우 대비: localStorage 동기 백업(IndexedDB 실패 시 복원용)
+			const __saveMapPositionToLocalStorage = () => {
+				try {
+					const center = window.map.getCenter();
+					const zoom   = window.map.getZoom();
+					localStorage.setItem("hongbu_mapPosition_fallback_v1", JSON.stringify({
+						lat: center.lat(), lng: center.lng(), zoom, t: Date.now()
+					}));
+				} catch(e) {}
+			};
+
 			const saveMapPositionDebounced = (delayMs = 150) => {
 				if (__saveMapPosTimer) clearTimeout(__saveMapPosTimer);
 				__saveMapPosTimer = setTimeout(() => {
 					try {
 						const center = window.map.getCenter();
 						const zoom   = window.map.getZoom();
+
+						// 1) IndexedDB(설정) 저장 (비동기)
 						setHongbuSetting("mapPosition", { lat: center.lat(), lng: center.lng(), zoom })
 						  .catch(console.warn);
+
+						// 2) localStorage 백업 (동기)
+						__saveMapPositionToLocalStorage();
 					} catch (e) {}
 				}, delayMs);
 			};
@@ -3102,6 +3131,13 @@ await initIndexedDB();
 
 			naver.maps.Event.addListener(window.map, "zoom_changed", () => saveMapPositionDebounced(0));
 			naver.maps.Event.addListener(window.map, "dragend", () => saveMapPositionDebounced(0));
+
+			// ✅ 백그라운드로 내려가기 직전/탭 종료 직전 저장(모바일 안정성↑)
+			document.addEventListener("visibilitychange", () => {
+				if (document.visibilityState === "hidden") saveMapPositionDebounced(0);
+			});
+			window.addEventListener("pagehide", () => saveMapPositionDebounced(0));
+			window.addEventListener("beforeunload", () => saveMapPositionDebounced(0));
 
 		console.log("✅ 네이버 지도 초기화 완료.");
 
