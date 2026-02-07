@@ -352,8 +352,285 @@ body.map-fullscreen {
     }
   }
     </style>
+<style id="hongbu-debug-style">
+  #hongbuDebugOverlay{
+    position:fixed; left:10px; right:10px; bottom:10px;
+    max-height:40vh; overflow:auto;
+    background:rgba(0,0,0,0.82);
+    color:#fff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size:12px; line-height:1.35;
+    border:1px solid rgba(255,255,255,0.25);
+    border-radius:10px;
+    z-index: 2147483647;
+    display:none;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+  #hongbuDebugOverlay .dbg-head{
+    position:sticky; top:0;
+    display:flex; gap:8px; align-items:center; justify-content:space-between;
+    padding:8px 10px;
+    background:rgba(0,0,0,0.92);
+    border-bottom:1px solid rgba(255,255,255,0.15);
+  }
+  #hongbuDebugOverlay .dbg-title{ font-weight:800; display:flex; gap:8px; align-items:center; }
+  #hongbuDebugOverlay .dbg-title .dot{ width:8px; height:8px; border-radius:50%; background:#22c55e; display:inline-block; }
+  #hongbuDebugOverlay .dbg-actions button{
+    background:rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.18);
+    border-radius:8px; padding:6px 8px; cursor:pointer;
+    font-size:12px;
+  }
+  #hongbuDebugOverlay .dbg-actions button:hover{ background:rgba(255,255,255,0.18); }
+  #hongbuDebugOverlay .dbg-body{ padding:8px 10px 10px; }
+  #hongbuDebugOverlay .dbg-line{ padding:4px 0; border-bottom:1px dashed rgba(255,255,255,0.12); }
+  #hongbuDebugOverlay .dbg-line:last-child{ border-bottom:none; }
+  #hongbuDebugOverlay .lvl-ERR{ color:#fecaca; }
+  #hongbuDebugOverlay .lvl-WARN{ color:#fde68a; }
+  #hongbuDebugOverlay .lvl-INFO{ color:#bfdbfe; }
+  #hongbuDebugOverlay .lvl-STAT{ color:#a7f3d0; }
+  #hongbuDebugToast{
+    position:fixed; left:50%; bottom:60px; transform:translateX(-50%);
+    background:rgba(0,0,0,0.82); color:#fff;
+    padding:10px 12px; border-radius:10px;
+    border:1px solid rgba(255,255,255,0.22);
+    z-index: 2147483646;
+    display:none; max-width:92vw;
+    font-size:13px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+</style>
 </head>
 <body>
+<div id="hongbuDebugToast"></div>
+<div id="hongbuDebugOverlay" aria-live="polite">
+  <div class="dbg-head">
+    <div class="dbg-title"><span class="dot" id="hongbuDbgDot"></span><span>디버그 로그</span><span id="hongbuDbgHint" style="opacity:.75;font-weight:600;"></span></div>
+    <div class="dbg-actions">
+      <button id="hongbuDbgShowBtn" title="표시/숨김">표시</button>
+      <button id="hongbuDbgCopyBtn" title="전체 복사">복사</button>
+      <button id="hongbuDbgClearBtn" title="지우기">지우기</button>
+    </div>
+  </div>
+  <div class="dbg-body" id="hongbuDbgBody"></div>
+</div>
+
+<script id="hongbu-debug-script">
+(function(){
+  const overlay = document.getElementById('hongbuDebugOverlay');
+  const body = document.getElementById('hongbuDbgBody');
+  const toast = document.getElementById('hongbuDebugToast');
+  const dot = document.getElementById('hongbuDbgDot');
+  const hint = document.getElementById('hongbuDbgHint');
+  const btnShow = document.getElementById('hongbuDbgShowBtn');
+  const btnCopy = document.getElementById('hongbuDbgCopyBtn');
+  const btnClear = document.getElementById('hongbuDbgClearBtn');
+
+  const MAX_LINES = 250;
+  const store = [];
+
+  function ts(){
+    const d = new Date();
+    const p = (n)=>String(n).padStart(2,'0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  function safeStr(x){
+    try{
+      if (x instanceof Error) return x.name + ': ' + x.message;
+      if (typeof x === 'string') return x;
+      return JSON.stringify(x);
+    }catch(e){
+      return String(x);
+    }
+  }
+  function setDot(level){
+    if (!dot) return;
+    if (level === 'ERR') dot.style.background = '#ef4444';
+    else if (level === 'WARN') dot.style.background = '#f59e0b';
+    else dot.style.background = '#22c55e';
+  }
+  function ensureVisibleOnError(level){
+    if (level === 'ERR'){
+      overlay.style.display = 'block';
+      btnShow.textContent = '숨김';
+      hint.textContent = '(오류 발생)';
+    }
+  }
+  function render(){
+    if (!body) return;
+    body.innerHTML = store.map(l => {
+      const cls = 'lvl-' + l.level;
+      const extra = l.extra ? `<div style="opacity:.9; margin-top:2px; white-space:pre-wrap;">${escapeHtml(l.extra)}</div>` : '';
+      return `<div class="dbg-line ${cls}"><b>[${l.level}]</b> ${escapeHtml(l.time)} ${escapeHtml(l.msg)}${extra}</div>`;
+    }).join('');
+  }
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'","&#39;");
+  }
+  function log(level, msg, extra){
+    if (level === 'WARN') return;
+    const line = { level, time: ts(), msg: safeStr(msg), extra: extra ? safeStr(extra) : '' };
+    store.push(line);
+    while (store.length > MAX_LINES) store.shift();
+    setDot(level);
+    render();
+    ensureVisibleOnError(level);
+  }
+
+  // expose
+  window.hongbuDebugLog = log;
+
+  function showToast(message, ms=3500){
+    if (!toast) return;
+    toast.textContent = String(message);
+    toast.style.display = 'block';
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(()=>{ toast.style.display='none'; }, ms);
+  }
+  window.hongbuDebugToast = showToast;
+
+  btnShow?.addEventListener('click', ()=>{
+    const on = overlay.style.display !== 'none';
+    overlay.style.display = on ? 'none' : 'block';
+    btnShow.textContent = on ? '표시' : '숨김';
+    if (!on) hint.textContent = '';
+  });
+  btnClear?.addEventListener('click', ()=>{
+    store.length = 0;
+    hint.textContent = '';
+    setDot('INFO');
+    render();
+  });
+  btnCopy?.addEventListener('click', async ()=>{
+    const text = store.map(l => `[${l.level}] ${l.time} ${l.msg}${l.extra ? '\n' + l.extra : ''}`).join('\n');
+    try{
+      await navigator.clipboard.writeText(text);
+      showToast('✅ 로그를 클립보드에 복사했어요.');
+    }catch(e){
+      showToast('⚠️ 복사 실패. (HTTPS/권한 확인)');
+      log('WARN', 'clipboard copy failed', e && (e.stack || e.message || e));
+    }
+  });
+
+  // Global error hooks
+  window.addEventListener('error', (e)=>{
+    const extra = {
+      file: e.filename, line: e.lineno, col: e.colno,
+      stack: e.error && e.error.stack ? e.error.stack : ''
+    };
+    log('ERR', e.message || 'window.onerror', extra);
+    showToast('❌ 오류 발생: ' + (e.message || 'unknown'));
+  });
+
+  window.addEventListener('unhandledrejection', (e)=>{
+    const r = e.reason;
+    const extra = { reason: safeStr(r), stack: r && r.stack ? r.stack : '' };
+    log('ERR', 'Unhandled Promise Rejection', extra);
+    showToast('❌ 처리되지 않은 오류(비동기)');
+  });
+
+  // Patch console.error / warn (keep original behavior)
+  const _ce = console.error.bind(console);
+  console.error = function(...args){
+    try{ log('ERR', 'console.error: ' + args.map(safeStr).join(' ')); }catch(_){}
+    return _ce(...args);
+  };
+  const _cw = console.warn.bind(console);
+  console.warn = function(...args){
+    // warn은 화면에 표시하지 않음 (콘솔에만 남김)
+    return _cw(...args);
+  };
+
+  // Storage quota monitor
+  async function reportStorage(){
+    try{
+      if (navigator.storage && navigator.storage.estimate){
+        const est = await navigator.storage.estimate();
+        const usage = est.usage || 0;
+        const quota = est.quota || 0;
+        if (quota > 0){
+          const pct = (usage / quota) * 100;
+          log('STAT', `Storage: ${(usage/1048576).toFixed(1)}MB / ${(quota/1048576).toFixed(1)}MB (${pct.toFixed(1)}%)`);
+          if (pct >= 92) showToast('⚠️ 저장공간이 거의 꽉 찼어요. (브라우저 저장소)');
+        }
+      }
+    }catch(e){
+      log('WARN', 'storage estimate failed', e && (e.message || e));
+    }
+  }
+  reportStorage();
+  setInterval(reportStorage, 60000);
+
+  // JS heap (desktop chrome only)
+  if (performance && performance.memory){
+    setInterval(()=>{
+      try{
+        const m = performance.memory;
+        log('STAT', `JS Heap: ${(m.usedJSHeapSize/1048576).toFixed(1)}MB / ${(m.jsHeapSizeLimit/1048576).toFixed(1)}MB`);
+      }catch(_){}
+    }, 45000);
+  }
+
+  // IndexedDB open monitor
+  if (window.indexedDB && typeof indexedDB.open === 'function'){
+    const _open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = function(...args){
+      const req = _open(...args);
+      req.addEventListener('error', ()=>{
+        const er = req.error;
+        log('ERR', `IndexedDB open error (${args[0]} v${args[1]||''})`, er ? (er.name + ': ' + er.message) : 'unknown');
+        if (er && er.name === 'QuotaExceededError') showToast('❌ IndexedDB 저장공간 초과(QuotaExceededError)');
+      });
+      return req;
+    };
+  }
+
+  // Helper to wrap requests (optional use by app code)
+  window.wrapIdbRequest = function(req, context){
+    try{
+      if (!req || typeof req.addEventListener !== 'function') return req;
+      req.addEventListener('error', ()=>{
+        const er = req.error;
+        log('ERR', `IDB request error: ${context || ''}`, er ? (er.name + ': ' + er.message) : 'unknown');
+        if (er && er.name === 'QuotaExceededError'){
+          showToast('❌ 저장공간 초과: 더 이상 저장할 수 없어요.');
+        }
+      });
+      req.addEventListener('blocked', ()=> log('WARN', `IDB blocked: ${context||''}`));
+    }catch(_){}
+    return req;
+  };
+
+  // Quick toggle gesture: triple-tap top-left corner (mobile friendly)
+  let tap = {t:0,c:0};
+  document.addEventListener('pointerdown', (e)=>{
+    if (e.clientX < 60 && e.clientY < 60){
+      const now = Date.now();
+      if (now - tap.t < 550) tap.c++; else tap.c = 1;
+      tap.t = now;
+      if (tap.c >= 3){
+        overlay.style.display = (overlay.style.display === 'none' ? 'block' : 'none');
+        btnShow.textContent = (overlay.style.display === 'none' ? '표시' : '숨김');
+        tap.c = 0;
+      }
+    }
+  }, {passive:true});
+
+  // Show overlay by default on desktop if URL has ?debug=1
+  try{
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('debug') === '1'){
+      overlay.style.display = 'block';
+      btnShow.textContent = '숨김';
+      log('INFO', 'Debug overlay enabled via ?debug=1');
+    }
+  }catch(_){}
+})();
+</script>
+
 <h1 style="font-size: 20px; font-weight: bold; text-align: left;">
     [루시퍼홍] 홍부가 기가막혀
 </h1>
@@ -551,7 +828,51 @@ body.map-fullscreen {
 
 <script>
 //이미지 확대 여부
-let imageModalShowYn = false;
+window.imageModalShowYn = false;
+
+// ==============================
+// ✅ Memory leak 방지 유틸 (메모/이미지/캔버스)
+// - 메모 이미지(base64) 캐시를 "현재 선택된 아파트 1개"로 제한
+// - 이미지 모달 캔버스 GPU 버퍼 강제 해제
+// ==============================
+let __currentMemoAptId = null;
+
+// ✅ 메모 이미지 캐시를 현재 아파트 1개로 제한 (IndexedDB가 원본 저장소)
+function __memoKeepOnly(keepId){
+  try{
+    if (!window.aptMemoImageList) return;
+    const keepKey = String(keepId);
+    Object.keys(window.aptMemoImageList).forEach(k => {
+      if (k !== keepKey) {
+        // 큰 base64 참조 끊기
+        window.aptMemoImageList[k] = [];
+        delete window.aptMemoImageList[k];
+      }
+    });
+  }catch(e){ console.warn("memo cache trim failed:", e); }
+}
+
+// ✅ 이미지 모달 캔버스 GPU 메모리 해제
+function __clearModalCanvas(){
+  try{
+    const canvas = document.getElementById("modalCanvas");
+    if(!canvas) return;
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if(ctx) ctx.clearRect(0,0,canvas.width,canvas.height);
+    // 🔥 핵심: width 재설정으로 GPU 버퍼 리셋
+    canvas.width = 1;
+    canvas.height = 1;
+  }catch(e){ console.warn("clear canvas failed:", e); }
+}
+
+function closeImageModal(){
+  const modal = document.getElementById("imageModal");
+  if(modal) modal.style.display = "none";
+  __clearModalCanvas();
+  window.lastOpenedBase64 = null;
+  window.imageModalShowYn = false;
+}
+
 
 
 
@@ -989,24 +1310,59 @@ let imageModalShowYn = false;
 	async function createMap(useBlankMap) {
 		const mapElement = document.getElementById("map");
 
+		// ✅ 기존 map 인스턴스가 있으면 이벤트/리스너 정리 (메모리 누수 방지)
+		try {
+		  if (window.map && window.map instanceof naver.maps.Map) {
+		    naver.maps.Event.clearListeners(window.map, "idle");
+		    naver.maps.Event.clearListeners(window.map, "zoom_changed");
+		    naver.maps.Event.clearListeners(window.map, "rightclick");
+		  }
+		} catch(e) {}
+
 		// ✅ 현재 위치 기억
 		const currentCenter = window.map?.getCenter?.();
 		const currentZoom = window.map?.getZoom?.();
+
+		// ✅ 최초 로드시 "서울시청(기본좌표) → 마지막 위치"로 점프하는 현상 방지
+		// - 가능한 한 "지도 생성 시점"부터 마지막 위치로 시작
+		let __initialPos = null;           // {lat,lng,zoom}
+		let __initialPosApplied = false;   // center/zoom을 mapOptions에 반영했는지
+		try {
+			const raw = localStorage.getItem("hongbu_mapPosition_fallback_v1");
+			if (!currentCenter && raw) {
+				const p = JSON.parse(raw);
+				if (p && typeof p.lat === "number" && typeof p.lng === "number") {
+					__initialPos = p;
+					__initialPosApplied = true; // mapOptions에서 바로 반영 예정
+				}
+			}
+		} catch(e) {}
+
+		// localStorage 폴백이 없으면 IndexedDB에서 먼저 읽어서 "점프" 자체를 없앰(조금 느려질 수 있음)
+		if (!currentCenter && !__initialPos) {
+			try {
+				const p = await getHongbuSetting("mapPosition");
+				if (p && typeof p.lat === "number" && typeof p.lng === "number") {
+					__initialPos = p;
+					__initialPosApplied = true;
+				}
+			} catch(e) {}
+		}
 
 		mapElement.innerHTML = "";
 
 		const mapOptions = useBlankMap
 			? {
-				center: currentCenter || new naver.maps.LatLng(37.5665, 126.9780),
-				zoom: currentZoom || 15,
+				center: currentCenter || (__initialPos ? new naver.maps.LatLng(__initialPos.lat, __initialPos.lng) : new naver.maps.LatLng(37.5665, 126.9780)),
+				zoom: (typeof currentZoom === "number" ? currentZoom : (__initialPos && typeof __initialPos.zoom === "number" ? __initialPos.zoom : 15)),
 				mapTypes: new naver.maps.MapTypeRegistry({
 					'normal': naver.maps.NaverStyleMapTypeOptions.getVectorMap()
 				}),
 				mapTypeId: 'normal'
 			}
 			: {
-				center: currentCenter || new naver.maps.LatLng(37.5665, 126.9780),
-				zoom: currentZoom || 15
+				center: currentCenter || (__initialPos ? new naver.maps.LatLng(__initialPos.lat, __initialPos.lng) : new naver.maps.LatLng(37.5665, 126.9780)),
+				zoom: (typeof currentZoom === "number" ? currentZoom : (__initialPos && typeof __initialPos.zoom === "number" ? __initialPos.zoom : 15))
 			};
 
 		window.map = new naver.maps.Map("map", mapOptions);
@@ -1016,29 +1372,50 @@ let imageModalShowYn = false;
 		// ✅ 행정동(ADM) 경계: 현재 화면(bounds) 내만 렌더링
 		ensureAdmLayerBoundToMap().catch(console.warn);
 
-		// 🔽 저장된 지도 위치 복원
+		// 🔽 저장된 지도 위치 복원 (IndexedDB 우선, 실패/미존재 시 localStorage 폴백)
 		try {
-		  const pos = await getHongbuSetting("mapPosition");
+		  let pos = await getHongbuSetting("mapPosition");
+
+		  // ✅ Android 탭 discard/프로세스 kill 대비: IndexedDB가 늦거나 실패할 때 폴백 사용
+		  if (!pos || !pos.lat || !pos.lng) {
+			try {
+			  const raw = localStorage.getItem("hongbu_mapPosition_fallback_v1");
+			  if (raw) {
+				const fb = JSON.parse(raw);
+				if (fb && fb.lat && fb.lng) pos = fb;
+			  }
+			} catch(e) {}
+		  }
+
 		  if (pos && pos.lat && pos.lng) {
-			window.map.setCenter(new naver.maps.LatLng(pos.lat, pos.lng));
-			if (typeof pos.zoom === "number") {
-			  window.map.setZoom(pos.zoom);
+			// ✅ 이미 mapOptions 단계에서 마지막 위치를 적용했다면(점프 방지), 여기서 다시 센터를 덮어쓰지 않음
+			if (!currentCenter && !__initialPosApplied) {
+				window.map.setCenter(new naver.maps.LatLng(pos.lat, pos.lng));
+				if (typeof pos.zoom === "number") {
+				  window.map.setZoom(pos.zoom);
+				}
 			}
+			// ✅ 복원 적용됨 표시
+			try { __markMapPosRestored(); } catch(e) {}
 		  }
 		} catch (err) {
 		  console.warn("지도 위치 복원 실패:", err);
 		}
 
+		// ✅ mapPosition 저장 리스너를 "현재 map 인스턴스"에 재바인딩
+		try { setupMapPositionAutoSave(window.map); } catch(e) {}
 
 		apartmentMarkers = [];
 			// 지도 이벤트 등록
 			naver.maps.Event.addListener(window.map, "idle", () => {
-				updateMarkers(window.map.getBounds());
-				updateSchoolMarkers();
-				updateMiddleSchoolMarkers();
-				updateStarbucksMarkers();
-				updateFacilityMarkers();
-			});
+					// ✅ 아파트 마커는 항상
+					updateMarkers(window.map.getBounds());
+					// ✅ 나머지는 로드 완료 + 토글 ON일 때만
+					if (window.__schoolsReady) updateSchoolMarkers();
+					if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
+					if (window.__starbucksReady) updateStarbucksMarkers();
+					if (window.__facilitiesReady) updateFacilityMarkers();
+				});
 
 			// 경로 그리기 핸들러 재등록
 			//new MapHandler(window.map);
@@ -1069,19 +1446,55 @@ let imageModalShowYn = false;
 		}
 		*/
 
-		// 데이터 재로드
-		await loadApartments();
-		await loadSchools();
-		await loadMiddleSchools();
-		await loadApartmentsDetail();
-		await loadFacilities();
-		await loadStarbucks();
-		await findWay();
+		
+// 데이터 로드 (우선순위: 아파트 마커 + 메모 → 2개 완료 후 나머지 병렬)
+// 1) 아파트(마커) 먼저
+await loadApartments();
 
-    // ✅ UI 옵션 상태에 맞게 화면 즉시 반영
-    refreshByUIState();
+// 2) 메모는 '내용'을 미리 로드하지 않음. (메모 아이콘 표기는 마커 생성 시 IDB에서 키 존재 여부를 지연 조회)
 
-		setupRightClickEvent(); // 길찾기용 우클릭 이벤트
+// ✅ 아파트+메모 준비가 끝난 시점에서 즉시 1차 렌더 (마커/메모아이콘 우선)
+try { refreshByUIState(); } catch(e) {}
+try { if (window.map && window.map.getBounds) updateMarkers(window.map.getBounds()); } catch(e) {}
+
+// 3) 그 다음 나머지는 병렬 로드 (상세/초/중/환경/스벅/길찾기)
+window.__aptDetailReady = false;
+window.__schoolsReady = false;
+window.__middleSchoolsReady = false;
+window.__facilitiesReady = false;
+window.__starbucksReady = false;
+window.__findWayReady = false;
+
+window.__aptDetailLoading = true;
+        const pAptDetail = loadApartmentsDetail()
+    .then(() => { window.__aptDetailReady = true; })
+            .finally(() => { window.__aptDetailLoading = false; })
+    .catch((e) => { console.warn("아파트 상세 로드 실패:", e); window.__aptDetailReady = false; });
+
+window.__aptDetailPromise = pAptDetail;
+
+        const pOthers = Promise.allSettled([
+    loadSchools().then(() => { window.__schoolsReady = true; }).catch(()=>{}),
+    loadMiddleSchools().then(() => { window.__middleSchoolsReady = true; }).catch(()=>{}),
+    loadFacilities().then(() => { window.__facilitiesReady = true; }).catch(()=>{}),
+    loadStarbucks().then(() => { window.__starbucksReady = true; }).catch(()=>{}),
+    findWay().then(() => { window.__findWayReady = true; }).catch(()=>{}),
+    pAptDetail
+]);
+
+pOthers.then(() => {
+    // 병렬 로드가 끝난 뒤 토글 상태에 맞춰 갱신
+    try { refreshByUIState(); } catch(e) {}
+    if (window.map && window.map.getBounds) {
+        try { updateMarkers(window.map.getBounds()); } catch(e) {}
+        try { if (window.__schoolsReady) updateSchoolMarkers(); } catch(e) {}
+        try { if (window.__middleSchoolsReady) updateMiddleSchoolMarkers(); } catch(e) {}
+        try { if (window.__starbucksReady) updateStarbucksMarkers(); } catch(e) {}
+        try { if (window.__facilitiesReady) updateFacilityMarkers(); } catch(e) {}
+    }
+});
+
+setupRightClickEvent(); // 길찾기용 우클릭 이벤트
 		
 
 		//모바일이면 현재 위치로 이동
@@ -2349,6 +2762,107 @@ function updateMarkerStyleAndSave(id, selectedColor, textColor, fontSize) {
 }
 
 
+// ================================
+// ✅ 메모 아이콘 '표기'만 지연 조회(내용은 클릭 시에만 로드)
+// - 초기 로딩에서 메모를 미리 읽지 않음
+// - 마커가 생성/갱신될 때 해당 id의 메모 존재 여부만 IndexedDB에서 확인(getKey/get)
+// - 결과는 캐시(Map)하여 반복 조회 방지
+// ================================
+window.__memoPresenceCache = window.__memoPresenceCache || new Map();
+window.__memoPresencePending = window.__memoPresencePending || new Map();
+window.__memoDbPromise = window.__memoDbPromise || null;
+
+function openHongbuMemoDBOnce() {
+  if (window.__memoDbPromise) return window.__memoDbPromise;
+  window.__memoDbPromise = new Promise((resolve, reject) => {
+    try {
+      const req = indexedDB.open("hongbuMemo", 4);
+      req.onsuccess = (e) => resolve(e.target.result);
+      req.onerror = (e) => reject(e.target.error);
+      // 업그레이드는 기존 initMemoIndexedDB가 담당. 여기서는 읽기 전용 용도.
+      req.onupgradeneeded = (e) => resolve(e.target.result);
+    } catch (err) {
+      reject(err);
+    }
+  });
+  return window.__memoDbPromise;
+}
+
+async function memoExistsLazy(id) {
+  id = String(id);
+  if (window.__memoPresenceCache.has(id)) return window.__memoPresenceCache.get(id);
+
+  if (window.__memoPresencePending.has(id)) return window.__memoPresencePending.get(id);
+
+  const p = (async () => {
+    try {
+      const db = await openHongbuMemoDBOnce();
+      return await new Promise((resolve) => {
+        try {
+          const tx = db.transaction(["apartmentNotes"], "readonly");
+          const store = tx.objectStore("apartmentNotes");
+
+          const req = (store.getKey ? store.getKey(id) : store.get(id));
+          req.onsuccess = () => {
+            const exists = store.getKey ? (req.result !== undefined && req.result !== null) : !!req.result;
+            window.__memoPresenceCache.set(id, exists);
+            resolve(exists);
+          };
+          req.onerror = () => {
+            // 에러면 없는 것으로 처리(표기만) - 클릭 시 loadNote에서 다시 시도
+            window.__memoPresenceCache.set(id, false);
+            resolve(false);
+          };
+        } catch (e) {
+          window.__memoPresenceCache.set(id, false);
+          resolve(false);
+        }
+      });
+    } catch (e) {
+      window.__memoPresenceCache.set(id, false);
+      return false;
+    } finally {
+      window.__memoPresencePending.delete(id);
+    }
+  })();
+
+  window.__memoPresencePending.set(id, p);
+  return p;
+}
+
+function applyMemoIconLazy(id, markerElement) {
+  try {
+    id = String(id);
+    if (!markerElement) return;
+
+    // 중복 방지
+    if (markerElement.__memoIconChecked) return;
+    markerElement.__memoIconChecked = true;
+
+    memoExistsLazy(id).then((exists) => {
+      if (!exists) return;
+
+      // 이미 붙어 있으면 패스
+      if (markerElement.querySelector && markerElement.querySelector("img.__hongbu_memo_icon")) return;
+
+      const memoIcon = document.createElement("img");
+      memoIcon.className = "__hongbu_memo_icon";
+      memoIcon.src = "memo.png";
+      memoIcon.style = `
+        position: absolute;
+        top: -16px;
+        left: -20px;
+        width: 28px;
+        height: 28px;
+        z-index: 10;
+        pointer-events: none;
+      `;
+      markerElement.style.position = "relative";
+      markerElement.appendChild(memoIcon);
+    });
+  } catch (e) {}
+}
+
 
 function createDefaultMapMarker(apartment) {
 		let yearValue = parseInt(apartment.year.slice(2), 10);
@@ -2413,140 +2927,12 @@ function createDefaultMapMarker(apartment) {
 
 
 
-	getMemoFromIndexedDB(apartment.id).then(memo => {
-		const hasMemo = memo?.memo?.trim()?.length > 0;
-		const hasImages = Array.isArray(memo?.images) && memo.images.length > 0;
+	// ✅ 메모 아이콘 (키셋 기반 빠른 체크: 마커마다 DB 조회하지 않음)
+	(function(){
 		const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
-
-		if (showMemoIcon && (hasMemo || hasImages)) {
-			const memoIcon = document.createElement("img");
-			memoIcon.src = "memo.png"; // 🔺 이미지 파일명
-			memoIcon.style = `
-				position: absolute;
-				top: -16px;
-				left: -20px;
-				width: 28px;
-				height: 28px;
-				z-index: 10;
-				pointer-events: none;
-			`;
-			markerElement.style.position = "relative";
-			markerElement.appendChild(memoIcon);
-		}
-	});
-
-
-
-
-		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
-    
-
-    const marker = new naver.maps.Marker({
-        position: new naver.maps.LatLng(apartment.lat, apartment.lng),
-        map: window.map,
-        icon: {
-            content: markerElement,
-            anchor: new naver.maps.Point(10, 30)
-        }
-    });
-	marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
-
-	naver.maps.Event.addListener(marker, "click",  function(e) {
-		showApartmentInfo(apartment.id, {
-			x: e.offset.x,
-			y: e.offset.y
-		});
-	});
-
-	addMarkerRightClickEvent(marker, markerElement); // ✅ 마커 선택 이벤트 등록
-
-	return marker;
-}
-
-
-function createWhiteMapMarker(apartment) {
-	let yearValue = parseInt(apartment.year.slice(2), 10);
-		let bgColor = "black"; // yellow
-		let fongColor = "white";
-
-		
-
-
-    const markerElement = document.createElement("div");
-    markerElement.className = "siseMapMarker";
-    markerElement.style = `
-    background: #fff;
-    border: 2px solid black;
-    padding: 0px;
-    font-size: 12px;
-    text-align: center;
-    border-radius: 6px;
-    display: inline-block;  /* ✅ 자동 너비 설정 */
-    max-width: 200px;        /* ✅ 필요하면 최대 너비 제한 */
-min-width: 40px;
-    word-break: keep-all;   /* ✅ 줄바꿈 방지 */
-`;
-
-
-    markerElement.setAttribute("data-apartment-id", apartment.id);
-
-    const nameElement = document.createElement("div");
-    nameElement.innerHTML = `${apartment.name}<br>${apartment.year.slice(-5)} ${apartment.units}세대`;
-    nameElement.style = `
-        font-weight: bold;
-        font-size: 12px;
-        margin: 5px;
-min-height: 7px;
-overflow: hidden; /* ✅ 넘치는 내용 숨김 */
-    white-space: nowrap; /* ✅ 한 줄 유지 */
-    text-overflow: ellipsis; /* ✅ 말줄임 (...) 처리 */
-    `;
-		const detailsElement = document.createElement("div");
-		detailsElement.style = `
-			font-size: 12px;
-			padding: 2px 5px;
-			min-width: 85px; /* ✅ 세부 정보도 최소 크기 동일 */
-			max-width: 85px;
-			display: flex;
-			justify-content: center;
-		`;
-
-
-		nameElement.textContent = " "
-		detailsElement.textContent = " "
-    markerElement.appendChild(nameElement);
-    markerElement.appendChild(detailsElement);
-	
-
-
-
-
-	getMemoFromIndexedDB(apartment.id).then(memo => {
-		const hasMemo = memo?.memo?.trim()?.length > 0;
-		const hasImages = Array.isArray(memo?.images) && memo.images.length > 0;
-		const showMemoIcon = document.getElementById("toggleMemoIcon")?.checked;
-
-		if (showMemoIcon && (hasMemo || hasImages)) {
-			const memoIcon = document.createElement("img");
-			memoIcon.src = "memo.png"; // 🔺 이미지 파일명
-			memoIcon.style = `
-				position: absolute;
-				top: -16px;
-				left: -20px;
-				width: 28px;
-				height: 28px;
-				z-index: 10;
-				pointer-events: none;
-			`;
-			markerElement.style.position = "relative";
-			markerElement.appendChild(memoIcon);
-		}
-	});
-
-
-
-
-		// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
+		if (!showMemoIcon) return;
+		applyMemoIconLazy(String(apartment.id), markerElement);
+	})();// ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
     
 
     const marker = new naver.maps.Marker({
@@ -3006,6 +3392,90 @@ infoBox.textContent =
 
 
 
+
+// ================================
+// ✅ 지도 마지막 위치 저장/복원 안정화
+// - createMap()으로 지도가 재생성되어도 항상 저장 리스너를 새 map에 재바인딩
+// - 초기 복원 직후 지역필터가 setCenter로 덮어쓰는 현상 방지(suppressAutoFocusRegion)
+// ================================
+window.__mapPosRestoredAt = 0;
+window.__suppressAutoFocusRegion = true;
+window.__hongbuPageSaveHooksBound = false;
+
+function __markMapPosRestored() {
+  window.__mapPosRestoredAt = Date.now();
+  window.__suppressAutoFocusRegion = true;
+  // 초기 로딩 중(대략 5초) 자동 region focus로 센터를 덮지 않게 보호
+  setTimeout(() => {
+    if (Date.now() - window.__mapPosRestoredAt >= 4500) {
+      window.__suppressAutoFocusRegion = true;
+    }
+  }, 5000);
+}
+
+function setupMapPositionAutoSave(map) {
+  if (!map || !window.naver || !naver.maps || !naver.maps.Event) return;
+
+  // ✅ 기존에 이 함수가 붙인 리스너만 제거 (다른 idle 리스너는 건드리지 않음)
+  try {
+    if (map.__hongbuMapPosListeners && Array.isArray(map.__hongbuMapPosListeners)) {
+      map.__hongbuMapPosListeners.forEach(l => { try { naver.maps.Event.removeListener(l); } catch(e) {} });
+    }
+  } catch(e) {}
+  map.__hongbuMapPosListeners = [];
+
+  let __saveMapPosTimer = null;
+
+  const __saveToLocalStorage = () => {
+    try {
+      const c = map.getCenter();
+      const z = map.getZoom();
+      localStorage.setItem("hongbu_mapPosition_fallback_v1", JSON.stringify({
+        lat: c.lat(), lng: c.lng(), zoom: z, t: Date.now()
+      }));
+    } catch(e) {}
+  };
+
+  const __save = (delayMs = 150) => {
+    if (__saveMapPosTimer) clearTimeout(__saveMapPosTimer);
+    __saveMapPosTimer = setTimeout(() => {
+      try {
+        const c = map.getCenter();
+        const z = map.getZoom();
+        setHongbuSetting("mapPosition", { lat: c.lat(), lng: c.lng(), zoom: z }).catch(console.warn);
+        __saveToLocalStorage();
+      } catch(e) {}
+    }, delayMs);
+  };
+
+  // ✅ map 이벤트(새 map 인스턴스마다 재바인딩)
+  map.__hongbuMapPosListeners.push(naver.maps.Event.addListener(map, "idle", () => __save(150)));
+  map.__hongbuMapPosListeners.push(naver.maps.Event.addListener(map, "zoom_changed", () => __save(0)));
+  map.__hongbuMapPosListeners.push(naver.maps.Event.addListener(map, "dragend", () => __save(0)));
+
+  // ✅ 탭이 죽기 직전/백그라운드 전환 직전 한 번 더 저장(전역 1회만 바인딩)
+  if (!window.__hongbuPageSaveHooksBound) {
+    window.__hongbuPageSaveHooksBound = true;
+    const saveCurrentNow = () => {
+      try {
+        const m = window.map;
+        if (!m) return;
+        const c = m.getCenter();
+        const z = m.getZoom();
+        setHongbuSetting("mapPosition", { lat: c.lat(), lng: c.lng(), zoom: z }).catch(console.warn);
+        localStorage.setItem("hongbu_mapPosition_fallback_v1", JSON.stringify({
+          lat: c.lat(), lng: c.lng(), zoom: z, t: Date.now()
+        }));
+      } catch(e) {}
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") saveCurrentNow();
+    });
+    window.addEventListener("pagehide", saveCurrentNow);
+    window.addEventListener("beforeunload", saveCurrentNow);
+  }
+}
+
 function isKakaoInAppBrowser() {
     return /KAKAOTALK/i.test(navigator.userAgent);
 }
@@ -3039,45 +3509,33 @@ await initIndexedDB();
 		
 
 		// ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-		// ✅ 지도 위치(센터/줌) 저장: idle + zoom/drag 이벤트 (모바일 즉시 새로고침 대비)
-			let __saveMapPosTimer = null;
-			const saveMapPositionDebounced = (delayMs = 150) => {
-				if (__saveMapPosTimer) clearTimeout(__saveMapPosTimer);
-				__saveMapPosTimer = setTimeout(() => {
-					try {
-						const center = window.map.getCenter();
-						const zoom   = window.map.getZoom();
-						setHongbuSetting("mapPosition", { lat: center.lat(), lng: center.lng(), zoom })
-						  .catch(console.warn);
-					} catch (e) {}
-				}, delayMs);
-			};
-
-			naver.maps.Event.addListener(window.map, "idle", () => {
-				const bounds = window.map.getBounds();
-				updateMarkers(bounds);
-				saveMapPositionDebounced();
-			});
-
-			naver.maps.Event.addListener(window.map, "zoom_changed", () => saveMapPositionDebounced(0));
-			naver.maps.Event.addListener(window.map, "dragend", () => saveMapPositionDebounced(0));
+		// ✅ 지도 위치(센터/줌) 저장은 createMap() 내부에서 현재 map 인스턴스에 바인딩됨 (setupMapPositionAutoSave)
 
 		console.log("✅ 네이버 지도 초기화 완료.");
 
 
 
-await loadApartments();
-    await loadSchools();
-    await loadMiddleSchools();
-	await loadApartmentsDetail();
-    await loadFacilities();
-    await loadStarbucks();
-	
+// ✅ 0) 메모 DB + 메모 존재 키셋을 가장 먼저 준비 (아파트 마커/메모 아이콘이 최우선)
 	await initMemoIndexedDB();
-	await loadApartments();
-	await findWay();
+	await loadMemoKeySetOnce();
 
-	if (window.map) {
+	// ✅ 1) 아파트(마커) 먼저 로드
+	await loadApartments();
+
+	// ✅ 2) 나머지는 병렬 로드 (초/중/환경/스벅/상세/길찾기 등)
+	Promise.allSettled([
+		loadApartmentsDetail(),
+		loadSchools(),
+		loadMiddleSchools(),
+		loadFacilities(),
+		loadStarbucks(),
+		findWay(),
+	]).then((results) => {
+		const ok = results.filter(r => r.status === "fulfilled").length;
+		const fail = results.filter(r => r.status === "rejected").length;
+		console.log(`✅ 백그라운드 로딩 완료: ok=${ok}, fail=${fail}`);
+	}).catch(console.warn);
+if (window.map) {
         setupRightClickEvent();
     } else {
         // ✅ 지도 로드 후 이벤트를 추가하는 방식
@@ -3367,14 +3825,36 @@ async function compressImage(base64, maxSize = 600, quality = 0.8) {
   if (document.getElementById("toggleSiseMap").checked) return;
 
   apartmentId = String(apartmentId);
-  if (!apartmentDetailData[apartmentId]) {
-    alert("데이터를 찾을 수 없습니다.");
-    return;
+  
+  // ✅ 메모/이미지 메모리 폭증 방지: 현재 선택된 아파트 1개만 캐시 유지
+  __currentMemoAptId = apartmentId;
+  __memoKeepOnly(apartmentId);
+// ✅ 아파트 상세(apartments1/2.json)는 느릴 수 있음: 없으면 메모 UI만 먼저 열고, 상세는 로딩 후 갱신
+  const hasDetail = !!apartmentDetailData[apartmentId];
+  // 상세 로딩이 끝나면, 현재 열려있는 팝업이면 자동 갱신
+  if (!hasDetail && window.__aptDetailPromise) {
+    window.__aptDetailPromise.then(() => {
+      try {
+        const curId = document.getElementById('apartmentInfo')?.getAttribute('data-id');
+        if (String(curId) === String(apartmentId) && apartmentDetailData[apartmentId]) {
+          showApartmentInfo(apartmentId, markerPosition);
+        }
+      } catch(e) {}
+    });
   }
 
-  let apt = apartmentDetailData[apartmentId];
   let aptInfo = apartmentData.find(apartment => String(apartment.id) === apartmentId);
-  let leaseInfo = aptInfo ? aptInfo.lease : "정보 없음";
+
+  let apt = hasDetail ? apartmentDetailData[apartmentId] : {
+    아파트명: aptInfo?.name || `아파트 ${apartmentId}`,
+    입주시기: aptInfo?.year ? String(aptInfo.year) : "로딩중…",
+    총세대수: aptInfo?.units ?? "로딩중…",
+    타입정보: []
+  };
+
+  // 상세가 아직 없으면, 로딩중 안내(메모는 바로 보여줌)
+
+    let leaseInfo = aptInfo ? aptInfo.lease : "정보 없음";
   let typeInfo = apt.타입정보 || [];
 
 apartmentInfo.setAttribute("data-id", apartmentId);
@@ -3388,6 +3868,9 @@ apartmentInfo.setAttribute("data-id", apartmentId);
         네부 바로가기
       </button>
     </div>
+			${hasDetail ? "" : `<div style="margin-top:8px; padding:6px 8px; background:#fff3cd; color:#664d03; border:1px solid #ffecb5; border-radius:6px; font-size:13px;">
+				상세 데이터 불러오는 중… (메모는 먼저 표시됩니다)
+			</div>`}
     <p>입주시기: ${apt.입주시기}</p>
     <p>총세대수: ${apt.총세대수} (임대 : ${leaseInfo})</p>
     <table style="width: 100%; border-collapse: collapse;">
@@ -3519,7 +4002,9 @@ const originalBase64 = event.target.result;
             const modal = document.getElementById("imageModal");
             const modalCanvas = document.getElementById("modalCanvas");
             const modalCtx = modalCanvas.getContext("2d");
-            const previewImg = new Image();
+            
+  __clearModalCanvas();
+const previewImg = new Image();
             previewImg.onload = () => {
               modalCanvas.width = previewImg.width;
               modalCanvas.height = previewImg.height;
@@ -3607,7 +4092,7 @@ document.addEventListener("click", (event) => {
     setTimeout(() => {
         // 🔒 모달이 열려있으면 닫지 않음
 
-        if (imageModalShowYn === true) {imageModalShowYn = false; return;}
+        if (window.imageModalShowYn === true) { return; }
 
         // apartmentInfo 내부 클릭이면 닫지 않음
         if (apartmentInfo.contains(event.target)) return;
@@ -3631,6 +4116,12 @@ console.log(images);
 
 
             apartmentInfo.style.display = "none";
+            // ✅ 메모 팝업 닫힐 때 큰 데이터 참조 해제
+            try { closeImageModal(); } catch(e){}
+            try { if (__currentMemoAptId) { __memoKeepOnly(__currentMemoAptId); } } catch(e){}
+            try { if (window.aptMemoImageList) { window.aptMemoImageList = {}; } } catch(e){}
+            try { __currentMemoAptId = null; } catch(e){}
+
         }
     }, 0);
 });
@@ -4164,6 +4655,76 @@ function initMemoIndexedDB() {
     };
   });
 }
+// ✅ 메모 존재 여부(아이콘 표시용) 키셋을 한번만 로드해서 마커 생성 시 DB를 매번 열지 않도록 최적화
+window.__hongbuMemoKeySet = window.__hongbuMemoKeySet || new Set();
+window.__hongbuMemoKeySetReady = window.__hongbuMemoKeySetReady || false;
+
+async function loadMemoKeySetOnce() {
+  if (window.__hongbuMemoKeySetReady) return window.__hongbuMemoKeySet;
+  await initMemoIndexedDB();
+
+  return new Promise((resolve) => {
+    const req = indexedDB.open("hongbuMemo", 4);
+    req.onerror = () => {
+      window.__hongbuMemoKeySet = new Set();
+      window.__hongbuMemoKeySetReady = true;
+      resolve(window.__hongbuMemoKeySet);
+    };
+    req.onsuccess = (event) => {
+      const db = event.target.result;
+      try {
+        const tx = db.transaction(["apartmentNotes"], "readonly");
+        const store = tx.objectStore("apartmentNotes");
+
+        // getAllKeys 지원 시 가장 빠름
+        if (store.getAllKeys) {
+          const kreq = store.getAllKeys();
+          kreq.onsuccess = () => {
+            const keys = (kreq.result || []).map(k => String(k));
+            window.__hongbuMemoKeySet = new Set(keys);
+            window.__hongbuMemoKeySetReady = true;
+            try { db.close(); } catch(e) {}
+            resolve(window.__hongbuMemoKeySet);
+          };
+          kreq.onerror = () => {
+            window.__hongbuMemoKeySet = new Set();
+            window.__hongbuMemoKeySetReady = true;
+            try { db.close(); } catch(e) {}
+            resolve(window.__hongbuMemoKeySet);
+          };
+        } else {
+          // fallback: cursor
+          const s = new Set();
+          const cur = store.openCursor();
+          cur.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              s.add(String(cursor.key));
+              cursor.continue();
+            } else {
+              window.__hongbuMemoKeySet = s;
+              window.__hongbuMemoKeySetReady = true;
+              try { db.close(); } catch(e) {}
+              resolve(window.__hongbuMemoKeySet);
+            }
+          };
+          cur.onerror = () => {
+            window.__hongbuMemoKeySet = new Set();
+            window.__hongbuMemoKeySetReady = true;
+            try { db.close(); } catch(e) {}
+            resolve(window.__hongbuMemoKeySet);
+          };
+        }
+      } catch (e) {
+        window.__hongbuMemoKeySet = new Set();
+        window.__hongbuMemoKeySetReady = true;
+        try { db.close(); } catch(e) {}
+        resolve(window.__hongbuMemoKeySet);
+      }
+    };
+  });
+}
+
 
 
 // ✅ hongbu.settings 저장
@@ -5847,6 +6408,7 @@ let deletedImages = []; // 삭제된 이미지 목록
               if (existing) {
                 const delReq = store.delete(id);
                 delReq.onsuccess = function () {
+                   try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false); } catch(e) {}
                   // UI 초기화
                   aptMemoImageList[id] = [];
                   loadNote(id);
@@ -5880,6 +6442,7 @@ let deletedImages = []; // 삭제된 이미지 목록
 
             const putRequest = store.put(toSave);
             putRequest.onsuccess = function () {
+               try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), true); } catch(e) {}
               loadNote(id);
 
               // 마커 재생성(메모 아이콘 반영)
@@ -5957,7 +6520,9 @@ function createCanvasThumbnail(blobUrl, base64, idx, onDelete) {
 	  const modalCanvas = document.getElementById("modalCanvas");
 	  const ctx = modalCanvas.getContext("2d");
 
-	  const img = new Image();
+	  
+  __clearModalCanvas();
+const img = new Image();
 	  img.onload = () => {
 		// 이미지 크기에 맞게 캔버스 조절
 		modalCanvas.width = img.width;
@@ -6119,17 +6684,40 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 
 // ✅ 모달 닫기 이벤트도 등록
-document.getElementById("imageModal").addEventListener("click", () => {
-    document.getElementById("imageModal").style.display = "none";
-	imageModalShowYn = true;
+document.getElementById("imageModal").addEventListener("click", (e) => {
+    // ✅ 배경(바깥 영역) 클릭일 때만 닫기
+    if (e.target === e.currentTarget) {
+        closeImageModal();
+    }
+    // 🔥 document 클릭으로 전파되어 디테일 창이 닫히는 것 방지
+    e.stopPropagation();
 });
 
-
+// ✅ 모달 내부 요소 클릭도 전파 차단
+(function(){
+  const canvas = document.getElementById("modalCanvas");
+  const copyBtn = document.getElementById("copyImageButton");
+  const downBtn = document.getElementById("downloadImageButton");
+  [canvas, copyBtn, downBtn].forEach(el=>{
+    if(!el) return;
+    el.addEventListener("click", (ev)=> ev.stopPropagation());
+  });
+})();
 function showImageModal(src) {
-    const modal = document.getElementById("imageModal");
-    const modalImg = document.getElementById("modalImage");
-    modalImg.src = src;
+  const modal = document.getElementById("imageModal");
+  const modalCanvas = document.getElementById("modalCanvas");
+  const ctx = modalCanvas && modalCanvas.getContext && modalCanvas.getContext("2d");
+  if (!modal || !modalCanvas || !ctx) return;
+  const img = new Image();
+  img.onload = () => {
+    modalCanvas.width = img.width;
+    modalCanvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
     modal.style.display = "flex";
+    window.imageModalShowYn = true;
+    window.lastOpenedBase64 = src;
+  };
+  img.src = src;
 }
 
 async function backupMemoDB() {
@@ -6442,8 +7030,7 @@ function deleteMemoDB() {
 
     const deleteRequest = indexedDB.deleteDatabase("hongbuMemo");
 
-    deleteRequest.onsuccess = function () {
-      alert("✅ 메모 DB 삭제 완료");
+    deleteRequest.onsuccess = function () {alert("✅ 메모 DB 삭제 완료");
       setTimeout(() => location.reload(), 300); // 너무 빨리 reload 되지 않게 약간 지연
     };
 
@@ -6476,6 +7063,7 @@ function deleteNote(id) {
     const deleteRequest = store.delete(id);
 
     deleteRequest.onsuccess = function () {
+       try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false); } catch(e) {}
       alert("해당 메모가 삭제되었습니다.");
       loadNote(id); // 삭제 후 화면 갱신
     };
@@ -6959,7 +7547,8 @@ function applyRegionFilterUpdate() {
   } catch(e) {}
 
   // 선택된 지역으로 지도 이동(가능하면)
-  try { focusMapToSelectedRegion(15); } catch(e) {}
+  // ✅ mapPosition 복원 직후(초기 로딩)에는 region filter가 센터를 덮어쓰지 않게 보호
+  try { if (!window.__suppressAutoFocusRegion) focusMapToSelectedRegion(15); } catch(e) {}
 
   if (window.map && window.map.getBounds) {
     updateMarkers(window.map.getBounds());
@@ -6972,13 +7561,15 @@ function attachRegionFilterEvents() {
   if (!sidoSel || !sigunguSel) return;
 
   // 시도 변경시: 시군구 목록 재구성 + 즉시 반영
-  sidoSel.addEventListener('change', () => {
+  sidoSel.addEventListener('change', (e) => {
+    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false; // ✅ 사용자 직접 변경시에만 지역 포커싱 허용
     buildRegionFiltersFromApartments();
     applyRegionFilterUpdate();
   });
 
   // 시군구 변경시: '전체' 포함 즉시 반영
-  sigunguSel.addEventListener('change', () => {
+  sigunguSel.addEventListener('change', (e) => {
+    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false; // ✅ 사용자 직접 변경시에만 지역 포커싱 허용
     applyRegionFilterUpdate();
   });
 }
@@ -7252,3 +7843,4 @@ function getLabelLatLngByPolylabel(geometry, bbox){
 
 </body>
 </html>
+
