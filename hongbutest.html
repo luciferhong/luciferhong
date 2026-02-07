@@ -352,8 +352,284 @@ body.map-fullscreen {
     }
   }
     </style>
+<style id="hongbu-debug-style">
+  #hongbuDebugOverlay{
+    position:fixed; left:10px; right:10px; bottom:10px;
+    max-height:40vh; overflow:auto;
+    background:rgba(0,0,0,0.82);
+    color:#fff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size:12px; line-height:1.35;
+    border:1px solid rgba(255,255,255,0.25);
+    border-radius:10px;
+    z-index: 2147483647;
+    display:none;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+  #hongbuDebugOverlay .dbg-head{
+    position:sticky; top:0;
+    display:flex; gap:8px; align-items:center; justify-content:space-between;
+    padding:8px 10px;
+    background:rgba(0,0,0,0.92);
+    border-bottom:1px solid rgba(255,255,255,0.15);
+  }
+  #hongbuDebugOverlay .dbg-title{ font-weight:800; display:flex; gap:8px; align-items:center; }
+  #hongbuDebugOverlay .dbg-title .dot{ width:8px; height:8px; border-radius:50%; background:#22c55e; display:inline-block; }
+  #hongbuDebugOverlay .dbg-actions button{
+    background:rgba(255,255,255,0.12); color:#fff; border:1px solid rgba(255,255,255,0.18);
+    border-radius:8px; padding:6px 8px; cursor:pointer;
+    font-size:12px;
+  }
+  #hongbuDebugOverlay .dbg-actions button:hover{ background:rgba(255,255,255,0.18); }
+  #hongbuDebugOverlay .dbg-body{ padding:8px 10px 10px; }
+  #hongbuDebugOverlay .dbg-line{ padding:4px 0; border-bottom:1px dashed rgba(255,255,255,0.12); }
+  #hongbuDebugOverlay .dbg-line:last-child{ border-bottom:none; }
+  #hongbuDebugOverlay .lvl-ERR{ color:#fecaca; }
+  #hongbuDebugOverlay .lvl-WARN{ color:#fde68a; }
+  #hongbuDebugOverlay .lvl-INFO{ color:#bfdbfe; }
+  #hongbuDebugOverlay .lvl-STAT{ color:#a7f3d0; }
+  #hongbuDebugToast{
+    position:fixed; left:50%; bottom:60px; transform:translateX(-50%);
+    background:rgba(0,0,0,0.82); color:#fff;
+    padding:10px 12px; border-radius:10px;
+    border:1px solid rgba(255,255,255,0.22);
+    z-index: 2147483646;
+    display:none; max-width:92vw;
+    font-size:13px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+</style>
 </head>
 <body>
+<div id="hongbuDebugToast"></div>
+<div id="hongbuDebugOverlay" aria-live="polite">
+  <div class="dbg-head">
+    <div class="dbg-title"><span class="dot" id="hongbuDbgDot"></span><span>디버그 로그</span><span id="hongbuDbgHint" style="opacity:.75;font-weight:600;"></span></div>
+    <div class="dbg-actions">
+      <button id="hongbuDbgShowBtn" title="표시/숨김">표시</button>
+      <button id="hongbuDbgCopyBtn" title="전체 복사">복사</button>
+      <button id="hongbuDbgClearBtn" title="지우기">지우기</button>
+    </div>
+  </div>
+  <div class="dbg-body" id="hongbuDbgBody"></div>
+</div>
+
+<script id="hongbu-debug-script">
+(function(){
+  const overlay = document.getElementById('hongbuDebugOverlay');
+  const body = document.getElementById('hongbuDbgBody');
+  const toast = document.getElementById('hongbuDebugToast');
+  const dot = document.getElementById('hongbuDbgDot');
+  const hint = document.getElementById('hongbuDbgHint');
+  const btnShow = document.getElementById('hongbuDbgShowBtn');
+  const btnCopy = document.getElementById('hongbuDbgCopyBtn');
+  const btnClear = document.getElementById('hongbuDbgClearBtn');
+
+  const MAX_LINES = 250;
+  const store = [];
+
+  function ts(){
+    const d = new Date();
+    const p = (n)=>String(n).padStart(2,'0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+  function safeStr(x){
+    try{
+      if (x instanceof Error) return x.name + ': ' + x.message;
+      if (typeof x === 'string') return x;
+      return JSON.stringify(x);
+    }catch(e){
+      return String(x);
+    }
+  }
+  function setDot(level){
+    if (!dot) return;
+    if (level === 'ERR') dot.style.background = '#ef4444';
+    else if (level === 'WARN') dot.style.background = '#f59e0b';
+    else dot.style.background = '#22c55e';
+  }
+  function ensureVisibleOnError(level){
+    if (level === 'ERR' || level === 'WARN'){
+      overlay.style.display = 'block';
+      btnShow.textContent = '숨김';
+      hint.textContent = '(오류 발생)';
+    }
+  }
+  function render(){
+    if (!body) return;
+    body.innerHTML = store.map(l => {
+      const cls = 'lvl-' + l.level;
+      const extra = l.extra ? `<div style="opacity:.9; margin-top:2px; white-space:pre-wrap;">${escapeHtml(l.extra)}</div>` : '';
+      return `<div class="dbg-line ${cls}"><b>[${l.level}]</b> ${escapeHtml(l.time)} ${escapeHtml(l.msg)}${extra}</div>`;
+    }).join('');
+  }
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'","&#39;");
+  }
+  function log(level, msg, extra){
+    const line = { level, time: ts(), msg: safeStr(msg), extra: extra ? safeStr(extra) : '' };
+    store.push(line);
+    while (store.length > MAX_LINES) store.shift();
+    setDot(level);
+    render();
+    ensureVisibleOnError(level);
+  }
+
+  // expose
+  window.hongbuDebugLog = log;
+
+  function showToast(message, ms=3500){
+    if (!toast) return;
+    toast.textContent = String(message);
+    toast.style.display = 'block';
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(()=>{ toast.style.display='none'; }, ms);
+  }
+  window.hongbuDebugToast = showToast;
+
+  btnShow?.addEventListener('click', ()=>{
+    const on = overlay.style.display !== 'none';
+    overlay.style.display = on ? 'none' : 'block';
+    btnShow.textContent = on ? '표시' : '숨김';
+    if (!on) hint.textContent = '';
+  });
+  btnClear?.addEventListener('click', ()=>{
+    store.length = 0;
+    hint.textContent = '';
+    setDot('INFO');
+    render();
+  });
+  btnCopy?.addEventListener('click', async ()=>{
+    const text = store.map(l => `[${l.level}] ${l.time} ${l.msg}${l.extra ? '\n' + l.extra : ''}`).join('\n');
+    try{
+      await navigator.clipboard.writeText(text);
+      showToast('✅ 로그를 클립보드에 복사했어요.');
+    }catch(e){
+      showToast('⚠️ 복사 실패. (HTTPS/권한 확인)');
+      log('WARN', 'clipboard copy failed', e && (e.stack || e.message || e));
+    }
+  });
+
+  // Global error hooks
+  window.addEventListener('error', (e)=>{
+    const extra = {
+      file: e.filename, line: e.lineno, col: e.colno,
+      stack: e.error && e.error.stack ? e.error.stack : ''
+    };
+    log('ERR', e.message || 'window.onerror', extra);
+    showToast('❌ 오류 발생: ' + (e.message || 'unknown'));
+  });
+
+  window.addEventListener('unhandledrejection', (e)=>{
+    const r = e.reason;
+    const extra = { reason: safeStr(r), stack: r && r.stack ? r.stack : '' };
+    log('ERR', 'Unhandled Promise Rejection', extra);
+    showToast('❌ 처리되지 않은 오류(비동기)');
+  });
+
+  // Patch console.error / warn (keep original behavior)
+  const _ce = console.error.bind(console);
+  console.error = function(...args){
+    try{ log('ERR', 'console.error: ' + args.map(safeStr).join(' ')); }catch(_){}
+    return _ce(...args);
+  };
+  const _cw = console.warn.bind(console);
+  console.warn = function(...args){
+    try{ log('WARN', 'console.warn: ' + args.map(safeStr).join(' ')); }catch(_){}
+    return _cw(...args);
+  };
+
+  // Storage quota monitor
+  async function reportStorage(){
+    try{
+      if (navigator.storage && navigator.storage.estimate){
+        const est = await navigator.storage.estimate();
+        const usage = est.usage || 0;
+        const quota = est.quota || 0;
+        if (quota > 0){
+          const pct = (usage / quota) * 100;
+          log('STAT', `Storage: ${(usage/1048576).toFixed(1)}MB / ${(quota/1048576).toFixed(1)}MB (${pct.toFixed(1)}%)`);
+          if (pct >= 92) showToast('⚠️ 저장공간이 거의 꽉 찼어요. (브라우저 저장소)');
+        }
+      }
+    }catch(e){
+      log('WARN', 'storage estimate failed', e && (e.message || e));
+    }
+  }
+  reportStorage();
+  setInterval(reportStorage, 60000);
+
+  // JS heap (desktop chrome only)
+  if (performance && performance.memory){
+    setInterval(()=>{
+      try{
+        const m = performance.memory;
+        log('STAT', `JS Heap: ${(m.usedJSHeapSize/1048576).toFixed(1)}MB / ${(m.jsHeapSizeLimit/1048576).toFixed(1)}MB`);
+      }catch(_){}
+    }, 45000);
+  }
+
+  // IndexedDB open monitor
+  if (window.indexedDB && typeof indexedDB.open === 'function'){
+    const _open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = function(...args){
+      const req = _open(...args);
+      req.addEventListener('error', ()=>{
+        const er = req.error;
+        log('ERR', `IndexedDB open error (${args[0]} v${args[1]||''})`, er ? (er.name + ': ' + er.message) : 'unknown');
+        if (er && er.name === 'QuotaExceededError') showToast('❌ IndexedDB 저장공간 초과(QuotaExceededError)');
+      });
+      return req;
+    };
+  }
+
+  // Helper to wrap requests (optional use by app code)
+  window.wrapIdbRequest = function(req, context){
+    try{
+      if (!req || typeof req.addEventListener !== 'function') return req;
+      req.addEventListener('error', ()=>{
+        const er = req.error;
+        log('ERR', `IDB request error: ${context || ''}`, er ? (er.name + ': ' + er.message) : 'unknown');
+        if (er && er.name === 'QuotaExceededError'){
+          showToast('❌ 저장공간 초과: 더 이상 저장할 수 없어요.');
+        }
+      });
+      req.addEventListener('blocked', ()=> log('WARN', `IDB blocked: ${context||''}`));
+    }catch(_){}
+    return req;
+  };
+
+  // Quick toggle gesture: triple-tap top-left corner (mobile friendly)
+  let tap = {t:0,c:0};
+  document.addEventListener('pointerdown', (e)=>{
+    if (e.clientX < 60 && e.clientY < 60){
+      const now = Date.now();
+      if (now - tap.t < 550) tap.c++; else tap.c = 1;
+      tap.t = now;
+      if (tap.c >= 3){
+        overlay.style.display = (overlay.style.display === 'none' ? 'block' : 'none');
+        btnShow.textContent = (overlay.style.display === 'none' ? '표시' : '숨김');
+        tap.c = 0;
+      }
+    }
+  }, {passive:true});
+
+  // Show overlay by default on desktop if URL has ?debug=1
+  try{
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('debug') === '1'){
+      overlay.style.display = 'block';
+      btnShow.textContent = '숨김';
+      log('INFO', 'Debug overlay enabled via ?debug=1');
+    }
+  }catch(_){}
+})();
+</script>
+
 <h1 style="font-size: 20px; font-weight: bold; text-align: left;">
     [루시퍼홍] 홍부가 기가막혀
 </h1>
