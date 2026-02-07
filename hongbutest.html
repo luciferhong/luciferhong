@@ -1089,11 +1089,15 @@ function closeImageModal(){
 			if (typeof pos.zoom === "number") {
 			  window.map.setZoom(pos.zoom);
 			}
+			// ✅ 복원 적용됨 표시
+			try { __markMapPosRestored(); } catch(e) {}
 		  }
 		} catch (err) {
 		  console.warn("지도 위치 복원 실패:", err);
 		}
 
+		// ✅ mapPosition 저장 리스너를 "현재 map 인스턴스"에 재바인딩
+		try { setupMapPositionAutoSave(window.map); } catch(e) {}
 
 		apartmentMarkers = [];
 			// 지도 이벤트 등록
@@ -3059,6 +3063,90 @@ infoBox.textContent =
 
 
 
+
+// ================================
+// ✅ 지도 마지막 위치 저장/복원 안정화
+// - createMap()으로 지도가 재생성되어도 항상 저장 리스너를 새 map에 재바인딩
+// - 초기 복원 직후 지역필터가 setCenter로 덮어쓰는 현상 방지(suppressAutoFocusRegion)
+// ================================
+window.__mapPosRestoredAt = 0;
+window.__suppressAutoFocusRegion = true;
+window.__hongbuPageSaveHooksBound = false;
+
+function __markMapPosRestored() {
+  window.__mapPosRestoredAt = Date.now();
+  window.__suppressAutoFocusRegion = true;
+  // 초기 로딩 중(대략 5초) 자동 region focus로 센터를 덮지 않게 보호
+  setTimeout(() => {
+    if (Date.now() - window.__mapPosRestoredAt >= 4500) {
+      window.__suppressAutoFocusRegion = true;
+    }
+  }, 5000);
+}
+
+function setupMapPositionAutoSave(map) {
+  if (!map || !window.naver || !naver.maps || !naver.maps.Event) return;
+
+  // ✅ 기존에 이 함수가 붙인 리스너만 제거 (다른 idle 리스너는 건드리지 않음)
+  try {
+    if (map.__hongbuMapPosListeners && Array.isArray(map.__hongbuMapPosListeners)) {
+      map.__hongbuMapPosListeners.forEach(l => { try { naver.maps.Event.removeListener(l); } catch(e) {} });
+    }
+  } catch(e) {}
+  map.__hongbuMapPosListeners = [];
+
+  let __saveMapPosTimer = null;
+
+  const __saveToLocalStorage = () => {
+    try {
+      const c = map.getCenter();
+      const z = map.getZoom();
+      localStorage.setItem("hongbu_mapPosition_fallback_v1", JSON.stringify({
+        lat: c.lat(), lng: c.lng(), zoom: z, t: Date.now()
+      }));
+    } catch(e) {}
+  };
+
+  const __save = (delayMs = 150) => {
+    if (__saveMapPosTimer) clearTimeout(__saveMapPosTimer);
+    __saveMapPosTimer = setTimeout(() => {
+      try {
+        const c = map.getCenter();
+        const z = map.getZoom();
+        setHongbuSetting("mapPosition", { lat: c.lat(), lng: c.lng(), zoom: z }).catch(console.warn);
+        __saveToLocalStorage();
+      } catch(e) {}
+    }, delayMs);
+  };
+
+  // ✅ map 이벤트(새 map 인스턴스마다 재바인딩)
+  map.__hongbuMapPosListeners.push(naver.maps.Event.addListener(map, "idle", () => __save(150)));
+  map.__hongbuMapPosListeners.push(naver.maps.Event.addListener(map, "zoom_changed", () => __save(0)));
+  map.__hongbuMapPosListeners.push(naver.maps.Event.addListener(map, "dragend", () => __save(0)));
+
+  // ✅ 탭이 죽기 직전/백그라운드 전환 직전 한 번 더 저장(전역 1회만 바인딩)
+  if (!window.__hongbuPageSaveHooksBound) {
+    window.__hongbuPageSaveHooksBound = true;
+    const saveCurrentNow = () => {
+      try {
+        const m = window.map;
+        if (!m) return;
+        const c = m.getCenter();
+        const z = m.getZoom();
+        setHongbuSetting("mapPosition", { lat: c.lat(), lng: c.lng(), zoom: z }).catch(console.warn);
+        localStorage.setItem("hongbu_mapPosition_fallback_v1", JSON.stringify({
+          lat: c.lat(), lng: c.lng(), zoom: z, t: Date.now()
+        }));
+      } catch(e) {}
+    };
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") saveCurrentNow();
+    });
+    window.addEventListener("pagehide", saveCurrentNow);
+    window.addEventListener("beforeunload", saveCurrentNow);
+  }
+}
+
 function isKakaoInAppBrowser() {
     return /KAKAOTALK/i.test(navigator.userAgent);
 }
@@ -3092,52 +3180,7 @@ await initIndexedDB();
 		
 
 		// ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-		// ✅ 지도 위치(센터/줌) 저장: idle + zoom/drag + 백그라운드/종료 훅
-			let __saveMapPosTimer = null;
-
-			// ✅ Android에서 프로세스가 갑자기 죽는 경우 대비: localStorage 동기 백업(IndexedDB 실패 시 복원용)
-			const __saveMapPositionToLocalStorage = () => {
-				try {
-					const center = window.map.getCenter();
-					const zoom   = window.map.getZoom();
-					localStorage.setItem("hongbu_mapPosition_fallback_v1", JSON.stringify({
-						lat: center.lat(), lng: center.lng(), zoom, t: Date.now()
-					}));
-				} catch(e) {}
-			};
-
-			const saveMapPositionDebounced = (delayMs = 150) => {
-				if (__saveMapPosTimer) clearTimeout(__saveMapPosTimer);
-				__saveMapPosTimer = setTimeout(() => {
-					try {
-						const center = window.map.getCenter();
-						const zoom   = window.map.getZoom();
-
-						// 1) IndexedDB(설정) 저장 (비동기)
-						setHongbuSetting("mapPosition", { lat: center.lat(), lng: center.lng(), zoom })
-						  .catch(console.warn);
-
-						// 2) localStorage 백업 (동기)
-						__saveMapPositionToLocalStorage();
-					} catch (e) {}
-				}, delayMs);
-			};
-
-			naver.maps.Event.addListener(window.map, "idle", () => {
-				const bounds = window.map.getBounds();
-				updateMarkers(bounds);
-				saveMapPositionDebounced();
-			});
-
-			naver.maps.Event.addListener(window.map, "zoom_changed", () => saveMapPositionDebounced(0));
-			naver.maps.Event.addListener(window.map, "dragend", () => saveMapPositionDebounced(0));
-
-			// ✅ 백그라운드로 내려가기 직전/탭 종료 직전 저장(모바일 안정성↑)
-			document.addEventListener("visibilitychange", () => {
-				if (document.visibilityState === "hidden") saveMapPositionDebounced(0);
-			});
-			window.addEventListener("pagehide", () => saveMapPositionDebounced(0));
-			window.addEventListener("beforeunload", () => saveMapPositionDebounced(0));
+		// ✅ 지도 위치(센터/줌) 저장은 createMap() 내부에서 현재 map 인스턴스에 바인딩됨 (setupMapPositionAutoSave)
 
 		console.log("✅ 네이버 지도 초기화 완료.");
 
@@ -7138,7 +7181,8 @@ function applyRegionFilterUpdate() {
   } catch(e) {}
 
   // 선택된 지역으로 지도 이동(가능하면)
-  try { focusMapToSelectedRegion(15); } catch(e) {}
+  // ✅ mapPosition 복원 직후(초기 로딩)에는 region filter가 센터를 덮어쓰지 않게 보호
+  try { if (!window.__suppressAutoFocusRegion) focusMapToSelectedRegion(15); } catch(e) {}
 
   if (window.map && window.map.getBounds) {
     updateMarkers(window.map.getBounds());
@@ -7151,13 +7195,15 @@ function attachRegionFilterEvents() {
   if (!sidoSel || !sigunguSel) return;
 
   // 시도 변경시: 시군구 목록 재구성 + 즉시 반영
-  sidoSel.addEventListener('change', () => {
+  sidoSel.addEventListener('change', (e) => {
+    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false; // ✅ 사용자 직접 변경시에만 지역 포커싱 허용
     buildRegionFiltersFromApartments();
     applyRegionFilterUpdate();
   });
 
   // 시군구 변경시: '전체' 포함 즉시 반영
-  sigunguSel.addEventListener('change', () => {
+  sigunguSel.addEventListener('change', (e) => {
+    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false; // ✅ 사용자 직접 변경시에만 지역 포커싱 허용
     applyRegionFilterUpdate();
   });
 }
