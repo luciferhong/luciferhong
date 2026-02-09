@@ -716,10 +716,10 @@ body.map-fullscreen {
         
 <button id="showInguBtn" style="display: block;">인구데이터</button>
 <div style="margin-top: 0px;">
-   <!--  <button type="button" onclick="backupMemoDB()">🗂️ 메모 백업</button> -->
+   <!--  <button onclick="backupMemoDB()">🗂️ 메모 백업</button> -->
 <button onclick="window.open('memoBackup.html', '_blank')">📦 메모 백업</button>
-    <button type="button" onclick="restoreMemoDB()">🗃️ 메모 복원</button>
-	<button type="button" onclick="deleteMemoDB()">🗑️ 메모 일괄 삭제</button>
+    <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
+	<button onclick="deleteMemoDB()">🗑️ 메모 일괄 삭제</button>
 
     <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
 </div>
@@ -2834,8 +2834,6 @@ function updateMarkerStyleAndSave(id, selectedColor, textColor, fontSize) {
 // - 마커가 생성/갱신될 때 해당 id의 메모 존재 여부만 IndexedDB에서 확인(getKey/get)
 // - 결과는 캐시(Map)하여 반복 조회 방지
 // ================================
-window.__HONGBU_MEMO_DB_VERSION = window.__HONGBU_MEMO_DB_VERSION || 4;
-
 window.__memoPresenceCache = window.__memoPresenceCache || new Map();
 window.__memoPresencePending = window.__memoPresencePending || new Map();
 window.__memoDbPromise = window.__memoDbPromise || null;
@@ -2844,24 +2842,11 @@ function openHongbuMemoDBOnce() {
   if (window.__memoDbPromise) return window.__memoDbPromise;
   window.__memoDbPromise = new Promise((resolve, reject) => {
     try {
-      const req = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
-
-      // ✅ iOS/사파리 계열: 최초 생성이 여기서 먼저 일어나면(스토어 없이 DB만 생성)
-      //    이후 같은 버전(4)로는 onupgradeneeded가 다시 뜨지 않아 apartmentNotes가 영구히 누락될 수 있음.
-      //    그래서 여기에서도 스토어 생성 방어 로직을 넣는다.
-      req.onupgradeneeded = (e) => {
-        try {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains("apartmentNotes")) {
-            db.createObjectStore("apartmentNotes", { keyPath: "id" });
-          }
-        } catch (err) {
-          // ignore
-        }
-      };
-
+      const req = indexedDB.open("hongbuMemo", 4);
       req.onsuccess = (e) => resolve(e.target.result);
       req.onerror = (e) => reject(e.target.error);
+      // 업그레이드는 기존 initMemoIndexedDB가 담당. 여기서는 읽기 전용 용도.
+      req.onupgradeneeded = (e) => resolve(e.target.result);
     } catch (err) {
       reject(err);
     }
@@ -4783,70 +4768,29 @@ function initIndexedDB() {
 }
 function initMemoIndexedDB() {
   return new Promise((resolve, reject) => {
-    try {
-      // ✅ 1) 우선 "현재 버전"으로 연다(버전 미지정). iOS에서 캐시/기록 삭제 후 DB만 생성되고 스토어가 누락되는 경우를 방어.
-      const req = indexedDB.open("hongbuMemo");
+    const request = indexedDB.open("hongbuMemo", 4);
 
-      req.onupgradeneeded = (e) => {
-        try {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains("apartmentNotes")) {
-            db.createObjectStore("apartmentNotes", { keyPath: "id" });
-          }
-        } catch (err) {
-          console.error("❌ hongbuMemo onupgradeneeded 오류:", err);
-        }
-      };
+    request.onupgradeneeded = function (event) {
+      const db = event.target.result;
 
-      req.onsuccess = (e) => {
-        const db = e.target.result;
-        try {
-          // ✅ 현재 버전 캐시
-          window.__HONGBU_MEMO_DB_VERSION = db.version || (window.__HONGBU_MEMO_DB_VERSION || 4);
+      if (!db.objectStoreNames.contains("apartmentNotes")) {
+        db.createObjectStore("apartmentNotes", { keyPath: "id" });
+      }
+    };
 
-          // ✅ 스토어가 없으면 '버전+1'로 강제 업그레이드하여 스토어를 생성
-          if (!db.objectStoreNames.contains("apartmentNotes")) {
-            const nextVer = (db.version || 1) + 1;
-            try { db.close(); } catch (_) {}
+    request.onsuccess = function (event) {
+      const db = event.target.result;
+      //console.log("📌 hongbuMemo 연결 성공 (DB: hongbu)");
 
-            const req2 = indexedDB.open("hongbuMemo", nextVer);
-            req2.onupgradeneeded = (ev) => {
-              const db2 = ev.target.result;
-              if (!db2.objectStoreNames.contains("apartmentNotes")) {
-                db2.createObjectStore("apartmentNotes", { keyPath: "id" });
-              }
-            };
-            req2.onsuccess = (ev) => {
-              const db2 = ev.target.result;
-              window.__HONGBU_MEMO_DB_VERSION = db2.version || nextVer;
-              try { db2.close(); } catch (_) {}
-              resolve(true);
-            };
-            req2.onerror = (ev) => {
-              console.error("❌ hongbuMemo 버전업(open) 실패:", ev.target.error);
-              reject(ev.target.error);
-            };
-            return;
-          }
+      // ✅ 바로 닫고 resolve (init 용이므로 이후 함수가 다시 열게 됨)
+      db.close();
+      resolve(true);
+    };
 
-          // ✅ 정상 케이스
-          try { db.close(); } catch (_) {}
-          resolve(true);
-        } catch (err) {
-          try { db.close(); } catch (_) {}
-          console.error("❌ hongbuMemo init 처리 오류:", err);
-          reject(err);
-        }
-      };
-
-      req.onerror = (e) => {
-        console.error("❌ IndexedDB 연결 실패:", e.target.error);
-        reject(e.target.error);
-      };
-    } catch (err) {
-      console.error("❌ hongbuMemo open 예외:", err);
-      reject(err);
-    }
+    request.onerror = function (event) {
+      console.error("❌ IndexedDB 연결 실패:", event.target.error);
+      reject(event.target.error);
+    };
   });
 }
 // ✅ 메모 존재 여부(아이콘 표시용) 키셋을 한번만 로드해서 마커 생성 시 DB를 매번 열지 않도록 최적화
@@ -4858,7 +4802,7 @@ async function loadMemoKeySetOnce() {
   await initMemoIndexedDB();
 
   return new Promise((resolve) => {
-    const req = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+    const req = indexedDB.open("hongbuMemo", 4);
     req.onerror = () => {
       window.__hongbuMemoKeySet = new Set();
       window.__hongbuMemoKeySetReady = true;
@@ -6569,13 +6513,12 @@ let deletedImages = []; // 삭제된 이미지 목록
 
 
   async function saveNote(id) {
-  await initMemoIndexedDB();
     await initMemoIndexedDB();
 
     const memo = (document.getElementById("noteText").value || "").trim();
     const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-    const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+    const request = indexedDB.open("hongbuMemo", 4);
 
     request.onerror = function (event) {
       console.error("❌ DB 열기 실패:", event.target.error);
@@ -6765,7 +6708,7 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 async function loadNote(id) {
 await initMemoIndexedDB()
-  const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+  const request = indexedDB.open("hongbuMemo", 4);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -6920,8 +6863,7 @@ function showImageModal(src) {
 }
 
 async function backupMemoDB() {
-  await initMemoIndexedDB();
-  const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -6987,8 +6929,7 @@ async function backupMemoDB() {
 
 // ✅ 메모 백업
 async function backupMemoDB_OLD() {
-  await initMemoIndexedDB();
-  const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -7056,88 +6997,131 @@ function refreshApartmentMarkers() {
   updateMarkers(window.map.getBounds());
 }
 
-async function ensureMemoStoreHealthy() {
-  // 1) 현재 버전(버전 미지정)으로 열어서 상태 확인
-  const db0 = await new Promise((resolve, reject) => {
-    const r = indexedDB.open("hongbuMemo"); // 버전 미지정
-    r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
-  });
-
-  const has = db0.objectStoreNames.contains("apartmentNotes");
-  const v = db0.version;
-  db0.close();
-
-  if (has) return true;
-
-  // 2) 없으면 버전 +1로 열어 onupgradeneeded 유도하여 생성
-  await new Promise((resolve, reject) => {
-    const r = indexedDB.open("hongbuMemo", v + 1);
-    r.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains("apartmentNotes")) {
-        db.createObjectStore("apartmentNotes", { keyPath: "id" });
-      }
-    };
-    r.onsuccess = () => { r.result.close(); resolve(true); };
-    r.onerror = () => reject(r.error);
-  });
-
-  return true;
-}
 
 
 // ✅ 메모 복원 (정상 동작 버전)
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
-  if (!input) { alert("memoRestoreInput 없음"); return; }
+  input.accept = ".json";
+  input.multiple = true;
 
-  // ✅ 같은 파일 다시 선택 가능
-  input.value = "";
-
-  // ✅ iOS에서 change가 확실히 타도록 핸들러를 click 전에 장착
-  input.onchange = async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-
+  input.onchange = async function (event) {
     const files = Array.from(event.target.files || []);
     if (!files.length) return;
 
-    // (선택) 사용자 피드백
-    try { window.hongbuDebugToast?.("📥 복원 파일 읽는 중..."); } catch(e) {}
+    // 같은 파일 다시 선택 가능하게 초기화
+    input.value = "";
 
     try {
-      // ✅ 여기서부터는 비동기/버전업/스토어복구 마음껏 해도 됨
-      await ensureMemoStoreHealthy();   // 너가 만든 자동버전업/스토어복구 함수
-
+      // 1) 파일들 읽어서 전부 flatten
       let records = [];
       for (const file of files) {
         const text = await file.text();
         const parsed = JSON.parse(text);
-        if (Array.isArray(parsed)) records.push(...parsed);
-        else if (parsed?.apartmentNotes && Array.isArray(parsed.apartmentNotes)) records.push(...parsed.apartmentNotes);
+
+        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
         else records.push(parsed);
       }
 
-      // 여기서 put/복원 로직 실행
-      //await restoreMemoFromRecords(records);  // 네 복원 함수(put chunk 등)
+      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
+      const normalized = records
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          if (r.id === undefined || r.id === null) return null;
+          return {
+            id: String(r.id),
+            memo: r.memo ? String(r.memo) : "",
+            images: Array.isArray(r.images) ? r.images : [],
+          };
+        })
+        .filter(Boolean);
 
-      alert("✅ 메모 복원 완료");
+      if (!normalized.length) {
+        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
+        return;
+      }
+
+      // 3) IndexedDB put
+      const request = indexedDB.open("hongbuMemo", 4);
+
+      request.onsuccess = function (e) {
+        const db = e.target.result;
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
+
+        let ok = 0, fail = 0;
+
+        normalized.forEach((item) => {
+          const putReq = store.put(item);
+          putReq.onsuccess = () => ok++;
+          putReq.onerror = (err) => {
+            fail++;
+            console.error("❌ put 실패:", item.id, err?.target?.error);
+          };
+        });
+
+        tx.oncomplete = () => {
+          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
+          db.close();
+		  refreshApartmentMarkers();
+        };
+
+        tx.onerror = (err) => {
+          console.error("❌ 트랜잭션 오류:", err?.target?.error);
+          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
+          db.close();
+        };
+      };
+
+      request.onerror = function (err) {
+        console.error("❌ DB 열기 실패:", err?.target?.error);
+        alert("❌ DB 열기 실패 (콘솔 확인)");
+      };
     } catch (err) {
-      console.error(err);
-      alert("❌ 메모 복원 오류: " + (err?.message || err));
-    } finally {
-      input.value = ""; // 다음 선택을 위해 초기화
+      console.error("❌ 복원 중 예외:", err);
+      alert("❌ 복원 중 오류 발생: " + err.message);
     }
   };
 
-  // ✅ 🔥 제일 중요: user gesture 안에서 즉시 실행 (await/timeout 절대 금지)
   input.click();
 }
 
 
 
 
+
+function restoreMemoDB_OLD() {
+    document.getElementById("memoRestoreInput").click();
+
+    document.getElementById("memoRestoreInput").onchange = function (e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (event) {
+            try {
+                const jsonData = JSON.parse(event.target.result);
+                if (!Array.isArray(jsonData)) {
+                    alert("유효하지 않은 백업 파일입니다.");
+                    return;
+                }
+
+                const request = indexedDB.open("hongbuMemo", 4);
+                request.onsuccess = function (event) {
+                    const db = event.target.result;
+                    const transaction = db.transaction(["apartmentNotes"], "readwrite");
+                    const store = transaction.objectStore("apartmentNotes");
+
+                    jsonData.forEach(entry => store.put(entry));
+                    alert("메모 복원이 완료되었습니다.");
+                };
+            } catch (err) {
+                alert("파일 읽기 오류: " + err.message);
+            }
+        };
+        reader.readAsText(file);
+    };
+}
 
 document.getElementById("copyImageButton").onclick = async () => {
   const canvas = document.getElementById("modalCanvas");
@@ -7178,11 +7162,10 @@ document.getElementById("downloadImageButton").addEventListener("click", () => {
 
 
 
-async function deleteMemoDB() {
-  await initMemoIndexedDB();
+function deleteMemoDB() {
   if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+  const request = indexedDB.open("hongbuMemo", 4);
   request.onsuccess = function (event) {
     const db = event.target.result;
     db.close(); // 👉 연결 먼저 닫기
@@ -7209,11 +7192,10 @@ async function deleteMemoDB() {
 
 
 
-async function deleteNote(id) {
-  await initMemoIndexedDB();
+function deleteNote(id) {
   if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+  const request = indexedDB.open("hongbuMemo", 4);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -7244,7 +7226,7 @@ async function getMemoFromIndexedDB(id) {
   return new Promise(async (resolve, reject) => {
     await initMemoIndexedDB();
 
-    const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
+    const request = indexedDB.open("hongbuMemo", 4);
     request.onerror = () => reject("DB 열기 실패");
 
     request.onsuccess = (event) => {
@@ -8001,53 +7983,9 @@ function getLabelLatLngByPolylabel(geometry, bbox){
 
 
 
-
-<script>
-// ✅ iOS/Chrome 복원 버튼 무반응 대응
-// restoreMemoFromRecords 미정의 문제 해결
-function restoreMemoFromRecords(){
-  try{
-    // 기존 복원 로직이 있으면 그대로 위임
-    if (typeof restoreMemoDB === "function"){
-      restoreMemoDB();
-      return;
-    }
-    // 폴백: 파일 입력 직접 트리거
-    const input = document.getElementById("memoRestoreInput");
-    if (!input){
-      alert("복원 입력 요소를 찾지 못했습니다.");
-      return;
-    }
-    input.onchange = function(e){
-      const file = e.target.files && e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = function(){
-        try{
-          const json = JSON.parse(reader.result);
-          if (typeof importMemoFromJSON === "function"){
-            importMemoFromJSON(json);
-            alert("✅ 메모 복원 완료");
-          }else{
-            alert("❌ importMemoFromJSON 함수가 없습니다.");
-          }
-        }catch(err){
-          alert("❌ 복원 실패: JSON 파싱 오류");
-        }
-      };
-      reader.readAsText(file);
-      input.value = "";
-    };
-    input.click();
-  }catch(e){
-    alert("❌ 메모 복원 중 오류 발생");
-    console.error(e);
-  }
-}
-</script>
-
 </body>
 </html>
+
 
 
 
