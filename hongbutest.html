@@ -7034,10 +7034,10 @@ function restoreMemoDB() {
       // 1) 파일들 읽어서 전부 flatten
       let records = [];
       for (const file of files) {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
+        const t = await file.text();
+        const parsed = JSON.parse(t);
 
-        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
+        if (Array.isArray(parsed)) records.push(...parsed);
         else records.push(parsed);
       }
 
@@ -7059,7 +7059,7 @@ function restoreMemoDB() {
         return;
       }
 
-      // 3) IndexedDB put
+      // 3) IndexedDB put (신규/갱신 구분)
       const request = indexedDB.open("hongbuMemo", 4);
 
       request.onsuccess = function (e) {
@@ -7067,21 +7067,53 @@ function restoreMemoDB() {
         const tx = db.transaction(["apartmentNotes"], "readwrite");
         const store = tx.objectStore("apartmentNotes");
 
-        let ok = 0, fail = 0;
+        let ok = 0, fail = 0, created = 0, updated = 0;
 
-        normalized.forEach((item) => {
-          const putReq = store.put(item);
-          putReq.onsuccess = () => ok++;
-          putReq.onerror = (err) => {
-            fail++;
-            console.error("❌ put 실패:", item.id, err?.target?.error);
+        // iOS 사파리/크롬에서 트랜잭션이 중간에 죽지 않도록
+        // get -> put 을 "요청 체인"으로 이어서 transaction을 계속 살아있게 유지
+        const step = (i) => {
+          if (i >= normalized.length) return;
+
+          const item = normalized[i];
+
+          const getReq = store.get(item.id);
+          getReq.onsuccess = function () {
+            const exists = !!getReq.result;
+            if (exists) updated++;
+            else created++;
+
+            const putReq = store.put(item);
+            putReq.onsuccess = function () {
+              ok++;
+              step(i + 1);
+            };
+            putReq.onerror = function (err) {
+              fail++;
+              console.error("❌ put 실패:", item.id, err?.target?.error);
+              step(i + 1);
+            };
           };
-        });
+          getReq.onerror = function (err) {
+            fail++;
+            console.error("❌ get 실패:", item.id, err?.target?.error);
+            // get이 실패해도 다음으로 진행
+            step(i + 1);
+          };
+        };
+
+        step(0);
 
         tx.oncomplete = () => {
-          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
+          alert(
+            `✅ 메모 복원 완료\n` +
+            `- 신규: ${created}\n` +
+            `- 갱신: ${updated}\n` +
+            `- 성공: ${ok}\n` +
+            `- 실패: ${fail}\n` +
+            `- 총: ${normalized.length}`
+          );
           db.close();
-		  refreshApartmentMarkers();
+          refreshApartmentMarkers();
         };
 
         tx.onerror = (err) => {
@@ -7103,6 +7135,7 @@ function restoreMemoDB() {
 
   input.click();
 }
+
 
 
 
