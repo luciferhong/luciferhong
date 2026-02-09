@@ -668,6 +668,7 @@ body.map-fullscreen {
 	<label class="only-pc"><input type="checkbox" id="toggleFindWay">업무지구 길찾기</label>
 	<label><input type="checkbox" id="toggleBlankMap">백지도</label>
 
+	<label><input type="checkbox" id="toggleCadastralMap">지적편집도</label>
 <!-- 
 	<label class="only-pc" style="color: red; margin-left: auto; white-space: nowrap;">
   길찾기할 때 출발시각은 현재 컴퓨터 시각에 맞춰집니다. 평일 오전 7시반으로 맞추면 출발시각이 해당 시각으로 변경됩니다
@@ -1306,7 +1307,30 @@ function closeImageModal(){
 		}
 
     }
-	//지도 선택
+	
+// ==============================
+// ✅ 지적편집도(Cadastral) 레이어 토글
+// - 백지도(toggleBlankMap)와 상호배타
+// - 둘 다 OFF면 기본지도(기존 동작)
+// ==============================
+let __cadastralLayer = null;
+function __ensureCadastralLayer(){
+    if (!__cadastralLayer && window.naver && naver.maps && typeof naver.maps.CadastralLayer === "function"){
+        __cadastralLayer = new naver.maps.CadastralLayer();
+    }
+    return __cadastralLayer;
+}
+function __setCadastralLayer(on){
+    try{
+        const layer = __ensureCadastralLayer();
+        if (!layer) return;
+        layer.setMap(on ? window.map : null);
+    }catch(e){
+        console.warn("CadastralLayer toggle failed:", e);
+    }
+}
+
+//지도 선택
 	async function createMap(useBlankMap) {
 		const mapElement = document.getElementById("map");
 
@@ -1503,16 +1527,38 @@ setupRightClickEvent(); // 길찾기용 우클릭 이벤트
 
 
 	document.getElementById("toggleBlankMap").addEventListener("change", async () => {
-		const useBlank = document.getElementById("toggleBlankMap").checked;
-		await createMap(useBlank);
-		injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
-		
-	});
+  const blankEl = document.getElementById("toggleBlankMap");
+  const cadastralEl = document.getElementById("toggleCadastralMap");
 
+  const useBlank = blankEl.checked;
 
+  // ✅ 상호배타: 백지도 ON이면 지적편집도 OFF
+  if (useBlank && cadastralEl) cadastralEl.checked = false;
 
+  await createMap(useBlank);           // 기존 동작 유지
+  injectMaximizeButton();              // 지도 내부 우상단 최대화 버튼 주입
 
-	const mapElement = document.getElementById('map');
+  // ✅ 지적편집도는 백지도와 동시에 켜지지 않음
+  __setCadastralLayer(false);
+});
+
+// ✅ 지적편집도 토글 (기본지도 위에 레이어로 표시)
+document.getElementById("toggleCadastralMap")?.addEventListener("change", async () => {
+  const blankEl = document.getElementById("toggleBlankMap");
+  const cadastralEl = document.getElementById("toggleCadastralMap");
+  const useCadastral = !!cadastralEl?.checked;
+
+  // ✅ 상호배타: 지적편집도 ON이면 백지도 OFF
+  if (useCadastral && blankEl) blankEl.checked = false;
+
+  // ✅ 지적편집도는 "기본지도" 위에 레이어로 표시 (백지도 아님)
+  await createMap(false);
+  injectMaximizeButton();
+
+  __setCadastralLayer(useCadastral);
+});
+
+const mapElement = document.getElementById('map');
 
 	function getMapSize() {
 		return new naver.maps.Size(mapElement.offsetWidth, mapElement.offsetHeight);
