@@ -838,6 +838,16 @@ window.imageModalShowYn = false;
 // ==============================
 let __currentMemoAptId = null;
 
+// ✅ ObjectURL(blob:) 안전 해제 유틸
+function __safeRevokeObjectURL(url){
+  try{
+    if(url && typeof url === "string" && url.startsWith("blob:")){
+      URL.revokeObjectURL(url);
+    }
+  }catch(e){ /* ignore */ }
+}
+
+
 // ✅ 메모 이미지 캐시를 현재 아파트 1개로 제한 (IndexedDB가 원본 저장소)
 function __memoKeepOnly(keepId){
   try{
@@ -845,6 +855,11 @@ function __memoKeepOnly(keepId){
     const keepKey = String(keepId);
     Object.keys(window.aptMemoImageList).forEach(k => {
       if (k !== keepKey) {
+        // ✅ blob: ObjectURL이 섞여있을 수 있으니 먼저 revoke
+        try{
+          const arr = window.aptMemoImageList[k];
+          if (Array.isArray(arr)) arr.forEach(u => __safeRevokeObjectURL(u));
+        }catch(e){}
         // 큰 base64 참조 끊기
         window.aptMemoImageList[k] = [];
         delete window.aptMemoImageList[k];
@@ -1063,10 +1078,13 @@ function closeImageModal(){
 				
 				const blob = new Blob([gpxData], { type: "application/gpx+xml" });
 				const a = document.createElement("a");
-				a.href = URL.createObjectURL(blob);
+				const url = URL.createObjectURL(blob);
+				a.href = url;
 				a.download = "route.gpx";
 				document.body.appendChild(a);
 				a.click();
+				// ✅ ObjectURL 해제(메모리 누수 방지)
+				setTimeout(() => __safeRevokeObjectURL(url), 1000);
 				document.body.removeChild(a);
 			}
 
@@ -4065,11 +4083,22 @@ console.log("[DBG] apartmentInfo z-index:", cs.zIndex, "display:", cs.display, "
         const reader = new FileReader();
         reader.onload = async function (event) {
 
-          const imageDataUrl = event.target.result;
+          const originalDataUrl = event.target.result;
+
+          // ✅ DataURL 저장 방식은 그대로 두고, 저장 직전에 리사이즈/재압축하여 용량만 줄임
+          let imageDataUrl = originalDataUrl;
+          try {
+            // 긴 변 1600px 제한 + JPEG 품질 0.82 (원하면 값 조정 가능)
+            imageDataUrl = await compressImage(originalDataUrl, 1600, 0.82);
+          } catch (err) {
+            console.warn("이미지 압축 실패. 원본으로 저장합니다.", err);
+            imageDataUrl = originalDataUrl;
+          }
+
           if (!aptMemoImageList[apartmentId]) {
             aptMemoImageList[apartmentId] = [];
           }
-			aptMemoImageList[apartmentId].push(imageDataUrl);
+          aptMemoImageList[apartmentId].push(imageDataUrl);
 
 
 /*
@@ -6662,6 +6691,8 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
     deleteBtn.onclick = (e) => {
         e.stopPropagation();
         if (confirm("사진을 삭제합니다")) {
+            // ✅ 썸네일에 blob: URL을 쓰는 경우 해제
+            __safeRevokeObjectURL(blobUrl);
             onDelete(base64);
             wrapper.remove();
         }
@@ -6773,6 +6804,8 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
         deleteBtn.onclick = (e) => {
           e.stopPropagation();
           if (confirm("사진을 삭제합니다")) {
+            // ✅ blob: URL일 경우 해제
+            __safeRevokeObjectURL(imageDataUrl);
             aptMemoImageList[id] = aptMemoImageList[id].filter(img => img !== imageDataUrl);
             wrapper.remove();
           }
