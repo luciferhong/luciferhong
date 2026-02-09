@@ -7001,87 +7001,175 @@ function refreshApartmentMarkers() {
 
 
 // ✅ 메모 복원 (정상 동작 버전)
+// ✅ 메모 복원 (iOS 안정 + 스토어 누락 자동 복구)
+async function ensureMemoStoreHealthy(){
+  // 1) 정상 생성 루트(버전/스토어 생성)
+  try{
+    if (typeof initMemoIndexedDB === "function") {
+      await initMemoIndexedDB();
+    }
+  }catch(e){
+    console.warn("initMemoIndexedDB failed:", e);
+  }
+
+  // 2) 현재 DB 상태 확인(버전 지정 없이)
+  const current = await new Promise((resolve, reject)=>{
+    const req = indexedDB.open("hongbuMemo");
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+    req.onupgradeneeded = (ev)=>{
+      // DB가 처음 만들어지는 경우에도 스토어 생성
+      const db = ev.target.result;
+      try{
+        if(!db.objectStoreNames.contains("apartmentNotes")){
+          db.createObjectStore("apartmentNotes", { keyPath: "id" });
+        }
+      }catch(_){}
+    };
+  });
+
+  const hasStore = current.objectStoreNames.contains("apartmentNotes");
+  const v = current.version;
+  try{ current.close(); }catch(_){}
+
+  if (hasStore) return true;
+
+  // 3) ✅ 깨진 DB(버전은 있는데 store가 없음) → 강제 버전업으로 수리
+  await new Promise((resolve, reject)=>{
+    const req = indexedDB.open("hongbuMemo", v + 1);
+    req.onupgradeneeded = (ev)=>{
+      const db = ev.target.result;
+      if(!db.objectStoreNames.contains("apartmentNotes")){
+        db.createObjectStore("apartmentNotes", { keyPath: "id" });
+      }
+    };
+    req.onsuccess = ()=>{ try{ req.result.close(); }catch(_){} resolve(true); };
+    req.onerror = ()=>reject(req.error);
+  });
+
+  return true;
+}
+
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
+  if (!input) { alert("❌ memoRestoreInput이 없습니다."); return; }
+
   input.accept = ".json";
-  input.multiple = true;
 
-  input.onchange = async function (event) {
-    try{ event.preventDefault(); event.stopPropagation(); }catch(e){}
+  // ✅ iOS는 다중 선택 시 탭 리로드/메모리 이슈가 더 자주 발생 → 1개만 허용
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  input.multiple = !isIOS;
+
+  // 같은 파일을 다시 선택할 수 있게
+  input.value = "";
+
+  input.onchange = async function(event){
+    try{
+      event.preventDefault();
+      event.stopPropagation();
+    }catch(_){}
+
     const files = Array.from(event.target.files || []);
-    if (!files.length) return;
-
-    // 같은 파일 다시 선택 가능하게 초기화
+    // change 후 값 초기화(같은 파일 재선택 가능)
     input.value = "";
 
-    try {
-      // 1) 파일들 읽어서 전부 flatten
-      let records = [];
-      for (const file of files) {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
+    if (!files.length) return;
+    if (isIOS && files.length > 1){
+      alert("아이폰에서는 안정성을 위해 메모 복원은 1개 파일만 선택해주세요.");
+      return;
+    }
 
-        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
-        else records.push(parsed);
+    try{
+      await ensureMemoStoreHealthy();
+
+      // ---- JSON 읽기/정규화 ----
+      let records = [];
+      for (const file of files){
+        const text = await file.text();
+
+        // iOS BOM 방어
+        const safeText = (typeof text === "string" && text.charCodeAt(0) === 0xFEFF) ? text.slice(1) : text;
+
+        const parsed = JSON.parse(safeText);
+
+        // 다양한 백업 포맷 대응
+        if (Array.isArray(parsed)) {
+          records.push(...parsed);
+        } else if (parsed && typeof parsed === "object") {
+          if (Array.isArray(parsed.apartmentNotes)) records.push(...parsed.apartmentNotes);
+          else if (Array.isArray(parsed.data)) records.push(...parsed.data);
+          else if (Array.isArray(parsed.items)) records.push(...parsed.items);
+          else records.push(parsed);
+        }
       }
 
-      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
       const normalized = records
-        .filter((r) => r && typeof r === "object")
-        .map((r) => {
-          if (r.id === undefined || r.id === null) return null;
+        .filter(r => r && typeof r === "object")
+        .map(r => {
+          const id = (r.id !== undefined && r.id !== null) ? String(r.id) : null;
+          if (!id) return null;
           return {
-            id: String(r.id),
-            memo: r.memo ? String(r.memo) : "",
-            images: Array.isArray(r.images) ? r.images : [],
+            id,
+            memo: (r.memo !== undefined && r.memo !== null) ? String(r.memo) : "",
+            images: Array.isArray(r.images) ? r.images : []
           };
         })
         .filter(Boolean);
 
-      if (!normalized.length) {
-        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
+      if (!normalized.length){
+        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락/형식 확인)");
         return;
       }
 
-      // 3) IndexedDB put
-      const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+      // ---- IndexedDB 저장 (chunk 처리로 iOS 안정화) ----
+      const db = await new Promise((resolve, reject)=>{
+        const req = indexedDB.open("hongbuMemo"); // 최신 버전
+        req.onsuccess = ()=>resolve(req.result);
+        req.onerror = ()=>reject(req.error);
+      });
 
-      request.onsuccess = function (e) {
-        const db = e.target.result;
-        const tx = db.transaction(["apartmentNotes"], "readwrite");
-        const store = tx.objectStore("apartmentNotes");
+      if (!db.objectStoreNames.contains("apartmentNotes")){
+        try{ db.close(); }catch(_){}
+        alert("❌ apartmentNotes 스토어가 없습니다. (DB 손상) 페이지 새로고침 후 다시 시도해주세요.");
+        return;
+      }
 
-        let ok = 0, fail = 0;
+      const CHUNK = isIOS ? 50 : 200;
+      let ok = 0, fail = 0;
 
-        normalized.forEach((item) => {
-          const putReq = store.put(item);
-          putReq.onsuccess = () => ok++;
-          putReq.onerror = (err) => {
-            fail++;
-            console.error("❌ put 실패:", item.id, err?.target?.error);
-          };
+      for (let i=0; i<normalized.length; i+=CHUNK){
+        const batch = normalized.slice(i, i+CHUNK);
+
+        await new Promise((resolve, reject)=>{
+          const tx = db.transaction(["apartmentNotes"], "readwrite");
+          const store = tx.objectStore("apartmentNotes");
+
+          batch.forEach(item=>{
+            const req = store.put(item);
+            req.onsuccess = ()=>{ ok++; };
+            req.onerror = ()=>{ fail++; };
+          });
+
+          tx.oncomplete = ()=>resolve(true);
+          tx.onerror = (e)=>reject(e?.target?.error || tx.error || new Error("tx error"));
+          tx.onabort = (e)=>reject(e?.target?.error || tx.error || new Error("tx abort"));
         });
 
-        tx.oncomplete = () => {
-          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
-          db.close();
-		  refreshApartmentMarkers();
-        };
+        // iOS: 숨쉬기
+        if (isIOS) await new Promise(r=>setTimeout(r, 0));
+      }
 
-        tx.onerror = (err) => {
-          console.error("❌ 트랜잭션 오류:", err?.target?.error);
-          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
-          db.close();
-        };
-      };
+      try{ db.close(); }catch(_){}
 
-      request.onerror = function (err) {
-        console.error("❌ DB 열기 실패:", err?.target?.error);
-        alert("❌ DB 열기 실패 (콘솔 확인)");
-      };
-    } catch (err) {
-      console.error("❌ 복원 중 예외:", err);
-      alert("❌ 복원 중 오류 발생: " + err.message);
+      alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
+
+      // 메모 아이콘/마커 갱신
+      try { refreshApartmentMarkers(); } catch(e) {}
+      try { if (window.map && window.map.getBounds) updateMarkers(window.map.getBounds()); } catch(e) {}
+
+    }catch(err){
+      console.error("❌ 메모 복원 오류:", err);
+      alert("❌ 메모 복원 중 오류: " + (err && err.message ? err.message : err));
     }
   };
 
