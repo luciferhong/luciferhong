@@ -7016,255 +7016,12 @@ function refreshApartmentMarkers() {
 }
 
 
-async function warmupHongbuMemoDB() {
-  try {
-    const db = await openHongbuMemoDBOnce();
 
-    // ✅ (중요) iOS에서 delete blocked/리로드를 줄이기 위해 연결이 길게 유지되지 않게
-    db.onversionchange = () => { try { db.close(); } catch (e) {} };
-
-    // ✅ 아주 가벼운 read tx 1회 (스토어 존재 확인 + 내부 캐시/JIT 워밍업)
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(["apartmentNotes"], "readonly");
-      const store = tx.objectStore("apartmentNotes");
-      const req = store.get("__warmup__"); // 존재하지 않아도 OK
-
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () => reject(tx.error);
-    });
-
-    // ✅ 짧게 양보(워치독/렌더링 안정화)
-    await new Promise(r => setTimeout(r, 60));
-
-    // db를 계속 재사용한다면 close 하지 않아도 되지만,
-    // 워밍업만 하고 끝낼 경우 닫는 편이 안정적
-    // (openHongbuMemoDBOnce()가 싱글톤이면 close하면 안 될 수 있으니,
-    //  싱글톤 구조라면 close는 빼세요)
-    // db.close();
-
-    console.log("[WARMUP] hongbuMemo warmup OK");
-    return true;
-  } catch (e) {
-    console.warn("[WARMUP] hongbuMemo warmup FAIL:", e);
-    return false;
-  }
-}
-
-
-// ✅ 메모 복원 (정상 동작 버전) - iOS 안정화: "단건 트랜잭션"으로 순차 복원
-
+// ✅ 메모 복원 (정상 동작 버전)
 function restoreMemoDB() {
-
-
-	await warmupHongbuMemoDB();
-	
   const input = document.getElementById("memoRestoreInput");
-  input.accept = ".json,.jsonl";
+  input.accept = ".json";
   input.multiple = true;
-
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-  function openHongbuMemoDB() {
-    return new Promise((resolve, reject) => {
-      const req = indexedDB.open("hongbuMemo", 4);
-      req.onsuccess = (e) => resolve(e.target.result);
-      req.onerror = (e) => reject(e?.target?.error || new Error("DB open failed"));
-    });
-  }
-
-  function putOne(db, item) {
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(["apartmentNotes"], "readwrite");
-      const store = tx.objectStore("apartmentNotes");
-      const req = store.put(item);
-      req.onsuccess = () => resolve();
-      req.onerror = (e) => reject(e?.target?.error || new Error("put failed"));
-      tx.onabort = (e) => reject(tx.error || e?.target?.error || new Error("tx aborted"));
-      tx.onerror = (e) => reject(tx.error || e?.target?.error || new Error("tx error"));
-    });
-  }
-
-  function normalizeRecord(r) {
-    if (!r || typeof r !== "object") return null;
-    if (r.id === undefined || r.id === null) return null;
-    return {
-      id: String(r.id),
-      memo: r.memo ? String(r.memo) : "",
-      images: Array.isArray(r.images) ? r.images : [],
-    };
-  }
-
-  // ✅ iOS 안정형: 대용량 JSON 배열도 "스트리밍"으로 파싱해서 메모리 폭발(탭 자동 새로고침) 방지
-  async function restoreFileStreaming(file, db, report) {
-    const CHUNK = 256 * 1024; // 256KB
-    const size = file.size;
-
-    let offset = 0;
-    let buf = "";
-    let mode = null; // "array" | "jsonl" | "single"
-    let startedArray = false;
-
-    // array parser state
-    let inStr = false, esc = false, depth = 0, objStart = -1;
-
-    let ok = 0, fail = 0, seen = 0;
-
-    // helper: process one normalized record
-    async function processOne(obj) {
-      const item = normalizeRecord(obj);
-      if (!item) return;
-      seen++;
-      try {
-        await putOne(db, item);
-        ok++;
-      } catch (err) {
-        fail++;
-        console.error("❌ put 실패:", item.id, err);
-        try { window.hongbuDebugLog?.("ERR", "메모 put 실패: " + item.id, err?.message || err); } catch(e) {}
-      }
-
-      // iOS: 너무 빠른 연속 write는 탭 리로드 유발 가능 → 아주 짧게 양보
-      if (isIOS) await sleep(8);
-      if (seen === 1 || seen % 50 === 0) report(seen, ok, fail);
-      // 이벤트 루프에 양보 (특히 iOS에서 효과 큼)
-      if (seen % 20 === 0) await sleep(0);
-    }
-
-    // 첫 chunk로 포맷 결정
-    const firstText = await file.slice(0, Math.min(CHUNK, size)).text();
-    const firstNonWS = (firstText.match(/[^\s]/) || [""])[0];
-    if (firstNonWS === "[") mode = "array";
-    else if (firstNonWS === "{") mode = "single";
-    else mode = "jsonl";
-
-    // single object: 그냥 parse해서 처리 (메모리 부담 작음)
-    if (mode === "single") {
-      const full = await file.text();
-      await processOne(JSON.parse(full));
-      return { ok, fail, total: seen };
-    }
-
-    // jsonl: 줄 단위(한 줄에 한 JSON)
-    if (mode === "jsonl") {
-      // 첫 chunk부터 다시 전체를 스트리밍
-      offset = 0;
-      buf = "";
-      while (offset < size) {
-        const chunkText = await file.slice(offset, offset + CHUNK).text();
-        offset += CHUNK;
-        buf += chunkText;
-
-        let nl;
-        while ((nl = buf.indexOf("\n")) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line) continue;
-          try {
-            await processOne(JSON.parse(line));
-          } catch (e) {
-            // 마지막 줄이 잘렸을 가능성은 낮지만, JSONL이 아닌 파일이면 여기서 걸림
-            fail++;
-            console.error("❌ JSONL parse 실패:", e, line.slice(0, 120));
-          }
-        }
-
-        if (isIOS) await sleep(0);
-      }
-
-      // 남은 버퍼 처리
-      const tail = buf.trim();
-      if (tail) {
-        try { await processOne(JSON.parse(tail)); }
-        catch (e) { fail++; console.error("❌ tail parse 실패:", e); }
-      }
-
-      report(seen, ok, fail, true);
-      return { ok, fail, total: seen };
-    }
-
-    // array: 스트리밍으로 { ... } 객체 단위로 쪼개서 처리
-    offset = 0;
-    buf = "";
-    startedArray = false;
-
-    while (offset < size) {
-      const chunkText = await file.slice(offset, offset + CHUNK).text();
-      offset += CHUNK;
-      buf += chunkText;
-
-      // 스캔 인덱스
-      let i = 0;
-
-      // 아직 '[' 시작 안 찾았으면 찾고 그 앞 버림
-      if (!startedArray) {
-        const m = buf.match(/\[/);
-        if (!m) {
-          // 아직 '[' 없음. 너무 커지지 않게 버퍼 제한
-          if (buf.length > CHUNK * 2) buf = buf.slice(-CHUNK);
-          continue;
-        }
-        const pos = m.index;
-        buf = buf.slice(pos + 1); // '[' 제거하고 이후부터
-        startedArray = true;
-        i = 0;
-      }
-
-      while (i < buf.length) {
-        const ch = buf[i];
-
-        if (esc) { esc = false; i++; continue; }
-        if (ch === "\\\\") { if (inStr) esc = true; i++; continue; }
-        if (ch === '"') { inStr = !inStr; i++; continue; }
-
-        if (!inStr) {
-          if (ch === "{") {
-            if (depth === 0) objStart = i;
-            depth++;
-          } else if (ch === "}") {
-            depth--;
-            if (depth === 0 && objStart >= 0) {
-              const objStr = buf.slice(objStart, i + 1);
-              // 소비: i+1까지 잘라내고, 스캔을 0부터 다시
-              buf = buf.slice(i + 1);
-              i = 0;
-              objStart = -1;
-
-              try {
-                const obj = JSON.parse(objStr);
-                await processOne(obj);
-              } catch (e) {
-                fail++;
-                console.error("❌ JSON parse 실패(객체):", e, objStr.slice(0, 120));
-              }
-              continue;
-            }
-          } else if (ch === "]") {
-            // 배열 끝. 남은 쓰레기 정리 후 종료
-            buf = "";
-            offset = size;
-            break;
-          }
-        }
-
-        i++;
-      }
-
-      // 버퍼가 너무 커지면(객체가 매우 길 때 제외) 앞부분 정리
-      if (buf.length > CHUNK * 4 && depth === 0) {
-        buf = buf.slice(-CHUNK * 2);
-      }
-
-      if (isIOS) await sleep(0);
-    }
-
-    report(seen, ok, fail, true);
-    return { ok, fail, total: seen };
-  }
 
   input.onchange = async function (event) {
     const files = Array.from(event.target.files || []);
@@ -7274,35 +7031,73 @@ function restoreMemoDB() {
     input.value = "";
 
     try {
-      const db = await openHongbuMemoDB();
-
-      let grandOk = 0, grandFail = 0, grandTotal = 0;
-
+      // 1) 파일들 읽어서 전부 flatten
+      let records = [];
       for (const file of files) {
-        const report = (seen, ok, fail, done=false) => {
-          try {
-            window.hongbuDebugLog?.("STAT",
-              `메모 복원(${file.name}): ${seen}건 처리 (성공 ${ok}, 실패 ${fail})` + (done ? " ✅" : "")
-            );
-          } catch(e) {}
-        };
+        const text = await file.text();
+        const parsed = JSON.parse(text);
 
-        // ✅ 파일 단위 스트리밍 복원
-        const res = await restoreFileStreaming(file, db, report);
-        grandOk += res.ok;
-        grandFail += res.fail;
-        grandTotal += res.total;
-
-        // 파일 사이 잠깐 쉬기 (iOS)
-        if (isIOS) await sleep(30);
+        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
+        else records.push(parsed);
       }
 
-      db.close();
-      alert(`✅ 복원 완료: 성공 ${grandOk} / 실패 ${grandFail} (총 ${grandTotal})`);
-      refreshApartmentMarkers();
+      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
+      const normalized = records
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          if (r.id === undefined || r.id === null) return null;
+          return {
+            id: String(r.id),
+            memo: r.memo ? String(r.memo) : "",
+            images: Array.isArray(r.images) ? r.images : [],
+          };
+        })
+        .filter(Boolean);
+
+      if (!normalized.length) {
+        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
+        return;
+      }
+
+      // 3) IndexedDB put
+      const request = indexedDB.open("hongbuMemo", 4);
+
+      request.onsuccess = function (e) {
+        const db = e.target.result;
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
+
+        let ok = 0, fail = 0;
+
+        normalized.forEach((item) => {
+          const putReq = store.put(item);
+          putReq.onsuccess = () => ok++;
+          putReq.onerror = (err) => {
+            fail++;
+            console.error("❌ put 실패:", item.id, err?.target?.error);
+          };
+        });
+
+        tx.oncomplete = () => {
+          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
+          db.close();
+		  refreshApartmentMarkers();
+        };
+
+        tx.onerror = (err) => {
+          console.error("❌ 트랜잭션 오류:", err?.target?.error);
+          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
+          db.close();
+        };
+      };
+
+      request.onerror = function (err) {
+        console.error("❌ DB 열기 실패:", err?.target?.error);
+        alert("❌ DB 열기 실패 (콘솔 확인)");
+      };
     } catch (err) {
       console.error("❌ 복원 중 예외:", err);
-      alert("❌ 복원 중 오류 발생: " + (err?.message || err));
+      alert("❌ 복원 중 오류 발생: " + err.message);
     }
   };
 
@@ -8208,6 +8003,7 @@ function getLabelLatLngByPolylabel(geometry, bbox){
 
 </body>
 </html>
+
 
 
 
