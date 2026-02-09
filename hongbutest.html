@@ -7,6 +7,8 @@
     <link rel="icon" href="route.png" type="image/png">
     <title>[루시퍼홍] 홍부가 기가막혀</title>
 	<script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8">
+window.HONGBU_MEMO_DB_VERSION = window.HONGBU_MEMO_DB_VERSION || 5;
+
 let sigGeojsonRaw = null;
 let emdGeojsonRaw = null;
 </script>
@@ -2842,7 +2844,7 @@ function openHongbuMemoDBOnce() {
   if (window.__memoDbPromise) return window.__memoDbPromise;
   window.__memoDbPromise = new Promise((resolve, reject) => {
     try {
-      const req = indexedDB.open("hongbuMemo", 4);
+      const req = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
       req.onsuccess = (e) => resolve(e.target.result);
       req.onerror = (e) => reject(e.target.error);
       // 업그레이드는 기존 initMemoIndexedDB가 담당. 여기서는 읽기 전용 용도.
@@ -4768,7 +4770,7 @@ function initIndexedDB() {
 }
 function initMemoIndexedDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbuMemo", 4);
+    const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
 
     request.onupgradeneeded = function (event) {
       const db = event.target.result;
@@ -4802,7 +4804,7 @@ async function loadMemoKeySetOnce() {
   await initMemoIndexedDB();
 
   return new Promise((resolve) => {
-    const req = indexedDB.open("hongbuMemo", 4);
+    const req = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
     req.onerror = () => {
       window.__hongbuMemoKeySet = new Set();
       window.__hongbuMemoKeySetReady = true;
@@ -6518,7 +6520,7 @@ let deletedImages = []; // 삭제된 이미지 목록
     const memo = (document.getElementById("noteText").value || "").trim();
     const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-    const request = indexedDB.open("hongbuMemo", 4);
+    const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
 
     request.onerror = function (event) {
       console.error("❌ DB 열기 실패:", event.target.error);
@@ -6708,7 +6710,7 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 async function loadNote(id) {
 await initMemoIndexedDB()
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -6863,7 +6865,7 @@ function showImageModal(src) {
 }
 
 async function backupMemoDB() {
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -6929,7 +6931,7 @@ async function backupMemoDB() {
 
 // ✅ 메모 백업
 async function backupMemoDB_OLD() {
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -6999,91 +7001,60 @@ function refreshApartmentMarkers() {
 
 
 
-// ✅ 메모 복원 (정상 동작 버전)
+// ✅ 메모 복원
 function restoreMemoDB() {
   const input = document.getElementById("memoRestoreInput");
-  input.accept = ".json";
-  input.multiple = true;
+  input.accept = ".json"; // ZIP 말고 JSON만 받음
+  input.multiple = true;  // ✅ 여러 파일 선택 허용
 
   input.onchange = async function (event) {
-    const files = Array.from(event.target.files || []);
+    const files = Array.from(event.target.files);
     if (!files.length) return;
 
-    // 같은 파일 다시 선택 가능하게 초기화
-    input.value = "";
+    const allRecords = [];
 
     try {
-      // 1) 파일들 읽어서 전부 flatten
-      let records = [];
       for (const file of files) {
         const text = await file.text();
         const parsed = JSON.parse(text);
 
-        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
-        else records.push(parsed);
+        if (Array.isArray(parsed)) {
+          allRecords.push(...parsed);
+        } else {
+          allRecords.push(parsed);
+        }
       }
 
-      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
-      const normalized = records
-        .filter((r) => r && typeof r === "object")
-        .map((r) => {
-          if (r.id === undefined || r.id === null) return null;
-          return {
-            id: String(r.id),
-            memo: r.memo ? String(r.memo) : "",
-            images: Array.isArray(r.images) ? r.images : [],
-          };
-        })
-        .filter(Boolean);
+      const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
+      request.onsuccess = function (event) {
+        const db = event.target.result;
+        const transaction = db.transaction(["apartmentNotes"], "readwrite");
+        const store = transaction.objectStore("apartmentNotes");
 
-      if (!normalized.length) {
-        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
-        return;
-      }
+        for (const item of allRecords) {
+          store.put(item);
+        }
 
-      // 3) IndexedDB put
-      const request = indexedDB.open("hongbuMemo", 4);
-
-      request.onsuccess = function (e) {
-        const db = e.target.result;
-        const tx = db.transaction(["apartmentNotes"], "readwrite");
-        const store = tx.objectStore("apartmentNotes");
-
-        let ok = 0, fail = 0;
-
-        normalized.forEach((item) => {
-          const putReq = store.put(item);
-          putReq.onsuccess = () => ok++;
-          putReq.onerror = (err) => {
-            fail++;
-            console.error("❌ put 실패:", item.id, err?.target?.error);
-          };
-        });
-
-        tx.oncomplete = () => {
-          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
+        transaction.oncomplete = () => {
+          alert(`✅ ${allRecords.length}개의 메모가 복원되었습니다.`);
           db.close();
-		  refreshApartmentMarkers();
         };
 
-        tx.onerror = (err) => {
-          console.error("❌ 트랜잭션 오류:", err?.target?.error);
-          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
+        transaction.onerror = () => {
+          alert("❌ 메모 복원 중 오류가 발생했습니다.");
           db.close();
         };
       };
 
-      request.onerror = function (err) {
-        console.error("❌ DB 열기 실패:", err?.target?.error);
-        alert("❌ DB 열기 실패 (콘솔 확인)");
+      request.onerror = function () {
+        alert("❌ DB 열기 실패");
       };
-    } catch (err) {
-      console.error("❌ 복원 중 예외:", err);
-      alert("❌ 복원 중 오류 발생: " + err.message);
+    } catch (e) {
+      alert("❌ 복원 중 오류 발생: " + e.message);
     }
   };
 
-  input.click();
+  input.click(); // 파일 선택 창 열기
 }
 
 
@@ -7106,7 +7077,7 @@ function restoreMemoDB_OLD() {
                     return;
                 }
 
-                const request = indexedDB.open("hongbuMemo", 4);
+                const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
                 request.onsuccess = function (event) {
                     const db = event.target.result;
                     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -7165,7 +7136,7 @@ document.getElementById("downloadImageButton").addEventListener("click", () => {
 function deleteMemoDB() {
   if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
   request.onsuccess = function (event) {
     const db = event.target.result;
     db.close(); // 👉 연결 먼저 닫기
@@ -7195,7 +7166,7 @@ function deleteMemoDB() {
 function deleteNote(id) {
   if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -7226,7 +7197,7 @@ async function getMemoFromIndexedDB(id) {
   return new Promise(async (resolve, reject) => {
     await initMemoIndexedDB();
 
-    const request = indexedDB.open("hongbuMemo", 4);
+    const request = indexedDB.open("hongbuMemo", window.HONGBU_MEMO_DB_VERSION);
     request.onerror = () => reject("DB 열기 실패");
 
     request.onsuccess = (event) => {
