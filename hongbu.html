@@ -668,6 +668,7 @@ body.map-fullscreen {
 	<label class="only-pc"><input type="checkbox" id="toggleFindWay">업무지구 길찾기</label>
 	<label><input type="checkbox" id="toggleBlankMap">백지도</label>
 
+	<label><input type="checkbox" id="toggleCadastralMap">지적편집도</label>
 <!-- 
 	<label class="only-pc" style="color: red; margin-left: auto; white-space: nowrap;">
   길찾기할 때 출발시각은 현재 컴퓨터 시각에 맞춰집니다. 평일 오전 7시반으로 맞추면 출발시각이 해당 시각으로 변경됩니다
@@ -1306,7 +1307,30 @@ function closeImageModal(){
 		}
 
     }
-	//지도 선택
+	
+// ==============================
+// ✅ 지적편집도(Cadastral) 레이어 토글
+// - 백지도(toggleBlankMap)와 상호배타
+// - 둘 다 OFF면 기본지도(기존 동작)
+// ==============================
+let __cadastralLayer = null;
+function __ensureCadastralLayer(){
+    if (!__cadastralLayer && window.naver && naver.maps && typeof naver.maps.CadastralLayer === "function"){
+        __cadastralLayer = new naver.maps.CadastralLayer();
+    }
+    return __cadastralLayer;
+}
+function __setCadastralLayer(on){
+    try{
+        const layer = __ensureCadastralLayer();
+        if (!layer) return;
+        layer.setMap(on ? window.map : null);
+    }catch(e){
+        console.warn("CadastralLayer toggle failed:", e);
+    }
+}
+
+//지도 선택
 	async function createMap(useBlankMap) {
 		const mapElement = document.getElementById("map");
 
@@ -1503,16 +1527,46 @@ setupRightClickEvent(); // 길찾기용 우클릭 이벤트
 
 
 	document.getElementById("toggleBlankMap").addEventListener("change", async () => {
-		const useBlank = document.getElementById("toggleBlankMap").checked;
-		await createMap(useBlank);
-		injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
-		
-	});
+  const blankEl = document.getElementById("toggleBlankMap");
+  const cadastralEl = document.getElementById("toggleCadastralMap");
 
+  const useBlank = blankEl.checked;
 
+  // ✅ 상호배타: 백지도 ON이면 지적편집도 OFF (백지도 ON일 때만)
+  if (useBlank && cadastralEl) {
+    cadastralEl.checked = false;
+    __setCadastralLayer(false);
+  }
 
+  await createMap(useBlank);           // 기존 동작 유지 (백지도 토글에서만 지도 재생성)
+  injectMaximizeButton();              // 지도 내부 우상단 최대화 버튼 주입
 
-	const mapElement = document.getElementById('map');
+  // ✅ 백지도 OFF로 돌아올 때, 지적편집도 체크가 켜져 있으면 레이어를 다시 올림
+  if (!useBlank) {
+    __setCadastralLayer(!!cadastralEl?.checked);
+  }
+});
+
+// ✅ 지적편집도 토글 (기존 지도 위에 레이어로 표시: 지도 재생성 X)
+document.getElementById("toggleCadastralMap")?.addEventListener("change", async () => {
+  const blankEl = document.getElementById("toggleBlankMap");
+  const cadastralEl = document.getElementById("toggleCadastralMap");
+  const useCadastral = !!cadastralEl?.checked;
+
+  // ✅ 상호배타: 지적편집도 ON이면 백지도 OFF
+  if (useCadastral && blankEl?.checked) {
+    // 백지도에서 기본지도(또는 원래 지도)로 복귀는 '백지도 토글' 책임으로 처리
+    blankEl.checked = false;
+    // 백지도 OFF는 지도 재생성(기존 로직) 이므로 여기서 한 번만 호출
+    await createMap(false);
+    injectMaximizeButton();
+  }
+
+  // ✅ 지적편집도는 현재 지도 위에 레이어로만 올림
+  __setCadastralLayer(useCadastral);
+});
+
+const mapElement = document.getElementById('map');
 
 	function getMapSize() {
 		return new naver.maps.Size(mapElement.offsetWidth, mapElement.offsetHeight);
@@ -2946,6 +3000,47 @@ function createDefaultMapMarker(apartment) {
 	addMarkerRightClickEvent(marker, markerElement); // ✅ 마커 선택 이벤트 등록
 
 	return marker;
+}
+
+
+// ✅ 백지도용 흰 마커 생성 (백지도 체크 시) - 과거 스타일(빈 흰 사각형 + 검정 테두리)
+function createWhiteMapMarker(apartment) {
+    const markerElement = document.createElement("div");
+    markerElement.style = `
+        background: #ffffff;
+        border: 2px solid #000000;
+        border-radius: 6px;
+        width: 85px;
+        height: 20px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    `;
+
+    // (의도적으로 텍스트/정보는 표시하지 않음)
+    markerElement.textContent = "";
+
+    const marker = new naver.maps.Marker({
+        position: new naver.maps.LatLng(apartment.lat, apartment.lng),
+        map: window.map,
+        icon: {
+            content: markerElement,
+            anchor: new naver.maps.Point(10, 30)
+        }
+    });
+    marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
+
+    naver.maps.Event.addListener(marker, "click", function (e) {
+        showApartmentInfo(apartment.id, {
+            x: e.offset.x,
+            y: e.offset.y
+        });
+    });
+
+    addMarkerRightClickEvent(marker, markerElement); // ✅ 마커 선택 이벤트 등록
+
+    return marker;
 }
 
 // ✅ 기본 마커 생성 (시세지도 체크 해제 시)
@@ -7834,4 +7929,5 @@ function getLabelLatLngByPolylabel(geometry, bbox){
 
 </body>
 </html>
+
 
