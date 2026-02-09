@@ -3,352 +3,110 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>hongbuMemo DB 초기화 / 디버그</title>
+  <title>hongbuMemo DB 존재 여부 확인</title>
   <style>
-    body { font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; margin: 16px; }
-    .card { border: 1px solid #333; border-radius: 12px; padding: 14px; margin: 12px 0; }
-    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #555; background: #111; color: #fff; font-weight: 700; }
-    button:disabled { opacity: .5; }
-    label { display: flex; gap: 10px; align-items: center; margin: 6px 0; }
-    pre { white-space: pre-wrap; word-break: break-word; background: #0b0b0b; color: #d7d7d7; padding: 12px; border-radius: 10px; border: 1px solid #333; }
-    .warn { color: #ffb020; }
-    .hint { color: #9ad1ff; }
-    input[type="text"]{ padding: 10px 12px; border-radius: 10px; border: 1px solid #555; background:#0b0b0b; color:#fff; }
-    .small { font-size: 12px; opacity: .85; }
+    body {
+      font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      margin: 20px;
+    }
+    button {
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid #444;
+      background: #111;
+      color: #fff;
+      font-weight: 700;
+    }
+    pre {
+      margin-top: 16px;
+      padding: 14px;
+      border-radius: 12px;
+      background: #0b0b0b;
+      color: #e5e5e5;
+      border: 1px solid #333;
+      white-space: pre-wrap;
+    }
+    .ok { color: #7CFF7C; }
+    .warn { color: #FFB020; }
+    .err { color: #FF6B6B; }
   </style>
 </head>
 <body>
-  <h2>hongbuMemo DB 초기화(삭제) + IndexedDB 디버그</h2>
 
-  <div class="card">
-    <div class="row">
-      <button id="btnDelete">🧨 hongbuMemo 삭제</button>
-      <button id="btnScan">🔄 DB 목록/스토어 스캔</button>
-      <button id="btnClearLog">🧹 로그 지우기</button>
-    </div>
+<h2>hongbuMemo IndexedDB 존재 여부 확인</h2>
 
-    <div style="margin-top:10px;">
-      <label><input type="checkbox" id="chkCaches" checked> Cache Storage도 같이 삭제 (권장)</label>
-      <label><input type="checkbox" id="chkSW" checked> Service Worker 등록도 해제 (권장)</label>
-    </div>
+<button id="btnCheck">🔍 hongbuMemo 검사</button>
 
-    <div class="row" style="margin-top:10px;">
-      <span class="hint">삭제 대상 DB 이름:</span>
-      <input id="dbName" type="text" value="hongbuMemo" />
-      <span class="small">(원하면 hongbutest 등으로 바꿔서 삭제 가능)</span>
-    </div>
-
-    <p class="warn" style="margin-top:10px;">
-      ⚠️ deleteDatabase가 <b>BLOCKED</b>로 뜨면: 홍부 페이지 포함 다른 탭/창을 전부 닫고,
-      이 페이지 한 탭만 남긴 뒤 다시 시도하세요. (iOS에서 매우 흔함)
-    </p>
-  </div>
-
-  <div class="card">
-    <h3>IndexedDB 목록 / objectStore 디버그</h3>
-    <pre id="dbList">(아직 스캔 전)</pre>
-    <p class="small hint">
-      iOS는 <code>indexedDB.databases()</code>가 미지원인 경우가 많아서,
-      아래 KNOWN_DB_CANDIDATES 후보 목록을 open 해서 존재 여부를 추정합니다.
-    </p>
-  </div>
-
-  <div class="card">
-    <h3>로그</h3>
-    <pre id="log"></pre>
-  </div>
+<pre id="result">(검사 전)</pre>
 
 <script>
 (() => {
-  // =======================
-  // Settings
-  // =======================
-  // iOS에서 전체 DB 목록 API가 없을 때를 대비한 "후보 DB 이름들"
-  // (프로젝트에 맞게 계속 추가하세요)
-  const KNOWN_DB_CANDIDATES = [
-    "hongbuMemo",
-    "hongbutest",
-    "hongbuMap",
-    "hongbuSise",
-    "hongbuMemoImage",
-    "hongbuSupply",
-    "hongbuPath",
-  ];
+  const DB_NAME = "hongbuMemo";
+  const $out = document.getElementById("result");
+  const $btn = document.getElementById("btnCheck");
 
-  // =======================
-  // UI refs
-  // =======================
-  const $log = document.getElementById("log");
-  const $dbList = document.getElementById("dbList");
-  const $btnDelete = document.getElementById("btnDelete");
-  const $btnScan = document.getElementById("btnScan");
-  const $btnClearLog = document.getElementById("btnClearLog");
-  const $chkCaches = document.getElementById("chkCaches");
-  const $chkSW = document.getElementById("chkSW");
-  const $dbName = document.getElementById("dbName");
+  function log(msg, cls="") {
+    $out.innerHTML += (cls ? `<span class="${cls}">${msg}</span>` : msg) + "\n";
+    console.log(msg);
+  }
 
-  // =======================
-  // Helpers (log)
-  // =======================
-  function now() {
-    const d = new Date();
-    const pad = n => String(n).padStart(2,"0");
-    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  }
-  function log(msg) {
-    const line = `[${now()}] ${msg}`;
-    $log.textContent += line + "\n";
-    console.log(line);
-  }
-  function clearLog() { $log.textContent = ""; }
+  async function checkHongbuMemo() {
+    $out.textContent = "";
+    log(`▶ 검사 시작: ${DB_NAME}\n`);
 
-  // =======================
-  // IndexedDB Debug Helpers
-  // =======================
-  function idbNames(db) {
-    try { return Array.from(db.objectStoreNames || []); }
-    catch { return []; }
-  }
-  function idbLogStores(db, needStores = [], tag = "IDB") {
-    const names = idbNames(db);
-    console.log(`[${tag}] DB`, { name: db?.name, version: db?.version, stores: names });
-    if (needStores?.length) {
-      const missing = needStores.filter(s => !names.includes(s));
-      if (missing.length) console.error(`[${tag}] ❌ Missing objectStores:`, missing, " / existing:", names);
-      else console.log(`[${tag}] ✅ All required stores exist:`, needStores);
+    // iOS에서는 indexedDB.databases() 거의 미지원
+    if (typeof indexedDB.databases === "function") {
+      try {
+        const dbs = await indexedDB.databases();
+        const found = dbs.find(d => d.name === DB_NAME);
+        if (found) {
+          log(`✅ indexedDB.databases(): ${DB_NAME} 발견 (ver=${found.version})`, "ok");
+        } else {
+          log(`ℹ️ indexedDB.databases(): ${DB_NAME} 없음`, "warn");
+        }
+      } catch (e) {
+        log(`ℹ️ indexedDB.databases() 실패 (iOS일 가능성)`, "warn");
+      }
+    } else {
+      log(`ℹ️ indexedDB.databases() 미지원 (iOS WebKit)`, "warn");
     }
-    return names;
-  }
-  function idbDebugTransaction(db, stores, mode = "readonly", tag = "IDB") {
-    idbLogStores(db, stores, tag);
-    try {
-      const tx = db.transaction(stores, mode);
-      tx.oncomplete = () => console.log(`[${tag}] tx complete`, { stores, mode });
-      tx.onabort = () => console.warn(`[${tag}] tx abort`, { stores, mode, error: tx.error });
-      tx.onerror = () => console.error(`[${tag}] tx error`, { stores, mode, error: tx.error });
-      return tx;
-    } catch (e) {
-      console.error(`[${tag}] ❌ transaction() throw`, { stores, mode, error: e });
-      throw e;
-    }
-  }
 
-  // =======================
-  // DB scan logic
-  // =======================
-  async function listDBsStandardAPI() {
-    if (typeof indexedDB.databases !== "function") return null;
-    try {
-      const dbs = await indexedDB.databases();
-      return dbs; // [{name, version}...]
-    } catch {
-      return null;
-    }
-  }
-
-  function openDBNonCreating(name) {
-    // 존재하면 open 성공 + onupgradeneeded 없이 넘어감.
-    // 없으면 onupgradeneeded가 트리거되어 "생성하려고 함" -> abort 처리.
-    return new Promise((resolve) => {
-      const req = indexedDB.open(name);
+    // 🔑 iOS에서 가장 신뢰 가능한 방법: open + onupgradeneeded 여부
+    await new Promise(resolve => {
+      const req = indexedDB.open(DB_NAME);
       let existed = true;
 
       req.onupgradeneeded = () => {
         existed = false;
-        log(`ℹ️ "${name}" 없음 → 생성(onupgradeneeded) 되려해서 즉시 중단(트랜잭션 abort)`);
-        try { req.transaction.abort(); } catch (e) {}
+        log(`❌ ${DB_NAME} 없음 → onupgradeneeded 발생(새 DB 생성 시도)`, "err");
+        try { req.transaction.abort(); } catch {}
       };
 
       req.onsuccess = () => {
         const db = req.result;
-        const stores = idbNames(db);
-        const version = db.version;
-        // existed가 true면 기존 DB 존재
-        // existed가 false면 사실상 새로 생기려던 것 -> abort 했지만 일부 환경에서 빈 DB로 열릴 수 있어 보수적으로 처리
-        // 그래도 stores/version 정보는 참고용으로 출력
-        db.close();
-        resolve({ name, existed, version, stores, ok: true });
-      };
-
-      req.onerror = () => resolve({ name, existed: false, version: null, stores: [], ok: false, error: req.error });
-    });
-  }
-
-  async function scanDatabasesAndStores() {
-    $btnScan.disabled = true;
-    try {
-      log("🔍 DB 목록/스토어 스캔 시작");
-      $dbList.textContent = "";
-
-      const lines = [];
-      const found = new Map(); // name -> info
-
-      // 1) 표준 API가 되면 우선 사용 (대체로 PC/안드/일부 환경)
-      const std = await listDBsStandardAPI();
-      if (std) {
-        lines.push("✅ indexedDB.databases() 지원: 실제 목록");
-        for (const d of std) {
-          if (d?.name) found.set(d.name, { name: d.name, version: d.version ?? null });
-        }
-        lines.push(`- API 반환 DB 수: ${std.length}`);
-        lines.push("");
-      } else {
-        lines.push("ℹ️ indexedDB.databases() 미지원(iOS에서 흔함) → 후보 목록으로 탐지");
-        lines.push("");
-      }
-
-      // 2) 후보 목록 open 검사 (iOS 핵심)
-      lines.push("📌 후보 DB 존재 여부 검사 + objectStore 목록");
-      for (const name of KNOWN_DB_CANDIDATES) {
-        const info = await openDBNonCreating(name);
-
-        // existed 기준으로 “있다/없다” 표시
-        if (info.ok && info.existed) {
-          found.set(name, { ...found.get(name), ...info });
-          lines.push(`✅ ${name} (ver=${info.version}) stores=[${info.stores.join(", ") || "(없음)"}]`);
+        if (existed) {
+          log(`✅ ${DB_NAME} 존재함`, "ok");
+          log(`   - version: ${db.version}`);
+          log(`   - objectStores: [${Array.from(db.objectStoreNames).join(", ") || "(없음)"}]`);
         } else {
-          lines.push(`— ${name} (없음/탐지불가)`);
+          log(`❌ ${DB_NAME} 실제로는 없음(생성 시도만 됨)`, "err");
         }
-      }
-
-      // 3) 표준 API에만 존재하고 후보에 없는 DB가 있으면, 그 DB도 store 목록을 시도
-      if (std && found.size) {
-        const extra = [];
-        for (const name of found.keys()) {
-          if (!KNOWN_DB_CANDIDATES.includes(name)) extra.push(name);
-        }
-        if (extra.length) {
-          lines.push("");
-          lines.push("📌 (추가) API에서만 발견된 DB의 stores 조회 시도");
-          for (const name of extra) {
-            const info = await openDBNonCreating(name);
-            if (info.ok) lines.push(`✅ ${name} (ver=${info.version}) stores=[${info.stores.join(", ") || "(없음)"}]`);
-            else lines.push(`⚠️ ${name} open 실패: ${info.error?.message || info.error}`);
-          }
-        }
-      }
-
-      $dbList.textContent = lines.join("\n");
-      log("✅ DB 목록/스토어 스캔 완료");
-    } catch (e) {
-      $dbList.textContent = "❌ 스캔 중 예외: " + (e?.message || e);
-      log("❌ 스캔 예외: " + (e?.message || e));
-    } finally {
-      $btnScan.disabled = false;
-    }
-  }
-
-  // =======================
-  // Deletion helpers
-  // =======================
-  async function deleteCaches() {
-    if (!("caches" in window) || typeof caches.keys !== "function") {
-      log("ℹ️ Cache Storage 미지원. 스킵");
-      return;
-    }
-    const keys = await caches.keys();
-    if (!keys.length) {
-      log("✅ Cache Storage: 삭제할 캐시 없음");
-      return;
-    }
-    for (const k of keys) {
-      const ok = await caches.delete(k);
-      log(`${ok ? "✅" : "ℹ️"} cache delete: ${k}`);
-    }
-  }
-
-  async function unregisterServiceWorkers() {
-    if (!("serviceWorker" in navigator) || typeof navigator.serviceWorker.getRegistrations !== "function") {
-      log("ℹ️ Service Worker 미지원. 스킵");
-      return;
-    }
-    const regs = await navigator.serviceWorker.getRegistrations();
-    if (!regs.length) {
-      log("✅ Service Worker: 등록 없음");
-      return;
-    }
-    for (const r of regs) {
-      const ok = await r.unregister();
-      log(`${ok ? "✅" : "ℹ️"} SW unregister: ${r.scope}`);
-    }
-  }
-
-  async function deleteDB(dbName) {
-    return await new Promise((resolve) => {
-      const req = indexedDB.deleteDatabase(dbName);
-
-      req.onblocked = () => {
-        log(`⚠️ deleteDatabase("${dbName}") BLOCKED: 다른 탭/창에서 DB 사용 중. 모든 홍부 탭 닫고 재시도!`);
+        db.close();
+        resolve();
       };
-      req.onsuccess = () => resolve({ ok: true });
-      req.onerror = () => resolve({ ok: false, err: req.error });
+
+      req.onerror = () => {
+        log(`❌ open 실패: ${req.error?.message || req.error}`, "err");
+        resolve();
+      };
     });
+
+    log(`\n▶ 검사 완료`);
   }
 
-  async function handleDelete() {
-    const name = ($dbName.value || "").trim();
-    if (!name) {
-      alert("삭제할 DB 이름을 입력하세요.");
-      return;
-    }
-
-    $btnDelete.disabled = true;
-    try {
-      log(`🧨 IndexedDB 삭제 시도: ${name}`);
-
-      // (디버그) 삭제 전 open해서 현재 stores 찍어보기 (있으면 도움 됨)
-      try {
-        const info = await openDBNonCreating(name);
-        if (info.ok) {
-          log(`(디버그) 삭제 전 상태: ${name} existed=${info.existed} ver=${info.version} stores=[${info.stores.join(", ") || "(없음)"}]`);
-        }
-      } catch {}
-
-      const result = await deleteDB(name);
-
-      if (result.ok) log(`✅ DB 삭제 성공: ${name}`);
-      else log(`❌ DB 삭제 실패: ${result.err?.message || result.err}`);
-
-      if ($chkCaches.checked) {
-        log("🧹 Cache Storage 삭제 시작");
-        await deleteCaches();
-        log("🧹 Cache Storage 삭제 완료");
-      }
-
-      if ($chkSW.checked) {
-        log("🧹 Service Worker 해제 시작");
-        await unregisterServiceWorkers();
-        log("🧹 Service Worker 해제 완료");
-      }
-
-      log("✅ 전체 작업 완료. 이제 홍부 페이지로 돌아가 새로고침하면 새 DB로 재생성됩니다.");
-      // 삭제 후 스캔 갱신
-      await scanDatabasesAndStores();
-    } catch (e) {
-      log(`❌ 예외: ${e?.message || e}`);
-    } finally {
-      $btnDelete.disabled = false;
-    }
-  }
-
-  // =======================
-  // Wire up
-  // =======================
-  $btnDelete.addEventListener("click", handleDelete);
-  $btnScan.addEventListener("click", scanDatabasesAndStores);
-  $btnClearLog.addEventListener("click", clearLog);
-
-  // 초기 실행
-  clearLog();
-  log("✅ 초기화/디버그 페이지 로드됨");
-  scanDatabasesAndStores();
-
-  // =======================
-  // (참고) 이 페이지 자체에서 transaction 디버그를 쓰고 싶다면:
-  // const tx = idbDebugTransaction(db, ["storeName"], "readwrite", "HONGBU");
-  // =======================
+  $btn.addEventListener("click", checkHongbuMemo);
 })();
 </script>
+
 </body>
 </html>
