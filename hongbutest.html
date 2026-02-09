@@ -7056,6 +7056,35 @@ function refreshApartmentMarkers() {
   updateMarkers(window.map.getBounds());
 }
 
+async function ensureMemoStoreHealthy() {
+  // 1) 현재 버전(버전 미지정)으로 열어서 상태 확인
+  const db0 = await new Promise((resolve, reject) => {
+    const r = indexedDB.open("hongbuMemo"); // 버전 미지정
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+
+  const has = db0.objectStoreNames.contains("apartmentNotes");
+  const v = db0.version;
+  db0.close();
+
+  if (has) return true;
+
+  // 2) 없으면 버전 +1로 열어 onupgradeneeded 유도하여 생성
+  await new Promise((resolve, reject) => {
+    const r = indexedDB.open("hongbuMemo", v + 1);
+    r.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("apartmentNotes")) {
+        db.createObjectStore("apartmentNotes", { keyPath: "id" });
+      }
+    };
+    r.onsuccess = () => { r.result.close(); resolve(true); };
+    r.onerror = () => reject(r.error);
+  });
+
+  return true;
+}
 
 
 // ✅ 메모 복원 (정상 동작 버전)
@@ -7109,40 +7138,6 @@ function restoreMemoDB() {
 
 
 
-
-
-function restoreMemoDB_OLD() {
-    document.getElementById("memoRestoreInput").click();
-
-    document.getElementById("memoRestoreInput").onchange = function (e) {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = function (event) {
-            try {
-                const jsonData = JSON.parse(event.target.result);
-                if (!Array.isArray(jsonData)) {
-                    alert("유효하지 않은 백업 파일입니다.");
-                    return;
-                }
-
-                const request = indexedDB.open("hongbuMemo", window.__HONGBU_MEMO_DB_VERSION || 4);
-                request.onsuccess = function (event) {
-                    const db = event.target.result;
-                    const transaction = db.transaction(["apartmentNotes"], "readwrite");
-                    const store = transaction.objectStore("apartmentNotes");
-
-                    jsonData.forEach(entry => store.put(entry));
-                    alert("메모 복원이 완료되었습니다.");
-                };
-            } catch (err) {
-                alert("파일 읽기 오류: " + err.message);
-            }
-        };
-        reader.readAsText(file);
-    };
-}
 
 document.getElementById("copyImageButton").onclick = async () => {
   const canvas = document.getElementById("modalCanvas");
