@@ -7016,10 +7016,52 @@ function refreshApartmentMarkers() {
 }
 
 
+async function warmupHongbuMemoDB() {
+  try {
+    const db = await openHongbuMemoDBOnce();
+
+    // ✅ (중요) iOS에서 delete blocked/리로드를 줄이기 위해 연결이 길게 유지되지 않게
+    db.onversionchange = () => { try { db.close(); } catch (e) {} };
+
+    // ✅ 아주 가벼운 read tx 1회 (스토어 존재 확인 + 내부 캐시/JIT 워밍업)
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(["apartmentNotes"], "readonly");
+      const store = tx.objectStore("apartmentNotes");
+      const req = store.get("__warmup__"); // 존재하지 않아도 OK
+
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+
+    // ✅ 짧게 양보(워치독/렌더링 안정화)
+    await new Promise(r => setTimeout(r, 60));
+
+    // db를 계속 재사용한다면 close 하지 않아도 되지만,
+    // 워밍업만 하고 끝낼 경우 닫는 편이 안정적
+    // (openHongbuMemoDBOnce()가 싱글톤이면 close하면 안 될 수 있으니,
+    //  싱글톤 구조라면 close는 빼세요)
+    // db.close();
+
+    console.log("[WARMUP] hongbuMemo warmup OK");
+    return true;
+  } catch (e) {
+    console.warn("[WARMUP] hongbuMemo warmup FAIL:", e);
+    return false;
+  }
+}
+
 
 // ✅ 메모 복원 (정상 동작 버전) - iOS 안정화: "단건 트랜잭션"으로 순차 복원
 
 function restoreMemoDB() {
+
+
+	await warmupHongbuMemoDB();
+	
   const input = document.getElementById("memoRestoreInput");
   input.accept = ".json,.jsonl";
   input.multiple = true;
