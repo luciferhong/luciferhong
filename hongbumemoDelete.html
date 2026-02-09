@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>hongbuMemo DB 초기화</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; margin: 16px; }
+    .card { border: 1px solid #333; border-radius: 12px; padding: 14px; margin: 12px 0; }
+    button { padding: 10px 12px; border-radius: 10px; border: 1px solid #555; background: #111; color: #fff; font-weight: 700; }
+    button:disabled { opacity: .5; }
+    label { display: flex; gap: 10px; align-items: center; margin: 6px 0; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #0b0b0b; color: #d7d7d7; padding: 12px; border-radius: 10px; border: 1px solid #333; }
+    .warn { color: #ffb020; }
+    .ok { color: #7CFF7C; }
+    .err { color: #ff6b6b; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <h2>hongbuMemo DB 초기화(삭제) 페이지</h2>
+
+  <div class="card">
+    <div class="row">
+      <button id="btnDelete">🧨 hongbuMemo 삭제</button>
+      <button id="btnCheck">🔎 현재 상태 확인</button>
+      <button id="btnClearLog">🧹 로그 지우기</button>
+    </div>
+
+    <div style="margin-top:10px;">
+      <label><input type="checkbox" id="chkCaches" checked> Cache Storage도 같이 삭제 (권장)</label>
+      <label><input type="checkbox" id="chkSW" checked> Service Worker 등록도 해제 (권장)</label>
+    </div>
+
+    <p class="warn" style="margin-top:10px;">
+      ⚠️ 삭제가 “blocked”로 뜨면: 다른 탭(홍부 페이지 포함)을 전부 닫고, 이 페이지 한 탭만 남긴 뒤 다시 눌러주세요.
+      iOS는 열려있는 연결이 있으면 IndexedDB 삭제가 막히는 경우가 많습니다.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>로그</h3>
+    <pre id="log"></pre>
+  </div>
+
+<script>
+(() => {
+  const DB_NAME = "hongbuMemo";
+
+  const $log = document.getElementById("log");
+  const $btnDelete = document.getElementById("btnDelete");
+  const $btnCheck = document.getElementById("btnCheck");
+  const $btnClearLog = document.getElementById("btnClearLog");
+  const $chkCaches = document.getElementById("chkCaches");
+  const $chkSW = document.getElementById("chkSW");
+
+  function now() {
+    const d = new Date();
+    const pad = n => String(n).padStart(2,"0");
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function log(msg, cls="") {
+    const line = `[${now()}] ${msg}`;
+    $log.textContent += (cls ? `${line}\n` : `${line}\n`);
+    // 색은 간단히 텍스트로만, 필요하면 HTML로 바꿔도 됨
+    console.log(line);
+  }
+
+  function clearLog() { $log.textContent = ""; }
+
+  async function listDBsIfPossible() {
+    // iOS Safari/Chrome는 indexedDB.databases() 미지원일 수 있음
+    if (typeof indexedDB.databases !== "function") {
+      log("ℹ️ indexedDB.databases() 미지원 환경(iOS일 수 있음). DB 목록 조회 스킵");
+      return null;
+    }
+    try {
+      const dbs = await indexedDB.databases();
+      return dbs;
+    } catch (e) {
+      log(`ℹ️ DB 목록 조회 실패: ${e?.message || e}`);
+      return null;
+    }
+  }
+
+  async function checkStatus() {
+    log("🔎 상태 확인 시작");
+    const dbs = await listDBsIfPossible();
+    if (dbs) {
+      const names = dbs.map(d => d.name).filter(Boolean);
+      const has = names.includes(DB_NAME);
+      log(`DB 목록: ${names.length ? names.join(", ") : "(비어있음)"}`);
+      log(has ? `✅ ${DB_NAME} 존재` : `✅ ${DB_NAME} 없음(또는 목록에 안 뜸)`);
+    }
+
+    // 실제로 열어보기 (열리면 존재 가능성 높음)
+    await new Promise((resolve) => {
+      const req = indexedDB.open(DB_NAME);
+      let done = false;
+
+      req.onupgradeneeded = () => {
+        // 존재하지 않으면 여기로 들어올 수 있음(새 DB 생성됨)
+        // 이 페이지는 "생성"이 목적이 아니라서 바로 중단
+        log(`⚠️ ${DB_NAME} 가 없어서 새로 생성되려 함(onupgradeneeded). 즉시 중단합니다.`);
+        try { req.transaction.abort(); } catch (e) {}
+      };
+
+      req.onsuccess = () => {
+        try {
+          const db = req.result;
+          log(`✅ open 성공: name=${db.name}, version=${db.version}, stores=${Array.from(db.objectStoreNames).join(", ") || "(없음)"}`);
+          db.close();
+        } catch (e) {
+          log(`ℹ️ open 성공 후 처리 중 예외: ${e?.message || e}`);
+        }
+        done = true;
+        resolve();
+      };
+
+      req.onerror = () => {
+        log(`❌ open 실패: ${req.error?.message || req.error}`);
+        done = true;
+        resolve();
+      };
+
+      // 혹시나 hang 방지
+      setTimeout(() => { if (!done) { log("ℹ️ open 응답 지연(환경 이슈 가능)"); resolve(); } }, 3000);
+    });
+
+    log("🔎 상태 확인 완료");
+  }
+
+  async function deleteCaches() {
+    if (!("caches" in window) || typeof caches.keys !== "function") {
+      log("ℹ️ Cache Storage 미지원. 스킵");
+      return;
+    }
+    const keys = await caches.keys();
+    if (!keys.length) {
+      log("✅ Cache Storage: 삭제할 캐시 없음");
+      return;
+    }
+    for (const k of keys) {
+      const ok = await caches.delete(k);
+      log(`${ok ? "✅" : "ℹ️"} cache delete: ${k}`);
+    }
+  }
+
+  async function unregisterServiceWorkers() {
+    if (!("serviceWorker" in navigator) || typeof navigator.serviceWorker.getRegistrations !== "function") {
+      log("ℹ️ Service Worker 미지원. 스킵");
+      return;
+    }
+    const regs = await navigator.serviceWorker.getRegistrations();
+    if (!regs.length) {
+      log("✅ Service Worker: 등록 없음");
+      return;
+    }
+    for (const r of regs) {
+      const ok = await r.unregister();
+      log(`${ok ? "✅" : "ℹ️"} SW unregister: ${r.scope}`);
+    }
+  }
+
+  async function deleteDB() {
+    $btnDelete.disabled = true;
+    try {
+      log(`🧨 IndexedDB 삭제 시도: ${DB_NAME}`);
+
+      const result = await new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(DB_NAME);
+
+        req.onblocked = () => {
+          log("⚠️ deleteDatabase BLOCKED: 다른 탭/창에서 DB를 사용 중일 수 있음. 모든 홍부 탭을 닫고 다시 시도하세요.");
+        };
+
+        req.onsuccess = () => resolve({ ok: true });
+        req.onerror = () => resolve({ ok: false, err: req.error });
+      });
+
+      if (result.ok) {
+        log(`✅ DB 삭제 성공: ${DB_NAME}`);
+      } else {
+        log(`❌ DB 삭제 실패: ${result.err?.message || result.err}`);
+      }
+
+      if ($chkCaches.checked) {
+        log("🧹 Cache Storage 삭제 시작");
+        await deleteCaches();
+        log("🧹 Cache Storage 삭제 완료");
+      }
+
+      if ($chkSW.checked) {
+        log("🧹 Service Worker 해제 시작");
+        await unregisterServiceWorkers();
+        log("🧹 Service Worker 해제 완료");
+      }
+
+      log("✅ 전체 작업 완료. 이제 홍부 페이지로 돌아가 새로고침하면 새 DB로 재생성됩니다.");
+    } catch (e) {
+      log(`❌ 예외: ${e?.message || e}`);
+    } finally {
+      $btnDelete.disabled = false;
+    }
+  }
+
+  $btnDelete.addEventListener("click", deleteDB);
+  $btnCheck.addEventListener("click", checkStatus);
+  $btnClearLog.addEventListener("click", clearLog);
+
+  // 페이지 로드시 상태 한 번 표시
+  clearLog();
+  log("hongbuMemo 초기화 페이지 로드됨");
+  checkStatus();
+})();
+</script>
+</body>
+</html>
