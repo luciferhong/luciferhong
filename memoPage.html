@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>시군구 메모 전체 복사 (조회 후 저장)</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "맑은 고딕", sans-serif; margin: 16px; }
+  h2 { margin: 0 0 10px 0; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  select, button { font-size: 14px; padding: 8px 10px; }
+  button { cursor:pointer; }
+  button:disabled { cursor: not-allowed; opacity: 0.65; }
+  .card { border:1px solid #e5e5e5; border-radius: 12px; padding: 12px; margin: 10px 0; }
+  #status { white-space: pre-wrap; font-size: 13px; line-height: 1.35; }
+  .ok { background:#f3fff7; border-color:#b7ebc6; }
+  .danger { background:#fff5f5; border-color:#f2b8b5; }
+  .muted { color:#666; font-size: 12px; }
+  #renderArea { margin-top: 12px; }
+  .apt { margin-bottom: 14px; padding: 12px; border: 1px dashed #ccc; border-radius: 12px; }
+  .apt h3 { margin: 0 0 6px 0; font-size: 16px; }
+  .meta { font-size: 13px; color:#333; margin-bottom: 8px; }
+  pre { margin: 8px 0 10px 0; padding: 10px; background: #f7f7f7; border-radius: 10px; overflow:auto; white-space: pre-wrap; word-break: break-word; }
+  .images { display:flex; flex-wrap:wrap; gap:6px; }
+  .images img { max-width: 220px; max-height: 220px; border-radius: 10px; border: 1px solid #ddd; cursor: zoom-in; }
+  .images img { loading: lazy; decoding: async; } /* harmless on browsers that ignore */
+
+  /* 이미지 모달 */
+  #imageModal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.82); justify-content:center; align-items:center; z-index:99999; }
+  #modalImg { max-width:92vw; max-height:92vh; border-radius:10px; background:#fff; }
+  #closeHint { position:absolute; bottom:16px; left:50%; transform: translateX(-50%); color:#fff; font-size: 12px; opacity: 0.85; }
+</style>
+</head>
+<body>
+
+<h2>💾 시군구 메모 전체 복사</h2>
+<div class="muted">
+  목록에는 <b>메모 또는 사진이 실제 존재하는 지역(시도+시군구)</b>만 표시됩니다. (memoBackup 방식)
+  <br/>① 지역 선택 → ② <b>조회</b> → ③ 이미지 로딩 완료 후 <b>페이지 저장</b> 버튼 활성화 → ④ 저장 파일에서도 사진 클릭 확대 가능
+</div>
+
+<div class="card">
+  <div class="row">
+    <label>지역(시도+시군구)
+      <select id="regionSelect" disabled>
+        <option value="">지역 로딩중...</option>
+      </select>
+    </label>
+
+    <label class="muted" style="display:flex; gap:6px; align-items:center;">
+      <input type="checkbox" id="onlyHasMemo" checked />
+      메모/사진 있는 아파트만
+    </label>
+
+    <button id="queryBtn">🔎 조회</button>
+    <button id="downloadPageBtn" disabled>⏳ 로딩 중...</button>
+  </div>
+</div>
+
+<div id="status" class="card">초기화 중…</div>
+<div id="renderArea"></div>
+
+<!-- 이미지 모달 -->
+<div id="imageModal" aria-hidden="true">
+  <img id="modalImg" alt="확대 이미지" />
+  <div id="closeHint">배경 클릭(또는 ESC)으로 닫기</div>
+</div>
+
+<script>
+(() => {
+  // ---------- IndexedDB ----------
+  const DB_NAME = 'hongbuMemo';
+  const DB_VERSION = 4;
+  const STORE_NOTES = 'apartmentNotes';
+
+  // ---------- DOM ----------
+  const els = {
+    region: document.getElementById('regionSelect'),
+    onlyHas: document.getElementById('onlyHasMemo'),
+    query: document.getElementById('queryBtn'),
+    download: document.getElementById('downloadPageBtn'),
+    status: document.getElementById('status'),
+    render: document.getElementById('renderArea'),
+    imageModal: document.getElementById('imageModal'),
+    modalImg: document.getElementById('modalImg'),
+  };
+
+  // ---------- State ----------
+  const aptIndex = new Map();     // aptId -> meta (필요한 aptId만)
+  const regionOptions = new Map(); // regionKey -> {label, sido, sigungu, count}
+  let lastQueryDone = false;
+
+  // ---------- UI helpers ----------
+  function setStatus(text, cls='') {
+    els.status.textContent = text;
+    els.status.className = 'card ' + (cls || '');
+  }
+
+  function setDownloadReady(isReady) {
+    if (isReady) {
+      els.download.disabled = false;
+      els.download.textContent = '💾 페이지 저장(이미지 포함)';
+    } else {
+      els.download.disabled = true;
+      els.download.textContent = '⏳ 로딩 중...';
+    }
+  }
+
+  function setQueryBusy(isBusy) {
+    els.query.disabled = isBusy;
+    els.query.textContent = isBusy ? '⏳ 조회 중...' : '🔎 조회';
+    els.region.disabled = isBusy || (els.region.dataset.ready !== '1');
+    els.onlyHas.disabled = isBusy;
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function stripHtmlAndTrim(s) {
+    return String(s ?? '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .trim();
+  }
+
+  function hasMemoContent(n) {
+    const memoText = stripHtmlAndTrim(n?.memo);
+    const imgs = Array.isArray(n?.images) ? n.images : [];
+    return memoText.length > 0 || imgs.length > 0;
+  }
+
+  function noteIdOf(n) {
+    return String(n?.id ?? n?.aptId ?? n?.apartmentId ?? '').trim();
+  }
+
+  // ---------- DB helpers (memoBackup style: streaming cursor) ----------
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onsuccess = e => resolve(e.target.result);
+      req.onerror = () => reject(new Error('DB 열기 실패'));
+    });
+  }
+
+  function iterateNotes(visitor) {
+    return openDB().then(db => {
+      const tx = db.transaction([STORE_NOTES], 'readonly');
+      const st = tx.objectStore(STORE_NOTES);
+
+      return new Promise((resolve, reject) => {
+        const req = st.openCursor();
+        req.onsuccess = e => {
+          const cur = e.target.result;
+          if (cur) {
+            try { visitor(cur.value); } catch (err) { console.error(err); }
+            cur.continue();
+          } else {
+            resolve();
+          }
+        };
+        req.onerror = () => reject(new Error('cursor 실패'));
+      }).finally(() => db.close());
+    });
+  }
+  async function collectUsedAptIds() {
+    const set = new Set();
+    await iterateNotes(n => {
+      if (!hasMemoContent(n)) return;
+      const id = noteIdOf(n);
+      if (id) set.add(id);
+    });
+    return set;
+  }
+
+  // ---------- apt.json (필요한 aptId만 인덱싱) ----------
+  async function loadFilteredAptIndexFromSamePath(usedIds) {
+    const res = await fetch(`apt.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('apt.json fetch 실패: HTTP ' + res.status);
+
+    // 404 HTML 방지: content-type 체크
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!ct.includes('application/json') && !ct.includes('text/json')) {
+      const head = (await res.text()).slice(0, 120);
+      throw new Error('apt.json이 JSON이 아닙니다(경로/서버 확인). 응답 head: ' + head);
+    }
+
+    const data = await res.json();
+    const arr = Array.isArray(data) ? data :
+      (Array.isArray(data?.apartments) ? data.apartments :
+       Array.isArray(data?.data) ? data.data : []);
+
+    aptIndex.clear();
+    for (const a of arr) {
+      const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+      if (!id || !usedIds.has(id)) continue;
+
+      aptIndex.set(id, {
+        sido: String(a.sido ?? a.sidoCode ?? '').trim(),
+        sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+        sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
+        sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
+        name: String(a.name ?? '').trim(),
+        year: a.year ?? '',
+        units: (a.units != null ? parseInt(a.units, 10) : ''),
+      });
+    }
+    return aptIndex.size;
+  }
+
+  // ---------- region options (메모 있는 지역만 + 시도표시 + 건수) ----------
+  function regionKeyOf(meta) {
+    const s1 = String(meta?.sido ?? '').trim();
+    const s2 = String(meta?.sigungu ?? '').trim();
+    return `${s1}__${s2}`;
+  }
+
+  function regionLabelOf(meta) {
+    const sidoNm = (meta?.sidoNm || meta?.sido || '').trim();
+    const sigunguNm = (meta?.sigunguNm || meta?.sigungu || '').trim();
+    return (sidoNm && sigunguNm) ? `${sidoNm} ${sigunguNm}` : (sigunguNm || sidoNm || '알수없음');
+  }
+
+  async function buildRegionOptionsFromNotes() {
+    regionOptions.clear();
+
+    await iterateNotes(n => {
+      if (!hasMemoContent(n)) return;
+      const id = noteIdOf(n);
+      const meta = aptIndex.get(id);
+      if (!meta || !meta.sido || !meta.sigungu) return;
+
+      const key = regionKeyOf(meta);
+      const cur = regionOptions.get(key) || {
+        key,
+        label: regionLabelOf(meta),
+        sido: String(meta.sido).trim(),
+        sigungu: String(meta.sigungu).trim(),
+        count: 0,
+      };
+      cur.count++;
+      regionOptions.set(key, cur);
+    });
+
+    // Fill select
+    els.region.innerHTML = '';
+    const optAll = document.createElement('option');
+    optAll.value = '';
+    optAll.textContent = '전체(메모 있는 지역)';
+    els.region.appendChild(optAll);
+
+    const items = Array.from(regionOptions.values())
+      .sort((a,b) => a.label.localeCompare(b.label, 'ko'));
+
+    for (const it of items) {
+      const opt = document.createElement('option');
+      opt.value = it.key;
+      opt.textContent = `${it.label} (${it.count}건)`;
+      els.region.appendChild(opt);
+    }
+
+    els.region.dataset.ready = '1';
+    els.region.disabled = false;
+    return items.length;
+  }
+
+  function selectedRegionFilter() {
+    const v = (els.region.value || '').trim();
+    if (!v) return null;
+    const it = regionOptions.get(v);
+    if (!it) return null;
+    return { sido: it.sido, sigungu: it.sigungu };
+  }
+
+  // ---------- Image modal ----------
+  function openModal(src){
+    els.modalImg.src = src;
+    els.imageModal.style.display = 'flex';
+    els.imageModal.setAttribute('aria-hidden','false');
+  }
+  function closeModal(){
+    els.imageModal.style.display = 'none';
+    els.imageModal.setAttribute('aria-hidden','true');
+    els.modalImg.removeAttribute('src');
+  }
+
+  els.render.addEventListener('click', (e) => {
+    const img = e.target && e.target.closest && e.target.closest('img');
+    if (!img) return;
+    const src = img.getAttribute('src') || '';
+    if (!src) return;
+    openModal(src);
+  });
+
+  els.imageModal.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  // ---------- Render (streaming cursor; avoid large arrays) ----------
+  async function waitForImagesLoaded(root) {
+    const imgs = Array.from(root.querySelectorAll('img'));
+    if (imgs.length === 0) return;
+    await Promise.all(imgs.map(img => new Promise(resolve => {
+      if (img.complete) return resolve();
+      const done = () => resolve();
+      img.addEventListener('load', done, { once: true });
+      img.addEventListener('error', done, { once: true });
+    })));
+  }
+
+  async function renderNotesStreaming() {
+    setDownloadReady(false);
+    els.render.innerHTML = '';
+
+    const onlyHas = els.onlyHas.checked;
+    const filter = selectedRegionFilter();
+
+    let rendered = 0;
+    let imagesCount = 0;
+    const usedSet = new Set();
+
+    // Chunk rendering to keep UI responsive on mobile
+    let pendingNodes = [];
+    let lastFlush = performance.now();
+    const FLUSH_MS = 24;
+
+    const flush = () => {
+      if (pendingNodes.length) {
+        const frag = document.createDocumentFragment();
+        for (const n of pendingNodes) frag.appendChild(n);
+        els.render.appendChild(frag);
+        pendingNodes = [];
+      }
+      lastFlush = performance.now();
+    };
+
+    await iterateNotes((n) => {
+      if (onlyHas && !hasMemoContent(n)) return;
+
+      const id = noteIdOf(n);
+      if (!id) return;
+      const meta = aptIndex.get(id);
+      if (!meta) return;
+
+      if (filter) {
+        if (String(meta.sido || '').trim() !== filter.sido) return;
+        if (String(meta.sigungu || '').trim() !== filter.sigungu) return;
+      }
+
+      usedSet.add(id);
+
+      const div = document.createElement('div');
+      div.className = 'apt';
+      div.innerHTML = `
+        <h3>${escapeHtml(meta.name || ('ID ' + id))}</h3>
+        <div class="meta">입주시기(연도): ${escapeHtml(meta.year || '-')} / 총세대수: ${escapeHtml(meta.units || '-')}</div>
+        <pre>${escapeHtml((n.memo || '').trim())}</pre>
+        <div class="images"></div>
+      `;
+
+      const imgBox = div.querySelector('.images');
+      const imgs = (Array.isArray(n.images) ? n.images : []);
+      imagesCount += imgs.length;
+
+      for (const src of imgs) {
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        img.src = src;
+        imgBox.appendChild(img);
+      }
+
+      pendingNodes.push(div);
+      rendered++;
+
+      const now = performance.now();
+      if (now - lastFlush > FLUSH_MS) {
+        flush();
+              }
+    });
+
+    flush();
+    await waitForImagesLoaded(els.render);
+    setDownloadReady(true);
+
+    return { rendered, imagesCount, aptIdCount: usedSet.size };
+  }
+
+  // ---------- Export (self-contained HTML with zoom) ----------
+  async function ensureImagesAreDataUrls(root) {
+    const imgs = Array.from(root.querySelectorAll("img"));
+    for (const img of imgs) {
+      const src = img.getAttribute("src") || "";
+      if (src.startsWith("data:")) continue;
+      try {
+        const res = await fetch(src, { cache: "no-store" });
+        const blob = await res.blob();
+        const dataUrl = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result);
+          r.onerror = reject;
+          r.readAsDataURL(blob);
+        });
+        img.setAttribute("src", dataUrl);
+      } catch (e) {
+        console.warn("이미지 변환 실패:", src, e);
+      }
+    }
+  }
+
+  function downloadSelfContainedHtml(filename, htmlString) {
+    const blob = new Blob([htmlString], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+
+  async function exportCurrentPageWithImages() {
+    await ensureImagesAreDataUrls(els.render);
+
+    const styles = Array.from(document.querySelectorAll("style"))
+      .map(s => s.innerHTML)
+      .join("\n");
+
+    const now = new Date();
+    const ts = now.toISOString().slice(0,19).replace("T","_").replace(/:/g,"-");
+    const regionLabel = els.region?.selectedOptions?.[0]?.textContent || '전체';
+    const safeLabel = String(regionLabel).replace(/[\\/:*?"<>|]/g, "_");
+    const filename = `시군구메모_${safeLabel}_${ts}.html`;
+
+    // backtick 방지
+    const contentHTML = String(els.render.innerHTML || '').replace(/`/g, '&#96;');
+
+    const out = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeLabel} 메모</title>
+<style>${styles}</style>
+<style>
+  #imageModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.82);justify-content:center;align-items:center;z-index:99999}
+  #modalImg{max-width:92vw;max-height:92vh;border-radius:10px;background:#fff}
+  #closeHint{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);color:#fff;font-size:12px;opacity:.85}
+</style>
+</head>
+<body>
+<h2>${safeLabel} 메모</h2>
+
+<div id="exportContent">${contentHTML}</div>
+
+<div id="imageModal" aria-hidden="true">
+  <img id="modalImg" alt="확대 이미지" />
+  <div id="closeHint">배경 클릭(또는 ESC)으로 닫기</div>
+</div>
+
+<script>
+(function(){
+  const root = document.getElementById('exportContent');
+  const modal = document.getElementById('imageModal');
+  const modalImg = document.getElementById('modalImg');
+
+  function openModal(src){
+    modalImg.src = src;
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden','false');
+  }
+  function closeModal(){
+    modal.style.display = 'none';
+    modal.setAttribute('aria-hidden','true');
+    modalImg.removeAttribute('src');
+  }
+
+  root.addEventListener('click', (e) => {
+    const img = e.target && e.target.closest && e.target.closest('img');
+    if (!img) return;
+    const src = img.getAttribute('src') || '';
+    if (!src) return;
+    openModal(src);
+  });
+
+  modal.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+})();
+<\/script>
+
+</body>
+</html>`;
+
+    downloadSelfContainedHtml(filename, out);
+  }
+
+  // ---------- Events ----------
+  els.query.addEventListener('click', async () => {
+    try {
+      if (els.region.dataset.ready !== '1') {
+        setStatus('⚠️ 지역 로딩이 아직 끝나지 않았습니다. 잠시 후 다시 눌러주세요.', 'danger');
+        return;
+      }
+      setQueryBusy(true);
+      setDownloadReady(false);
+      lastQueryDone = false;
+
+      els.render.innerHTML = '';
+      setStatus('조회 중… (메모/사진을 불러오고 있습니다)', '');
+
+      const { rendered, imagesCount, aptIdCount } = await renderNotesStreaming();
+
+      lastQueryDone = true;
+      setStatus(
+        `✅ 조회 완료\n` +
+        `- 표시: ${rendered}개\n` +
+        `- 표시 아파트 ID: ${aptIdCount}개\n` +
+        `- 이미지: ${imagesCount}개\n\n` +
+        `※ 이미지 로딩이 끝나면 저장 버튼이 활성화됩니다.`,
+        'ok'
+      );
+    } catch (e) {
+      console.error(e);
+      setDownloadReady(false);
+      setStatus(
+        `❌ 조회 실패: ${e?.message || e}\n\n` +
+        `체크:\n` +
+        `1) file:// 로 열지 말고 http://127.0.0.1:8000 같은 서버로 열기\n` +
+        `2) 같은 경로에 apt.json 존재 여부\n` +
+        `3) 해당 오리진에 hongbuMemo(apartmentNotes)에 메모가 저장되어 있는지`,
+        'danger'
+      );
+    } finally {
+      setQueryBusy(false);
+    }
+  });
+
+  els.region.addEventListener('change', async () => {
+    if (!lastQueryDone) return;
+    // 조회를 다시 누르지 않아도 필터 즉시 적용하고 싶으면 아래 한 줄을 주석 해제:
+    // els.query.click();
+  });
+
+  els.onlyHas.addEventListener('change', async () => {
+    if (!lastQueryDone) return;
+    // 조회를 다시 누르지 않아도 필터 즉시 적용하고 싶으면 아래 한 줄을 주석 해제:
+    // els.query.click();
+  });
+
+  els.download.addEventListener('click', exportCurrentPageWithImages);
+
+  // ---------- Init (memoBackup 방식으로 "메모 있는 지역"만 구성) ----------
+  (async () => {
+    setDownloadReady(false);
+    setQueryBusy(true);
+    setStatus('초기화 중… (메모 있는 지역 목록 생성)', '');
+    try {
+      const usedIds = await collectUsedAptIds();
+      const aptLoaded = await loadFilteredAptIndexFromSamePath(usedIds);
+      const regionCount = await buildRegionOptionsFromNotes();
+
+      setStatus(
+        `✅ 준비 완료\n` +
+        `- 메모/사진 있는 아파트 ID: ${usedIds.size}개\n` +
+        `- apt.json 인덱싱(필요한 ID만): ${aptLoaded}개\n` +
+        `- 메모 있는 지역(시도+시군구): ${regionCount}개\n\n` +
+        `지역 선택 후 조회를 눌러주세요.`,
+        'ok'
+      );
+      setDownloadReady(false);
+    } catch (e) {
+      console.error(e);
+      els.region.disabled = true;
+      setStatus(
+        `❌ 초기화 실패: ${e?.message || e}\n\n` +
+        `체크:\n` +
+        `1) 같은 경로에 apt.json 존재 여부(서버에서 제공)\n` +
+        `2) file:// 로 열지 말고 http://127.0.0.1:8000 같은 서버로 열기\n` +
+        `3) apt.json이 404면 JSON 대신 HTML이 내려오며(Unexpected token '<') 오류가 납니다`,
+        'danger'
+      );
+    } finally {
+      setQueryBusy(false);
+    }
+  })();
+
+})();
+</script>
+
+</body>
+</html>
