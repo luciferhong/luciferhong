@@ -2837,22 +2837,35 @@ function updateMarkerStyleAndSave(id, selectedColor, textColor, fontSize) {
 window.__memoPresenceCache = window.__memoPresenceCache || new Map();
 window.__memoPresencePending = window.__memoPresencePending || new Map();
 window.__memoDbPromise = window.__memoDbPromise || null;
-
 function openHongbuMemoDBOnce() {
   if (window.__memoDbPromise) return window.__memoDbPromise;
+
   window.__memoDbPromise = new Promise((resolve, reject) => {
-    try {
-      const req = indexedDB.open("hongbuMemo", 4);
-      req.onsuccess = (e) => resolve(e.target.result);
-      req.onerror = (e) => reject(e.target.error);
-      // 업그레이드는 기존 initMemoIndexedDB가 담당. 여기서는 읽기 전용 용도.
-      req.onupgradeneeded = (e) => resolve(e.target.result);
-    } catch (err) {
-      reject(err);
-    }
+    const req = indexedDB.open("hongbuMemo", 4);
+
+    // ✅ 추가: 첫 생성/업그레이드시 스토어 보장
+    req.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains("apartmentNotes")) {
+        db.createObjectStore("apartmentNotes", { keyPath: "id" });
+      }
+    };
+
+    req.onsuccess = (e) => {
+      const db = e.target.result;
+
+      // ✅ iOS blocked/업그레이드 대비: 다른 탭에서 버전 변경 시 자동 close
+      db.onversionchange = () => { try { db.close(); } catch(e) {} };
+
+      resolve(db);
+    };
+
+    req.onerror = (e) => reject(e.target.error);
   });
+
   return window.__memoDbPromise;
 }
+
 
 async function memoExistsLazy(id) {
   id = String(id);
