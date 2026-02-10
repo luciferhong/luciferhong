@@ -67,11 +67,25 @@
 			box-shadow: 0px 0px 5px rgba(74, 144, 226, 0.5);
 		}
 
-	#controls {
-    display: flex; /* ✅ 가로 정렬 */
-    align-items: center; /* ✅ 내부 요소 세로 정렬 */
-    gap: 10px; /* ✅ 요소 간격 조정 */
-	}
+		#controls {
+			display: flex;           /* ✅ 가로 정렬 */
+			align-items: center;     /* ✅ 내부 요소 세로 정렬 */
+			flex-wrap: nowrap;       /* ✅ 1920x1080 기준 한 줄 유지 */
+			gap: 6px;                /* ✅ 요소 간격 축소 */
+			font-size: 13px;
+		}
+
+		/* 드롭다운/입력 크기 조금 축소 (한 줄 유지 목적) */
+		#sidoFilter, #sigunguFilter {
+			min-width: 110px;
+			padding: 2px 6px;
+			font-size: 13px;
+		}
+		#unitFilter {
+			width: 60px;
+			padding: 2px 6px;
+			font-size: 13px;
+		}
 
 	#scaleControls {
 		display: flex; /* ✅ 가로 정렬 */
@@ -189,18 +203,18 @@ buttonContainer {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: 30px;
+  margin-left: 8px; /* ✅ 한 줄 유지 위해 여백 축소 */
 }
 
 .filter-label {
   <!-- font-weight: bold; -->
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .filter-input {
-  width: 60px;
+  width: 56px;
   padding: 2px 6px;
-  font-size: 14px;
+  font-size: 13px;
   border: 2px solid #4A90E2;
   border-radius: 6px;
   outline: none;
@@ -227,7 +241,11 @@ buttonContainer {
 </h1>
 
 <div id="controls">
-    <label for="unitFilter">최소세대수: </label>
+    <label for="sidoFilter">시도: </label>
+    <select id="sidoFilter"><option value="">전체</option></select>
+    <label for="sigunguFilter">시군구: </label>
+    <select id="sigunguFilter" disabled><option value="">전체</option></select>
+	    <label for="unitFilter">최소세대수: </label>
     <input type="number" id="unitFilter" min="0" value="190">
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label><input type="checkbox" id="toggleSchools" >초</label>
@@ -823,6 +841,28 @@ buttonContainer {
 	let apartmentMarkers = []; // ✅ 지도에 표시된 마커 저장
 	let markerCluster = null; // ✅ 마커 클러스터링 객체
 
+	// ✅ 시도/시군구 필터용 필드 정규화 유틸
+	function _pickField(obj, keys){
+		for (const k of keys){
+			if (obj && obj[k] != null && String(obj[k]).trim() !== "") return String(obj[k]).trim();
+		}
+		return "";
+	}
+	function _normSidoCode(apt){
+		// hongbutest와 동일: value(코드)는 sido, label(표기)은 sidoNm를 우선 사용
+		return _pickField(apt, ["sido","sidoCd","sidoCode","SIDO","시도코드","sido_cd","sido_code"]);
+	}
+	function _normSidoName(apt){
+		return _pickField(apt, ["sidoNm","sidoName","SIDO_NM","시도명","sido_name","시도"]);
+	}
+	function _normSigunguCode(apt){
+		return _pickField(apt, ["sigungu","sigunguCd","sigunguCode","SIGUNGU","시군구코드","sigungu_cd","sigungu_code","gugun"]);
+	}
+	function _normSigunguName(apt){
+		return _pickField(apt, ["sigunguNm","sigunguName","SIGUNGU_NM","시군구명","sigungu_name","시군구"]);
+	}
+
+
 	// ✅ 2. 아파트 데이터를 fetch()로 가져오기
 	async function loadApartments() { 
     
@@ -838,10 +878,17 @@ buttonContainer {
 				units: parseInt(apt.units, 10), // ✅ 올바른 속성 접근
 				lat: parseFloat(apt.lat), // ✅ 올바른 속성 접근
 				lng: parseFloat(apt.lng), // ✅ 올바른 속성 접근
-				lease: apt.lease // ✅ 올바른 속성 접근
+				lease: apt.lease, // ✅ 올바른 속성 접근
+				// ✅ (선택) apt.json에 시도/시군구가 있으면 필터로 사용
+				sido: _normSidoCode(apt) || _normSidoName(apt),
+				sidoNm: _normSidoName(apt) || _normSidoCode(apt),
+				sigungu: _normSigunguCode(apt) || _normSigunguName(apt),
+					sigunguNm: _normSigunguName(apt) || _normSigunguCode(apt)
 			}));
 
-			
+			// ✅ 시도/시군구 필터 옵션 생성
+			initRegionFilters();
+
 			//console.log("✅ 아파트 데이터 fetch 완료");
 			updateMarkers(window.map.getBounds())
 		} catch (error) {
@@ -851,6 +898,140 @@ buttonContainer {
 
 
 
+
+// ==============================
+// ✅ 시도/시군구 필터 (hongbutest와 동일: value=코드, label=이름)
+//  - 시도: value=sido, label=sidoNm
+//  - 시군구: value=sigungu, label=sigunguNm (선택된 시도 기준)
+// ==============================
+function getFilterEls() {
+	return {
+		sidoSel: document.getElementById('sidoFilter'),
+		sigunguSel: document.getElementById('sigunguFilter'),
+	};
+}
+
+// ▼ 옵션 채우기 유틸 (items: string | {value, label})
+function fillOptions(selectEl, items) {
+	const prev = selectEl.value;
+	selectEl.innerHTML = '';
+
+	// 첫 옵션: 전체(빈값)
+	const optAll = document.createElement('option');
+	optAll.value = '';
+	optAll.textContent = '전체';
+	selectEl.appendChild(optAll);
+
+	(items || []).forEach(item => {
+		const opt = document.createElement('option');
+		if (typeof item === 'string') {
+			opt.value = item;
+			opt.textContent = item;
+		} else {
+			opt.value = item.value;
+			opt.textContent = item.label;
+		}
+		selectEl.appendChild(opt);
+	});
+
+	// 이전 선택 유지(가능하면)
+	if ([...selectEl.options].some(o => o.value === prev)) {
+		selectEl.value = prev;
+	} else {
+		selectEl.value = '';
+	}
+}
+
+// ▼ 시도/시군구 옵션 구성 (apartmentData 기반)
+//   - 시도: label=시도명(sidoNm), value=시도코드(sido)
+//   - 시군구: label=시군구명(sigunguNm), value=시군구코드(sigungu)
+function buildRegionFiltersFromApartments() {
+	const { sidoSel, sigunguSel } = getFilterEls();
+	if (!sidoSel || !sigunguSel || !Array.isArray(apartmentData)) return;
+
+	// 시도코드 -> { name: 시도명, sigungu: Map(시군구코드 -> 시군구명) }
+	const bySido = new Map();
+	apartmentData.forEach(a => {
+		const sc = String(a.sido || '').trim();
+		const sn = String(a.sidoNm || '').trim();
+		const gc = String(a.sigungu || '').trim();
+		const gn = String(a.sigunguNm || '').trim();
+		if (!sc) return;
+		if (!bySido.has(sc)) bySido.set(sc, { name: sn || sc, sigungu: new Map() });
+		if (gc) bySido.get(sc).sigungu.set(gc, gn || gc);
+	});
+
+	// 지역 필드가 없으면 비활성화
+	if (bySido.size === 0) {
+		sidoSel.disabled = true;
+		sigunguSel.disabled = true;
+		sidoSel.title = "apt.json에 sido/sidoNm(시도코드/명) 필드가 없어 필터를 사용할 수 없습니다.";
+		sigunguSel.title = "apt.json에 sigungu/sigunguNm(시군구코드/명) 필드가 없어 필터를 사용할 수 없습니다.";
+		fillOptions(sidoSel, []);
+		fillOptions(sigunguSel, []);
+		return;
+	}
+
+	// 시도 옵션: value=코드, label=이름
+	const sidoItems = Array.from(bySido.entries())
+		.map(([code, obj]) => ({ value: code, label: obj.name }))
+		.sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+	fillOptions(sidoSel, sidoItems);
+
+	// 선택된 시도에 따라 시군구 옵션 생성
+	const selectedSidoCode = (sidoSel.value || '').trim();
+	if (selectedSidoCode && bySido.has(selectedSidoCode)) {
+		const sigunguItems = Array.from(bySido.get(selectedSidoCode).sigungu.entries())
+			.map(([code, name]) => ({ value: code, label: name }))
+			.sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+		fillOptions(sigunguSel, sigunguItems);
+		sigunguSel.disabled = false;
+	} else {
+		fillOptions(sigunguSel, []);
+		sigunguSel.disabled = true;
+	}
+}
+
+function applyRegionFilterUpdate() {
+	// 필터가 바뀌면: 마커 캐시를 비우고 현재 bounds로 다시 그림
+	try {
+		if (window.apartmentMarkers) {
+			Object.values(window.apartmentMarkers).forEach(m => {
+				try { if (m && typeof m.setMap === 'function') m.setMap(null); } catch (e) {}
+			});
+			window.apartmentMarkers = {};
+		}
+	} catch (e) {}
+
+	try {
+		if (window.markerCluster && typeof window.markerCluster.setMarkers === 'function') {
+			window.markerCluster.setMarkers([]);
+		}
+	} catch (e) {}
+
+	if (window.map && window.map.getBounds) {
+		updateMarkers(window.map.getBounds(), true);
+	}
+}
+
+function attachRegionFilterEvents() {
+	const { sidoSel, sigunguSel } = getFilterEls();
+	if (!sidoSel || !sigunguSel) return;
+
+	sidoSel.addEventListener('change', () => {
+		buildRegionFiltersFromApartments();
+		applyRegionFilterUpdate();
+	});
+
+	sigunguSel.addEventListener('change', () => {
+		applyRegionFilterUpdate();
+	});
+}
+
+function initRegionFilters(){
+	buildRegionFiltersFromApartments();
+	attachRegionFilterEvents();
+}
 function closePopup() {
   //console.log("호출")
     isPopupOpen = false;
@@ -1191,6 +1372,8 @@ function removeAllLines() {
 
 
 		const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
+		const selectedSido = document.getElementById("sidoFilter") ? document.getElementById("sidoFilter").value : "";
+		const selectedSigungu = document.getElementById("sigunguFilter") ? document.getElementById("sigunguFilter").value : "";
 		const showApartments = document.getElementById("toggleApartments").checked;
 		const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
 
@@ -1198,7 +1381,9 @@ function removeAllLines() {
 
 		const filtered = apartmentData.filter(apartment =>
 			bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) &&
-			apartment.units >= minUnits
+			apartment.units >= minUnits &&
+			(!selectedSido || apartment.sido === selectedSido) &&
+			(!selectedSigungu || apartment.sigungu === selectedSigungu)
 		);
 
 		const newMarkers = [];
