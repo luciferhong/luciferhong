@@ -350,6 +350,13 @@ body.map-fullscreen {
     .only-pc {
       display: none !important;
     }
+    
+    /* 📱 모바일에서 메모 입력칸 글자 크기 조대 */
+    #noteText {
+      font-size: 16px !important;
+      padding: 12px !important;
+      line-height: 1.6 !important;
+    }
   }
     </style>
 <style id="hongbu-debug-style">
@@ -1451,20 +1458,44 @@ function __setCadastralLayer(on){
 		try { setupMapPositionAutoSave(window.map); } catch(e) {}
 
 		apartmentMarkers = [];
-			// 지도 이벤트 등록
+		
+		// 🔄 idle 이벤트 중복 등록 방지
+		if (!window.__mapIdleListenerReady) {
 			naver.maps.Event.addListener(window.map, "idle", () => {
-					// ✅ 아파트 마커는 항상
-					updateMarkers(window.map.getBounds());
-					// ✅ 나머지는 로드 완료 + 토글 ON일 때만
-					if (window.__schoolsReady) updateSchoolMarkers();
-					if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
-					if (window.__starbucksReady) updateStarbucksMarkers();
-					if (window.__facilitiesReady) updateFacilityMarkers();
-				});
-
-			// 경로 그리기 핸들러 재등록
-			//new MapHandler(window.map);
-		// ✅ 길찾기 핸들러 재등록
+				// ✅ 아파트 마커는 항상
+				updateMarkers(window.map.getBounds());
+				// ✅ 나머지는 로드 완료 + 토글 ON일 때만
+				if (window.__schoolsReady) updateSchoolMarkers();
+				if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
+				if (window.__starbucksReady) updateStarbucksMarkers();
+				if (window.__facilitiesReady) updateFacilityMarkers();
+				
+				// 💾 메모 캐시 추가 정리 (매 idle마다 한 번 더 점검)
+				try {
+					const bounds = window.map.getBounds();
+					if (bounds && apartmentData) {
+						const visibleIds = apartmentData
+							.filter(apt => bounds.hasLatLng(new naver.maps.LatLng(apt.lat, apt.lng)))
+							.map(apt => String(apt.id));
+						
+						const visibleSet = new Set(visibleIds);
+						let cleanedCount = 0;
+						
+						for (const id of window.__memoPresenceCache.keys()) {
+							if (!visibleSet.has(id)) {
+								window.__memoPresenceCache.delete(id);
+								cleanedCount++;
+							}
+						}
+						
+						if (cleanedCount > 0) {
+							hongbuDebugLog("INFO", `🧹 유휴 시 메모 캐시 정리: ${cleanedCount}개`);
+						}
+					}
+				} catch(e) {}
+			});
+			window.__mapIdleListenerReady = true;
+		}
 			if (window.mapHandler) {
 				  naver.maps.Event.clearListeners(window.map, "rightclick"); // 이전 이벤트 제거
 			}
@@ -2869,33 +2900,54 @@ function openHongbuMemoDBOnce() {
 
 async function memoExistsLazy(id) {
   id = String(id);
-  if (window.__memoPresenceCache.has(id)) return window.__memoPresenceCache.get(id);
+  // ✅ 캐시된 경우라도 Promise로 래핑해서 반환 (항상 Promise 반환 보장)
+  if (window.__memoPresenceCache.has(id)) {
+    return Promise.resolve(window.__memoPresenceCache.get(id));
+  }
+
+  // 💾 캐시 크기 제한 (500개 초과 시 가장 오래된 항목 제거)
+  if (window.__memoPresenceCache.size >= 500) {
+    const firstKey = window.__memoPresenceCache.keys().next().value;
+    window.__memoPresenceCache.delete(firstKey);
+  }
 
   if (window.__memoPresencePending.has(id)) return window.__memoPresencePending.get(id);
 
   const p = (async () => {
     try {
-      const db = await openHongbuMemoDBOnce();
+      await initMemoIndexedDB();
+      // ✅ 매번 새로운 DB 연결 열기 (캐시된 연결이 아닌 독립적인 연결)
       return await new Promise((resolve) => {
-        try {
-          const tx = db.transaction(["apartmentNotes"], "readonly");
-          const store = tx.objectStore("apartmentNotes");
+        const req = indexedDB.open("hongbuMemo", 4);
+        req.onsuccess = (e) => {
+          const db = e.target.result;
+          try {
+            const tx = db.transaction(["apartmentNotes"], "readonly");
+            const store = tx.objectStore("apartmentNotes");
 
-          const req = (store.getKey ? store.getKey(id) : store.get(id));
-          req.onsuccess = () => {
-            const exists = store.getKey ? (req.result !== undefined && req.result !== null) : !!req.result;
-            window.__memoPresenceCache.set(id, exists);
-            resolve(exists);
-          };
-          req.onerror = () => {
-            // 에러면 없는 것으로 처리(표기만) - 클릭 시 loadNote에서 다시 시도
+            const getReq = (store.getKey ? store.getKey(id) : store.get(id));
+            getReq.onsuccess = () => {
+              const exists = store.getKey ? (getReq.result !== undefined && getReq.result !== null) : !!getReq.result;
+              window.__memoPresenceCache.set(id, exists);
+              try { db.close(); } catch(e) {} // ✅ 새로운 DB 연결 닫기
+              resolve(exists);
+            };
+            getReq.onerror = () => {
+              // 에러면 없는 것으로 처리(표기만)
+              window.__memoPresenceCache.set(id, false);
+              try { db.close(); } catch(e) {} // ✅ 새로운 DB 연결 닫기
+              resolve(false);
+            };
+          } catch (e) {
             window.__memoPresenceCache.set(id, false);
+            try { db.close(); } catch(e) {}
             resolve(false);
-          };
-        } catch (e) {
+          }
+        };
+        req.onerror = () => {
           window.__memoPresenceCache.set(id, false);
           resolve(false);
-        }
+        };
       });
     } catch (e) {
       window.__memoPresenceCache.set(id, false);
@@ -3208,6 +3260,16 @@ function updateMarkers(bounds) {
 
 // ✅ 필터 결과에 없는 기존 마커는 즉시 제거(연도/세대수/지역/범위 변경 시 즉시 반영)
 const keepIds = new Set(filtered.map(a => String(a.id)));
+
+// 💾 범위 밖의 메모 캐시도 자동 삭제 (메모리 최적화)
+try {
+  const outOfBoundsIds = Array.from(window.__memoPresenceCache.keys()).filter(id => !keepIds.has(String(id)));
+  outOfBoundsIds.forEach(id => window.__memoPresenceCache.delete(id));
+  if (outOfBoundsIds.length > 0) {
+    hongbuDebugLog("INFO", `🧹 메모 캐시 정리: ${outOfBoundsIds.length}개 제거 (범위 밖)`);
+  }
+} catch(e) {}
+
 Object.keys(apartmentMarkers).forEach(id => {
   if (!keepIds.has(String(id))) {
     const m = apartmentMarkers[id];
@@ -4908,10 +4970,19 @@ function getHongbuSetting(key) {
       const tx = db.transaction(["settings"], "readonly");
       const store = tx.objectStore("settings");
       const getReq = store.get(key);
-      getReq.onsuccess = () => { resolve(getReq.result); };
-      getReq.onerror = (e) => { reject(e); };
+      getReq.onsuccess = () => { 
+        db.close(); // ✅ DB 연결 정리
+        resolve(getReq.result); 
+      };
+      getReq.onerror = (e) => { 
+        db.close(); // ✅ DB 연결 정리
+        reject(e); 
+      };
     };
-    request.onerror = (e) => reject(e);
+    request.onerror = (e) => {
+      try { /* db가 열리지 않아 이미 닫힘 */ } catch(e) {}
+      reject(e);
+    };
   });
 }
 
@@ -4928,7 +4999,10 @@ function deleteHongbuSetting(key) {
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = (e) => { db.close(); reject(e); };
     };
-    request.onerror = (e) => reject(e);
+    request.onerror = (e) => {
+      try { /* db가 열리지 않아 이미 닫힘 */ } catch(e) {}
+      reject(e);
+    };
   });
 }
 
@@ -5056,9 +5130,17 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 
         store.put({ idType: `${id}-${type}`, text, color, textColor, fontSize });
 
-        transaction.oncomplete = () => console.log(`✅ IndexedDB 저장 완료: ${id}`);
-        transaction.onerror = (e) => console.error(`❌ IndexedDB 저장 오류: ${e.target.error}`);
-
+        transaction.oncomplete = () => {
+            console.log(`✅ IndexedDB 저장 완료: ${id}`);
+            db.close(); // ✅ DB 연결 정리
+        };
+        transaction.onerror = (e) => {
+            console.error(`❌ IndexedDB 저장 오류: ${e.target.error}`);
+            db.close(); // ✅ DB 연결 정리
+        };
+    };
+    request.onerror = function(event) {
+        console.error(`❌ IndexedDB 열기 실패: ${event.target.error}`);
     };
 	markerElement = document.querySelector(`[data-apartment-id='${id}']`);
 	//markerElement.style.maxWidth = '160px';
@@ -5084,6 +5166,7 @@ function getFromIndexedDB(id, type) {
             const getRequest = store.get(idType);
 
             getRequest.onsuccess = () => {
+                db.close(); // ✅ DB 연결 정리
                 if (getRequest.result) {
                     resolve(getRequest.result);
                 } else {
@@ -5092,6 +5175,7 @@ function getFromIndexedDB(id, type) {
             };
 
             getRequest.onerror = () => {
+                db.close(); // ✅ DB 연결 정리
                 reject("❌ IndexedDB 데이터 가져오기 실패");
             };
         };
@@ -6113,6 +6197,7 @@ resetButton.onclick = () => {
         store.delete(`${apartmentId}-시세1`);
         transaction.oncomplete = () => {
             console.log("✅ 초기화 완료 (IndexedDB 삭제됨)");
+            db.close(); // ✅ DB 연결 정리
 
             // ✅ 마커 스타일도 기본값으로 리셋
             const markerElement = document.querySelector(`[data-apartment-id='${apartmentId}']`);
@@ -6337,10 +6422,12 @@ async function exportToJSON() {
             await writable.close();
 
             console.log('✅ 저장 완료:', handle.name);
+            db.close(); // ✅ DB 연결 정리
         };
 
         request.onerror = function(event) {
             console.error('❌ Export transaction error: ', event.target.errorCode);
+            db.close(); // ✅ DB 연결 정리
         };
     } catch (error) {
         console.error('❌ 오류 발생:', error);
@@ -6366,6 +6453,7 @@ function importFromJSON(file) {
 
             transaction.oncomplete = function() {
 				alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+                db.close(); // ✅ DB 연결 정리
 
 				// ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
 				if (document.getElementById("toggleSiseMap").checked && window.map) {
@@ -6377,6 +6465,7 @@ function importFromJSON(file) {
 
             transaction.onerror = function(event) {
                 console.error('❌ Import transaction error:', event.target.errorCode);
+                db.close(); // ✅ DB 연결 정리
             };
         }).catch(error => {
             console.error('❌ Failed to initialize hongbu DB:', error);
@@ -6424,11 +6513,13 @@ function importFromSiseVer2JSON(file) {
 
             transaction.oncomplete = function() {
                 alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+                db.close(); // ✅ DB 연결 정리
                 // ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
             };
 
             transaction.onerror = function(event) {
                 console.error('❌ Import transaction error:', event.target.error);
+                db.close(); // ✅ DB 연결 정리
             };
         }).catch(error => {
             console.error('❌ Failed to initialize hongbu DB:', error);
@@ -6748,6 +6839,7 @@ await initMemoIndexedDB()
           preview.style.display = "none";
         }
         aptMemoImageList[id] = [];
+        db.close(); // ✅ DB 연결 정리
         return;
       }
 
@@ -6836,7 +6928,17 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
         wrapper.appendChild(deleteBtn);
         preview.appendChild(wrapper);
       }
+      db.close(); // ✅ DB 연결 정리
     };
+
+    getRequest.onerror = function () {
+      console.error("❌ loadNote 데이터 조회 실패:", getRequest.error);
+      db.close(); // ✅ 실패 시에도 DB 연결 정리
+    };
+  };
+
+  request.onerror = function (event) {
+    console.error("❌ loadNote DB 열기 실패:", event.target.error);
   };
 }
 
@@ -7031,14 +7133,32 @@ function restoreMemoDB() {
     input.value = "";
 
     try {
-      // 1) 파일들 읽어서 전부 flatten
+      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
+      hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
+      
+      // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
       let records = [];
+      
       for (const file of files) {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-
-        if (Array.isArray(parsed)) records.push(...parsed);   // ✅ 핵심
-        else records.push(parsed);
+        hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
+        
+        // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
+        const text = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target.result);
+          reader.onerror = (e) => reject(new Error(`파일 읽기 실패: ${file.name}`));
+          reader.readAsText(file, 'UTF-8');
+        });
+        
+        try {
+          const parsed = JSON.parse(text);
+          if (Array.isArray(parsed)) records.push(...parsed);
+          else records.push(parsed);
+          hongbuDebugLog("INFO", `✅ ${file.name} 파싱 완료`);
+        } catch (parseErr) {
+          hongbuDebugLog("WARN", `파일 파싱 실패 (${file.name})`, parseErr.message);
+          continue;
+        }
       }
 
       // 2) 레코드 정규화 (keyPath=id라서 id 필수)
@@ -7054,50 +7174,81 @@ function restoreMemoDB() {
         })
         .filter(Boolean);
 
+      hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalized.length}개`);
+
       if (!normalized.length) {
-        alert("❌ 복원할 유효한 메모 데이터가 없습니다. (id 누락 등)");
+        hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
+        hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
         return;
       }
 
-      // 3) IndexedDB put
-      const request = indexedDB.open("hongbuMemo", 4);
+      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
+      hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
+      const BATCH_SIZE = 100; // 100개씩 처리
+      let totalOk = 0, totalFail = 0;
 
-      request.onsuccess = function (e) {
-        const db = e.target.result;
-        const tx = db.transaction(["apartmentNotes"], "readwrite");
-        const store = tx.objectStore("apartmentNotes");
+      for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
+        const batch = normalized.slice(i, i + BATCH_SIZE);
+        
+        await new Promise((resolvePromise, rejectPromise) => {
+          const request = indexedDB.open("hongbuMemo", 4);
 
-        let ok = 0, fail = 0;
+          request.onsuccess = function (e) {
+            const db = e.target.result;
+            const tx = db.transaction(["apartmentNotes"], "readwrite");
+            const store = tx.objectStore("apartmentNotes");
 
-        normalized.forEach((item) => {
-          const putReq = store.put(item);
-          putReq.onsuccess = () => ok++;
-          putReq.onerror = (err) => {
-            fail++;
-            console.error("❌ put 실패:", item.id, err?.target?.error);
+            let batchOk = 0, batchFail = 0;
+
+            batch.forEach((item) => {
+              const putReq = store.put(item);
+              putReq.onsuccess = () => batchOk++;
+              putReq.onerror = (err) => {
+                batchFail++;
+                hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
+              };
+            });
+
+            tx.oncomplete = () => {
+              totalOk += batchOk;
+              totalFail += batchFail;
+              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
+              db.close();
+              resolvePromise();
+            };
+
+            tx.onerror = (err) => {
+              hongbuDebugLog("ERR", "❌ 배치 트랜잭션 오류", err?.target?.error?.message);
+              db.close();
+              rejectPromise(err);
+            };
+          };
+
+          request.onerror = function (err) {
+            hongbuDebugLog("ERR", "❌ DB 열기 실패", err?.target?.error?.message);
+            rejectPromise(err);
           };
         });
 
-        tx.oncomplete = () => {
-          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
-          db.close();
-		  refreshApartmentMarkers();
-        };
+        // 배치 간 짧은 지연으로 메모리 정리 시간 제공
+        await new Promise(r => setTimeout(r, 50));
+      }
 
-        tx.onerror = (err) => {
-          console.error("❌ 트랜잭션 오류:", err?.target?.error);
-          alert("❌ 메모 복원 중 트랜잭션 오류가 발생했습니다. (콘솔 확인)");
-          db.close();
-        };
-      };
+      hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
+      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
+      
+      hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
+      
+      // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
+      setTimeout(() => {
+        hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
+        refreshApartmentMarkers();
+        hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
+      }, 2000);
 
-      request.onerror = function (err) {
-        console.error("❌ DB 열기 실패:", err?.target?.error);
-        alert("❌ DB 열기 실패 (콘솔 확인)");
-      };
     } catch (err) {
-      console.error("❌ 복원 중 예외:", err);
-      alert("❌ 복원 중 오류 발생: " + err.message);
+      hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
+      hongbuDebugToast("❌ 오류 발생: " + err.message, 5000);
     }
   };
 
@@ -7225,12 +7376,14 @@ function deleteNote(id) {
     deleteRequest.onsuccess = function () {
        try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false); } catch(e) {}
       alert("해당 메모가 삭제되었습니다.");
+      db.close(); // ✅ DB 연결 정리
       loadNote(id); // 삭제 후 화면 갱신
     };
 
     deleteRequest.onerror = function (event) {
       console.error("❌ 삭제 중 오류:", event.target.error);
       alert("❌ 메모 삭제 중 오류가 발생했습니다.");
+      db.close(); // ✅ DB 연결 정리
     };
   };
 
