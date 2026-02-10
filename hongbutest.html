@@ -7135,55 +7135,70 @@ function restoreMemoDB() {
         return;
       }
 
-      // 3) IndexedDB put
-      hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중...");
-      const request = indexedDB.open("hongbuMemo", 4);
+      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
+      hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
+      const BATCH_SIZE = 100; // 100개씩 처리
+      let totalOk = 0, totalFail = 0;
 
-      request.onsuccess = function (e) {
-        const db = e.target.result;
-        const tx = db.transaction(["apartmentNotes"], "readwrite");
-        const store = tx.objectStore("apartmentNotes");
+      for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
+        const batch = normalized.slice(i, i + BATCH_SIZE);
+        
+        await new Promise((resolvePromise, rejectPromise) => {
+          const request = indexedDB.open("hongbuMemo", 4);
 
-        let ok = 0, fail = 0;
+          request.onsuccess = function (e) {
+            const db = e.target.result;
+            const tx = db.transaction(["apartmentNotes"], "readwrite");
+            const store = tx.objectStore("apartmentNotes");
 
-        normalized.forEach((item) => {
-          const putReq = store.put(item);
-          putReq.onsuccess = () => ok++;
-          putReq.onerror = (err) => {
-            fail++;
-            hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
+            let batchOk = 0, batchFail = 0;
+
+            batch.forEach((item) => {
+              const putReq = store.put(item);
+              putReq.onsuccess = () => batchOk++;
+              putReq.onerror = (err) => {
+                batchFail++;
+                hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
+              };
+            });
+
+            tx.oncomplete = () => {
+              totalOk += batchOk;
+              totalFail += batchFail;
+              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
+              db.close();
+              resolvePromise();
+            };
+
+            tx.onerror = (err) => {
+              hongbuDebugLog("ERR", "❌ 배치 트랜잭션 오류", err?.target?.error?.message);
+              db.close();
+              rejectPromise(err);
+            };
+          };
+
+          request.onerror = function (err) {
+            hongbuDebugLog("ERR", "❌ DB 열기 실패", err?.target?.error?.message);
+            rejectPromise(err);
           };
         });
 
-        tx.oncomplete = () => {
-          hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${ok} / 실패 ${fail}`);
-          hongbuDebugToast(`✅ 복원 완료! ${ok}개 메모 저장됨`, 5000);
-          db.close();
-          hongbuDebugLog("INFO", "⏳ 1초 후 마커 새로고침...");
-          
-          // 1초 지연 후 마커 새로고침 (안정성 강화)
-          setTimeout(() => {
-            refreshApartmentMarkers();
-            hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
-          }, 1000);
-        };
+        // 배치 간 짧은 지연으로 메모리 정리 시간 제공
+        await new Promise(r => setTimeout(r, 50));
+      }
 
-        tx.onerror = (err) => {
-          hongbuDebugLog("ERR", "❌ 트랜잭션 오류", err?.target?.error?.message);
-          hongbuDebugToast("❌ 복원 중 오류가 발생했습니다.", 5000);
-          db.close();
-        };
-      };
+      hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
+      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
+      
+      hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
+      
+      // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
+      setTimeout(() => {
+        hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
+        refreshApartmentMarkers();
+        hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
+      }, 2000);
 
-      request.onerror = function (err) {
-        const errorMsg = err?.target?.error?.message || '';
-        hongbuDebugLog("ERR", "❌ DB 열기 실패", errorMsg);
-        hongbuDebugToast("❌ DB 열기 실패", 5000);
-        if (errorMsg.includes('QuotaExceededError') || errorMsg.includes('private')) {
-          hongbuDebugLog("WARN", "⚠️ iOS Private Mode에서는 메모 복원이 불가능합니다.");
-          hongbuDebugToast("⚠️ Private Mode 감지됨", 5000);
-        }
-      };
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
       hongbuDebugToast("❌ 오류 발생: " + err.message, 5000);
