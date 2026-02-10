@@ -2869,33 +2869,48 @@ function openHongbuMemoDBOnce() {
 
 async function memoExistsLazy(id) {
   id = String(id);
-  if (window.__memoPresenceCache.has(id)) return window.__memoPresenceCache.get(id);
+  // ✅ 캐시된 경우라도 Promise로 래핑해서 반환 (항상 Promise 반환 보장)
+  if (window.__memoPresenceCache.has(id)) {
+    return Promise.resolve(window.__memoPresenceCache.get(id));
+  }
 
   if (window.__memoPresencePending.has(id)) return window.__memoPresencePending.get(id);
 
   const p = (async () => {
     try {
-      const db = await openHongbuMemoDBOnce();
+      await initMemoIndexedDB();
+      // ✅ 매번 새로운 DB 연결 열기 (캐시된 연결이 아닌 독립적인 연결)
       return await new Promise((resolve) => {
-        try {
-          const tx = db.transaction(["apartmentNotes"], "readonly");
-          const store = tx.objectStore("apartmentNotes");
+        const req = indexedDB.open("hongbuMemo", 4);
+        req.onsuccess = (e) => {
+          const db = e.target.result;
+          try {
+            const tx = db.transaction(["apartmentNotes"], "readonly");
+            const store = tx.objectStore("apartmentNotes");
 
-          const req = (store.getKey ? store.getKey(id) : store.get(id));
-          req.onsuccess = () => {
-            const exists = store.getKey ? (req.result !== undefined && req.result !== null) : !!req.result;
-            window.__memoPresenceCache.set(id, exists);
-            resolve(exists);
-          };
-          req.onerror = () => {
-            // 에러면 없는 것으로 처리(표기만) - 클릭 시 loadNote에서 다시 시도
+            const getReq = (store.getKey ? store.getKey(id) : store.get(id));
+            getReq.onsuccess = () => {
+              const exists = store.getKey ? (getReq.result !== undefined && getReq.result !== null) : !!getReq.result;
+              window.__memoPresenceCache.set(id, exists);
+              try { db.close(); } catch(e) {} // ✅ 새로운 DB 연결 닫기
+              resolve(exists);
+            };
+            getReq.onerror = () => {
+              // 에러면 없는 것으로 처리(표기만)
+              window.__memoPresenceCache.set(id, false);
+              try { db.close(); } catch(e) {} // ✅ 새로운 DB 연결 닫기
+              resolve(false);
+            };
+          } catch (e) {
             window.__memoPresenceCache.set(id, false);
+            try { db.close(); } catch(e) {}
             resolve(false);
-          };
-        } catch (e) {
+          }
+        };
+        req.onerror = () => {
           window.__memoPresenceCache.set(id, false);
           resolve(false);
-        }
+        };
       });
     } catch (e) {
       window.__memoPresenceCache.set(id, false);
@@ -4908,10 +4923,19 @@ function getHongbuSetting(key) {
       const tx = db.transaction(["settings"], "readonly");
       const store = tx.objectStore("settings");
       const getReq = store.get(key);
-      getReq.onsuccess = () => { resolve(getReq.result); };
-      getReq.onerror = (e) => { reject(e); };
+      getReq.onsuccess = () => { 
+        db.close(); // ✅ DB 연결 정리
+        resolve(getReq.result); 
+      };
+      getReq.onerror = (e) => { 
+        db.close(); // ✅ DB 연결 정리
+        reject(e); 
+      };
     };
-    request.onerror = (e) => reject(e);
+    request.onerror = (e) => {
+      try { /* db가 열리지 않아 이미 닫힘 */ } catch(e) {}
+      reject(e);
+    };
   });
 }
 
@@ -4928,7 +4952,10 @@ function deleteHongbuSetting(key) {
       tx.oncomplete = () => { db.close(); resolve(); };
       tx.onerror = (e) => { db.close(); reject(e); };
     };
-    request.onerror = (e) => reject(e);
+    request.onerror = (e) => {
+      try { /* db가 열리지 않아 이미 닫힘 */ } catch(e) {}
+      reject(e);
+    };
   });
 }
 
@@ -5056,9 +5083,17 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 
         store.put({ idType: `${id}-${type}`, text, color, textColor, fontSize });
 
-        transaction.oncomplete = () => console.log(`✅ IndexedDB 저장 완료: ${id}`);
-        transaction.onerror = (e) => console.error(`❌ IndexedDB 저장 오류: ${e.target.error}`);
-
+        transaction.oncomplete = () => {
+            console.log(`✅ IndexedDB 저장 완료: ${id}`);
+            db.close(); // ✅ DB 연결 정리
+        };
+        transaction.onerror = (e) => {
+            console.error(`❌ IndexedDB 저장 오류: ${e.target.error}`);
+            db.close(); // ✅ DB 연결 정리
+        };
+    };
+    request.onerror = function(event) {
+        console.error(`❌ IndexedDB 열기 실패: ${event.target.error}`);
     };
 	markerElement = document.querySelector(`[data-apartment-id='${id}']`);
 	//markerElement.style.maxWidth = '160px';
@@ -5084,6 +5119,7 @@ function getFromIndexedDB(id, type) {
             const getRequest = store.get(idType);
 
             getRequest.onsuccess = () => {
+                db.close(); // ✅ DB 연결 정리
                 if (getRequest.result) {
                     resolve(getRequest.result);
                 } else {
@@ -5092,6 +5128,7 @@ function getFromIndexedDB(id, type) {
             };
 
             getRequest.onerror = () => {
+                db.close(); // ✅ DB 연결 정리
                 reject("❌ IndexedDB 데이터 가져오기 실패");
             };
         };
@@ -6113,6 +6150,7 @@ resetButton.onclick = () => {
         store.delete(`${apartmentId}-시세1`);
         transaction.oncomplete = () => {
             console.log("✅ 초기화 완료 (IndexedDB 삭제됨)");
+            db.close(); // ✅ DB 연결 정리
 
             // ✅ 마커 스타일도 기본값으로 리셋
             const markerElement = document.querySelector(`[data-apartment-id='${apartmentId}']`);
@@ -6337,10 +6375,12 @@ async function exportToJSON() {
             await writable.close();
 
             console.log('✅ 저장 완료:', handle.name);
+            db.close(); // ✅ DB 연결 정리
         };
 
         request.onerror = function(event) {
             console.error('❌ Export transaction error: ', event.target.errorCode);
+            db.close(); // ✅ DB 연결 정리
         };
     } catch (error) {
         console.error('❌ 오류 발생:', error);
@@ -6366,6 +6406,7 @@ function importFromJSON(file) {
 
             transaction.oncomplete = function() {
 				alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+                db.close(); // ✅ DB 연결 정리
 
 				// ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
 				if (document.getElementById("toggleSiseMap").checked && window.map) {
@@ -6377,6 +6418,7 @@ function importFromJSON(file) {
 
             transaction.onerror = function(event) {
                 console.error('❌ Import transaction error:', event.target.errorCode);
+                db.close(); // ✅ DB 연결 정리
             };
         }).catch(error => {
             console.error('❌ Failed to initialize hongbu DB:', error);
@@ -6424,11 +6466,13 @@ function importFromSiseVer2JSON(file) {
 
             transaction.oncomplete = function() {
                 alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
+                db.close(); // ✅ DB 연결 정리
                 // ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
             };
 
             transaction.onerror = function(event) {
                 console.error('❌ Import transaction error:', event.target.error);
+                db.close(); // ✅ DB 연결 정리
             };
         }).catch(error => {
             console.error('❌ Failed to initialize hongbu DB:', error);
@@ -6748,6 +6792,7 @@ await initMemoIndexedDB()
           preview.style.display = "none";
         }
         aptMemoImageList[id] = [];
+        db.close(); // ✅ DB 연결 정리
         return;
       }
 
@@ -6836,7 +6881,17 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
         wrapper.appendChild(deleteBtn);
         preview.appendChild(wrapper);
       }
+      db.close(); // ✅ DB 연결 정리
     };
+
+    getRequest.onerror = function () {
+      console.error("❌ loadNote 데이터 조회 실패:", getRequest.error);
+      db.close(); // ✅ 실패 시에도 DB 연결 정리
+    };
+  };
+
+  request.onerror = function (event) {
+    console.error("❌ loadNote DB 열기 실패:", event.target.error);
   };
 }
 
@@ -7031,14 +7086,27 @@ function restoreMemoDB() {
     input.value = "";
 
     try {
-      // 1) 파일들 읽어서 전부 flatten
+      // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
       let records = [];
+      
       for (const file of files) {
-        const t = await file.text();
-        const parsed = JSON.parse(t);
-
-        if (Array.isArray(parsed)) records.push(...parsed);
-        else records.push(parsed);
+        // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
+        const text = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target.result);
+          reader.onerror = (e) => reject(new Error(`파일 읽기 실패: ${file.name}`));
+          reader.readAsText(file, 'UTF-8');
+        });
+        
+        try {
+          const parsed = JSON.parse(text);
+          if (Array.isArray(parsed)) records.push(...parsed);
+          else records.push(parsed);
+        } catch (parseErr) {
+          console.warn(`⚠️ 파일 파싱 실패 (${file.name}):`, parseErr);
+          alert(`⚠️ 파일을 파싱할 수 없습니다: ${file.name}\n(JSON 형식을 확인하세요)`);
+          continue;
+        }
       }
 
       // 2) 레코드 정규화 (keyPath=id라서 id 필수)
@@ -7059,7 +7127,7 @@ function restoreMemoDB() {
         return;
       }
 
-      // 3) IndexedDB put (신규/갱신 구분)
+      // 3) IndexedDB put
       const request = indexedDB.open("hongbuMemo", 4);
 
       request.onsuccess = function (e) {
@@ -7067,53 +7135,21 @@ function restoreMemoDB() {
         const tx = db.transaction(["apartmentNotes"], "readwrite");
         const store = tx.objectStore("apartmentNotes");
 
-        let ok = 0, fail = 0, created = 0, updated = 0;
+        let ok = 0, fail = 0;
 
-        // iOS 사파리/크롬에서 트랜잭션이 중간에 죽지 않도록
-        // get -> put 을 "요청 체인"으로 이어서 transaction을 계속 살아있게 유지
-        const step = (i) => {
-          if (i >= normalized.length) return;
-
-          const item = normalized[i];
-
-          const getReq = store.get(item.id);
-          getReq.onsuccess = function () {
-            const exists = !!getReq.result;
-            if (exists) updated++;
-            else created++;
-
-            const putReq = store.put(item);
-            putReq.onsuccess = function () {
-              ok++;
-              step(i + 1);
-            };
-            putReq.onerror = function (err) {
-              fail++;
-              console.error("❌ put 실패:", item.id, err?.target?.error);
-              step(i + 1);
-            };
-          };
-          getReq.onerror = function (err) {
+        normalized.forEach((item) => {
+          const putReq = store.put(item);
+          putReq.onsuccess = () => ok++;
+          putReq.onerror = (err) => {
             fail++;
-            console.error("❌ get 실패:", item.id, err?.target?.error);
-            // get이 실패해도 다음으로 진행
-            step(i + 1);
+            console.error("❌ put 실패:", item.id, err?.target?.error);
           };
-        };
-
-        step(0);
+        });
 
         tx.oncomplete = () => {
-          alert(
-            `✅ 메모 복원 완료\n` +
-            `- 신규: ${created}\n` +
-            `- 갱신: ${updated}\n` +
-            `- 성공: ${ok}\n` +
-            `- 실패: ${fail}\n` +
-            `- 총: ${normalized.length}`
-          );
+          alert(`✅ 복원 완료: 성공 ${ok} / 실패 ${fail} (총 ${normalized.length})`);
           db.close();
-          refreshApartmentMarkers();
+		  refreshApartmentMarkers();
         };
 
         tx.onerror = (err) => {
@@ -7125,7 +7161,13 @@ function restoreMemoDB() {
 
       request.onerror = function (err) {
         console.error("❌ DB 열기 실패:", err?.target?.error);
-        alert("❌ DB 열기 실패 (콘솔 확인)");
+        // ✅ Private Mode 감지
+        const errorMsg = err?.target?.error?.message || '';
+        if (errorMsg.includes('QuotaExceededError') || errorMsg.includes('private')) {
+          alert("⚠️ iOS Private Mode에서는 메모 복원이 불가능합니다.\n(일반 모드로 전환 후 다시 시도하세요)");
+        } else {
+          alert("❌ DB 열기 실패 - 콘솔 확인 후 다시 시도하세요");
+        }
       };
     } catch (err) {
       console.error("❌ 복원 중 예외:", err);
@@ -7135,7 +7177,6 @@ function restoreMemoDB() {
 
   input.click();
 }
-
 
 
 
@@ -7258,12 +7299,14 @@ function deleteNote(id) {
     deleteRequest.onsuccess = function () {
        try { window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false); } catch(e) {}
       alert("해당 메모가 삭제되었습니다.");
+      db.close(); // ✅ DB 연결 정리
       loadNote(id); // 삭제 후 화면 갱신
     };
 
     deleteRequest.onerror = function (event) {
       console.error("❌ 삭제 중 오류:", event.target.error);
       alert("❌ 메모 삭제 중 오류가 발생했습니다.");
+      db.close(); // ✅ DB 연결 정리
     };
   };
 
@@ -7342,12 +7385,19 @@ async function findWay() {
 
     // 닫기 버튼 클릭 시 오버레이 닫기
     closeButton.addEventListener('click', function() {
-        overlay.style.display = 'none';
-        iframe.src = '';  // iframe 비우기
-        //document.querySelector('.ctn_wrap.open').style.width = '390px';
-        //document.querySelector('.map_wrap').style.width = `calc(100% - 390px)`;
-        document.querySelector('.map_wrap').style.height = '100%';
-    });
+	  overlay.style.display = 'none';
+	  iframe.src = '';
+
+	  const mapWrap = document.querySelector('.map_wrap');
+	  if (mapWrap) mapWrap.style.height = '100%';
+
+	  // 혹시 너비 복구 코드 다시 쓸 거면 이것도 안전하게:
+	  const ctn = document.querySelector('.ctn_wrap.open');
+	  if (ctn) ctn.style.width = '390px';
+
+	  if (mapWrap && ctn) mapWrap.style.width = `calc(100% - ${ctn.offsetWidth}px)`;
+	});
+
 
     // "길찾기" 버튼 생성
     var routeButton = document.createElement('button');
