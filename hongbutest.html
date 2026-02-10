@@ -1451,20 +1451,44 @@ function __setCadastralLayer(on){
 		try { setupMapPositionAutoSave(window.map); } catch(e) {}
 
 		apartmentMarkers = [];
-			// 지도 이벤트 등록
+		
+		// 🔄 idle 이벤트 중복 등록 방지
+		if (!window.__mapIdleListenerReady) {
 			naver.maps.Event.addListener(window.map, "idle", () => {
-					// ✅ 아파트 마커는 항상
-					updateMarkers(window.map.getBounds());
-					// ✅ 나머지는 로드 완료 + 토글 ON일 때만
-					if (window.__schoolsReady) updateSchoolMarkers();
-					if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
-					if (window.__starbucksReady) updateStarbucksMarkers();
-					if (window.__facilitiesReady) updateFacilityMarkers();
-				});
-
-			// 경로 그리기 핸들러 재등록
-			//new MapHandler(window.map);
-		// ✅ 길찾기 핸들러 재등록
+				// ✅ 아파트 마커는 항상
+				updateMarkers(window.map.getBounds());
+				// ✅ 나머지는 로드 완료 + 토글 ON일 때만
+				if (window.__schoolsReady) updateSchoolMarkers();
+				if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
+				if (window.__starbucksReady) updateStarbucksMarkers();
+				if (window.__facilitiesReady) updateFacilityMarkers();
+				
+				// 💾 메모 캐시 추가 정리 (매 idle마다 한 번 더 점검)
+				try {
+					const bounds = window.map.getBounds();
+					if (bounds && apartmentData) {
+						const visibleIds = apartmentData
+							.filter(apt => bounds.hasLatLng(new naver.maps.LatLng(apt.lat, apt.lng)))
+							.map(apt => String(apt.id));
+						
+						const visibleSet = new Set(visibleIds);
+						let cleanedCount = 0;
+						
+						for (const id of window.__memoPresenceCache.keys()) {
+							if (!visibleSet.has(id)) {
+								window.__memoPresenceCache.delete(id);
+								cleanedCount++;
+							}
+						}
+						
+						if (cleanedCount > 0) {
+							hongbuDebugLog("INFO", `🧹 유휴 시 메모 캐시 정리: ${cleanedCount}개`);
+						}
+					}
+				} catch(e) {}
+			});
+			window.__mapIdleListenerReady = true;
+		}
 			if (window.mapHandler) {
 				  naver.maps.Event.clearListeners(window.map, "rightclick"); // 이전 이벤트 제거
 			}
@@ -2874,6 +2898,12 @@ async function memoExistsLazy(id) {
     return Promise.resolve(window.__memoPresenceCache.get(id));
   }
 
+  // 💾 캐시 크기 제한 (500개 초과 시 가장 오래된 항목 제거)
+  if (window.__memoPresenceCache.size >= 500) {
+    const firstKey = window.__memoPresenceCache.keys().next().value;
+    window.__memoPresenceCache.delete(firstKey);
+  }
+
   if (window.__memoPresencePending.has(id)) return window.__memoPresencePending.get(id);
 
   const p = (async () => {
@@ -3223,6 +3253,16 @@ function updateMarkers(bounds) {
 
 // ✅ 필터 결과에 없는 기존 마커는 즉시 제거(연도/세대수/지역/범위 변경 시 즉시 반영)
 const keepIds = new Set(filtered.map(a => String(a.id)));
+
+// 💾 범위 밖의 메모 캐시도 자동 삭제 (메모리 최적화)
+try {
+  const outOfBoundsIds = Array.from(window.__memoPresenceCache.keys()).filter(id => !keepIds.has(String(id)));
+  outOfBoundsIds.forEach(id => window.__memoPresenceCache.delete(id));
+  if (outOfBoundsIds.length > 0) {
+    hongbuDebugLog("INFO", `🧹 메모 캐시 정리: ${outOfBoundsIds.length}개 제거 (범위 밖)`);
+  }
+} catch(e) {}
+
 Object.keys(apartmentMarkers).forEach(id => {
   if (!keepIds.has(String(id))) {
     const m = apartmentMarkers[id];
