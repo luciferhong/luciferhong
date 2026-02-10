@@ -1625,7 +1625,7 @@ const mapElement = document.getElementById('map');
 	}
 
 	let isTracking = false; // ✅ 위치 추적 여부 (true: 추적 중)
-	
+	window.watchId = null; // ✅ watchPosition의 ID (중복 등록 방지)
 
 		
 	function showLocationPopup() {
@@ -1643,28 +1643,37 @@ console.log("hideLocationPopup");
 			console.error("네이버 지도 객체가 올바르게 초기화되지 않았습니다.");
 			return;
 		}
+		
+		// 🔄 이미 tracking 중이면 중지
+		if (isTracking === true) {
+			stopTracking();
+			return;
+		}
+
 		document.getElementById("locationPopup").style.display = "block";
 		if (navigator.geolocation) {
 			navigator.geolocation.getCurrentPosition(
 				(position) => {
-
-					
-console.log(document.getElementById("locationPopup").style.display);
+					console.log(document.getElementById("locationPopup").style.display);
 					updateUserLocation(position, true); // ✅ 강제 이동 (true)
-
 					document.getElementById("locationPopup").style.display = "none";
-console.log(document.getElementById("locationPopup").style.display);
+					console.log(document.getElementById("locationPopup").style.display);
 					startTracking(); // ✅ 위치 추적 시작
-
 				},
 				(error) => {
+					document.getElementById("locationPopup").style.display = "none";
 					alert("현재 위치를 찾을 수 없습니다. 위치 권한을 확인하세요.");
+					hongbuDebugLog("ERR", "위치 조회 실패", `코드: ${error.code}`);
+				},
+				{
+					enableHighAccuracy: false,
+					timeout: 10000,
+					maximumAge: 30000
 				}
 			);
 		} else {
 			alert("이 브라우저에서는 위치 정보를 지원하지 않습니다.");
 		}
-
 	}
 
 	document.getElementById("locationButton").addEventListener("click", () => {
@@ -1672,6 +1681,12 @@ console.log(document.getElementById("locationPopup").style.display);
 	});
 
 	function startTracking() {
+		// 🔄 이미 tracking 중이면 기존 것 정리 후 재시작
+		if (window.watchId !== null && window.watchId !== undefined) {
+			navigator.geolocation.clearWatch(window.watchId);
+			hongbuDebugLog("INFO", "기존 위치 추적 정리 후 재시작");
+		}
+
 		if (navigator.geolocation) {
 			isTracking = true; // ✅ 위치 추적 활성화
 			window.watchId = navigator.geolocation.watchPosition(
@@ -1679,12 +1694,16 @@ console.log(document.getElementById("locationPopup").style.display);
 					updateUserLocation(position, false); // ✅ 센터 이동 X (false)
 				},
 				(error) => {
-					alert("실시간 위치 추적에 실패했습니다.");
+					hongbuDebugLog("ERR", "실시간 위치 추적 실패", `코드: ${error.code}`);
+					// ⚠️ 에러 알림 제거 (배경에서 조용히 진행)
 				},
-				{ enableHighAccuracy: true
+				{ 
+					enableHighAccuracy: false, // 배터리 절감
+					timeout: 10000,
+					maximumAge: 5000  // 5초 이내 캐시 사용
 				}
 			);
-			//console.log("위치 추적 시작 (watchId):", window.watchId);
+			hongbuDebugLog("INFO", `위치 추적 시작 (watchId: ${window.watchId})`);
 		}
 	}
 
