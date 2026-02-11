@@ -24,79 +24,154 @@
     <div id="controls">
         <label for="file-input">결론 파트 이미지:</label>
         <input type="file" id="file-input" multiple accept="image/*"><br><br>
-        <label for="mask-input">가릴 이미지(ex 조대문이미지):</label>
-        <input type="file" id="mask-input" accept="image/*"><br><br>
+        
+        <div style="border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; border-radius: 5px;">
+            <h3>가리기 방식 선택:</h3>
+            <label>
+                <input type="radio" name="mask-type" value="image" checked> 이미지로 가리기
+            </label>
+            <div id="image-mask-options" style="margin-left: 20px; margin-top: 10px;">
+                <label for="mask-input">가릴 이미지(ex 조대문이미지):</label>
+                <input type="file" id="mask-input" accept="image/*"><br>
+            </div>
+            
+            <label style="margin-top: 10px;">
+                <input type="radio" name="mask-type" value="color"> 단색으로 가리기
+            </label>
+            <div id="color-mask-options" style="margin-left: 20px; margin-top: 10px; display: none;">
+                <label for="mask-color">가릴 색상:</label>
+                <input type="color" id="mask-color" value="#000000" style="width: 50px; height: 40px;"><br>
+            </div>
+        </div>
+        
         <button id="preview-process">미리보기</button>
         <button id="download-all" disabled>다운로드</button><br>
-		<label for="mask-input">( 다운로드 경로는 브라우저 다운로드 경로에 저장됩니다 )</label>
+		<label>( 다운로드 경로는 브라우저 다운로드 경로에 저장됩니다 )</label>
     </div>
     <div id="output"></div>
 
     <script>
         let processedImages = [];
 
+        // 마스크 타입 선택 이벤트
+        document.querySelectorAll('input[name="mask-type"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                if (e.target.value === 'image') {
+                    document.getElementById('image-mask-options').style.display = 'block';
+                    document.getElementById('color-mask-options').style.display = 'none';
+                } else {
+                    document.getElementById('image-mask-options').style.display = 'none';
+                    document.getElementById('color-mask-options').style.display = 'block';
+                }
+            });
+        });
+
         document.getElementById('preview-process').addEventListener('click', async () => {
             const files = document.getElementById('file-input').files;
-            const maskFile = document.getElementById('mask-input').files[0];
+            const maskType = document.querySelector('input[name="mask-type"]:checked').value;
             const output = document.getElementById('output');
             output.innerHTML = '';
             processedImages = [];
 
-            if (!maskFile) {
-                alert('Please select a mask image.');
+            if (files.length === 0) {
+                alert('Please select images.');
                 return;
             }
 
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const maskImg = new Image();
-                maskImg.src = e.target.result;
-                maskImg.onload = function() {
-                    const cmToPx = (cm) => cm * (96 / 2.54); // Convert cm to pixels (assuming 96 DPI)
-                    const topMargin = cmToPx(0.5); // 상단 0.5CM만 제외
+            const cmToPx = (cm) => cm * (96 / 2.54);
+            const topMargin = cmToPx(0.5);
 
-                    for (const file of files) {
-                        const reader = new FileReader();
-                        reader.onload = function(e) {
-                            const img = new Image();
-                            img.src = e.target.result;
-                            img.onload = function() {
-                                const canvas = document.createElement('canvas');
-                                const ctx = canvas.getContext('2d');
-                                canvas.width = img.width;
-                                canvas.height = img.height;
+            if (maskType === 'image') {
+                const maskFile = document.getElementById('mask-input').files[0];
+                if (!maskFile) {
+                    alert('Please select a mask image.');
+                    return;
+                }
 
-                                // Draw the original image
-                                ctx.drawImage(img, 0, 0);
-
-                                // Calculate the area to mask (상단 1CM 제외하고 전부)
-                                const maskX = 0;
-                                const maskY = topMargin;
-                                const maskWidth = canvas.width;
-                                const maskHeight = canvas.height - topMargin;
-
-                                // Draw the mask image over the area
-                                ctx.drawImage(maskImg, maskX, maskY, maskWidth, maskHeight);
-
-                                const imgElement = document.createElement('img');
-                                imgElement.src = canvas.toDataURL('image/png');
-                                output.appendChild(imgElement);
-
-                                // Store the processed image data
-                                canvas.toBlob((blob) => {
-                                    processedImages.push({ blob, name: file.name });
-                                    if (processedImages.length === files.length) {
-                                        document.getElementById('download-all').disabled = false;
-                                    }
-                                }, 'image/png');
-                            };
-                        };
-                        reader.readAsDataURL(file);
-                    }
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const maskImg = new Image();
+                    maskImg.src = e.target.result;
+                    maskImg.onload = function() {
+                        processImagesWithImageMask(files, maskImg, topMargin, output);
+                    };
                 };
-            };
-            reader.readAsDataURL(maskFile);
+                reader.readAsDataURL(maskFile);
+            } else {
+                const maskColor = document.getElementById('mask-color').value;
+                processImagesWithColorMask(files, maskColor, topMargin, output);
+            }
         });
+
+        function processImagesWithImageMask(files, maskImg, topMargin, output) {
+            for (const file of files) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = new Image();
+                    img.src = e.target.result;
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+
+                        ctx.drawImage(img, 0, 0);
+
+                        const maskX = 0;
+                        const maskY = topMargin;
+                        const maskWidth = canvas.width;
+                        const maskHeight = canvas.height - topMargin;
+
+                        ctx.drawImage(maskImg, maskX, maskY, maskWidth, maskHeight);
+
+                        displayAndStoreImage(canvas, file.name, output);
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function processImagesWithColorMask(files, maskColor, topMargin, output) {
+            for (const file of files) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = new Image();
+                    img.src = e.target.result;
+                    img.onload = function() {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+
+                        ctx.drawImage(img, 0, 0);
+
+                        const maskX = 0;
+                        const maskY = topMargin;
+                        const maskWidth = canvas.width;
+                        const maskHeight = canvas.height - topMargin;
+
+                        ctx.fillStyle = maskColor;
+                        ctx.fillRect(maskX, maskY, maskWidth, maskHeight);
+
+                        displayAndStoreImage(canvas, file.name, output);
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function displayAndStoreImage(canvas, fileName, output) {
+            const imgElement = document.createElement('img');
+            imgElement.src = canvas.toDataURL('image/png');
+            output.appendChild(imgElement);
+
+            canvas.toBlob((blob) => {
+                processedImages.push({ blob, name: fileName });
+                if (processedImages.length === document.getElementById('file-input').files.length) {
+                    document.getElementById('download-all').disabled = false;
+                }
+            }, 'image/png');
+        }
 
         document.getElementById('download-all').addEventListener('click', async () => {
             const zip = new JSZip();
