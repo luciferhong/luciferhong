@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>임보 결론 파트 가리기</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        #output img {
+            margin: 10px;
+            border: 1px solid #ddd;
+        }
+        #controls {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>임보 결론 파트 가리기</h1>
+    <div id="controls">
+        <label for="file-input">결론 파트 이미지:</label>
+        <input type="file" id="file-input" multiple accept="image/*"><br><br>
+        <label for="mask-input">가릴 이미지(ex 조대문이미지):</label>
+        <input type="file" id="mask-input" accept="image/*"><br><br>
+        <button id="preview-process">미리보기</button>
+        <button id="download-all" disabled>다운로드</button><br>
+		<label for="mask-input">( 다운로드 경로는 브라우저 다운로드 경로에 저장됩니다 )</label>
+    </div>
+    <div id="output"></div>
+
+    <script>
+        let processedImages = [];
+
+        document.getElementById('preview-process').addEventListener('click', async () => {
+            const files = document.getElementById('file-input').files;
+            const maskFile = document.getElementById('mask-input').files[0];
+            const output = document.getElementById('output');
+            output.innerHTML = '';
+            processedImages = [];
+
+            if (!maskFile) {
+                alert('Please select a mask image.');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const maskImg = new Image();
+                maskImg.src = e.target.result;
+                maskImg.onload = function() {
+                    const cmToPx = (cm) => cm * (96 / 2.54); // Convert cm to pixels (assuming 96 DPI)
+                    const topMargin = cmToPx(0.5); // 상단 0.5CM만 제외
+
+                    for (const file of files) {
+                        const reader = new FileReader();
+                        reader.onload = function(e) {
+                            const img = new Image();
+                            img.src = e.target.result;
+                            img.onload = function() {
+                                const canvas = document.createElement('canvas');
+                                const ctx = canvas.getContext('2d');
+                                canvas.width = img.width;
+                                canvas.height = img.height;
+
+                                // Draw the original image
+                                ctx.drawImage(img, 0, 0);
+
+                                // Calculate the area to mask (상단 1CM 제외하고 전부)
+                                const maskX = 0;
+                                const maskY = topMargin;
+                                const maskWidth = canvas.width;
+                                const maskHeight = canvas.height - topMargin;
+
+                                // Draw the mask image over the area
+                                ctx.drawImage(maskImg, maskX, maskY, maskWidth, maskHeight);
+
+                                const imgElement = document.createElement('img');
+                                imgElement.src = canvas.toDataURL('image/png');
+                                output.appendChild(imgElement);
+
+                                // Store the processed image data
+                                canvas.toBlob((blob) => {
+                                    processedImages.push({ blob, name: file.name });
+                                    if (processedImages.length === files.length) {
+                                        document.getElementById('download-all').disabled = false;
+                                    }
+                                }, 'image/png');
+                            };
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                };
+            };
+            reader.readAsDataURL(maskFile);
+        });
+
+        document.getElementById('download-all').addEventListener('click', async () => {
+            const zip = new JSZip();
+            
+            for (const { blob, name } of processedImages) {
+                zip.file(name, blob);
+            }
+            
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(zipBlob);
+            a.download = 'masked_images.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+    </script>
+</body>
+</html>
