@@ -1,18 +1,29 @@
+// ==UserScript==
+// @name        [루시퍼홍] 월닷 투자공부인증 게시글 숨기기
+// @namespace   Violentmonkey Scripts
+// @match       https://weolbu.com/community*
+// @grant       GM_info
+// @grant       none
+// @version     1.0
+// @description 월부닷컴 투자공부인증 게시글 숨기기
+
+// ==/UserScript==
+
 (() => {
   let currentObserver = null; // 현재 옵저버 저장
-  
+
   // URL이 변경될 때마다 호출될 메인 함수
   const initScript = () => {
     // URL에서 subTab 값 확인
     const params = new URLSearchParams(window.location.search);
     const subTab = params.get('subTab');
-    
+
     console.log(`현재 URL subTab 값: "${subTab}" | 현재 옵저버 상태: ${currentObserver ? '✅ 활성' : '❌ 없음'}`);
-    
+
     // 조건 불일치 시 이전 옵저버 정리 후 중단
     if (subTab !== '11') {
       console.log(`⚠️ 조건 불일치: subTab="${subTab}" (필요: "11") - 스크립트 중단`);
-      
+
       // 옵저버 정리
       if (currentObserver) {
         console.log("🧹 옵저버 정리 시작...");
@@ -22,7 +33,7 @@
       } else {
         console.log("ℹ️ 이미 정리된 옵저버입니다.");
       }
-      
+
       // 스타일 제거
       const styleId = "hong-delete-style-right";
       const style = document.getElementById(styleId);
@@ -30,18 +41,18 @@
         style.remove();
         console.log("🗑️ 스타일 제거 완료");
       }
-      
+
       // 버튼 제거
       document.querySelectorAll(".hong-delete-btn").forEach(btn => {
         btn.remove();
       });
       console.log("🗑️ 모든 삭제 버튼 제거 완료");
-      
+
       return;
     }
 
     console.log("✅ subTab=11 확인됨: 스크립트 실행 시작");
-  
+
     // 스타일 추가 함수
     const addStyles = () => {
       const styleId = "hong-delete-style-right";
@@ -98,7 +109,7 @@
           btn.addEventListener("click", (e) => {
             e.stopPropagation();
             e.preventDefault();
-            
+
             // 요소를 삭제하지 말고 숨기기 (사이트 원본 코드 간섭 방지)
             li.style.display = "none";
             console.log("✅ 게시글 숨김 처리됨");
@@ -139,7 +150,7 @@
       currentObserver.disconnect();
       currentObserver = null;
     }
-    
+
     currentObserver = new MutationObserver(() => {
       try {
         addDeleteButtons();
