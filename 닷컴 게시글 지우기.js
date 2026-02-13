@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name        [루시퍼홍] 월닷 투자공부인증 게시글 숨기기
 // @namespace   Violentmonkey Scripts
-// @match       https://weolbu.com/community*
+// @match       https://weolbu.com/*
 // @grant       GM_info
 // @grant       none
-// @version     1.0
+// @version     1.1
 // @description 월부닷컴 투자공부인증 게시글 숨기기
 
+// @downloadURL https://update.greasyfork.org/scripts/566131/%5B%EB%A3%A8%EC%8B%9C%ED%8D%BC%ED%99%8D%5D%20%EC%9B%94%EB%8B%B7%20%ED%88%AC%EC%9E%90%EA%B3%B5%EB%B6%80%EC%9D%B8%EC%A6%9D%20%EA%B2%8C%EC%8B%9C%EA%B8%80%20%EC%88%A8%EA%B8%B0%EA%B8%B0.user.js
+// @updateURL https://update.greasyfork.org/scripts/566131/%5B%EB%A3%A8%EC%8B%9C%ED%8D%BC%ED%99%8D%5D%20%EC%9B%94%EB%8B%B7%20%ED%88%AC%EC%9E%90%EA%B3%B5%EB%B6%80%EC%9D%B8%EC%A6%9D%20%EA%B2%8C%EC%8B%9C%EA%B8%80%20%EC%88%A8%EA%B8%B0%EA%B8%B0.meta.js
 // ==/UserScript==
+
 
 (() => {
   let currentObserver = null; // 현재 옵저버 저장
@@ -104,7 +107,7 @@
           const btn = document.createElement("button");
           btn.className = "hong-delete-btn";
           btn.type = "button";
-          btn.textContent = "삭제";
+          btn.textContent = "숨기기";
 
           btn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -169,16 +172,35 @@
   // 초기 실행
   initScript();
 
-  // URL 변경 감지 (SPA 네비게이션 대응)
-  let lastUrl = window.location.href;
-  setInterval(() => {
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      console.log(`\n🔄 URL 변경 감지: ${lastUrl}`);
-      console.log(`📊 변경 전 옵저버 상태: ${currentObserver ? '✅ 활성' : '❌ 없음'}`);
-      setTimeout(() => {
-        initScript();
-      }, 100); // DOM 변경 대기
+  // URL 변경 감지 (이벤트 기반 - 더 효율적)
+
+  // 1️⃣ popstate 이벤트 (뒤로가기/앞으로가기)
+  window.addEventListener('popstate', () => {
+    console.log("📍 popstate 감지");
+    setTimeout(() => initScript(), 100);
+  });
+
+  // 2️⃣ History API 오버라이드 (pushState, replaceState)
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+
+  history.pushState = function (...args) {
+    originalPushState.apply(history, args);
+    console.log("📍 pushState 감지");
+    setTimeout(() => initScript(), 100);
+  };
+
+  history.replaceState = function (...args) {
+    originalReplaceState.apply(history, args);
+    console.log("📍 replaceState 감지");
+    setTimeout(() => initScript(), 100);
+  };
+
+  // 3️⃣ 링크 클릭 감지 (SPA 라우팅)
+  document.addEventListener('click', (e) => {
+    const link = e.target.closest('a[href]');
+    if (link && link.href && link.href.startsWith(window.location.origin)) {
+      setTimeout(() => initScript(), 100);
     }
-  }, 500);
+  }, true);
 })();
