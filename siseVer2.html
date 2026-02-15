@@ -3648,15 +3648,47 @@ function parsePriceDataFromTable(tableContainer) {
     const rows = tableContainer.querySelectorAll("tr");
     const parsed = [];
 
+    // ✅ 괄호를 제거하고 숫자만 추출하는 헬퍼함수
+    function extractPrice(text) {
+        if (!text || text.trim() === '') return NaN;
+        
+        // 1단계: 괄호 안의 숫자 추출 시도 (예: "(2)" → 2)
+        let inBracket = text.match(/\(([^)]*)\)/);
+        if (inBracket && inBracket[1]) {
+            let numStr = inBracket[1].replace(/[^\d.]/g, '');
+            let num = parseFloat(numStr);
+            if (!isNaN(num)) {
+                return num;
+            }
+        }
+        
+        // 2단계: 괄호 제거 후 숫자 추출 (예: "10.5(예상)" → 10.5)
+        let cleaned = text.replace(/\([^)]*\)/g, '').trim();
+        if (cleaned === '') {
+            return NaN;
+        }
+        
+        let numStr = cleaned.replace(/[^\d.]/g, '');
+        let num = parseFloat(numStr);
+        if (!isNaN(num)) {
+            return num;
+        }
+        
+        return NaN;
+    }
+
     rows.forEach(row => {
         const cells = row.querySelectorAll("td");
         if (cells.length >= 3) {
             const 평형 = cells[0].textContent.trim();
-            const 매매 = parseFloat(cells[1].textContent.trim());
-            const 전세 = parseFloat(cells[2].textContent.trim());
+            const 매매Text = cells[1].textContent.trim();
+            const 매매 = extractPrice(매매Text);
+            const 전세Text = cells[2].textContent.trim();
+            const 전세 = extractPrice(전세Text);
 
             if (!isNaN(매매) && !isNaN(전세)) {
-                parsed.push({ 평형, 매매, 전세 });
+                // ✅ 원본 텍스트도 함께 저장 (차트에서 표시용)
+                parsed.push({ 평형, 매매, 매매Display: 매매Text, 전세, 전세Display: 전세Text });
             }
         }
     });
@@ -4000,20 +4032,59 @@ function parsePriceDataFromTable(tableContainer) {
     const rows = tableContainer.querySelectorAll("tr");
     const parsed = [];
 
-    rows.forEach(row => {
+    // ✅ 괄호를 제거하고 숫자만 추출하는 헬퍼함수
+    function extractPrice(text) {
+        if (!text || text.trim() === '') return NaN;
+        
+        // 1단계: 괄호 안의 숫자 추출 시도 (예: "(2)" → 2)
+        let inBracket = text.match(/\(([^)]*)\)/);
+        if (inBracket && inBracket[1]) {
+            let numStr = inBracket[1].replace(/[^\d.]/g, '');
+            let num = parseFloat(numStr);
+            if (!isNaN(num)) {
+                console.log(`  → 괄호 내 숫자 추출: "${text}" = ${num}`);
+                return num;
+            }
+        }
+        
+        // 2단계: 괄호 제거 후 숫자 추출 (예: "10.5(예상)" → 10.5)
+        let cleaned = text.replace(/\([^)]*\)/g, '').trim();
+        if (cleaned === '') {
+            console.log(`  → 괄호만 있음: "${text}" = NaN`);
+            return NaN;
+        }
+        
+        let numStr = cleaned.replace(/[^\d.]/g, '');
+        let num = parseFloat(numStr);
+        if (!isNaN(num)) {
+            console.log(`  → 괄호 제거 후 숫자 추출: "${text}" = ${num}`);
+            return num;
+        }
+        
+        console.log(`  → 숫자 추출 실패: "${text}" = NaN`);
+        return NaN;
+    }
+
+    rows.forEach((row, rowIndex) => {
         const cells = row.querySelectorAll("td");
         if (cells.length >= 2) {
             const 평형 = cells[0].textContent.trim();
-            const 매매 = parseFloat(cells[1].textContent.trim());
-            const 전세 = parseFloat(cells[2].textContent.trim());
-			const 기타 = cells[3].textContent.trim();
+            const 매매Text = cells[1].textContent.trim();
+            const 매매 = extractPrice(매매Text);
+            const 전세Text = cells[2].textContent.trim();
+            const 전세 = extractPrice(전세Text);
+			const 기타 = cells[3]?.textContent.trim() || "";
+
+            console.log(`🔍 파싱 행 ${rowIndex}:`, { 평형, 매매Text, 매매, 전세Text, 전세, 기타 });
 
             if (!isNaN(매매)) {
-                parsed.push({ 평형, 매매, 전세, 기타 });
+                // ✅ 원본 텍스트도 함께 저장 (차트에서 표시용)
+                parsed.push({ 평형, 매매, 매매Display: 매매Text, 전세, 전세Display: 전세Text, 기타 });
             }
         }
     });
 
+    console.log(`✅ 파싱 완료 (총 ${parsed.length}행):`, parsed);
     return parsed;
 }
 
@@ -4037,8 +4108,9 @@ const toLease = parseFloat(document.getElementById("filterLeaseTo").value);
 
 const filteredData = data.filter(row => {
   const pyeong = parseFloat(row.평형);
-  const price = parseFloat(String(row.매매 ?? "").replace(/,/g, ""));
-  const lease = parseFloat(String(row.전세 ?? "").replace(/,/g, ""));
+  // ✅ row.매매는 이미 숫자이므로 직접 사용
+  const price = typeof row.매매 === 'number' ? row.매매 : parseFloat(row.매매);
+  const lease = typeof row.전세 === 'number' ? row.전세 : parseFloat(row.전세);
 
   //console.log(fromP + "|" + toP + "|" + fromPrice + "|" + toPrice + "|" + fromLease + "|" + toLease);
   //console.log(pyeong + "|" + price + "|" + lease);
@@ -4104,7 +4176,10 @@ const filteredData = data.filter(row => {
 //console.log("filteredData : "+filteredData.length)
     filteredData.forEach(d => {
 
-    if (isNaN(d.매매)) return; // 매매가 없는 경우는 건너뜀
+    if (isNaN(d.매매)) {
+        console.warn(`⚠️ 매매가 NaN: 평형=${d.평형}, 원본=${d.매매}`);
+        return; // 매매가 없는 경우는 건너뜀
+    }
 
     const card = document.createElement("div");
     card.style.display = "flex";
@@ -4114,7 +4189,7 @@ const filteredData = data.filter(row => {
     card.style.borderRadius = "4px";
     card.style.overflow = "hidden";
     card.style.width = "32px";
-    card.style.fontSize = "13px";
+    card.style.fontSize = "11px";
     card.style.boxShadow = "1px 1px 3px rgba(0,0,0,0.2)";
 
     // 평형 (상단)
@@ -4145,8 +4220,16 @@ const filteredData = data.filter(row => {
 	const 매매 = document.createElement("div");
 	매매.style.fontWeight = "bold";
 	매매.style.minHeight = "1.5em";
-	if (d.매매 !== undefined && d.매매 !== null && d.매매 !== "" && !isNaN(d.매매)) {
-		매매.textContent = Number(d.매매).toFixed(1);
+	if (d.매매 !== undefined && d.매매 !== null && !isNaN(d.매매)) {
+		// ✅ 원본 텍스트(괄호 포함)에 소수점 포맷팅 적용
+		if (d.매매Display && d.매매Display.trim() !== '') {
+			// 숫자 부분을 모두 .toFixed(1)로 포맷팅 (예: "(2)" → "(2.0)", "10.5(예상)" → "10.5(예상)")
+			매매.textContent = d.매매Display.replace(/(\d+\.?\d*)/g, (match) => {
+				return parseFloat(match).toFixed(1);
+			});
+		} else {
+			매매.textContent = (typeof d.매매 === 'number' ? d.매매 : parseFloat(d.매매)).toFixed(1);
+		}
 	} else {
 		매매.textContent = " ";
 	}
@@ -4156,8 +4239,16 @@ const filteredData = data.filter(row => {
 	const 전세 = document.createElement("div");
 	전세.style.fontWeight = "bold";
 	전세.style.minHeight = "1.5em";
-	if (d.전세 !== undefined && d.전세 !== null && d.전세 !== "" && !isNaN(d.전세)) {
-		전세.textContent = Number(d.전세).toFixed(1);
+	if (d.전세 !== undefined && d.전세 !== null && !isNaN(d.전세)) {
+		// ✅ 원본 텍스트(괄호 포함)에 소수점 포맷팅 적용
+		if (d.전세Display && d.전세Display.trim() !== '') {
+			// 숫자 부분을 모두 .toFixed(1)로 포맷팅  (예: "(3)" → "(3.0)", "15.5(예상)" → "15.5(예상)")
+			전세.textContent = d.전세Display.replace(/(\d+\.?\d*)/g, (match) => {
+				return parseFloat(match).toFixed(1);
+			});
+		} else {
+			전세.textContent = (typeof d.전세 === 'number' ? d.전세 : parseFloat(d.전세)).toFixed(1);
+		}
 	} else {
 		전세.textContent = " ";
 	}
@@ -4177,9 +4268,8 @@ const filteredData = data.filter(row => {
 		const 기타 = document.createElement("div");
 		기타.style.fontWeight = "bold";
 		기타.style.minHeight = "1.5em";
-		if (d.기타 !== undefined && d.기타 !== null && d.기타 !== "" && !isNaN(d.기타)) {
-			기타.textContent = Number(d.기타).toFixed(1);
-		} else if(d.기타 !== undefined && d.기타 !== null && d.기타 !== ""){
+		if (d.기타 !== undefined && d.기타 !== null && d.기타 !== "") {
+			// ✅ 기타는 포맷팅하지 말고 원본 그대로 표시
 			기타.textContent = d.기타;
 		} else {
 			기타.textContent = " ";
