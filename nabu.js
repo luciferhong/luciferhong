@@ -273,7 +273,7 @@ async function fetchToken() {
 }
 
 async function fetchArticles(token, page, complexId) {
-    const url = `https://new.land.naver.com/api/articles/complex/${parseInt(complexId, 10)}?realEstateType=APT%3APRE%3AABYG%3AJGC&tradeType=A1%3AB1&tag=%3A%3A%3A%3A%3A%3A%3A%3A&rentPriceMin=0&rentPriceMax=900000000&priceMin=0&priceMax=900000000&areaMin=0&areaMax=900000000&oldBuildYears&recentlyBuildYears&minHouseHoldCount&maxHouseHoldCount&showArticle=false&sameAddressGroup=true&minMaintenanceCost&maxMaintenanceCost&priceType=RETAIL&directions=&page=${page}&complexNo=${parseInt(complexId, 10)}&buildingNos=&areaNos=&type=list&order=prc`;
+    const url = `https://new.land.naver.com/api/articles/complex/${parseInt(complexId, 10)}?realEstateType=APT%3APRE%3AABYG%3AJGC&tradeType=A1%3AB1&tag=%3A%3A%3A%3A%3A%3A%3A%3A&rentPriceMin=0&rentPriceMax=900000000&priceMin=0&priceMax=900000000&areaMin=0&areaMax=900000000&oldBuildYears&recentlyBuildYears&minHouseHoldCount&maxHouseHoldCount&showArticle=true&sameAddressGroup=true&minMaintenanceCost&maxMaintenanceCost&priceType=RETAIL&directions=&page=${page}&complexNo=${parseInt(complexId, 10)}&buildingNos=&areaNos=&type=list&order=prc`;
 
     const response = await fetch(url, {
         method: 'GET',
