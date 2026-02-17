@@ -803,91 +803,6 @@ body.map-fullscreen {
 <div id="apartmentInfo" style="border: 1px solid black; padding: 10px; display:none">
     <p>아파트 정보를 확인하려면 마커를 클릭하세요.</p>
 </div>
-
-<!-- 메모 복원 진행상황 UI -->
-<div id="memoRestoreProgressModal" style="
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.7);
-  z-index: 99999;
-  display: none;
-  align-items: center;
-  justify-content: center;
-">
-  <div style="
-    background: white;
-    border-radius: 12px;
-    padding: 30px;
-    max-width: 90%;
-    width: 300px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  ">
-    <h2 style="margin: 0 0 20px 0; font-size: 18px; text-align: center;">📦 메모 복원 중</h2>
-    
-    <div style="margin-bottom: 15px;">
-      <div style="
-        background: #e5e7eb;
-        height: 20px;
-        border-radius: 10px;
-        overflow: hidden;
-      ">
-        <div id="memoRestoreProgressBar" style="
-          background: linear-gradient(90deg, #4f46e5, #7c3aed);
-          height: 100%;
-          width: 0%;
-          transition: width 0.3s ease;
-          border-radius: 10px;
-        "></div>
-      </div>
-      <p id="memoRestoreProgressText" style="
-        margin: 10px 0 0 0;
-        text-align: center;
-        font-size: 14px;
-        color: #333;
-      ">0%</p>
-    </div>
-    
-    <div id="memoRestoreProgressDetail" style="
-      background: #f3f4f6;
-      padding: 10px;
-      border-radius: 8px;
-      font-size: 13px;
-      color: #555;
-      line-height: 1.5;
-    ">
-      <p style="margin: 0;">⏳ 준비 중...</p>
-    </div>
-    
-    <div style="margin-top: 15px; display: flex; gap: 8px;">
-      <button id="memoRestoreContinueBtn" onclick="continueMemoRestore()" style="
-        flex: 1;
-        padding: 10px;
-        background: #4f46e5;
-        color: white;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        font-weight: 500;
-        font-size: 13px;
-      ">계속하기</button>
-      <button id="memoRestoreCancelBtn" onclick="closeMemoRestoreModal()" style="
-        flex: 1;
-        padding: 10px;
-        background: #d1d5db;
-        color: #333;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        font-weight: 500;
-        font-size: 13px;
-      ">닫기</button>
-    </div>
-  </div>
-</div>
-
 <!-- 모달 최상단 + 배경 흐림 -->
 <!-- 이미지 모달 (canvas로 변경) -->
 <!-- 이미지 모달 -->
@@ -3780,9 +3695,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
 await initIndexedDB();
-
-    // ✅ 메모 복원 상태 확인 (새로고침 후 복원 완료 여부 확인)
-    checkMemoRestoreStatus();
 
     // ✅ 저장된 UI 옵션 복원 + 자동 저장 설정
     await restoreUIStateFromDB();
@@ -7242,29 +7154,17 @@ function restoreMemoDB() {
     // 같은 파일 다시 선택 가능하게 초기화
     input.value = "";
 
-    // iOS 감지
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-    
-    // 복원 상태 sessionStorage에 저장 (새로고침 후에도 확인 가능)
-    const restoreSessionId = Date.now();
-    sessionStorage.setItem('memoRestoreInProgress', restoreSessionId);
-
-    // 진행상황 UI 표시
-    const modal = document.getElementById('memoRestoreProgressModal');
-    if (modal) {
-      modal.style.display = 'flex';
-    }
-
     try {
-      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일 (Session: ${restoreSessionId})`);
-      hongbuDebugToast("⏳ 메모 복원 중입니다. 페이지를 떠나지 마세요!", 100000);
+      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
+      hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
       
-      // 1) 파일들 읽어서 전부 flatten (FileReader 사용)
+      // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
       let records = [];
       
       for (const file of files) {
         hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
         
+        // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
         const text = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = (e) => resolve(e.target.result);
@@ -7283,7 +7183,7 @@ function restoreMemoDB() {
         }
       }
 
-      // 2) 레코드 정규화
+      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
       const normalized = records
         .filter((r) => r && typeof r === "object")
         .map((r) => {
@@ -7301,20 +7201,16 @@ function restoreMemoDB() {
       if (!normalized.length) {
         hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
         hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
-        if (modal) modal.style.display = 'none';
-        sessionStorage.removeItem('memoRestoreInProgress');
         return;
       }
 
-      // 3) IndexedDB put - 배치 처리
+      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
       hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
-      const BATCH_SIZE = 100;
+      const BATCH_SIZE = 100; // 100개씩 처리
       let totalOk = 0, totalFail = 0;
 
       for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
         const batch = normalized.slice(i, i + BATCH_SIZE);
-        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(normalized.length / BATCH_SIZE);
         
         await new Promise((resolvePromise, rejectPromise) => {
           const request = indexedDB.open("hongbuMemo", 4);
@@ -7338,22 +7234,7 @@ function restoreMemoDB() {
             tx.oncomplete = () => {
               totalOk += batchOk;
               totalFail += batchFail;
-              
-              // UI 즉시 업데이트
-              updateMemoRestoreProgress(batchNum, totalBatches, totalOk, totalFail);
-              
-              // 진행 상황을 sessionStorage에 저장
-              const progress = {
-                sessionId: restoreSessionId,
-                batchNum,
-                totalBatches,
-                totalOk,
-                totalFail,
-                timestamp: Date.now()
-              };
-              sessionStorage.setItem('memoRestoreProgress', JSON.stringify(progress));
-              
-              hongbuDebugLog("INFO", `배치 ${batchNum}/${totalBatches} 완료 (${totalOk}개 저장)`);
+              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
               db.close();
               resolvePromise();
             };
@@ -7371,168 +7252,29 @@ function restoreMemoDB() {
           };
         });
 
-        // 배치 간 지연
-        await new Promise(r => setTimeout(r, 100));
+        // 배치 간 짧은 지연으로 메모리 정리 시간 제공
+        await new Promise(r => setTimeout(r, 50));
       }
 
-      hongbuDebugLog("INFO", `✅ DB 저장 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
+      hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
+      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
       
-      // 복원이 완료되었음을 저장
-      sessionStorage.setItem('memoRestoreCompleted', Date.now());
-      sessionStorage.removeItem('memoRestoreInProgress');
-      sessionStorage.removeItem('memoRestoreProgress');
+      hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
       
-      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 3000);
-      hongbuDebugLog("INFO", "⏳ 마커 새로고침 준비 중...");
-      
-      // iOS에서는 더 긴 지연
-      const refreshDelay = isIOS ? 4000 : 2000;
-      
+      // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
       setTimeout(() => {
-        try {
-          hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
-          refreshApartmentMarkers();
-          hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
-        } catch (refreshErr) {
-          hongbuDebugLog("ERR", "마커 새로고침 오류", refreshErr.message);
-        }
-        
-        // 진행상황 UI 숨김
-        if (modal) modal.style.display = 'none';
-      }, refreshDelay);
+        hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
+        refreshApartmentMarkers();
+        hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
+      }, 2000);
 
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
       hongbuDebugToast("❌ 오류 발생: " + err.message, 5000);
-      if (modal) modal.style.display = 'none';
-      sessionStorage.removeItem('memoRestoreInProgress');
     }
   };
 
-  // 파일 선택
-  try {
-    input.click();
-  } catch (e) {
-    hongbuDebugLog("WARN", "파일 선택 오류", e.message);
-    setTimeout(() => {
-      try {
-        input.click();
-      } catch (e2) {
-        hongbuDebugLog("ERR", "파일 선택 재시도 실패", e2.message);
-      }
-    }, 100);
-  }
-}
-
-// ✅ 페이지 로드 시 복원 상태 확인
-function checkMemoRestoreStatus() {
-  const inProgress = sessionStorage.getItem('memoRestoreInProgress');
-  const completed = sessionStorage.getItem('memoRestoreCompleted');
-  const progress = sessionStorage.getItem('memoRestoreProgress');
-
-  if (completed) {
-    // 복원이 최근 완료됨 → 마커 새로고침
-    const completedTime = parseInt(completed);
-    const now = Date.now();
-    
-    // 5분 이내에 완료된 복원만 신뢰
-    if (now - completedTime < 5 * 60 * 1000) {
-      hongbuDebugLog("INFO", "✅ 이전 메모 복원이 완료되었습니다.");
-      
-      // 진행상황 UI 숨김
-      const modal = document.getElementById('memoRestoreProgressModal');
-      if (modal) modal.style.display = 'none';
-      
-      setTimeout(() => {
-        try {
-          refreshApartmentMarkers();
-          hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
-        } catch (e) {
-          hongbuDebugLog("ERR", "마커 새로고침 오류", e.message);
-        }
-      }, 1000);
-      
-      sessionStorage.removeItem('memoRestoreCompleted');
-    }
-  }
-  
-  if (inProgress) {
-    // 복원이 아직 진행 중 (새로고침됨)
-    const modal = document.getElementById('memoRestoreProgressModal');
-    if (modal) {
-      modal.style.display = 'flex';
-    }
-
-    const progressData = progress ? JSON.parse(progress) : null;
-    
-    if (progressData) {
-      // 진행상황 데이터가 있음 → 표시
-      updateMemoRestoreProgress(progressData.batchNum, progressData.totalBatches, progressData.totalOk, progressData.totalFail);
-      hongbuDebugLog("WARN", `⚠️ 이전 복원이 중단됨 (새로고침). 진행상황: ${progressData.batchNum}/${progressData.totalBatches}`);
-    } else {
-      // 진행상황 데이터가 없음 → 초기 상태
-      const progressDetail = document.getElementById('memoRestoreProgressDetail');
-      if (progressDetail) {
-        progressDetail.innerHTML = `<p style="margin: 0;">⏳ 복원 중... (네트워크 상태 문제로 중단되었을 수 있습니다)</p>`;
-      }
-      hongbuDebugLog("WARN", "⚠️ 이전 복원이 중단됨. 진행상황 불명확");
-    }
-    
-    // 진행 상태 초기화
-    sessionStorage.removeItem('memoRestoreInProgress');
-    sessionStorage.removeItem('memoRestoreProgress');
-    
-    // 마커 새로고침
-    setTimeout(() => {
-      try {
-        refreshApartmentMarkers();
-      } catch (e) {}
-      // 모달 닫기
-      if (modal) modal.style.display = 'none';
-    }, 2000);
-  }
-}
-
-// ✅ 진행상황 업데이트 함수
-function updateMemoRestoreProgress(batchNum, totalBatches, totalOk, totalFail) {
-  const percent = Math.round((batchNum / totalBatches) * 100);
-  
-  // UI 업데이트
-  const progressBar = document.getElementById('memoRestoreProgressBar');
-  const progressText = document.getElementById('memoRestoreProgressText');
-  const progressDetail = document.getElementById('memoRestoreProgressDetail');
-  
-  if (progressBar) progressBar.style.width = percent + '%';
-  if (progressText) progressText.textContent = percent + '%';
-  if (progressDetail) {
-    progressDetail.innerHTML = `
-      <p style="margin: 0;">배치: ${batchNum}/${totalBatches}</p>
-      <p style="margin: 5px 0 0 0;">저장됨: ${totalOk}개</p>
-      <p style="margin: 5px 0 0 0;">실패: ${totalFail}개</p>
-    `;
-  }
-}
-
-// ✅ 모달 닫기
-function closeMemoRestoreModal() {
-  const modal = document.getElementById('memoRestoreProgressModal');
-  if (modal) modal.style.display = 'none';
-  
-  // 복원 상태 정리
-  sessionStorage.removeItem('memoRestoreInProgress');
-  sessionStorage.removeItem('memoRestoreProgress');
-}
-
-// ✅ 복원 계속하기 - 파일을 다시 선택하도록 유도
-function continueMemoRestore() {
-  hongbuDebugLog("INFO", "📂 복원 재시작: 파일을 다시 선택해주세요");
-  closeMemoRestoreModal();
-  
-  // 약간의 지연 후 파일 선택 다이얼로그 표시
-  setTimeout(() => {
-    hongbuDebugToast("📂 복원할 파일을 선택해주세요", 3000);
-    restoreMemoDB();
-  }, 500);
+  input.click();
 }
 
 
