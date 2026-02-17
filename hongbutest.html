@@ -7158,104 +7158,115 @@ function restoreMemoDB() {
       hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
       hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
       
-      // ✅ 스트리밍 방식: 청크 읽기 → 정규화 → 즉시 저장 (메모리 효율)
-      // iOS에서 메모리 크래시 방지를 위해 대용량 파일을 1MB씩 읽음
+      // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
+      let records = [];
       
-      const BATCH_SIZE = 30; // iOS 호환성을 위해 더 작게 설정
-      const CHUNK_SIZE = 1024 * 1024; // 1MB씩 읽기
-      let totalOk = 0, totalFail = 0;
-      let batch = [];
-
       for (const file of files) {
-        hongbuDebugLog("INFO", `📄 파일 읽는 중: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB, 청크 처리)`);
+        hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
         
-        // ✅ 청크 단위로 파일 읽기 (대용량 파일 메모리 효율)
-        const chunks = [];
-        for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
-          const chunk = file.slice(offset, offset + CHUNK_SIZE);
-          const text = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = (e) => resolve(e.target.result);
-            reader.onerror = (e) => reject(new Error(`청크 읽기 실패: ${file.name}`));
-            reader.readAsText(chunk, 'UTF-8');
-          });
-          chunks.push(text);
-        }
+        // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
+        const text = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = (e) => resolve(e.target.result);
+          reader.onerror = (e) => reject(new Error(`파일 읽기 실패: ${file.name}`));
+          reader.readAsText(file, 'UTF-8');
+        });
         
-        // ✅ 청크 결합하되 즉시 처리 (메모리 최소화)
-        const fullText = chunks.join('');
-        chunks.length = 0; // 메모리 해제
-        
-        let parsed;
         try {
-          parsed = JSON.parse(fullText);
+          const parsed = JSON.parse(text);
+          if (Array.isArray(parsed)) records.push(...parsed);
+          else records.push(parsed);
+          hongbuDebugLog("INFO", `✅ ${file.name} 파싱 완료`);
         } catch (parseErr) {
           hongbuDebugLog("WARN", `파일 파싱 실패 (${file.name})`, parseErr.message);
           continue;
         }
-
-        // ✅ 배열 처리 (각 객체를 하나씩 처리해서 메모리 최소화)
-        try {
-          const records = Array.isArray(parsed) ? parsed : [parsed];
-          
-          for (const r of records) {
-            if (!r || typeof r !== "object" || r.id === undefined || r.id === null) {
-              continue;
-            }
-
-            // 정규화하면서 즉시 배치에 추가 (메모리 효율)
-            batch.push({
-              id: String(r.id),
-              memo: r.memo ? String(r.memo) : "",
-              images: Array.isArray(r.images) ? r.images : [],
-            });
-
-            // 배치가 꽉 차면 저장
-            if (batch.length >= BATCH_SIZE) {
-              const result = await saveBatchToDB(batch, BATCH_SIZE);
-              totalOk += result.ok;
-              totalFail += result.fail;
-              hongbuDebugLog("INFO", `💾 저장됨: ${result.ok}개 (누적: ${totalOk}/${totalOk + totalFail})`);
-              
-              // 메모리 정리
-              batch = [];
-              await new Promise(r => setTimeout(r, 200)); // iOS는 더 긴 지연 필요
-            }
-          }
-        } finally {
-          // 파싱된 객체 참조 명시적 해제
-          parsed = null;
-        }
-
-        // 파일 처리 후 메모리 정리
-        hongbuDebugLog("INFO", `✅ ${file.name} 처리 완료`);
       }
 
-      // ✅ 남은 배치 저장
-      if (batch.length > 0) {
-        const result = await saveBatchToDB(batch, BATCH_SIZE);
-        totalOk += result.ok;
-        totalFail += result.fail;
-        hongbuDebugLog("INFO", `💾 최종 저장: ${result.ok}개 (누적: ${totalOk}/${totalOk + totalFail})`);
-      }
+      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
+      const normalized = records
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          if (r.id === undefined || r.id === null) return null;
+          return {
+            id: String(r.id),
+            memo: r.memo ? String(r.memo) : "",
+            images: Array.isArray(r.images) ? r.images : [],
+          };
+        })
+        .filter(Boolean);
 
-      if (totalOk === 0) {
+      hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalized.length}개`);
+
+      if (!normalized.length) {
         hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
         hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
         return;
       }
 
+      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
+      hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
+      const BATCH_SIZE = 100; // 100개씩 처리
+      let totalOk = 0, totalFail = 0;
+
+      for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
+        const batch = normalized.slice(i, i + BATCH_SIZE);
+        
+        await new Promise((resolvePromise, rejectPromise) => {
+          const request = indexedDB.open("hongbuMemo", 4);
+
+          request.onsuccess = function (e) {
+            const db = e.target.result;
+            const tx = db.transaction(["apartmentNotes"], "readwrite");
+            const store = tx.objectStore("apartmentNotes");
+
+            let batchOk = 0, batchFail = 0;
+
+            batch.forEach((item) => {
+              const putReq = store.put(item);
+              putReq.onsuccess = () => batchOk++;
+              putReq.onerror = (err) => {
+                batchFail++;
+                hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
+              };
+            });
+
+            tx.oncomplete = () => {
+              totalOk += batchOk;
+              totalFail += batchFail;
+              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
+              db.close();
+              resolvePromise();
+            };
+
+            tx.onerror = (err) => {
+              hongbuDebugLog("ERR", "❌ 배치 트랜잭션 오류", err?.target?.error?.message);
+              db.close();
+              rejectPromise(err);
+            };
+          };
+
+          request.onerror = function (err) {
+            hongbuDebugLog("ERR", "❌ DB 열기 실패", err?.target?.error?.message);
+            rejectPromise(err);
+          };
+        });
+
+        // 배치 간 짧은 지연으로 메모리 정리 시간 제공
+        await new Promise(r => setTimeout(r, 50));
+      }
+
       hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
       hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
       
-      hongbuDebugLog("INFO", "⏳ 3초 후 마커 새로고침...");
+      hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
       
-      // 3초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
+      // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
       setTimeout(() => {
         hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
         refreshApartmentMarkers();
         hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
-      }, 3000);
+      }, 2000);
 
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
@@ -7264,45 +7275,6 @@ function restoreMemoDB() {
   };
 
   input.click();
-}
-
-// ✅ IndexedDB 배치 저장 헬퍼 함수 (iOS 메모리 효율)
-async function saveBatchToDB(batch, batchSize) {
-  return new Promise((resolve) => {
-    const request = indexedDB.open("hongbuMemo", 4);
-    let batchOk = 0, batchFail = 0;
-
-    request.onsuccess = function (e) {
-      const db = e.target.result;
-      const tx = db.transaction(["apartmentNotes"], "readwrite");
-      const store = tx.objectStore("apartmentNotes");
-
-      batch.forEach((item) => {
-        const putReq = store.put(item);
-        putReq.addEventListener('success', () => batchOk++);
-        putReq.addEventListener('error', (err) => {
-          batchFail++;
-          hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
-        });
-      });
-
-      tx.oncomplete = () => {
-        db.close();
-        resolve({ ok: batchOk, fail: batchFail });
-      };
-
-      tx.onerror = (err) => {
-        hongbuDebugLog("ERR", "배치 트랜잭션 오류", err?.target?.error?.message);
-        db.close();
-        resolve({ ok: batchOk, fail: batchFail });
-      };
-    };
-
-    request.onerror = function (err) {
-      hongbuDebugLog("ERR", "DB 열기 실패", err?.target?.error?.message);
-      resolve({ ok: 0, fail: batch.length });
-    };
-  });
 }
 
 
