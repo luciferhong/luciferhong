@@ -3696,6 +3696,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 await initIndexedDB();
 
+    // ✅ 메모 복원 상태 확인 (새로고침 후 복원 완료 여부 확인)
+    checkMemoRestoreStatus();
+
     // ✅ 저장된 UI 옵션 복원 + 자동 저장 설정
     await restoreUIStateFromDB();
     initUIStateAutoSave();
@@ -7154,34 +7157,23 @@ function restoreMemoDB() {
     // 같은 파일 다시 선택 가능하게 초기화
     input.value = "";
 
-    // iOS에서 페이지 떠남 감지 및 방지
+    // iOS 감지
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-    let isProcessing = false;
-    let warningShown = false;
-
-    const unloadHandler = (e) => {
-      if (isProcessing && !warningShown) {
-        warningShown = true;
-        e.preventDefault();
-        e.returnValue = '복원 중입니다. 페이지를 떠나면 안 됩니다!';
-        return '복원 중입니다. 페이지를 떠나면 안 됩니다!';
-      }
-    };
-
-    window.addEventListener('beforeunload', unloadHandler);
+    
+    // 복원 상태 sessionStorage에 저장 (새로고침 후에도 확인 가능)
+    const restoreSessionId = Date.now();
+    sessionStorage.setItem('memoRestoreInProgress', restoreSessionId);
 
     try {
-      isProcessing = true;
-      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
-      hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
+      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일 (Session: ${restoreSessionId})`);
+      hongbuDebugToast("⏳ 메모 복원 중입니다. 페이지를 떠나지 마세요!", 100000);
       
-      // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
+      // 1) 파일들 읽어서 전부 flatten (FileReader 사용)
       let records = [];
       
       for (const file of files) {
         hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
         
-        // ✅ FileReader 사용 (iOS Safari 호환성 향상)
         const text = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = (e) => resolve(e.target.result);
@@ -7200,7 +7192,7 @@ function restoreMemoDB() {
         }
       }
 
-      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
+      // 2) 레코드 정규화
       const normalized = records
         .filter((r) => r && typeof r === "object")
         .map((r) => {
@@ -7218,18 +7210,19 @@ function restoreMemoDB() {
       if (!normalized.length) {
         hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
         hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
-        isProcessing = false;
-        window.removeEventListener('beforeunload', unloadHandler);
+        sessionStorage.removeItem('memoRestoreInProgress');
         return;
       }
 
-      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
+      // 3) IndexedDB put - 배치 처리
       hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
-      const BATCH_SIZE = 100; // 100개씩 처리
+      const BATCH_SIZE = 100;
       let totalOk = 0, totalFail = 0;
 
       for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
         const batch = normalized.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(normalized.length / BATCH_SIZE);
         
         await new Promise((resolvePromise, rejectPromise) => {
           const request = indexedDB.open("hongbuMemo", 4);
@@ -7253,7 +7246,19 @@ function restoreMemoDB() {
             tx.oncomplete = () => {
               totalOk += batchOk;
               totalFail += batchFail;
-              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
+              
+              // 진행 상황을 sessionStorage에 저장
+              const progress = {
+                sessionId: restoreSessionId,
+                batchNum,
+                totalBatches,
+                totalOk,
+                totalFail,
+                timestamp: Date.now()
+              };
+              sessionStorage.setItem('memoRestoreProgress', JSON.stringify(progress));
+              
+              hongbuDebugLog("INFO", `배치 ${batchNum}/${totalBatches} 완료 (${totalOk}개 저장)`);
               db.close();
               resolvePromise();
             };
@@ -7271,17 +7276,22 @@ function restoreMemoDB() {
           };
         });
 
-        // 배치 간 짧은 지연으로 메모리 정리 시간 제공
-        await new Promise(r => setTimeout(r, 50));
+        // 배치 간 지연
+        await new Promise(r => setTimeout(r, 100));
       }
 
-      hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
-      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
+      hongbuDebugLog("INFO", `✅ DB 저장 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
       
-      hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
+      // 복원이 완료되었음을 저장
+      sessionStorage.setItem('memoRestoreCompleted', Date.now());
+      sessionStorage.removeItem('memoRestoreInProgress');
+      sessionStorage.removeItem('memoRestoreProgress');
       
-      // iOS에서는 더 긴 지연 후 마커 새로고침 (메모리 정리 시간 제공)
-      const refreshDelay = isIOS ? 3000 : 2000;
+      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 3000);
+      hongbuDebugLog("INFO", "⏳ 마커 새로고침 준비 중...");
+      
+      // iOS에서는 더 긴 지연
+      const refreshDelay = isIOS ? 4000 : 2000;
       
       setTimeout(() => {
         try {
@@ -7291,25 +7301,20 @@ function restoreMemoDB() {
         } catch (refreshErr) {
           hongbuDebugLog("ERR", "마커 새로고침 오류", refreshErr.message);
         }
-        
-        isProcessing = false;
-        window.removeEventListener('beforeunload', unloadHandler);
       }, refreshDelay);
 
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
       hongbuDebugToast("❌ 오류 발생: " + err.message, 5000);
-      isProcessing = false;
-      window.removeEventListener('beforeunload', unloadHandler);
+      sessionStorage.removeItem('memoRestoreInProgress');
     }
   };
 
-  // iOS에서 더 안정적인 파일 선택 방식
+  // 파일 선택
   try {
     input.click();
   } catch (e) {
     hongbuDebugLog("WARN", "파일 선택 오류", e.message);
-    // fallback: 문제가 있으면 다시 시도
     setTimeout(() => {
       try {
         input.click();
@@ -7317,6 +7322,53 @@ function restoreMemoDB() {
         hongbuDebugLog("ERR", "파일 선택 재시도 실패", e2.message);
       }
     }, 100);
+  }
+}
+
+// ✅ 페이지 로드 시 복원 상태 확인
+function checkMemoRestoreStatus() {
+  const inProgress = sessionStorage.getItem('memoRestoreInProgress');
+  const completed = sessionStorage.getItem('memoRestoreCompleted');
+  const progress = sessionStorage.getItem('memoRestoreProgress');
+
+  if (completed) {
+    // 복원이 최근 완료됨 → 마커 새로고침
+    const completedTime = parseInt(completed);
+    const now = Date.now();
+    
+    // 5분 이내에 완료된 복원만 신뢰
+    if (now - completedTime < 5 * 60 * 1000) {
+      hongbuDebugLog("INFO", "✅ 이전 메모 복원이 완료되었습니다. 마커 새로고침합니다.");
+      setTimeout(() => {
+        try {
+          refreshApartmentMarkers();
+          hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
+        } catch (e) {
+          hongbuDebugLog("ERR", "마커 새로고침 오류", e.message);
+        }
+      }, 1000);
+      
+      sessionStorage.removeItem('memoRestoreCompleted');
+    }
+  }
+  
+  if (inProgress) {
+    // 복원이 아직 진행 중 (새로고침됨) → 진행상황 표시
+    const progressData = progress ? JSON.parse(progress) : null;
+    if (progressData) {
+      hongbuDebugLog("WARN", `⚠️ 이전 복원이 중단됨. 진행상황: ${progressData.batchNum}/${progressData.totalBatches} (${progressData.totalOk}개 저장)`);
+      hongbuDebugToast("⚠️ 이전 복원이 중단되었습니다. 마커를 새로고침했습니다.", 5000);
+    }
+    
+    // 진행 중이던 복원 상태 초기화
+    sessionStorage.removeItem('memoRestoreInProgress');
+    
+    // 마커 새로고침
+    setTimeout(() => {
+      try {
+        refreshApartmentMarkers();
+      } catch (e) {}
+    }, 1000);
   }
 }
 
