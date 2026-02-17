@@ -803,6 +803,67 @@ body.map-fullscreen {
 <div id="apartmentInfo" style="border: 1px solid black; padding: 10px; display:none">
     <p>아파트 정보를 확인하려면 마커를 클릭하세요.</p>
 </div>
+
+<!-- 메모 복원 진행상황 UI -->
+<div id="memoRestoreProgressModal" style="
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+">
+  <div style="
+    background: white;
+    border-radius: 12px;
+    padding: 30px;
+    max-width: 90%;
+    width: 300px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  ">
+    <h2 style="margin: 0 0 20px 0; font-size: 18px; text-align: center;">📦 메모 복원 중</h2>
+    
+    <div style="margin-bottom: 15px;">
+      <div style="
+        background: #e5e7eb;
+        height: 20px;
+        border-radius: 10px;
+        overflow: hidden;
+      ">
+        <div id="memoRestoreProgressBar" style="
+          background: linear-gradient(90deg, #4f46e5, #7c3aed);
+          height: 100%;
+          width: 0%;
+          transition: width 0.3s ease;
+          border-radius: 10px;
+        "></div>
+      </div>
+      <p id="memoRestoreProgressText" style="
+        margin: 10px 0 0 0;
+        text-align: center;
+        font-size: 14px;
+        color: #333;
+      ">0%</p>
+    </div>
+    
+    <div id="memoRestoreProgressDetail" style="
+      background: #f3f4f6;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #555;
+      line-height: 1.5;
+    ">
+      <p style="margin: 0;">⏳ 준비 중...</p>
+    </div>
+  </div>
+</div>
+
 <!-- 모달 최상단 + 배경 흐림 -->
 <!-- 이미지 모달 (canvas로 변경) -->
 <!-- 이미지 모달 -->
@@ -7164,6 +7225,10 @@ function restoreMemoDB() {
     const restoreSessionId = Date.now();
     sessionStorage.setItem('memoRestoreInProgress', restoreSessionId);
 
+    // 진행상황 UI 표시
+    const modal = document.getElementById('memoRestoreProgressModal');
+    if (modal) modal.style.display = 'flex';
+
     try {
       hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일 (Session: ${restoreSessionId})`);
       hongbuDebugToast("⏳ 메모 복원 중입니다. 페이지를 떠나지 마세요!", 100000);
@@ -7210,6 +7275,7 @@ function restoreMemoDB() {
       if (!normalized.length) {
         hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
         hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
+        if (modal) modal.style.display = 'none';
         sessionStorage.removeItem('memoRestoreInProgress');
         return;
       }
@@ -7246,6 +7312,9 @@ function restoreMemoDB() {
             tx.oncomplete = () => {
               totalOk += batchOk;
               totalFail += batchFail;
+              
+              // UI 즉시 업데이트
+              updateMemoRestoreProgress(batchNum, totalBatches, totalOk, totalFail);
               
               // 진행 상황을 sessionStorage에 저장
               const progress = {
@@ -7301,11 +7370,15 @@ function restoreMemoDB() {
         } catch (refreshErr) {
           hongbuDebugLog("ERR", "마커 새로고침 오류", refreshErr.message);
         }
+        
+        // 진행상황 UI 숨김
+        if (modal) modal.style.display = 'none';
       }, refreshDelay);
 
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
       hongbuDebugToast("❌ 오류 발생: " + err.message, 5000);
+      if (modal) modal.style.display = 'none';
       sessionStorage.removeItem('memoRestoreInProgress');
     }
   };
@@ -7338,7 +7411,12 @@ function checkMemoRestoreStatus() {
     
     // 5분 이내에 완료된 복원만 신뢰
     if (now - completedTime < 5 * 60 * 1000) {
-      hongbuDebugLog("INFO", "✅ 이전 메모 복원이 완료되었습니다. 마커 새로고침합니다.");
+      hongbuDebugLog("INFO", "✅ 이전 메모 복원이 완료되었습니다.");
+      
+      // 진행상황 UI 숨김
+      const modal = document.getElementById('memoRestoreProgressModal');
+      if (modal) modal.style.display = 'none';
+      
       setTimeout(() => {
         try {
           refreshApartmentMarkers();
@@ -7355,12 +7433,32 @@ function checkMemoRestoreStatus() {
   if (inProgress) {
     // 복원이 아직 진행 중 (새로고침됨) → 진행상황 표시
     const progressData = progress ? JSON.parse(progress) : null;
-    if (progressData) {
-      hongbuDebugLog("WARN", `⚠️ 이전 복원이 중단됨. 진행상황: ${progressData.batchNum}/${progressData.totalBatches} (${progressData.totalOk}개 저장)`);
-      hongbuDebugToast("⚠️ 이전 복원이 중단되었습니다. 마커를 새로고침했습니다.", 5000);
+    
+    const modal = document.getElementById('memoRestoreProgressModal');
+    if (modal) {
+      modal.style.display = 'flex';
+      
+      if (progressData) {
+        const percent = Math.round((progressData.batchNum / progressData.totalBatches) * 100);
+        const progressBar = document.getElementById('memoRestoreProgressBar');
+        const progressText = document.getElementById('memoRestoreProgressText');
+        const progressDetail = document.getElementById('memoRestoreProgressDetail');
+        
+        if (progressBar) progressBar.style.width = percent + '%';
+        if (progressText) progressText.textContent = percent + '%';
+        if (progressDetail) {
+          progressDetail.innerHTML = `
+            <p style="margin: 0;">배치: ${progressData.batchNum}/${progressData.totalBatches}</p>
+            <p style="margin: 5px 0 0 0;">저장됨: ${progressData.totalOk}개</p>
+            <p style="margin: 5px 0 0 0;">실패: ${progressData.totalFail}개</p>
+          `;
+        }
+      }
     }
     
-    // 진행 중이던 복원 상태 초기화
+    hongbuDebugLog("WARN", `⚠️ 복원이 중단되었습니다. 진행상황: ${progressData?.batchNum}/${progressData?.totalBatches} (${progressData?.totalOk}개 저장)`);
+    
+    // 진행 중이던 복원 상태 초기화 (이 새고침은 완료된 것으로 치지 않음)
     sessionStorage.removeItem('memoRestoreInProgress');
     
     // 마커 새로고침
@@ -7369,6 +7467,26 @@ function checkMemoRestoreStatus() {
         refreshApartmentMarkers();
       } catch (e) {}
     }, 1000);
+  }
+}
+
+// ✅ 진행상황 업데이트 함수
+function updateMemoRestoreProgress(batchNum, totalBatches, totalOk, totalFail) {
+  const percent = Math.round((batchNum / totalBatches) * 100);
+  
+  // UI 업데이트
+  const progressBar = document.getElementById('memoRestoreProgressBar');
+  const progressText = document.getElementById('memoRestoreProgressText');
+  const progressDetail = document.getElementById('memoRestoreProgressDetail');
+  
+  if (progressBar) progressBar.style.width = percent + '%';
+  if (progressText) progressText.textContent = percent + '%';
+  if (progressDetail) {
+    progressDetail.innerHTML = `
+      <p style="margin: 0;">배치: ${batchNum}/${totalBatches}</p>
+      <p style="margin: 5px 0 0 0;">저장됨: ${totalOk}개</p>
+      <p style="margin: 5px 0 0 0;">실패: ${totalFail}개</p>
+    `;
   }
 }
 
