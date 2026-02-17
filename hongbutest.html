@@ -7154,7 +7154,24 @@ function restoreMemoDB() {
     // 같은 파일 다시 선택 가능하게 초기화
     input.value = "";
 
+    // iOS에서 페이지 떠남 감지 및 방지
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    let isProcessing = false;
+    let warningShown = false;
+
+    const unloadHandler = (e) => {
+      if (isProcessing && !warningShown) {
+        warningShown = true;
+        e.preventDefault();
+        e.returnValue = '복원 중입니다. 페이지를 떠나면 안 됩니다!';
+        return '복원 중입니다. 페이지를 떠나면 안 됩니다!';
+      }
+    };
+
+    window.addEventListener('beforeunload', unloadHandler);
+
     try {
+      isProcessing = true;
       hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
       hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
       
@@ -7164,7 +7181,7 @@ function restoreMemoDB() {
       for (const file of files) {
         hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
         
-        // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
+        // ✅ FileReader 사용 (iOS Safari 호환성 향상)
         const text = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = (e) => resolve(e.target.result);
@@ -7201,6 +7218,8 @@ function restoreMemoDB() {
       if (!normalized.length) {
         hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
         hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
+        isProcessing = false;
+        window.removeEventListener('beforeunload', unloadHandler);
         return;
       }
 
@@ -7261,20 +7280,44 @@ function restoreMemoDB() {
       
       hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
       
-      // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
+      // iOS에서는 더 긴 지연 후 마커 새로고침 (메모리 정리 시간 제공)
+      const refreshDelay = isIOS ? 3000 : 2000;
+      
       setTimeout(() => {
-        hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
-        refreshApartmentMarkers();
-        hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
-      }, 2000);
+        try {
+          hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
+          refreshApartmentMarkers();
+          hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
+        } catch (refreshErr) {
+          hongbuDebugLog("ERR", "마커 새로고침 오류", refreshErr.message);
+        }
+        
+        isProcessing = false;
+        window.removeEventListener('beforeunload', unloadHandler);
+      }, refreshDelay);
 
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
       hongbuDebugToast("❌ 오류 발생: " + err.message, 5000);
+      isProcessing = false;
+      window.removeEventListener('beforeunload', unloadHandler);
     }
   };
 
-  input.click();
+  // iOS에서 더 안정적인 파일 선택 방식
+  try {
+    input.click();
+  } catch (e) {
+    hongbuDebugLog("WARN", "파일 선택 오류", e.message);
+    // fallback: 문제가 있으면 다시 시도
+    setTimeout(() => {
+      try {
+        input.click();
+      } catch (e2) {
+        hongbuDebugLog("ERR", "파일 선택 재시도 실패", e2.message);
+      }
+    }, 100);
+  }
 }
 
 
