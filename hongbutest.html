@@ -860,6 +860,31 @@ body.map-fullscreen {
     ">
       <p style="margin: 0;">⏳ 준비 중...</p>
     </div>
+    
+    <div style="margin-top: 15px; display: flex; gap: 8px;">
+      <button id="memoRestoreContinueBtn" onclick="continueMemoRestore()" style="
+        flex: 1;
+        padding: 10px;
+        background: #4f46e5;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 500;
+        font-size: 13px;
+      ">계속하기</button>
+      <button id="memoRestoreCancelBtn" onclick="closeMemoRestoreModal()" style="
+        flex: 1;
+        padding: 10px;
+        background: #d1d5db;
+        color: #333;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: 500;
+        font-size: 13px;
+      ">닫기</button>
+    </div>
   </div>
 </div>
 
@@ -7432,42 +7457,39 @@ function checkMemoRestoreStatus() {
   }
   
   if (inProgress) {
-    // 복원이 아직 진행 중 (새로고침됨) → 진행상황 표시
-    const progressData = progress ? JSON.parse(progress) : null;
-    
+    // 복원이 아직 진행 중 (새로고침됨)
     const modal = document.getElementById('memoRestoreProgressModal');
     if (modal) {
       modal.style.display = 'flex';
-      
-      if (progressData) {
-        const percent = Math.round((progressData.batchNum / progressData.totalBatches) * 100);
-        const progressBar = document.getElementById('memoRestoreProgressBar');
-        const progressText = document.getElementById('memoRestoreProgressText');
-        const progressDetail = document.getElementById('memoRestoreProgressDetail');
-        
-        if (progressBar) progressBar.style.width = percent + '%';
-        if (progressText) progressText.textContent = percent + '%';
-        if (progressDetail) {
-          progressDetail.innerHTML = `
-            <p style="margin: 0;">배치: ${progressData.batchNum}/${progressData.totalBatches}</p>
-            <p style="margin: 5px 0 0 0;">저장됨: ${progressData.totalOk}개</p>
-            <p style="margin: 5px 0 0 0;">실패: ${progressData.totalFail}개</p>
-          `;
-        }
+    }
+
+    const progressData = progress ? JSON.parse(progress) : null;
+    
+    if (progressData) {
+      // 진행상황 데이터가 있음 → 표시
+      updateMemoRestoreProgress(progressData.batchNum, progressData.totalBatches, progressData.totalOk, progressData.totalFail);
+      hongbuDebugLog("WARN", `⚠️ 이전 복원이 중단됨 (새로고침). 진행상황: ${progressData.batchNum}/${progressData.totalBatches}`);
+    } else {
+      // 진행상황 데이터가 없음 → 초기 상태
+      const progressDetail = document.getElementById('memoRestoreProgressDetail');
+      if (progressDetail) {
+        progressDetail.innerHTML = `<p style="margin: 0;">⏳ 복원 중... (네트워크 상태 문제로 중단되었을 수 있습니다)</p>`;
       }
+      hongbuDebugLog("WARN", "⚠️ 이전 복원이 중단됨. 진행상황 불명확");
     }
     
-    hongbuDebugLog("WARN", `⚠️ 복원이 중단되었습니다. 진행상황: ${progressData?.batchNum}/${progressData?.totalBatches} (${progressData?.totalOk}개 저장)`);
-    
-    // 진행 중이던 복원 상태 초기화 (이 새고침은 완료된 것으로 치지 않음)
+    // 진행 상태 초기화
     sessionStorage.removeItem('memoRestoreInProgress');
+    sessionStorage.removeItem('memoRestoreProgress');
     
     // 마커 새로고침
     setTimeout(() => {
       try {
         refreshApartmentMarkers();
       } catch (e) {}
-    }, 1000);
+      // 모달 닫기
+      if (modal) modal.style.display = 'none';
+    }, 2000);
   }
 }
 
@@ -7489,6 +7511,28 @@ function updateMemoRestoreProgress(batchNum, totalBatches, totalOk, totalFail) {
       <p style="margin: 5px 0 0 0;">실패: ${totalFail}개</p>
     `;
   }
+}
+
+// ✅ 모달 닫기
+function closeMemoRestoreModal() {
+  const modal = document.getElementById('memoRestoreProgressModal');
+  if (modal) modal.style.display = 'none';
+  
+  // 복원 상태 정리
+  sessionStorage.removeItem('memoRestoreInProgress');
+  sessionStorage.removeItem('memoRestoreProgress');
+}
+
+// ✅ 복원 계속하기 - 파일을 다시 선택하도록 유도
+function continueMemoRestore() {
+  hongbuDebugLog("INFO", "📂 복원 재시작: 파일을 다시 선택해주세요");
+  closeMemoRestoreModal();
+  
+  // 약간의 지연 후 파일 선택 다이얼로그 표시
+  setTimeout(() => {
+    hongbuDebugToast("📂 복원할 파일을 선택해주세요", 3000);
+    restoreMemoDB();
+  }, 500);
 }
 
 
