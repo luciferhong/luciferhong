@@ -7155,118 +7155,31 @@ function restoreMemoDB() {
     input.value = "";
 
     try {
-      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
-      hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
+      hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일 (청크 스트림 처리)`);
+      hongbuDebugToast("⏳ 메모 복원 중입니다. 페이지를 떠나지 마세요!", 100000);
       
-      // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
-      let records = [];
+      let totalSavedCount = 0;
       
+      // 각 파일을 청크 기반 스트림으로 처리
       for (const file of files) {
-        hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
-        
-        // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
-        const text = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (e) => resolve(e.target.result);
-          reader.onerror = (e) => reject(new Error(`파일 읽기 실패: ${file.name}`));
-          reader.readAsText(file, 'UTF-8');
-        });
-        
-        try {
-          const parsed = JSON.parse(text);
-          if (Array.isArray(parsed)) records.push(...parsed);
-          else records.push(parsed);
-          hongbuDebugLog("INFO", `✅ ${file.name} 파싱 완료`);
-        } catch (parseErr) {
-          hongbuDebugLog("WARN", `파일 파싱 실패 (${file.name})`, parseErr.message);
-          continue;
-        }
+        const fileSize = (file.size / 1024 / 1024).toFixed(2);
+        hongbuDebugLog("INFO", `📂 파일 처리 중: ${file.name} (${fileSize}MB)`);
+        const savedCount = await restoreMemoDBStreaming(file);
+        totalSavedCount += savedCount;
       }
 
-      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
-      const normalized = records
-        .filter((r) => r && typeof r === "object")
-        .map((r) => {
-          if (r.id === undefined || r.id === null) return null;
-          return {
-            id: String(r.id),
-            memo: r.memo ? String(r.memo) : "",
-            images: Array.isArray(r.images) ? r.images : [],
-          };
-        })
-        .filter(Boolean);
-
-      hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalized.length}개`);
-
-      if (!normalized.length) {
-        hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
-        hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
-        return;
-      }
-
-      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
-      hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
-      const BATCH_SIZE = 100; // 100개씩 처리
-      let totalOk = 0, totalFail = 0;
-
-      for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
-        const batch = normalized.slice(i, i + BATCH_SIZE);
-        
-        await new Promise((resolvePromise, rejectPromise) => {
-          const request = indexedDB.open("hongbuMemo", 4);
-
-          request.onsuccess = function (e) {
-            const db = e.target.result;
-            const tx = db.transaction(["apartmentNotes"], "readwrite");
-            const store = tx.objectStore("apartmentNotes");
-
-            let batchOk = 0, batchFail = 0;
-
-            batch.forEach((item) => {
-              const putReq = store.put(item);
-              putReq.onsuccess = () => batchOk++;
-              putReq.onerror = (err) => {
-                batchFail++;
-                hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
-              };
-            });
-
-            tx.oncomplete = () => {
-              totalOk += batchOk;
-              totalFail += batchFail;
-              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
-              db.close();
-              resolvePromise();
-            };
-
-            tx.onerror = (err) => {
-              hongbuDebugLog("ERR", "❌ 배치 트랜잭션 오류", err?.target?.error?.message);
-              db.close();
-              rejectPromise(err);
-            };
-          };
-
-          request.onerror = function (err) {
-            hongbuDebugLog("ERR", "❌ DB 열기 실패", err?.target?.error?.message);
-            rejectPromise(err);
-          };
-        });
-
-        // 배치 간 짧은 지연으로 메모리 정리 시간 제공
-        await new Promise(r => setTimeout(r, 50));
-      }
-
-      hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
-      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
+      hongbuDebugLog("INFO", `✅ 복원 완료: ${totalSavedCount}개 메모 저장됨`);
+      hongbuDebugToast(`✅ 복원 완료! ${totalSavedCount}개 메모 저장됨`, 3000);
       
-      hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
-      
-      // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
+      // 마커 새로고침
       setTimeout(() => {
-        hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
-        refreshApartmentMarkers();
-        hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
-      }, 2000);
+        try {
+          refreshApartmentMarkers();
+          hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
+        } catch (err) {
+          hongbuDebugLog("ERR", "마커 새로고침 오류", err.message);
+        }
+      }, 1500);
 
     } catch (err) {
       hongbuDebugLog("ERR", "❌ 복원 중 예외", err.message);
@@ -7274,9 +7187,196 @@ function restoreMemoDB() {
     }
   };
 
-  input.click();
+  try {
+    input.click();
+  } catch (e) {
+    hongbuDebugLog("WARN", "파일 선택 오류", e.message);
+  }
 }
 
+// ✅ 스트림 기반 JSON 파싱 (1MB 청크 단위로 처리)
+async function restoreMemoDBStreaming(file) {
+  const CHUNK_SIZE = 1024 * 1024; // 1MB씩 읽기
+  let buffer = '';
+  let offset = 0;
+  let savedCount = 0;
+  
+  hongbuDebugLog("INFO", `🔄 스트림 처리 시작: ${file.name}`);
+
+  try {
+    // 파일을 청크 단위로 읽기
+    while (offset < file.size) {
+      const chunk = file.slice(offset, offset + CHUNK_SIZE);
+      const text = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = (e) => reject(new Error(`청크 읽기 실패: offset=${offset}`));
+        reader.readAsText(chunk, 'UTF-8');
+      });
+
+      buffer += text;
+      offset += CHUNK_SIZE;
+
+      // 버퍼에서 완전한 JSON 객체들 추출 및 저장
+      const processed = await processBufferChunks(buffer);
+      savedCount += processed.count;
+      buffer = processed.remaining;
+
+      // 진행 상황 로깅
+      const progress = Math.round((offset / file.size) * 100);
+      hongbuDebugLog("INFO", `📊 진행률: ${Math.min(progress, 99)}% (${savedCount}개 저장)`);
+    }
+
+    // 마지막 남은 버퍼 처리
+    if (buffer.trim()) {
+      try {
+        // 마지막 부분 정리 (배열 괄호, 쉼표 제거)
+        let cleanBuffer = buffer.trim();
+        cleanBuffer = cleanBuffer.replace(/[\[\],\s]*$/, '').trim();
+        
+        // 마지막 완전한 객체 추출
+        let lastObj = null;
+        try {
+          const lastObjMatch = cleanBuffer.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}(?!.*\})/);
+          if (lastObjMatch) {
+            lastObj = JSON.parse(lastObjMatch[0]);
+          }
+        } catch (e) {
+          // 스킵
+        }
+        
+        if (lastObj && lastObj.id) {
+          await saveMemoToDB({
+            id: String(lastObj.id),
+            memo: lastObj.memo ? String(lastObj.memo) : "",
+            images: []
+          });
+          savedCount++;
+        }
+      } catch (finalErr) {
+        hongbuDebugLog("WARN", "마지막 객체 처리 오류", finalErr.message);
+      }
+    }
+
+    hongbuDebugLog("INFO", `✅ 파일 처리 완료: ${file.name} (${savedCount}개)`);
+    return savedCount;
+
+  } catch (err) {
+    hongbuDebugLog("ERR", "스트림 처리 오류", err.message);
+    throw err;
+  }
+}
+
+// ✅ 버퍼에서 완전한 JSON 객체들 추출 및 처리
+async function processBufferChunks(buffer) {
+  let count = 0;
+  
+  // 배열 형태: [{ }, { }, { }] 또는 [{ }, { }]
+  // }, { 패턴으로 객체들 사이를 분할
+  
+  // 먼저 opening [를 찾음
+  let searchStart = buffer.indexOf('[');
+  if (searchStart === -1) searchStart = 0;
+  
+  let remaining = '';
+  let processedUpto = searchStart;
+
+  // }, { 패턴 찾아서 분할
+  const splitPattern = /}\s*,\s*{/g;
+  let lastSplitIndex = -1;
+  let match;
+  
+  // 모든 }, { 패턴의 위치 찾기
+  const splitIndices = [];
+  const tempPattern = /}\s*,\s*{/g;
+  while ((match = tempPattern.exec(buffer)) !== null) {
+    splitIndices.push(match.index);
+  }
+
+  if (splitIndices.length > 0) {
+    lastSplitIndex = splitIndices[splitIndices.length - 1];
+    processedUpto = lastSplitIndex + 1; // }, { 에서 } 부분까지
+  }
+
+  // 처리할 부분과 남은 부분 분리
+  const toProcess = buffer.substring(0, processedUpto);
+  remaining = buffer.substring(processedUpto);
+
+  // 추출된 텍스트에서 { } 쌍 찾기
+  const objectMatches = [];
+  const objectPattern = /\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g;
+  let objMatch;
+  
+  while ((objMatch = objectPattern.exec(toProcess)) !== null) {
+    try {
+      const objStr = objMatch[0];
+      const parsed = JSON.parse(objStr);
+      
+      if (parsed.id !== undefined && parsed.id !== null) {
+        const normalized = {
+          id: String(parsed.id),
+          memo: parsed.memo ? String(parsed.memo) : "",
+          images: [] // 이미지는 제외 - 메모리 절감
+        };
+        
+        // 동기적으로 DB에 저장
+        saveMemoToDBSync(normalized);
+        count++;
+      }
+    } catch (parseErr) {
+      // 파싱 실패한 객체는 스킵
+    }
+  }
+
+  return { count, remaining };
+}
+
+// ✅ 메모를 DB에 저장 (동기 방식 - Promise 없음)
+function saveMemoToDBSync(obj) {
+  try {
+    const request = indexedDB.open("hongbuMemo", 4);
+    request.onsuccess = function (e) {
+      const db = e.target.result;
+      const tx = db.transaction(["apartmentNotes"], "readwrite");
+      const store = tx.objectStore("apartmentNotes");
+      const putReq = store.put(obj);
+      
+      putReq.onerror = () => {
+        hongbuDebugLog("WARN", `저장 실패: ${obj.id}`);
+      };
+      
+      tx.onerror = () => {};
+      db.close();
+    };
+    request.onerror = () => {};
+  } catch (e) {
+    hongbuDebugLog("WARN", "DB 저장 오류", e.message);
+  }
+}
+
+// ✅ 메모를 DB에 저장 (Promise 기반)
+function saveMemoToDB(obj) {
+  return new Promise((resolve) => {
+    try {
+      const request = indexedDB.open("hongbuMemo", 4);
+      request.onsuccess = function (e) {
+        const db = e.target.result;
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
+        const putReq = store.put(obj);
+        
+        putReq.onsuccess = () => resolve();
+        putReq.onerror = () => resolve();
+        tx.onerror = () => resolve();
+        db.close();
+      };
+      request.onerror = () => resolve();
+    } catch (e) {
+      resolve();
+    }
+  });
+}
+ 
 
 
 
