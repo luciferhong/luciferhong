@@ -7234,24 +7234,40 @@ async function restoreMemoDBStreaming(file) {
         let cleanBuffer = buffer.trim();
         cleanBuffer = cleanBuffer.replace(/[\[\],\s]*$/, '').trim();
         
-        // 마지막 완전한 객체 추출
+        // 마지막 완전한 객체 추출 (정확한 brace 매칭)
         let lastObj = null;
         try {
-          const lastObjMatch = cleanBuffer.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}(?!.*\})/);
-          if (lastObjMatch) {
-            lastObj = JSON.parse(lastObjMatch[0]);
+          let openBraces = 0;
+          let objStart = -1;
+          for (let j = 0; j < cleanBuffer.length; j++) {
+            if (cleanBuffer[j] === '{') {
+              if (openBraces === 0) objStart = j;
+              openBraces++;
+            } else if (cleanBuffer[j] === '}') {
+              openBraces--;
+              if (openBraces === 0 && objStart !== -1) {
+                try {
+                  const candidate = JSON.parse(cleanBuffer.substring(objStart, j + 1));
+                  lastObj = candidate; // 마지막에 찾은 것을 저장
+                  objStart = -1;
+                } catch (e) {
+                  // 파싱 실패는 무시
+                }
+              }
+            }
           }
         } catch (e) {
           // 스킵
         }
         
         if (lastObj && lastObj.id) {
-          await saveMemoToDB({
+          await saveMemoToDBPromise({
             id: String(lastObj.id),
             memo: lastObj.memo ? String(lastObj.memo) : "",
             images: []
           });
           savedCount++;
+          hongbuDebugLog("DEBUG", `✓ 마지막 메모 저장: id=${lastObj.id}`);
         }
       } catch (finalErr) {
         hongbuDebugLog("WARN", "마지막 객체 처리 오류", finalErr.message);
@@ -7267,68 +7283,119 @@ async function restoreMemoDBStreaming(file) {
   }
 }
 
-// ✅ 버퍼에서 완전한 JSON 객체들 추출 및 처리
+// ✅ 버퍼에서 완전한 JSON 객체들 추출 및 처리 (개선: 정확한 brace 매칭 + Promise 저장)
 async function processBufferChunks(buffer) {
   let count = 0;
-  
-  // 배열 형태: [{ }, { }, { }] 또는 [{ }, { }]
-  // }, { 패턴으로 객체들 사이를 분할
-  
-  // 먼저 opening [를 찾음
-  let searchStart = buffer.indexOf('[');
-  if (searchStart === -1) searchStart = 0;
-  
   let remaining = '';
-  let processedUpto = searchStart;
-
-  // }, { 패턴 찾아서 분할
-  const splitPattern = /}\s*,\s*{/g;
-  let lastSplitIndex = -1;
-  let match;
+  let savePromises = [];
   
-  // 모든 }, { 패턴의 위치 찾기
-  const splitIndices = [];
-  const tempPattern = /}\s*,\s*{/g;
-  while ((match = tempPattern.exec(buffer)) !== null) {
-    splitIndices.push(match.index);
-  }
-
-  if (splitIndices.length > 0) {
-    lastSplitIndex = splitIndices[splitIndices.length - 1];
-    processedUpto = lastSplitIndex + 1; // }, { 에서 } 부분까지
-  }
-
-  // 처리할 부분과 남은 부분 분리
-  const toProcess = buffer.substring(0, processedUpto);
-  remaining = buffer.substring(processedUpto);
-
-  // 추출된 텍스트에서 { } 쌍 찾기
-  const objectMatches = [];
-  const objectPattern = /\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g;
-  let objMatch;
+  // 배열 시작 찾기 [
+  let arrayStart = buffer.indexOf('[');
+  if (arrayStart === -1) arrayStart = 0;
   
-  while ((objMatch = objectPattern.exec(toProcess)) !== null) {
-    try {
-      const objStr = objMatch[0];
-      const parsed = JSON.parse(objStr);
-      
-      if (parsed.id !== undefined && parsed.id !== null) {
-        const normalized = {
-          id: String(parsed.id),
-          memo: parsed.memo ? String(parsed.memo) : "",
-          images: [] // 이미지는 제외 - 메모리 절감
-        };
-        
-        // 동기적으로 DB에 저장
-        saveMemoToDBSync(normalized);
-        count++;
+  let braceCount = 0;
+  let currentObjStart = -1;
+  let processedUpto = arrayStart;
+  let inString = false;
+  let escapeNext = false;
+  
+  // 문자 단위로 순회하면서 완전한 JSON 객체 찾기
+  for (let i = arrayStart; i < buffer.length; i++) {
+    const char = buffer[i];
+    
+    // 문자열 범위 확인
+    if (char === '"' && !escapeNext) {
+      inString = !inString;
+    }
+    escapeNext = (char === '\\' && !escapeNext);
+    
+    if (inString) continue; // 문자열 내부는 무시
+    
+    if (char === '{') {
+      if (braceCount === 0) {
+        currentObjStart = i;
       }
-    } catch (parseErr) {
-      // 파싱 실패한 객체는 스킵
+      braceCount++;
+    } else if (char === '}') {
+      braceCount--;
+      
+      // 완전한 객체가 끝남
+      if (braceCount === 0 && currentObjStart !== -1) {
+        try {
+          const objStr = buffer.substring(currentObjStart, i + 1);
+          const parsed = JSON.parse(objStr);
+          
+          if (parsed.id !== undefined && parsed.id !== null) {
+            const normalized = {
+              id: String(parsed.id),
+              memo: parsed.memo ? String(parsed.memo) : "",
+              images: [] // 이미지는 제외 - 메모리 절감
+            };
+            
+            // Promise로 DB 저장 큐에 추가
+            savePromises.push(saveMemoToDBPromise(normalized));
+            count++;
+            
+            // 큐가 너무 커지면 일부 대기 (메모리 관리)
+            if (savePromises.length >= 50) {
+              await Promise.all(savePromises.splice(0, 25));
+              hongbuDebugLog("DEBUG", `✓ 25개 메모 일괄 저장됨 (총 ${count}개)`);
+            }
+          }
+        } catch (parseErr) {
+          hongbuDebugLog("WARN", `파싱 실패: ${parseErr.message}`);
+        }
+        
+        currentObjStart = -1;
+        processedUpto = i + 1;
+      }
     }
   }
-
+  
+  // 남은 save Promise들 모두 처리
+  if (savePromises.length > 0) {
+    await Promise.all(savePromises);
+    hongbuDebugLog("DEBUG", `✓ 마지막 ${savePromises.length}개 메모 저장됨`);
+  }
+  
+  // 완전하지 않은 부분은 다음 청크로 넘김
+  remaining = buffer.substring(processedUpto);
+  
   return { count, remaining };
+}
+
+// ✅ 메모를 DB에 저장 (Promise 기반 - 동기적으로 대기)
+function saveMemoToDBPromise(obj) {
+  return new Promise((resolve, reject) => {
+    try {
+      const request = indexedDB.open("hongbuMemo", 4);
+      request.onsuccess = function (e) {
+        const db = e.target.result;
+        const tx = db.transaction(["apartmentNotes"], "readwrite");
+        const store = tx.objectStore("apartmentNotes");
+        const putReq = store.put(obj);
+        
+        putReq.onsuccess = () => {
+          db.close();
+          resolve();
+        };
+        putReq.onerror = () => {
+          hongbuDebugLog("WARN", `저장 실패: ${obj.id}`);
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      };
+      request.onerror = () => {
+        reject(new Error("DB 열기 실패"));
+      };
+    } catch (e) {
+      reject(e);
+    }
+  });
 }
 
 // ✅ 메모를 DB에 저장 (동기 방식 - Promise 없음)
