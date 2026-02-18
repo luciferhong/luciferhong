@@ -8,13 +8,6 @@
 // @description 2024. 5. 27. 오후 16:43:18
 // ==/UserScript==
 
-/**
- * 네이버부동산 콘솔에서 실행할 수 있는 가격 조회 스크립트
- * 사용법:
- * 1. 네이버부동산 페이지(https://new.land.naver.com/complexes)에 접속
- * 2. F12로 개발자도구 열기
- * 3. 콘솔(Console) 탭에서 아래 함수들 실행
- */
 
 // ========== 지역 데이터 (네부단지추출.js에서 가져옴) ==========
 // console_price_fetcher.js만 단독 실행할 때도 '시도/시군구/읍면동' 선택이 가능하도록,
@@ -5357,7 +5350,6 @@ async function initPyeongStructureMap(token, complexId) {
                 const bathroomCnt = parseInt(item.bathroomCnt) || 0;
                 const householdCount = parseInt(item.householdCountByPyeong || item.totalSupplyCount || item.householdCount || item.houseCnt || 0);
 
-                // pyeongName을 키로 사용 (예: "98.xy", "73.xx" 등)
                 const structureInfo = {
                     entranceType: entranceTypeSymbol,
                     roomCount: roomCnt,
@@ -5365,9 +5357,18 @@ async function initPyeongStructureMap(token, complexId) {
                     householdCount: householdCount
                 };
 
-                if (item.pyeongName) {
-                    pyeongStructureMap[item.pyeongName] = structureInfo;
-                }
+                // 여러 키로 저장 (다양한 형식 지원)
+                const keysToStore = [
+                    item.pyeongName,                          // "98.xy", "73.xx" 등
+                    String(item.supplyArea),                 // "84" (공급면적)
+                    String(item.exclusiveArea),              // "74" (전용면적)
+                    item.supplyArea ? `${item.supplyArea}` : null,  // 다시 한번
+                    item.displayName                          // 표시명
+                ].filter(Boolean);
+
+                keysToStore.forEach(key => {
+                    pyeongStructureMap[key] = structureInfo;
+                });
             });
         }
     } catch (e) {
@@ -5380,19 +5381,36 @@ async function initPyeongStructureMap(token, complexId) {
 function getStructureInfoDetail(article) {
     if (!article) return { entranceType: '', roomCount: 0, bathroomCount: 0, householdCount: 0 };
 
-    // 1차: pyeongStructureMap에서 areaName으로 조회
-    if (article.areaName && pyeongStructureMap[article.areaName]) {
-        const mapped = pyeongStructureMap[article.areaName];
-        return {
-            entranceType: String(mapped.entranceType || ''),
-            roomCount: parseInt(mapped.roomCount) || 0,
-            bathroomCount: parseInt(mapped.bathroomCount) || 0,
-            householdCount: parseInt(mapped.householdCount) || 0
-        };
+    // 1차: pyeongStructureMap에서 여러 필드로 조회 시도
+    const candidateKeys = [
+        article.areaName,           // "84.52A" 등
+        article.pyeongName,         // "98.xy" 등
+        String(article.area2),      // "84" 등
+        String(article.area1),      // 다른 면적 필드
+        article.supplyArea,         // 공급면적
+        article.exclusiveArea       // 전용면적
+    ].filter(Boolean);
+
+    for (const key of candidateKeys) {
+        if (pyeongStructureMap[key]) {
+            const mapped = pyeongStructureMap[key];
+            return {
+                entranceType: String(mapped.entranceType || ''),
+                roomCount: parseInt(mapped.roomCount) || 0,
+                bathroomCount: parseInt(mapped.bathroomCount) || 0,
+                householdCount: parseInt(mapped.householdCount) || 0
+            };
+        }
     }
 
     // 2차: tagList에서 구조 정보 추출: "방세개,화장실두개" -> 숫자로 추출
-    const tagList = article.tagList || '';
+    let tagList = article.tagList || '';
+    // tagList가 배열이면 문자열로 변환
+    if (Array.isArray(tagList)) {
+        tagList = tagList.join(',');
+    } else {
+        tagList = String(tagList).trim();
+    }
     if (!tagList) return { entranceType: '', roomCount: 0, bathroomCount: 0, householdCount: 0 };
 
     const koreanToNumber = {
@@ -5704,12 +5722,12 @@ allData.forEach(article => {
             const aptName = isFirstRow ? complexDetails.name : '';
             const moveDate = isFirstRow ? `${complexDetails.useApproveYmd.slice(0, 2)}.${complexDetails.useApproveYmd.slice(2, 4)}` : '';
             const household = isFirstRow ? complexDetails.totalHouseholdCount : '';
-            const salePrice = (data.sale.min !== null) ? formatPriceAsManWon(data.sale.min) : '-';
-            const rentPrice = (data.rent.min !== null) ? formatPriceAsManWon(data.rent.min) : '-';
+            const salePrice = (data.sale.min !== null) ? formatPriceAsManWon(data.sale.min) : '0';
+            const rentPrice = (data.rent.min !== null) ? formatPriceAsManWon(data.rent.min) : '0';
             const saleCnt = data.saleCnt.toString();
             const rentCnt = data.rentCnt.toString();
-            const saleFloor = (data.sale.min !== null) ? ((data.sale.isLow ? '(저)' : '') + data.sale.floorInfo) : '-';
-            const rentFloor = (data.rent.min !== null) ? ((data.rent.isLow ? '(저)' : '') + data.rent.floorInfo) : '-';
+            const saleFloor = (data.sale.min !== null) ? ((data.sale.isLow ? '(저)' : '') + data.sale.floorInfo) : '0';
+            const rentFloor = (data.rent.min !== null) ? ((data.rent.isLow ? '(저)' : '') + data.rent.floorInfo) : '0';
 
             const aptNameStr = aptName.substring(0, 11).padEnd(11, ' ');
             const moveDateStr = moveDate.toString().padEnd(8, ' ');
@@ -5906,12 +5924,12 @@ async function getPriceExcel(complexId, areaMinThreshold = 0, areaMaxThreshold =
             const aptName = isFirstRow ? complexDetails.name : '';
             const moveDate = isFirstRow ? `${complexDetails.useApproveYmd.slice(0, 2)}.${complexDetails.useApproveYmd.slice(2, 4)}` : '';
             const household = isFirstRow ? complexDetails.totalHouseholdCount : '';
-            const salePrice = (data.sale.min !== null) ? formatPriceAsManWon(data.sale.min) : '-';
-            const rentPrice = (data.rent.min !== null) ? formatPriceAsManWon(data.rent.min) : '-';
+            const salePrice = (data.sale.min !== null) ? formatPriceAsManWon(data.sale.min) : '0';
+            const rentPrice = (data.rent.min !== null) ? formatPriceAsManWon(data.rent.min) : '0';
             const saleCnt = data.saleCnt;
             const rentCnt = data.rentCnt;
-            const saleFloor = (data.sale.min !== null) ? ((data.sale.isLow ? '(저)' : '') + data.sale.floorInfo) : '-';
-            const rentFloor = (data.rent.min !== null) ? ((data.rent.isLow ? '(저)' : '') + data.rent.floorInfo) : '-';
+            const saleFloor = (data.sale.min !== null) ? ((data.sale.isLow ? '(저)' : '') + data.sale.floorInfo) : '0';
+            const rentFloor = (data.rent.min !== null) ? ((data.rent.isLow ? '(저)' : '') + data.rent.floorInfo) : '0';
 
             excelData.push([
                 aptName,
@@ -5948,7 +5966,10 @@ async function getPriceExcel(complexId, areaMinThreshold = 0, areaMaxThreshold =
         XLSX.utils.book_append_sheet(wb, ws, '가격정보');
 
         // 8. 파일 다운로드
-        const fileName = `${complexDetails.name}_${new Date().getTime()}.xlsx`;
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const fileName = `엑셀저장_${dateStr}.xlsx`;
         XLSX.writeFile(wb, fileName);
 
         console.log(`✓ 엑셀 파일 다운로드 완료: ${fileName}`);
@@ -6132,8 +6153,8 @@ async function getComplexesByRegion() {
                     입주시기: `${complexDetails.useApproveYmd.slice(0, 4)}.${complexDetails.useApproveYmd.slice(4, 6)}`,
                     전체세대수: complexDetails.totalHouseholdCount,
                     면적: area2,
-                    매매가: (data.sale.min !== null) ? ((data.sale.isLow ? '(저)' : '') + formatPriceAsManWon(data.sale.min)) : '-',
-                    전세가: (data.rent.min !== null) ? ((data.rent.isLow ? '(저)' : '') + formatPriceAsManWon(data.rent.min)) : '-',
+                    매매가: (data.sale.min !== null) ? ((data.sale.isLow ? '(저)' : '') + formatPriceAsManWon(data.sale.min)) : '0',
+                    전세가: (data.rent.min !== null) ? ((data.rent.isLow ? '(저)' : '') + formatPriceAsManWon(data.rent.min)) : '0',
                     매매물건수: data.saleCnt,
                     전세물건수: data.rentCnt
                 });
@@ -6204,7 +6225,7 @@ async function showPricePopup() {
         .apt-btn.primary { background: #00ac42; color: #fff; border-color: #00ac42; }
         .apt-btn.primary:hover { background: #009a37; }
         .apt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .apt-log { display: block; box-sizing: border-box; width: 100%; height: 120px; padding: 10px 12px; background: #0b1020; color: #cde3ff; border: 1px solid #1f2a40; border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre-wrap; overflow-y: auto; margin-top: 10px; }
+        .apt-log { display: block; box-sizing: border-box; width: 100%; height: 300px; padding: 10px 12px; background: #0b1020; color: #cde3ff; border: 1px solid #1f2a40; border-radius: 4px; font-family: monospace; font-size: 12px; white-space: pre-wrap; overflow-y: auto; margin-top: 10px; }
         .apt-info { padding: 8px; background: #f0f0f0; border-radius: 4px; margin: 10px 0; font-size: 13px; }
         .apt-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
         .apt-table th { border: 1px solid #ddd; padding: 8px; background: #f5f5f5; font-weight: bold; text-align: center; }
@@ -6601,12 +6622,13 @@ refreshComplexList();
             '2726000000', '2711000000', '3017000000', '3014000000', '4413100000',
             '4413300000', '4311200000', '4719000000', '4141000000', '2818500000'
         ]);
-        /*
+    
+    /*
         const targetSigunguCodes = new Set([
-            '1123000000', '1159000000'
+            '1123000000'
         ]);
-*/
-        btnBeforeMadang.disabled = true;
+ */
+       btnBeforeMadang.disabled = true;
         collectedData.length = 0;
         setInfo(`앞마당 대상 지역 조회 중...`);
         log(`\n📍 앞마당 대상 지역 조회 시작 (${targetSigunguCodes.size}개 시군구)`);
@@ -6655,18 +6677,207 @@ refreshComplexList();
             log(`\n📍 매칭된 읍면동: ${targetCortarNos.size}개`);
             matchedRegions.forEach(r => log(`  └─ ${r.cortarNo} (${r.sigunguName} ${r.dongName})`));
 
-            // 2단계: 각 읍면동별로 단지 조회
-            for (const cortarNo of targetCortarNos) {
+            // 동별 평면도 맵을 생성하는 함수 (지역 변수로 관리하여 병렬 처리 문제 해결)
+            const getPyeongStructureMapForDong = async (token, complexId, dongName) => {
+                try {
+                    const url = `https://new.land.naver.com/api/complexes/${parseInt(complexId, 10)}?sameAddressGroup=true`;
+                    const response = await fetch(url, {
+                        headers: {
+                            accept: "*/*",
+                            "accept-language": "ko-KR,ko;q=0.9",
+                            authorization: token,
+                            "priority": "u=1, i",
+                            "sec-fetch-dest": "empty",
+                            "sec-fetch-mode": "cors",
+                            "sec-fetch-site": "same-origin",
+                        },
+                        referrerPolicy: "unsafe-url",
+                        body: null,
+                        method: "GET",
+                        mode: "cors",
+                        credentials: "include",
+                    });
+
+                    if (!response.ok) {
+                        log(`  ⚠ 평면도 조회 실패 (${response.status})`);
+                        return {};
+                    }
+
+                    const data = await response.json();
+                    const dongPyeongMap = {};
+                    let pyeongCount = 0;
+
+                    if (data.complexPyeongDetailList && Array.isArray(data.complexPyeongDetailList)) {
+                        data.complexPyeongDetailList.forEach(item => {
+                            let entranceTypeSymbol = "";
+                            if (item.entranceType === "계단식") {
+                                entranceTypeSymbol = "계단식";
+                            } else if (item.entranceType === "복도식") {
+                                entranceTypeSymbol = "복도식";
+                            } else if (item.entranceType === "복합식") {
+                                entranceTypeSymbol = "복합식";
+                            } else {
+                                entranceTypeSymbol = item.entranceType || "";
+                            }
+
+                            const roomCnt = parseInt(item.roomCnt) || 0;
+                            const bathroomCnt = parseInt(item.bathroomCnt) || 0;
+                            const householdCount = parseInt(item.householdCountByPyeong || item.totalSupplyCount || item.householdCount || item.houseCnt || 0);
+
+                            const structureInfo = {
+                                entranceType: entranceTypeSymbol,
+                                roomCount: roomCnt,
+                                bathroomCount: bathroomCnt,
+                                householdCount: householdCount
+                            };
+
+                            // 모든 가능한 키로 저장 (중요: 정수/실수 형식 모두)
+                            const keysToStore = [
+                                item.pyeongName,                     // "98.xy" 등
+                                String(item.supplyArea),             // "84"
+                                String(parseFloat(item.supplyArea)), // 84 (정수)
+                                item.exclusiveArea ? String(item.exclusiveArea) : null,  // "74"
+                                item.exclusiveArea ? String(parseFloat(item.exclusiveArea)) : null,
+                                item.displayName                     // "84㎡" 같은 표시명
+                            ].filter(Boolean);
+
+                            keysToStore.forEach(key => {
+                                dongPyeongMap[key] = structureInfo;
+                                pyeongCount++;
+                            });
+                        });
+                            /*
+                        if (pyeongCount > 0) {
+                            log(`  └─ 평면도 ${data.complexPyeongDetailList.length}개 로드 (${pyeongCount}개 키)`);
+                        }
+                            */
+                    }
+
+                    return dongPyeongMap;
+                } catch (e) {
+                    log(`  ⚠ 평면도 조회 오류: ${e.message}`);
+                    return {};
+                }
+            };
+
+            // 동별 평면도를 사용하여 구조 정보를 추출하는 함수
+            const getStructureInfoWithDongMap = (article, dongPyeongMap) => {
+                if (!article) return { entranceType: '', roomCount: 0, bathroomCount: 0, householdCount: 0 };
+
+                // 1차: 동의 평면도 맵에서 매칭 시도
+                const area2Value = parseFloat(article.area2);
+                
+                // 여러 형식으로 시도
+                const candidateKeys = [
+                    article.areaName,
+                    article.pyeongName,
+                    String(article.area2),
+                    String(Math.round(area2Value)),
+                    String(area2Value),
+                    article.supplyArea ? String(parseFloat(article.supplyArea)) : null,
+                    article.exclusiveArea ? String(parseFloat(article.exclusiveArea)) : null
+                ].filter(Boolean);
+
+                // 정확한 매치 우선
+                for (const key of candidateKeys) {
+                    if (dongPyeongMap[key]) {
+                        const mapped = dongPyeongMap[key];
+                        return {
+                            entranceType: String(mapped.entranceType || ''),
+                            roomCount: parseInt(mapped.roomCount) || 0,
+                            bathroomCount: parseInt(mapped.bathroomCount) || 0,
+                            householdCount: parseInt(mapped.householdCount) || 0
+                        };
+                    }
+                }
+
+                // 2차: 근사값 매칭 (±1 범위)
+                if (area2Value > 0) {
+                    for (let offset = 0; offset <= 2; offset++) {
+                        for (const delta of [0, -offset, offset]) {
+                            const approxKey = String(Math.round(area2Value + delta));
+                            if (dongPyeongMap[approxKey]) {
+                                const mapped = dongPyeongMap[approxKey];
+                                return {
+                                    entranceType: String(mapped.entranceType || ''),
+                                    roomCount: parseInt(mapped.roomCount) || 0,
+                                    bathroomCount: parseInt(mapped.bathroomCount) || 0,
+                                    householdCount: parseInt(mapped.householdCount) || 0
+                                };
+                            }
+                        }
+                    }
+                }
+
+                // 3차: tagList에서 구조 정보 추출
+                let tagList = article.tagList || '';
+                if (Array.isArray(tagList)) {
+                    tagList = tagList.join(',');
+                } else {
+                    tagList = String(tagList).trim();
+                }
+                
+                const koreanToNumber = {
+                    '한': 1, '두': 2, '세': 3, '네': 4, '다섯': 5,
+                    '여섯': 6, '일곱': 7, '여덟': 8, '아홉': 9, '열': 10
+                };
+
+                let roomCount = 0;
+                let bathroomCount = 0;
+
+                if (tagList) {
+                    const roomMatch = tagList.match(/방(\S+?)개/);
+                    if (roomMatch) {
+                        const roomText = roomMatch[1];
+                        roomCount = parseInt(koreanToNumber[roomText] || roomText) || 0;
+                    }
+
+                    const bathMatch = tagList.match(/화장실(\S+?)개/);
+                    if (bathMatch) {
+                        const bathText = bathMatch[1];
+                        bathroomCount = parseInt(koreanToNumber[bathText] || bathText) || 0;
+                    }
+                }
+
+                // 4차: 면적으로 추정 (기본값)
+                const area = parseFloat(article.area2) || 0;
+                if (roomCount === 0 && bathroomCount === 0 && area > 0) {
+                    // 면적별 일반적인 평면도 추정
+                    if (area < 45) {
+                        roomCount = 1;
+                        bathroomCount = 1;
+                    } else if (area < 60) {
+                        roomCount = 2;
+                        bathroomCount = 1;
+                    } else if (area < 85) {
+                        roomCount = 3;
+                        bathroomCount = 2;
+                    } else if (area < 110) {
+                        roomCount = 3;
+                        bathroomCount = 2;
+                    } else {
+                        roomCount = 4;
+                        bathroomCount = 2;
+                    }
+                }
+
+                return { entranceType: '', roomCount, bathroomCount, householdCount: 0 };
+            };
+
+            // 한 동을 처리하는 함수
+            const processDong = async (cortarNo, dongIndex, totalDongs) => {
                 const regionInfo = matchedRegions.find(r => r.cortarNo === cortarNo);
                 const dongName = regionInfo?.dongName || '';
                 const sigunguName = regionInfo?.sigunguName || '';
                 const sidoName = regionInfo?.sidoName || '';
 
-                setInfo(`조회 중: ${sigunguName} ${dongName} (${processedCount}/${targetCortarNos.size})`);
-                log(`\n▶ 조회: ${sigunguName} ${dongName}`);
+                const dongResults = [];
 
-                // 해당 지역의 모든 단지 조회
                 try {
+                    setInfo(`조회 중: ${sigunguName} ${dongName} (동 ${dongIndex}/${totalDongs})`);
+                    log(`\n▶ 조회: ${sigunguName} ${dongName} (${dongIndex}/${totalDongs})`);
+
+                    // 해당 지역의 모든 단지 조회
                     const areaComplexes = await fetchComplexListByCortarNo(cortarNo);
                     // 150세대 이상만 필터링
                     const filteredComplexes = areaComplexes.filter(c => {
@@ -6676,140 +6887,191 @@ refreshComplexList();
                     });
                     log(`  └─ ${areaComplexes.length}개 단지 발견 → ${filteredComplexes.length}개 단지 선택 (150세대 이상)`);
 
-                    // 각 단지별 가격 조회
-                    for (const complex of filteredComplexes) {
-                        const complexId = complex.complexNo;
-                        const complexDetails = await fetchComplexDetails(complexId);
+                    // 각 단지별 가격 조회 (병렬 처리)
+                    const processComplexGroup = async (complexGroup, groupIndex) => {
+                        const results = [];
+                        for (const complex of complexGroup) {
+                            try {
+                                const complexId = complex.complexNo;
+                                
+                                // fetchComplexDetails만 호출
+                                const complexDetails = await fetchComplexDetails(complexId);
 
-                        if (!complexDetails) continue;
+                                if (!complexDetails) continue;
 
-                        // 평면도별 구조 정보 초기화 (nabu.js 방식)
-                        await initPyeongStructureMap(token, complexId);
+                                // ⭐️ 각 단지별로 평면도 맵을 개별 조회
+                                const complexPyeongMap = await getPyeongStructureMapForDong(
+                                    token, 
+                                    complexId, 
+                                    complexDetails.name
+                                );
 
-                        // 가격 데이터 조회
-                        let page = 1;
-                        let isMoreData = true;
-                        let allData = [];
+                                // 가격 데이터 조회
+                                let page = 1;
+                                let isMoreData = true;
+                                let allData = [];
 
-                        while (isMoreData) {
-                            const data = await fetchArticles(token, page, complexId);
+                                while (isMoreData) {
+                                    const data = await fetchArticles(token, page, complexId);
 
-                            if (data.articleList && Array.isArray(data.articleList)) {
-                                allData = allData.concat(data.articleList);
+                                    if (data.articleList && Array.isArray(data.articleList)) {
+                                        allData = allData.concat(data.articleList);
+                                    }
+
+                                    isMoreData = data.isMoreData;
+                                    page++;
+                                    await new Promise(resolve => setTimeout(resolve, 50));
+                                }
+
+                                // 면적별 정리
+                                const priceByArea = {};
+
+                                allData.forEach(article => {
+                                    const area2 = article.area2;
+                                    const structureInfoDetail = getStructureInfoWithDongMap(article, complexPyeongMap);
+                                    const priceInManWon = parsePrice(article.dealOrWarrantPrc);
+                                    const tradeType = article.tradeTypeName;
+                                    const floorInfo = getFloorInfo(article);
+                                    const isLow = isLowByFloorInfo(floorInfo);
+
+                                    // area2를 기준으로 그룹핑
+                                    const key = area2;
+
+                                    if (!priceByArea[key]) {
+                                        priceByArea[key] = {
+                                            area2: area2,
+                                            entranceType: structureInfoDetail.entranceType,
+                                            roomCount: structureInfoDetail.roomCount,
+                                            bathroomCount: structureInfoDetail.bathroomCount,
+                                            householdCount: structureInfoDetail.householdCount,
+                                            sale: { min: null, isLow: false, floorInfo: '' },
+                                            rent: { min: null, isLow: false, floorInfo: '' },
+                                            saleCnt: 0,
+                                            rentCnt: 0
+                                        };
+                                    } else {
+                                        // 같은 면적의 다른 물건에서 구조 정보를 다시 확인 (더 정확한 정보 갱신)
+                                        if (structureInfoDetail.entranceType && !priceByArea[key].entranceType) {
+                                            priceByArea[key].entranceType = structureInfoDetail.entranceType;
+                                        }
+                                        if (structureInfoDetail.roomCount && !priceByArea[key].roomCount) {
+                                            priceByArea[key].roomCount = structureInfoDetail.roomCount;
+                                        }
+                                        if (structureInfoDetail.bathroomCount && !priceByArea[key].bathroomCount) {
+                                            priceByArea[key].bathroomCount = structureInfoDetail.bathroomCount;
+                                        }
+                                        if (structureInfoDetail.householdCount && !priceByArea[key].householdCount) {
+                                            priceByArea[key].householdCount = structureInfoDetail.householdCount;
+                                        }
+                                    }
+
+                                    if (tradeType === '매매' && article.cpName !== '한국공인중개사협회') {
+                                        const cur = priceByArea[key].sale.min;
+                                        if (cur === null || priceInManWon < cur) {
+                                            priceByArea[key].sale.min = priceInManWon;
+                                            priceByArea[key].sale.isLow = isLow;
+                                            priceByArea[key].sale.floorInfo = floorInfo;
+                                        }
+                                        priceByArea[key].saleCnt++;
+                                    } else if (tradeType === '전세' && article.cpName !== '한국공인중개사협회') {
+                                        const cur = priceByArea[key].rent.min;
+                                        if (cur === null || priceInManWon < cur) {
+                                            priceByArea[key].rent.min = priceInManWon;
+                                            priceByArea[key].rent.isLow = isLow;
+                                            priceByArea[key].rent.floorInfo = floorInfo;
+                                        }
+                                        priceByArea[key].rentCnt++;
+                                    }
+                                });
+
+                                // 결과 저장
+                                const sortedAreas = Object.keys(priceByArea).sort((a, b) => {
+                                    return parseFloat(a) - parseFloat(b);
+                                });
+
+                                // 디버그: 첫 번째 아이템 로깅
+                                if (sortedAreas.length > 0) {
+                                    const firstKey = sortedAreas[0];
+                                    const firstData = priceByArea[firstKey];
+                                    //log(`[DEBUG] 첫 면적 key=${firstKey}: entrance=${firstData.entranceType}, room=${firstData.roomCount}, bath=${firstData.bathroomCount}`);
+                                }
+
+                                sortedAreas.forEach(key => {
+                                    const data = priceByArea[key];
+                                    const areaValue = parseFloat(key);
+                                    results.push({
+                                        시도: sidoName,
+                                        시군구: sigunguName,
+                                        읍면동: dongName,
+                                        단지명: complexDetails.name,
+                                        입주시기: `${complexDetails.useApproveYmd.slice(0, 4)}.${complexDetails.useApproveYmd.slice(4, 6)}`,
+                                        전체세대수: complexDetails.totalHouseholdCount,
+                                        면적: areaValue,
+                                        평형세대수: data.householdCount,
+                                        구조: data.entranceType,
+                                        방: data.roomCount,
+                                        화장실: data.bathroomCount,
+                                        매매가: (data.sale.min !== null) ? data.sale.min : 0,
+                                        전세가: (data.rent.min !== null) ? data.rent.min : 0,
+                                        매매물건수: data.saleCnt,
+                                        전세물건수: data.rentCnt,
+                                        매매층: (data.sale.min !== null) ? data.sale.floorInfo : '',
+                                        전세층: (data.rent.min !== null) ? data.rent.floorInfo : '',
+                                        매매저층여부: (data.sale.min !== null) ? (data.sale.isLow ? '(저)' : '') : '',
+                                        전세저층여부: (data.rent.min !== null) ? (data.rent.isLow ? '(저)' : '') : ''
+                                    });
+                                });
+                            } catch (error) {
+                                log(`  ⚠ 단지 조회 오류: ${error.message}`);
                             }
-
-                            isMoreData = data.isMoreData;
-                            page++;
-                            await new Promise(resolve => setTimeout(resolve, 50));
                         }
+                        return results;
+                    };
 
-                        // 면적별 정리
-                        const priceByArea = {};
-
-                        allData.forEach(article => {
-                            const area2 = article.area2;
-                            const structureInfoDetail = getStructureInfoDetail(article);
-                            const priceInManWon = parsePrice(article.dealOrWarrantPrc);
-                            const tradeType = article.tradeTypeName;
-                            const floorInfo = getFloorInfo(article);
-                            const isLow = isLowByFloorInfo(floorInfo);
-
-                            // area2를 기준으로 그룹핑
-                            const key = area2;
-
-                            if (!priceByArea[key]) {
-                                priceByArea[key] = {
-                                    area2: area2,
-                                    entranceType: structureInfoDetail.entranceType,
-                                    roomCount: structureInfoDetail.roomCount,
-                                    bathroomCount: structureInfoDetail.bathroomCount,
-                                    householdCount: structureInfoDetail.householdCount,
-                                    sale: { min: null, isLow: false, floorInfo: '' },
-                                    rent: { min: null, isLow: false, floorInfo: '' },
-                                    saleCnt: 0,
-                                    rentCnt: 0
-                                };
-                            } else {
-                                // 같은 면적의 다른 물건에서 구조 정보를 다시 확인 (더 정확한 정보 갱신)
-                                if (structureInfoDetail.entranceType && !priceByArea[key].entranceType) {
-                                    priceByArea[key].entranceType = structureInfoDetail.entranceType;
-                                }
-                                if (structureInfoDetail.roomCount && !priceByArea[key].roomCount) {
-                                    priceByArea[key].roomCount = structureInfoDetail.roomCount;
-                                }
-                                if (structureInfoDetail.bathroomCount && !priceByArea[key].bathroomCount) {
-                                    priceByArea[key].bathroomCount = structureInfoDetail.bathroomCount;
-                                }
-                                if (structureInfoDetail.householdCount && !priceByArea[key].householdCount) {
-                                    priceByArea[key].householdCount = structureInfoDetail.householdCount;
-                                }
-                            }
-
-                            if (tradeType === '매매' && article.cpName !== '한국공인중개사협회') {
-                                const cur = priceByArea[key].sale.min;
-                                if (cur === null || priceInManWon < cur) {
-                                    priceByArea[key].sale.min = priceInManWon;
-                                    priceByArea[key].sale.isLow = isLow;
-                                    priceByArea[key].sale.floorInfo = floorInfo;
-                                }
-                                priceByArea[key].saleCnt++;
-                            } else if (tradeType === '전세' && article.cpName !== '한국공인중개사협회') {
-                                const cur = priceByArea[key].rent.min;
-                                if (cur === null || priceInManWon < cur) {
-                                    priceByArea[key].rent.min = priceInManWon;
-                                    priceByArea[key].rent.isLow = isLow;
-                                    priceByArea[key].rent.floorInfo = floorInfo;
-                                }
-                                priceByArea[key].rentCnt++;
-                            }
-                        });
-
-                        // 결과 저장
-                        const sortedAreas = Object.keys(priceByArea).sort((a, b) => {
-                            return parseFloat(a) - parseFloat(b);
-                        });
-
-                        // 디버그: 첫 번째 아이템 로깅
-                        if (sortedAreas.length > 0) {
-                            const firstKey = sortedAreas[0];
-                            const firstData = priceByArea[firstKey];
-                            //log(`[DEBUG] 첫 면적 key=${firstKey}: entrance=${firstData.entranceType}, room=${firstData.roomCount}, bath=${firstData.bathroomCount}`);
-                        }
-
-                        sortedAreas.forEach(key => {
-                            const data = priceByArea[key];
-                            const areaValue = parseFloat(key);
-                            collectedData.push({
-                                시도: sidoName,
-                                시군구: sigunguName,
-                                읍면동: dongName,
-                                단지명: complexDetails.name,
-                                입주시기: `${complexDetails.useApproveYmd.slice(0, 4)}.${complexDetails.useApproveYmd.slice(4, 6)}`,
-                                전체세대수: complexDetails.totalHouseholdCount,
-                                면적: areaValue,
-                                평형세대수: data.householdCount,
-                                구조: data.entranceType,
-                                방: data.roomCount,
-                                화장실: data.bathroomCount,
-                                매매가: (data.sale.min !== null) ? data.sale.min : '',
-                                전세가: (data.rent.min !== null) ? data.rent.min : '',
-                                매매물건수: data.saleCnt,
-                                전세물건수: data.rentCnt,
-                                매매층: (data.sale.min !== null) ? data.sale.floorInfo : '',
-                                전세층: (data.rent.min !== null) ? data.rent.floorInfo : '',
-                                매매저층여부: (data.sale.min !== null) ? (data.sale.isLow ? '(저)' : '') : '',
-                                전세저층여부: (data.rent.min !== null) ? (data.rent.isLow ? '(저)' : '') : ''
-                            });
-                        });
+                    // 4개씩 묶어서 병렬 처리
+                    const complexesPerGroup = 4;
+                    for (let i = 0; i < filteredComplexes.length; i += complexesPerGroup) {
+                        const group = filteredComplexes.slice(i, i + complexesPerGroup);
+                        const groupResults = await processComplexGroup(group);
+                        dongResults.push(...groupResults);
                     }
 
                     log(`✓ ${dongName}: 처리 완료`);
-                    processedCount++;
-                    await new Promise(resolve => setTimeout(resolve, 200));
 
                 } catch (error) {
                     log(`⚠ ${dongName}: ${error.message}`);
+                }
+
+                return dongResults;
+            };
+
+            // 2단계: 동을 3개씩 묶어서 병렬 처리 (네이버 rate limit 고려)
+            const cortarNoArray = Array.from(targetCortarNos);
+            const dongsPerGroup = 3;
+            
+            for (let i = 0; i < cortarNoArray.length; i += dongsPerGroup) {
+                const dongGroup = cortarNoArray.slice(i, i + dongsPerGroup);
+                const groupIndex = Math.floor(i / dongsPerGroup) + 1;
+                const totalGroups = Math.ceil(cortarNoArray.length / dongsPerGroup);
+                
+                log(`\n📊 동 그룹 ${groupIndex}/${totalGroups} 처리 중... (${dongGroup.length}개 동 병렬)`);
+                
+                // 그룹 내 동들을 동시에 처리
+                const groupPromises = dongGroup.map((cortarNo, groupDongIndex) => {
+                    const dongIndex = i + groupDongIndex + 1;  // 전체 동 순서
+                    return processDong(cortarNo, dongIndex, cortarNoArray.length);
+                });
+                const groupResults = await Promise.all(groupPromises);
+                
+                // 결과 수집
+                groupResults.forEach(dongResults => {
+                    collectedData.push(...dongResults);
                     processedCount++;
+                });
+                
+                // 동 그룹 간 대기 (rate limit 고려)
+                if (i + dongsPerGroup < cortarNoArray.length) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
                 }
             }
 
@@ -7012,8 +7274,8 @@ refreshComplexList();
                         구조: data.entranceType,
                         방: data.roomCount,
                         화장실: data.bathroomCount,
-                        매매가: (data.sale.min !== null) ? data.sale.min : '',
-                        전세가: (data.rent.min !== null) ? data.rent.min : '',
+                        매매가: (data.sale.min !== null) ? data.sale.min : 0,
+                        전세가: (data.rent.min !== null) ? data.rent.min : 0,
                         매매물건수: data.saleCnt,
                         전세물건수: data.rentCnt,
                         매매층: (data.sale.min !== null) ? data.sale.floorInfo : '',
@@ -7138,7 +7400,10 @@ async function saveComplexDataToExcel(complexData) {
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, '단지정보');
 
-        const fileName = `단지정보_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+        const fileName = `앞마당다운로드_${dateStr}.xlsx`;
         XLSX.writeFile(wb, fileName);
 
         console.log(`✓ 엑셀 파일 다운로드 완료: ${fileName}\n`);
