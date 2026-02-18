@@ -27,6 +27,33 @@
       display: block;
       margin-bottom: 4px;
     }
+
+    /* ✅ 경계선 라벨 스타일 */
+    .emd-label{
+      font-weight: 800;
+      color: #0b1b3a;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      box-shadow: none;
+      white-space: nowrap;
+      pointer-events: none;
+      text-shadow: 0 0 2px rgba(255,255,255,0.9), 0 0 6px rgba(255,255,255,0.7);
+    }
+
+    .sig-label{
+      font-weight: 800;
+      color: #111;
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 0;
+      box-shadow: none;
+      white-space: nowrap;
+      pointer-events: none;
+      text-shadow: 0 0 2px rgba(255,255,255,0.9), 0 0 6px rgba(255,255,255,0.7);
+    }
   </style>
 </head>
 <body>
@@ -50,8 +77,25 @@ const map = new naver.maps.Map('map', {
   zoom: 13
 });
 
-const lineLayers = {};
+// ✅ 경계선 변수 (법정동/행정동/시군구)
+const EMD_GEOJSON_PARTS = ["emd_wgs84_utf8_part01.geojson", "emd_wgs84_utf8_part02.geojson", "emd_wgs84_utf8_part03.geojson", "emd_wgs84_utf8_part04.geojson"];
+const SIG_GEOJSON_PARTS = ["sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson", "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson"];
+
+let emdGeojsonRaw = null;
+let emdPrepared = null;
+let emdPolygons = [];
+let emdLabels = [];
+let emdRedrawTimer = null;
+let emdBoundMap = null;
+
+let sigGeojsonRaw = null;
+let sigPrepared = null;
+let sigPolygons = [];
+let sigLabels = [];
+let sigStyleMode = "default";
+
 const lineCheckboxes = {};
+const lineLayers = {};
 const markers = [];
 let lastLoadedData = null;
 
@@ -268,29 +312,34 @@ const coords = [];
 const outputEl = document.getElementById('output');
 
 // 시작 버튼 클릭 시 기록 시작
-document.getElementById('start-btn').addEventListener('click', () => {
-  isRecording = true;
-});
+if (document.getElementById('start-btn')) {
+  document.getElementById('start-btn').addEventListener('click', () => {
+    isRecording = true;
+  });
+}
 
 // 리셋 버튼 클릭 시 초기화
-document.getElementById('reset-btn').addEventListener('click', () => {
-  isRecording = false;
-  coords.length = 0;
-  outputEl.textContent = '';
-});
+if (document.getElementById('reset-btn')) {
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    isRecording = false;
+    coords.length = 0;
+    if (outputEl) outputEl.textContent = '';
+  });
+}
 
 // 복사 버튼 클릭 시 클립보드로 복사
-document.getElementById('copy-btn').addEventListener('click', () => {
-  const text = outputEl.textContent.trim();
-  if (!text) {
-    alert("복사할 내용이 없습니다.");
-    return;
-  }
-
-  navigator.clipboard.writeText(text)
-    .then(() => alert("좌표가 복사되었습니다!"))
-    .catch(err => alert("복사 실패: " + err));
-});
+if (document.getElementById('copy-btn')) {
+  document.getElementById('copy-btn').addEventListener('click', () => {
+    const text = outputEl && outputEl.textContent ? outputEl.textContent.trim() : '';
+    if (!text) {
+      alert("복사할 내용이 없습니다.");
+      return;
+    }
+    navigator.clipboard.writeText(text)
+      .then(() => alert("좌표가 복사되었습니다!"))
+      .catch(err => alert("복사 실패: " + err));
+  });
+}
 
 // 지도 클릭 시 좌표 저장 및 마커 표시
 naver.maps.Event.addListener(map, 'click', function(e) {
@@ -322,6 +371,562 @@ naver.maps.Event.addListener(map, 'click', function(e) {
   // 출력창에 누적 좌표 표시
   outputEl.textContent = coords.map(c => `[${c[0]}, ${c[1]}]`).join(',\n') + ',';
 });
+
+// ==============================
+// ✅ 경계선 렌더링 함수 (hongbutest.html에서 추출)
+// ==============================
+
+function bboxIntersects(bounds, bbox) {
+  const sw = bounds.getSW();
+  const ne = bounds.getNE();
+  const minLng = bbox[0], minLat = bbox[1], maxLng = bbox[2], maxLat = bbox[3];
+  if (maxLng < sw.lng()) return false;
+  if (minLng > ne.lng()) return false;
+  if (maxLat < sw.lat()) return false;
+  if (minLat > ne.lat()) return false;
+  return true;
+}
+
+function _prepareFeatureBBoxes(featureCollection) {
+  const feats = featureCollection?.features || [];
+  return feats.map(f => {
+    const geom = f.geometry;
+    const polys = (geom.type === "MultiPolygon") ? geom.coordinates : [geom.coordinates];
+    let minLng=Infinity, minLat=Infinity, maxLng=-Infinity, maxLat=-Infinity;
+    for (const poly of polys) {
+      const ring = poly[0];
+      for (const pt of ring) {
+        const lng = pt[0], lat = pt[1];
+        if (lng < minLng) minLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    return { geometry: geom, properties: f.properties || {}, bbox: [minLng, minLat, maxLng, maxLat] };
+  });
+}
+
+function prepareSigPreparedOnce() {
+  if (sigPrepared) return;
+  if (!sigGeojsonRaw) throw new Error("SIG GeoJSON not loaded");
+  sigPrepared = _prepareFeatureBBoxes(sigGeojsonRaw);
+}
+
+function prepareEmdPreparedOnce() {
+  if (emdPrepared) return;
+  if (!emdGeojsonRaw) throw new Error("EMD GeoJSON not loaded");
+  emdPrepared = _prepareFeatureBBoxes(emdGeojsonRaw);
+}
+
+// ✅ polylabel 알고리즘과 지오메트리 헬퍼 함수들
+function _emd_pointToPolygonDist(x, y, polygon) {
+  let inside = false;
+  let minDistSq = Infinity;
+  for (let k = 0; k < polygon.length; k++) {
+    const ring = polygon[k];
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const ax = ring[i][0], ay = ring[i][1];
+      const bx = ring[j][0], by = ring[j][1];
+      const intersect = ((ay > y) !== (by > y)) && (x < (bx - ax) * (y - ay) / (by - ay + 0.0) + ax);
+      if (intersect) inside = !inside;
+      const dx = bx - ax, dy = by - ay;
+      let t = ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy);
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + t * dx, py = ay + t * dy;
+      const distSq = (x - px) * (x - px) + (y - py) * (y - py);
+      if (distSq < minDistSq) minDistSq = distSq;
+    }
+  }
+  const dist = Math.sqrt(minDistSq);
+  return inside ? dist : -dist;
+}
+
+function _emd_polylabel(polygon, precision = 1e-5) {
+  const outer = polygon[0];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of outer) {
+    const x = p[0], y = p[1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const width = maxX - minX;
+  const height = maxY - minY;
+  const cellSize = Math.min(width, height);
+  if (!isFinite(cellSize) || cellSize === 0) return outer[0];
+  function Cell(x, y, h, d) {
+    this.x = x; this.y = y; this.h = h;
+    this.d = d;
+    this.max = this.d + this.h * Math.SQRT2;
+  }
+  let h = cellSize / 2;
+  let cells = [];
+  for (let x = minX; x < maxX; x += cellSize) {
+    for (let y = minY; y < maxY; y += cellSize) {
+      const cx = x + h, cy = y + h;
+      const d = _emd_pointToPolygonDist(cx, cy, polygon);
+      cells.push(new Cell(cx, cy, h, d));
+    }
+  }
+  let best = new Cell((minX + maxX) / 2, (minY + maxY) / 2, 0, _emd_pointToPolygonDist((minX + maxX) / 2, (minY + maxY) / 2, polygon));
+  const fp = outer[0];
+  const fpCell = new Cell(fp[0], fp[1], 0, _emd_pointToPolygonDist(fp[0], fp[1], polygon));
+  if (fpCell.d > best.d) best = fpCell;
+  cells.sort((a, b) => b.max - a.max);
+  while (cells.length) {
+    const cell = cells.shift();
+    if (cell.d > best.d) best = cell;
+    if (cell.max - best.d <= precision) continue;
+    const h2 = cell.h / 2;
+    const children = [[cell.x - h2, cell.y - h2], [cell.x + h2, cell.y - h2], [cell.x - h2, cell.y + h2], [cell.x + h2, cell.y + h2]];
+    for (const c of children) {
+      const cx = c[0], cy = c[1];
+      const d = _emd_pointToPolygonDist(cx, cy, polygon);
+      const child = new Cell(cx, cy, h2, d);
+      let idx = 0;
+      while (idx < cells.length && cells[idx].max > child.max) idx++;
+      cells.splice(idx, 0, child);
+    }
+  }
+  return [best.x, best.y];
+}
+
+function _emd_clamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function _emd_aspectFromBbox(bbox){
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const w = Math.max(1e-12, (maxLng - minLng));
+  const h = Math.max(1e-12, (maxLat - minLat));
+  return w > h ? (w / h) : (h / w);
+}
+
+function _emd_lerp(a, b, t){
+  return [a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t];
+}
+
+function _emd_ringCentroidLngLat(ring){
+  let area = 0, cx = 0, cy = 0;
+  const n = ring.length;
+  if (n < 3) return null;
+  for (let i=0;i<n;i++){
+    const [x1,y1]=ring[i];
+    const [x2,y2]=ring[(i+1)%n];
+    const a = x1*y2 - x2*y1;
+    area += a;
+    cx += (x1+x2)*a;
+    cy += (y1+y2)*a;
+  }
+  area *= 0.5;
+  if (Math.abs(area) < 1e-12) return null;
+  return [cx/(6*area), cy/(6*area)];
+}
+
+function getLabelLatLngByPolylabel(geometry, bbox) {
+  const polys = (geometry.type === "MultiPolygon") ? geometry.coordinates : [geometry.coordinates];
+  let bestPoly = polys[0];
+  let bestArea = -1;
+  for (const p of polys) {
+    const ring = p[0];
+    let a = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[(i + 1) % ring.length];
+      a += (x1 * y2 - x2 * y1);
+    }
+    a = Math.abs(a * 0.5);
+    if (a > bestArea) {
+      bestArea = a;
+      bestPoly = p;
+    }
+  }
+  const pl = _emd_polylabel(bestPoly, 1e-5);
+  const ct = _emd_ringCentroidLngLat(bestPoly[0]) || pl;
+  const ar = _emd_aspectFromBbox(bbox);
+  const t = _emd_clamp((ar - 1) / 3, 0.2, 0.8);
+  const blended = _emd_lerp(pl, ct, t);
+  return new naver.maps.LatLng(blended[1], blended[0]);
+}
+
+// ✅ 라벨 폰트 크기 자동 계산
+function _label_getBboxPixelSize(bbox, map){
+  try{
+    const proj = map && map.getProjection && map.getProjection();
+    if (!proj) return null;
+    const sw = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[1], bbox[0]));
+    const ne = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[3], bbox[2]));
+    return { width: Math.abs(ne.x - sw.x), height: Math.abs(ne.y - sw.y) };
+  }catch(e){
+    return null;
+  }
+}
+
+function _label_measureTextPx(text, fontSizePx, fontWeight = 800, fontFamily = "sans-serif") {
+  const canvas = _label_measureTextPx._canvas || (_label_measureTextPx._canvas = document.createElement("canvas"));
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontWeight} ${fontSizePx}px ${fontFamily}`;
+  const w = ctx.measureText(text).width;
+  const h = fontSizePx * 1.15;
+  return { w, h };
+}
+
+function _label_calcFitFontSize({
+  bbox,
+  text,
+  map,
+  paddingPx = 8,
+  min = 8,
+  max = 40,
+  fontWeight = 800,
+  fontFamily = "sans-serif",
+  hideIfTooSmall = true
+}) {
+  const px = _label_getBboxPixelSize(bbox, map);
+  if (!px) return min;
+  const availW = Math.max(0, px.width  - paddingPx * 2);
+  const availH = Math.max(0, px.height - paddingPx * 2);
+  if (hideIfTooSmall && (availW < 10 || availH < 10)) return 0;
+  let lo = min, hi = max, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const m = _label_measureTextPx(text, mid, fontWeight, fontFamily);
+    if (m.w <= availW && m.h <= availH) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (best === 0) return hideIfTooSmall ? 0 : min;
+  return best;
+}
+
+// ✅ EMD(법정동) 라벨 추가
+function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
+  if (!text || !bbox || !map) return;
+  const fs = (typeof forcedFontSizePx === "number")
+    ? forcedFontSizePx
+    : _label_calcFitFontSize({
+        bbox,
+        text,
+        map,
+        paddingPx: 8,
+        min: 9,
+        max: 20,
+        hideIfTooSmall: true
+      });
+  if (fs <= 0) return;
+  const marker = new naver.maps.Marker({
+    position: latlng,
+    map,
+    clickable: false,
+    zIndex: 999999,
+    icon: {
+      content: `<div class="emd-label" style="font-size:${fs}px">${text}</div>`,
+      anchor: new naver.maps.Point(0, 0)
+    }
+  });
+  emdLabels.push(marker);
+}
+
+// ✅ EMD 폴리곤/라벨 정리
+function clearEmdPolygons() {
+  if (emdPolygons && emdPolygons.length) {
+    emdPolygons.forEach(p => { try { p.setMap(null); } catch(e){} });
+    emdPolygons = [];
+  }
+  if (emdLabels && emdLabels.length) {
+    emdLabels.forEach(m => { try { m.setMap(null); } catch(e){} });
+    emdLabels = [];
+  }
+}
+
+function clearEmdLabels() {
+  if (!emdLabels || emdLabels.length === 0) return;
+  emdLabels.forEach(o => { try { o.setMap && o.setMap(null); } catch(e){} });
+  emdLabels = [];
+}
+
+// ✅ EMD 지오메트리 그리기
+function drawEmdGeometry(geom) {
+  const type = geom.type;
+  const coords = geom.coordinates;
+  const polygons = (type === "MultiPolygon") ? coords : [coords];
+  polygons.forEach(poly => {
+    if (!poly || !poly[0] || poly[0].length < 3) return;
+    const ring = poly[0];
+    const path = ring.map(c => new naver.maps.LatLng(c[1], c[0]));
+    const polygon = new naver.maps.Polygon({
+      map,
+      paths: path,
+      strokeColor: "#000000",
+      strokeOpacity: 0.9,
+      strokeWeight: 2,
+      fillColor: "#000000",
+      fillOpacity: 0.01
+    });
+    emdPolygons.push(polygon);
+  });
+}
+
+// ✅ EMD 경계 로드
+async function loadEmdBoundaryOnce() {
+  if (emdPrepared) return;
+  const parts = EMD_GEOJSON_PARTS;
+  const results = await Promise.all(parts.map(p => fetch(p).then(r => {
+    if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
+    return r.json();
+  })));
+  const merged = { type: "FeatureCollection", features: [] };
+  for (const fc of results) {
+    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
+      merged.features.push(...fc.features);
+    }
+  }
+  emdGeojsonRaw = merged;
+}
+
+// ✅ SIG(시군구) 라벨 추가
+function addSigLabel(latlng, text, bbox, forcedFontSizePx) {
+  if (!text || !bbox || !map) return;
+  const fs = (typeof forcedFontSizePx === "number")
+    ? forcedFontSizePx
+    : _label_calcFitFontSize({
+        bbox,
+        text,
+        map,
+        paddingPx: 10,
+        min: 10,
+        max: 20,
+        hideIfTooSmall: true
+      });
+  if (fs <= 0) return;
+  const color = (sigStyleMode === "admin") ? "#1e40af" : "#000000";
+  const marker = new naver.maps.Marker({
+    position: latlng,
+    map,
+    clickable: false,
+    zIndex: 999998,
+    icon: {
+      content: `<div class="sig-label" style="font-size:${fs}px; color:${color};">${text}</div>`,
+      anchor: new naver.maps.Point(0, 0)
+    }
+  });
+  sigLabels.push(marker);
+}
+
+// ✅ SIG 폴리곤/라벨 정리
+function clearSigPolygons() {
+  if (sigPolygons && sigPolygons.length) {
+    sigPolygons.forEach(p => { try { p.setMap(null); } catch(e){} });
+    sigPolygons = [];
+  }
+}
+
+function clearSigLabels() {
+  if (sigLabels && sigLabels.length) {
+    sigLabels.forEach(m => { try { m.setMap(null); } catch(e){} });
+    sigLabels = [];
+  }
+}
+
+// ✅ SIG 지오메트리 그리기
+function drawSigGeometry(geometry) {
+  const polys = (geometry.type === "MultiPolygon") ? geometry.coordinates : [geometry.coordinates];
+  polys.forEach(poly => {
+    const ring = poly[0];
+    const path = ring.map(c => new naver.maps.LatLng(c[1], c[0]));
+    const isAdminStyle = (sigStyleMode === "admin");
+    const polygon = new naver.maps.Polygon({
+      map,
+      paths: path,
+      strokeColor: isAdminStyle ? "#1e40af" : "#000000",
+      strokeOpacity: isAdminStyle ? 0.85 : 1,
+      strokeWeight: 3,
+      fillColor: isAdminStyle ? "#1e40af" : "#000000",
+      fillOpacity: isAdminStyle ? 0.01 : 0
+    });
+    sigPolygons.push(polygon);
+  });
+}
+
+// ✅ SIG 경계 로드
+async function loadSigBoundaryOnce() {
+  if (sigPrepared) return;
+  const parts = SIG_GEOJSON_PARTS;
+  const results = await Promise.all(parts.map(p => fetch(p).then(r => {
+    if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
+    return r.json();
+  })));
+  const merged = { type: "FeatureCollection", features: [] };
+  for (const fc of results) {
+    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
+      merged.features.push(...fc.features);
+    }
+  }
+  sigGeojsonRaw = merged;
+}
+
+// ✅ 체크박스 확인 함수
+function isBoundaryCheckboxOn() {
+  const cb = document.getElementById("toggleEmdBoundary");
+  return !!(cb && cb.checked);
+}
+
+function shouldShowEmdBoundary() {
+  // EMD(읍면동) 표시 비활성화 - 시군구만 표시
+  return false;
+}
+
+function shouldShowSigBoundary() {
+  if (!map) return false;
+  return isBoundaryCheckboxOn();
+}
+
+// ✅ EMD 경계선 다시 그리기
+function redrawEmdByBounds() {
+  try { prepareEmdPreparedOnce(); } catch(e) { console.error('redrawEmdByBounds prepare 실패:', e); return; }
+  if (!map) return;
+  if (!shouldShowEmdBoundary()) {
+    clearEmdPolygons();
+    clearEmdLabels();
+    return;
+  }
+  const bounds = map.getBounds();
+  if (!bounds) return;
+  clearEmdPolygons();
+  clearEmdLabels();
+  const labelCap = 200;
+  const labelCandidates = [];
+  for (const f of emdPrepared) {
+    if (!bboxIntersects(bounds, f.bbox)) continue;
+    drawEmdGeometry(f.geometry);
+    if (map.getZoom() >= 15 && labelCandidates.length < labelCap) {
+      const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
+      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+    }
+  }
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map,
+      paddingPx: 8,
+      min: 9,
+      max: 20,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+  if (!isFinite(minFit) || minFit <= 0) return;
+  let uniformFit = minFit;
+  const maxLabelSize = window.matchMedia && window.matchMedia('(max-width: 768px)').matches ? 18 : 20;
+  uniformFit = Math.min(uniformFit, maxLabelSize);
+  for (const c of labelCandidates) {
+    const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    addEmdLabel(latlng, c.name, c.bbox, uniformFit);
+  }
+}
+
+// ✅ SIG 경계선 다시 그리기
+function redrawSigByBounds() {
+  try { prepareSigPreparedOnce(); } catch(e) { console.error('redrawSigByBounds prepare 실패:', e); return; }
+  if (!map || !sigPrepared) return;
+  const bounds = map.getBounds();
+  if (!bounds) return;
+  clearSigPolygons();
+  clearSigLabels();
+  const labelCap = 60;
+  const labelCandidates = [];
+  for (const f of sigPrepared) {
+    if (!bboxIntersects(bounds, f.bbox)) continue;
+    drawSigGeometry(f.geometry);
+    if (labelCandidates.length < labelCap) {
+      const name = f.properties?.sgg_nm || f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
+      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+    }
+  }
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map,
+      paddingPx: 10,
+      min: 10,
+      max: 20,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+  if (!isFinite(minFit) || minFit <= 0) return;
+  let uniformFit = minFit;
+  const maxLabelSize = window.matchMedia && window.matchMedia('(max-width: 768px)').matches ? 18 : 20;
+  uniformFit = Math.min(uniformFit, maxLabelSize);
+  for (const c of labelCandidates) {
+    const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    addSigLabel(center, c.name, c.bbox, uniformFit);
+  }
+}
+
+// ✅ 줌 레벨에 따른 경계 표시 제어
+function redrawBoundaryByZoom() {
+  if (!map) return;
+  const z = map.getZoom();
+  const boundaryOn = isBoundaryCheckboxOn();
+  
+  // EMD(읍면동) 항상 비활성화 - SIG(시군구)만 표시
+  clearEmdPolygons(); clearEmdLabels();
+  
+  if (boundaryOn) {
+    sigStyleMode = "default";
+    loadSigBoundaryOnce().then(() => { try { redrawSigByBounds(); } catch(e){ console.error("SIG redraw 실패:", e);} });
+  } else {
+    clearSigPolygons(); clearSigLabels();
+  }
+}
+
+function scheduleEmdRedraw() {
+  if (emdRedrawTimer) clearTimeout(emdRedrawTimer);
+  emdRedrawTimer = setTimeout(() => {
+    try { redrawBoundaryByZoom(); } catch (e) { console.error("Boundary redraw 실패:", e); }
+  }, 120);
+}
+
+async function ensureEmdLayerBoundToMap() {
+  await loadEmdBoundaryOnce();
+  if (emdBoundMap !== map) {
+    emdBoundMap = map;
+    naver.maps.Event.addListener(map, "idle", scheduleEmdRedraw);
+    naver.maps.Event.addListener(map, "zoom_changed", scheduleEmdRedraw);
+  }
+  scheduleEmdRedraw();
+}
+
+// ✅ 경계선 체크박스 추가
+const boundaryLabel = document.createElement('label');
+boundaryLabel.style.marginTop = '10px';
+
+const boundaryCheckbox = document.createElement('input');
+boundaryCheckbox.type = 'checkbox';
+boundaryCheckbox.id = 'toggleEmdBoundary';
+boundaryCheckbox.checked = false;
+boundaryCheckbox.style.marginRight = '4px';
+
+boundaryLabel.appendChild(boundaryCheckbox);
+boundaryLabel.appendChild(document.createTextNode('법정동경계'));
+container.appendChild(boundaryLabel);
+
+boundaryCheckbox.addEventListener('change', () => {
+  scheduleEmdRedraw();
+});
+
+// ✅ 초기 경계선 로드 및 바인딩
+ensureEmdLayerBoundToMap().catch(err => console.error("EMD layer binding failed:", err));
 
 </script>
 </body>
