@@ -47,6 +47,8 @@
             border: 1px solid #ccc;
             border-radius: 8px;
             background-color: #f9f9f9;
+            position: relative;
+            overflow: visible;
         }
 
         #dataTableContainer {
@@ -89,41 +91,59 @@
 			accent-color: initial;
 		}
 		
+		/* ✅ 시군구 필터 드롭다운 스타일 */
+		#sigunguFilterWrapper {
+			display: inline-block;
+			position: relative;
+		}
 
-		flatpickr("#fromDate", {
-    dateFormat: "Y-m",
-    altInput: true,
-    altFormat: "Y년 m월",
-    allowInput: true,
-    position: "auto center",
-    defaultDate: selectedFromDate, // 기본값 현재 연도 1월
-    onOpen: function(selectedDates, dateStr, instance) {
-        instance.calendarContainer.style.width = "420px";
-    },
-    onChange: function(selectedDates, dateStr) {
-        selectedFromDate = dateStr;
-        updateMarkers();
-    }
-});
+		#sigunguFilterDisplay {
+			border: 1px solid #ccc;
+			padding: 4px 8px;
+			display: inline-block;
+			position: relative;
+			background-color: #fff;
+			border-radius: 4px;
+			min-width: 150px;
+			font-size: 13px;
+			cursor: pointer;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+			padding-right: 25px;
+		}
 
-flatpickr("#toDate", {
-    dateFormat: "Y-m",
-    altInput: true,
-    altFormat: "Y년 m월",
-    allowInput: true,
-    position: "auto center",
-    defaultDate: selectedToDate, // 기본값 MAX 날짜
-    onOpen: function(selectedDates, dateStr, instance) {
-        instance.calendarContainer.style.width = "420px";
-    },
-    onChange: function(selectedDates, dateStr) {
-        selectedToDate = dateStr;
-        updateMarkers();
-    }
-});
+		#sigunguToggleBtn {
+			position: absolute;
+			right: 8px;
+			top: 50%;
+			transform: translateY(-50%);
+			cursor: pointer;
+			font-weight: bold;
+			user-select: none;
+			pointer-events: none;
+		}
 
-
-
+		#sigunguFilter {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			right: 0;
+			background-color: #fff;
+			border: 1px solid #ccc;
+			border-radius: 4px;
+			max-height: 0;
+			transition: max-height 0.3s ease;
+			overflow: hidden;
+			padding: 0;
+			margin-top: 0;
+			z-index: 10001;
+		}
+		
+		#sigunguFilter.expanded {
+			max-height: 50vh;
+			overflow-y: auto;
+			padding: 4px 8px;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+		}
 
     </style>
 
@@ -134,11 +154,14 @@ flatpickr("#toDate", {
 <h1>[루시퍼홍] 홍급지도 <span style="font-size: 14px; color: gray;">(공급데이터 업데이트: 2025-12-29)</span></h1>
 <div id="filterContainer">
     <label>시도: <select id="sidoFilter" style="width: 100px;"></select></label>
-    <label>시군구: 
-        <select id="sigunguFilter" style="width: 100px;" disabled>
-            <option value="">전체</option>
-        </select>
-    </label>
+    <label>시군구:</label>
+    <div id="sigunguFilterWrapper">
+        <div id="sigunguFilterDisplay">
+            <span id="sigunguDisplayText">전체</span>
+            <span id="sigunguToggleBtn">▼</span>
+        </div>
+        <div id="sigunguFilter"></div>
+    </div>
     <label><input type="checkbox" id="toggleTextBox" checked> 라벨 표시</label>
     <label><input type="checkbox" id="toggleTextWrap" checked> 라벨 텍스트 줄바꿈</label>
     <label>&nbsp;&nbsp;&nbsp; 🟠 입주시기:</label>
@@ -189,7 +212,7 @@ flatpickr("#toDate", {
     var activeTextBox = null;
     var moveStep = 5;
 	var selectedSido = "";
-    var selectedSigungu = "";
+    var selectedSigungu = new Set(); // ✅ Set으로 변경하여 여러 개 선택 지원
 	let minHouseholdsFilter = null;
 
     var sidoData = {};
@@ -300,7 +323,7 @@ function updateTable() {
 
         // ✅ 시도 및 시군구 필터링
         const isSidoSelected = !selectedSido || sido === selectedSido;
-        const isSigunguSelected = !selectedSigungu || sigungu === selectedSigungu;
+        const isSigunguSelected = selectedSigungu.size === 0 || selectedSigungu.has(sigungu);
 
         const householdsNum = parseInt(households, 10) || 0;
 		const isMinHouseholdsOK =
@@ -485,17 +508,100 @@ function updateTable() {
 
     function updateSigunguFilters() {
         const sigunguFilter = document.getElementById("sigunguFilter");
-        sigunguFilter.innerHTML = '<option value="">전체</option>';
+        
+        // 모든 요소 제거
+        sigunguFilter.innerHTML = "";
+        
         if (selectedSido && sidoData[selectedSido]) {
-            sigunguFilter.disabled = false;
-            sidoData[selectedSido].forEach(sigungu => {
-                let option = document.createElement("option");
-                option.value = sigungu;
-                option.textContent = sigungu;
-                sigunguFilter.appendChild(option);
+            const sigunguArray = Array.from(sidoData[selectedSido]).sort();
+            
+            // ✅ "전체" 체크박스 추가
+            const allLabel = document.createElement("label");
+            allLabel.style.display = "block";
+            allLabel.style.padding = "2px 0";
+            allLabel.style.cursor = "pointer";
+            allLabel.style.margin = "0";
+            allLabel.style.lineHeight = "1.2";
+            allLabel.innerHTML = `<input type="checkbox" value="__ALL__" style="accent-color: blue;"> 전체`;
+            sigunguFilter.appendChild(allLabel);
+            
+            const allCheckbox = allLabel.querySelector("input");
+            allCheckbox.addEventListener("change", function() {
+                if (this.checked) {
+                    // ✅ 전체 선택
+                    sigunguArray.forEach(sigungu => {
+                        selectedSigungu.add(sigungu);
+                    });
+                    // 모든 개별 체크박스 체크 해제 ("전체"만 체크)
+                    sigunguFilter.querySelectorAll("input:not([value=\"__ALL__\"])").forEach(cb => {
+                        cb.checked = false;
+                    });
+                    document.getElementById("sigunguDisplayText").textContent = "전체";
+                } else {
+                    // ✅ 전체 해제
+                    selectedSigungu.clear();
+                    sigunguFilter.querySelectorAll("input:not([value=\"__ALL__\"])").forEach(cb => {
+                        cb.checked = false;
+                    });
+                    document.getElementById("sigunguDisplayText").textContent = "선택 없음";
+                }
+                
+                updateMarkers();
             });
+            
+            // ✅ 각 시군구 체크박스 추가
+            sigunguArray.forEach(sigungu => {
+                const label = document.createElement("label");
+                label.style.display = "block";
+                label.style.padding = "2px 0";
+                label.style.cursor = "pointer";
+                label.style.margin = "0";
+                label.style.lineHeight = "1.2";
+                label.innerHTML = `<input type="checkbox" value="${sigungu}" style="accent-color: orange;"> ${sigungu}`;
+                sigunguFilter.appendChild(label);
+                
+                const checkbox = label.querySelector("input");
+                checkbox.addEventListener("change", function() {
+                    if (this.checked) {
+                        selectedSigungu.add(sigungu);
+                    } else {
+                        selectedSigungu.delete(sigungu);
+                    }
+                    
+                    // ✅ "전체" 체크박스 상태 업데이트
+                    const allCheckbox = sigunguFilter.querySelector("input[value='__ALL__']");
+                    if (selectedSigungu.size === sigunguArray.length) {
+                        allCheckbox.checked = true;
+                    } else {
+                        allCheckbox.checked = false;
+                    }
+                    
+                    // ✅ 디스플레이 텍스트 업데이트
+                    const selected = Array.from(selectedSigungu);
+                    if (selected.length === sigunguArray.length) {
+                        document.getElementById("sigunguDisplayText").textContent = "전체";
+                    } else if (selected.length > 0) {
+                        document.getElementById("sigunguDisplayText").textContent = selected.length + "개 선택";
+                    } else {
+                        document.getElementById("sigunguDisplayText").textContent = "선택 없음";
+                    }
+                    
+                    updateMarkers();
+                });
+            });
+            
+            // 시도 변경 후: "전체" 자동 체크 (하지만 selectedSigungu는 추가하지 않음)
+            allCheckbox.checked = true;
+            // selectedSigungu는 비워둔 상태 유지 (사용자가 직접 선택해야 함)
+            document.getElementById("sigunguDisplayText").textContent = "전체";
         } else {
-            sigunguFilter.disabled = true;
+            // 메시지 추가
+            const msgDiv = document.createElement("div");
+            msgDiv.style.color = "#999";
+            msgDiv.style.padding = "0";
+            msgDiv.style.whiteSpace = "nowrap";
+            msgDiv.textContent = "시도를 선택하세요";
+            sigunguFilter.appendChild(msgDiv);
         }
     }
 
@@ -533,8 +639,8 @@ function updateMarkerSelection(markerElement, isSelected) {
 				(!selectedFromDate || appr_dt_full >= selectedFromDate) &&
 				(!selectedToDate || appr_dt_full <= selectedToDate);
 
-			const isSidoSelected = !selectedSido || sido === selectedSido;
-			const isSigunguSelected = !selectedSigungu || sigungu === selectedSigungu;
+            const isSidoSelected = !selectedSido || sido === selectedSido;
+			const isSigunguSelected = selectedSigungu.size === 0 || selectedSigungu.has(sigungu);
 
 			// 🔹 최소 세대수 필터 적용 (null이면 필터 안 걸림)
 			const householdsNum = parseInt(households, 10) || 0;
@@ -696,16 +802,43 @@ function updateMarkerSelection(markerElement, isSelected) {
 
 	document.getElementById("sidoFilter").addEventListener("change", function() {
 		selectedSido = this.value;
-		selectedSigungu = ""; // 시도를 변경하면 시군구 초기화
+		selectedSigungu.clear(); 
 		updateSigunguFilters();
-		updateMarkers(); // 시도 변경 시 마커 업데이트
+		const sigunguFilter = document.getElementById("sigunguFilter");
+		sigunguDropdownExpanded = false;
+		sigunguFilter.classList.remove("expanded");
+		
+		const icon = document.getElementById("sigunguToggleBtn");
+		icon.textContent = "▼";
+		
+		document.getElementById("sigunguDisplayText").textContent = "전체";
+		updateMarkers();
 	});
 
-	document.getElementById("sigunguFilter").addEventListener("change", function() {
-		selectedSigungu = this.value;
-		updateMarkers(); // 시군구 변경 시 마커 업데이트
-	});
+	// ✅ 시군구 필터 초기값 설정
+	const sigunguFilter = document.getElementById("sigunguFilter");
+	const sigunguFilterDisplay = document.getElementById("sigunguFilterDisplay");
+	const sigunguToggleBtn = document.getElementById("sigunguToggleBtn");
+	let sigunguDropdownExpanded = false; // 드롭다운 상태 추적
 
+	// ✅ 디스플레이 창 클릭하면 펼쳐지고 접힘
+	sigunguFilterDisplay.addEventListener("click", function(e) {
+		e.stopPropagation();
+		sigunguDropdownExpanded = !sigunguDropdownExpanded;
+		
+		if (sigunguDropdownExpanded) {
+			sigunguFilter.classList.add("expanded");
+		} else {
+			sigunguFilter.classList.remove("expanded");
+		}
+		
+		sigunguToggleBtn.textContent = sigunguDropdownExpanded ? "▲" : "▼";
+	});
+	
+	// ✅ 체크박스나 라벨 클릭 시에는 펼침 유지, 다른 곳 클릭해도 닫히지 않음
+	sigunguFilter.addEventListener("click", function(e) {
+		e.stopPropagation();
+	});
 	document.querySelectorAll("#dataTable th").forEach((th, index) => {
     th.addEventListener("click", () => {
         const columnMap = ["name", "appr_dt_full", "households", "address", "price"]; // 🔥 데이터 속성 매핑
