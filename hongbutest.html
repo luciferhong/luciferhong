@@ -351,6 +351,11 @@ body.map-fullscreen {
       display: none !important;
     }
     
+    /* 업무지구 길찾기는 모바일에서도 표시 */
+    .only-pc:has(input#toggleFindWay) {
+      display: block !important;
+    }
+    
     /* 📱 모바일에서 메모 입력칸 글자 크기 조대 */
     #noteText {
       font-size: 15px !important;
@@ -7643,6 +7648,92 @@ document.head.appendChild(style);
     window.map.getElement().addEventListener('click', function() {
         routeButton.style.display = 'none';
         checkboxContainer.style.display = 'none';
+    });
+
+    // 📱 모바일 롱터치 (1초 이상) 이벤트 - 우클릭과 동일한 동작
+    let touchStartTime = null;
+    let touchStartCoords = null;
+    let touchTimer = null;
+
+    window.map.getElement().addEventListener('touchstart', function(event) {
+        if (event.touches.length > 1) return; // 멀티터치 무시
+        
+        touchStartTime = Date.now();
+        const touch = event.touches[0];
+        touchStartCoords = { x: touch.clientX, y: touch.clientY };
+
+        // 1초 후 롱터치 동작 실행
+        touchTimer = setTimeout(function() {
+            if (!document.getElementById("toggleFindWay")?.checked) {
+                return;
+            }
+
+            // 지도의 현재 중심 또는 터치 위치의 좌표 계산
+            const mapElement = window.map.getElement();
+            const rect = mapElement.getBoundingClientRect();
+            const offsetX = touchStartCoords.x - rect.left;
+            const offsetY = touchStartCoords.y - rect.top;
+
+            // Naver Map의 좌표 변환 (화면 픽셀 -> 지도 좌표)
+            const point = new naver.maps.Point(offsetX, offsetY);
+            const latlng = window.map.screenToCoord(point);
+
+            if (!latlng) {
+                return;
+            }
+
+            const startX = latlng.lng(); // 경도
+            const startY = latlng.lat(); // 위도
+            const mouseX = touchStartCoords.x;
+            const mouseY = touchStartCoords.y;
+
+            // 롱터치 위치에 "길찾기" 버튼과 체크박스 표시
+            routeButton.style.left = mouseX + 'px';
+            routeButton.style.top = mouseY + 'px';
+            routeButton.style.display = 'block';
+
+            checkboxContainer.style.left = (mouseX + 65) + 'px';
+            checkboxContainer.style.top = mouseY + 'px';
+            checkboxContainer.style.display = 'block';
+
+            // "길찾기" 버튼 클릭 로직
+            routeButton.onclick = function() {
+                var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
+
+                if (selectedDestinations.length > 0) {
+                    var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
+                    var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
+
+                    iframe.src = url;
+                    overlay.style.display = 'flex';
+                    routeButton.style.display = 'none';
+                    checkboxContainer.style.display = 'none';
+                } else {
+                    alert('적어도 하나의 목적지를 선택하세요.');
+                }
+
+                routeButton.style.display = 'none';
+                checkboxContainer.style.display = 'none';
+            };
+        }, 1000); // 1초
+    });
+
+    window.map.getElement().addEventListener('touchmove', function(event) {
+        // 터치가 움직이면 롱터치 타이머 취소
+        if (touchTimer) {
+            clearTimeout(touchTimer);
+            touchTimer = null;
+        }
+    });
+
+    window.map.getElement().addEventListener('touchend', function(event) {
+        // 터치 종료 시 타이머 취소
+        if (touchTimer) {
+            clearTimeout(touchTimer);
+            touchTimer = null;
+        }
+        touchStartTime = null;
+        touchStartCoords = null;
     });
 };
 

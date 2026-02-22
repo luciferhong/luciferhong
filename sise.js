@@ -3,9 +3,11 @@
 // @namespace   Violentmonkey Scripts
 // @match       *://new.land.naver.com/complexes*
 // @grant       none
-// @version     0.9
+// @version     1.0
 // @author      루시퍼홍
 // @description 2024. 5. 27. 오후 16:43:18
+// @downloadURL https://update.greasyfork.org/scripts/566629/%5B%EC%A0%84%EC%9A%A9%5D%20%EC%8B%9C%EC%84%B8%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C.user.js
+// @updateURL https://update.greasyfork.org/scripts/566629/%5B%EC%A0%84%EC%9A%A9%5D%20%EC%8B%9C%EC%84%B8%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C.meta.js
 // ==/UserScript==
 
 
@@ -5167,19 +5169,37 @@ async function fetchArticles(token, page, complexId) {
 }
 
 // 가격 파싱 (억 단위를 만원으로 변환)
+let __parsePriceDebugCount = 0;
 function parsePrice(priceStr) {
+    if (!priceStr || priceStr === undefined || priceStr === null) {
+        return Infinity; // 가격이 없으면 비교에서 제외
+    }
+    
     let priceInManWon = 0;
-    const priceParts = priceStr.split('억');
+    const priceStrTrimmed = String(priceStr).trim();
+    const priceParts = priceStrTrimmed.split('억');
 
     if (priceParts.length > 1) {
-        const billionPart = parseInt(priceParts[0].replace(/,/g, ''), 10) * 10000;
-        const millionPart = priceParts[1] ? parseInt(priceParts[1].replace(/,/g, ''), 10) : 0;
+        const billionPartStr = priceParts[0].replace(/,/g, '').trim();
+        const billionPart = isNaN(parseInt(billionPartStr, 10)) ? 0 : parseInt(billionPartStr, 10) * 10000;
+        
+        const millionPartStr = priceParts[1] ? priceParts[1].replace(/,/g, '').trim() : '';
+        const millionPart = isNaN(parseInt(millionPartStr, 10)) ? 0 : parseInt(millionPartStr, 10);
+        
         priceInManWon = billionPart + millionPart;
     } else {
-        priceInManWon = parseInt(priceParts[0].replace(/,/g, ''), 10);
+        const singlePartStr = priceParts[0].replace(/,/g, '').trim();
+        priceInManWon = isNaN(parseInt(singlePartStr, 10)) ? 0 : parseInt(singlePartStr, 10);
     }
 
-    return priceInManWon;
+    const result = Number(priceInManWon);
+    // 가격이 45000~47000 범위일 때만 디버그 출력
+    if (__parsePriceDebugCount < 20 && result >= 40000 && result <= 50000) {
+        console.log(`[parsePrice] input="${priceStr}" → ${result}`);
+        __parsePriceDebugCount++;
+    }
+    
+    return result; // 명시적으로 숫자로 반환
 }
 
 // floorInfo 문자열을 최대한 안전하게 추출
@@ -5195,6 +5215,33 @@ function isLowByFloorInfo(floorInfo) {
     if (first === "저") return true;
     const n = parseInt(first, 10);
     return !isNaN(n) && n <= 3;
+}
+
+// 제외층 판정 (저층 또는 탑층): 최저가 계산에서 제외
+// 저층: 1, 2, 3, 저
+// 탑층: 15/15, 20/20 등 (첫번째 == 마지막)
+function isExcludedFloor(floorInfo) {
+    const raw = (floorInfo ?? "").toString().trim();
+    if (!raw) return false;
+    
+    const parts = raw.split("/");
+    const first = parts[0].replace(/층/g, "").trim();
+    
+    // 저층 체크: "1", "2", "3", "저"
+    if (first === "저") return true;
+    const firstNum = parseInt(first, 10);
+    if (!isNaN(firstNum) && firstNum <= 3) return true;
+    
+    // 탑층 체크: 첫번째 == 마지막 (예: "15/15", "20/20")
+    if (parts.length === 2) {
+        const last = parts[1].replace(/층/g, "").trim();
+        const lastNum = parseInt(last, 10);
+        if (!isNaN(firstNum) && !isNaN(lastNum) && firstNum === lastNum) {
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 // floorInfo 디버그: 어떤 필드에서 층 정보를 가져오는지 확인
@@ -6923,29 +6970,46 @@ refreshComplexList();
                                     await new Promise(resolve => setTimeout(resolve, 50));
                                 }
 
-                                // 면적별 정리
+                                // 디버그: 전체 매물 리스트 로그 (처음 3개 항목만, 앞마당용)
+                                // if (allData.length > 0) {
+                                //     console.log(`[앞마당 다운로드] ${complexDetails.name}: 총 ${allData.length}개 매물`);
+                                //     allData.slice(0, 3).forEach((article, idx) => {
+                                //         console.log(`  [${idx + 1}] price="${article.dealOrWarrantPrc}", area2="${article.area2}", floor="${article.floorInfo}"`);
+                                //     });
+                                // }
+
+                                // 면적별 정리 (area2 기준으로 분류)
                                 const priceByArea = {};
 
                                 allData.forEach(article => {
-                                    const area2 = article.area2;
+                                    // area2를 기준으로 그룹핑
+                                    const actualArea = article.area2;
+                                    
                                     const structureInfoDetail = getStructureInfoWithDongMap(article, complexPyeongMap);
                                     const priceInManWon = parsePrice(article.dealOrWarrantPrc);
                                     const tradeType = article.tradeTypeName;
                                     const floorInfo = getFloorInfo(article);
                                     const isLow = isLowByFloorInfo(floorInfo);
+                                    const isExcluded = isExcludedFloor(floorInfo);
 
-                                    // area2를 기준으로 그룹핑
-                                    const key = area2;
+                                    // actualArea를 기준으로 그룹핑
+                                    const key = String(actualArea);
 
                                     if (!priceByArea[key]) {
                                         priceByArea[key] = {
-                                            area2: area2,
+                                            area2: parseFloat(actualArea),
                                             entranceType: structureInfoDetail.entranceType,
                                             roomCount: structureInfoDetail.roomCount,
                                             bathroomCount: structureInfoDetail.bathroomCount,
                                             householdCount: structureInfoDetail.householdCount,
-                                            sale: { min: null, isLow: false, floorInfo: '' },
-                                            rent: { min: null, isLow: false, floorInfo: '' },
+                                            sale: {
+                                                minNormal: null, minNormalIsLow: false, minNormalFloorInfo: '',  // 제외층 제외
+                                                minAll: null, minAllIsLow: false, minAllFloorInfo: ''           // 제외층만
+                                            },
+                                            rent: {
+                                                minNormal: null, minNormalIsLow: false, minNormalFloorInfo: '',
+                                                minAll: null, minAllIsLow: false, minAllFloorInfo: ''
+                                            },
                                             saleCnt: 0,
                                             rentCnt: 0
                                         };
@@ -6966,19 +7030,45 @@ refreshComplexList();
                                     }
 
                                     if (tradeType === '매매' && article.cpName !== '한국공인중개사협회') {
-                                        const cur = priceByArea[key].sale.min;
-                                        if (cur === null || priceInManWon < cur) {
-                                            priceByArea[key].sale.min = priceInManWon;
-                                            priceByArea[key].sale.isLow = isLow;
-                                            priceByArea[key].sale.floorInfo = floorInfo;
+                                        const numPrice = Number(priceInManWon);
+                                        
+                                        if (!isExcluded) {
+                                            // 제외층 아님: minNormal에 저장
+                                            const curNormal = priceByArea[key].sale.minNormal;
+                                            if (curNormal === null || (isFinite(numPrice) && numPrice < curNormal)) {
+                                                priceByArea[key].sale.minNormal = numPrice;
+                                                priceByArea[key].sale.minNormalIsLow = false;
+                                                priceByArea[key].sale.minNormalFloorInfo = floorInfo;
+                                            }
+                                        } else {
+                                            // 제외층: minAll에 저장
+                                            const curAll = priceByArea[key].sale.minAll;
+                                            if (curAll === null || (isFinite(numPrice) && numPrice < curAll)) {
+                                                priceByArea[key].sale.minAll = numPrice;
+                                                priceByArea[key].sale.minAllIsLow = isLow;
+                                                priceByArea[key].sale.minAllFloorInfo = floorInfo;
+                                            }
                                         }
                                         priceByArea[key].saleCnt++;
                                     } else if (tradeType === '전세' && article.cpName !== '한국공인중개사협회') {
-                                        const cur = priceByArea[key].rent.min;
-                                        if (cur === null || priceInManWon < cur) {
-                                            priceByArea[key].rent.min = priceInManWon;
-                                            priceByArea[key].rent.isLow = isLow;
-                                            priceByArea[key].rent.floorInfo = floorInfo;
+                                        const numPrice = Number(priceInManWon);
+                                        
+                                        if (!isExcluded) {
+                                            // 제외층 아님: minNormal에 저장
+                                            const curNormal = priceByArea[key].rent.minNormal;
+                                            if (curNormal === null || (isFinite(numPrice) && numPrice < curNormal)) {
+                                                priceByArea[key].rent.minNormal = numPrice;
+                                                priceByArea[key].rent.minNormalIsLow = false;
+                                                priceByArea[key].rent.minNormalFloorInfo = floorInfo;
+                                            }
+                                        } else {
+                                            // 제외층: minAll에 저장
+                                            const curAll = priceByArea[key].rent.minAll;
+                                            if (curAll === null || (isFinite(numPrice) && numPrice < curAll)) {
+                                                priceByArea[key].rent.minAll = numPrice;
+                                                priceByArea[key].rent.minAllIsLow = isLow;
+                                                priceByArea[key].rent.minAllFloorInfo = floorInfo;
+                                            }
                                         }
                                         priceByArea[key].rentCnt++;
                                     }
@@ -7011,14 +7101,14 @@ refreshComplexList();
                                         구조: data.entranceType,
                                         방: data.roomCount,
                                         화장실: data.bathroomCount,
-                                        매매가: (data.sale.min !== null) ? data.sale.min : 0,
-                                        전세가: (data.rent.min !== null) ? data.rent.min : 0,
+                                        매매가: (data.sale.minNormal !== null) ? data.sale.minNormal : (data.sale.minAll !== null ? data.sale.minAll : 0),
+                                        전세가: (data.rent.minNormal !== null) ? data.rent.minNormal : (data.rent.minAll !== null ? data.rent.minAll : 0),
                                         매매물건수: data.saleCnt,
                                         전세물건수: data.rentCnt,
-                                        매매층: (data.sale.min !== null) ? data.sale.floorInfo : '',
-                                        전세층: (data.rent.min !== null) ? data.rent.floorInfo : '',
-                                        매매저층여부: (data.sale.min !== null) ? (data.sale.isLow ? '(저)' : '') : '',
-                                        전세저층여부: (data.rent.min !== null) ? (data.rent.isLow ? '(저)' : '') : ''
+                                        매매층: (data.sale.minNormal !== null) ? data.sale.minNormalFloorInfo : (data.sale.minAll !== null ? data.sale.minAllFloorInfo : ''),
+                                        전세층: (data.rent.minNormal !== null) ? data.rent.minNormalFloorInfo : (data.rent.minAll !== null ? data.rent.minAllFloorInfo : ''),
+                                        매매저층여부: (data.sale.minNormal !== null) ? '' : (data.sale.minAll !== null ? (data.sale.minAllIsLow ? '(저)' : '') : ''),
+                                        전세저층여부: (data.rent.minNormal !== null) ? '' : (data.rent.minAll !== null ? (data.rent.minAllIsLow ? '(저)' : '') : '')
                                     });
                                 });
                             } catch (error) {
@@ -7181,29 +7271,47 @@ refreshComplexList();
                     await new Promise(resolve => setTimeout(resolve, 100));
                 }
 
-                // 면적별 정리
+                // 디버그: 전체 매물 리스트 로그 (모든 항목 + 면적 관련 모든 필드)
+                // log(`\n===== 세종주공6단지 조회 결과 (총 ${allData.length}개) =====`);
+                // if (allData.length > 0) {
+                //     log('☆ 전체 매물 리스트 (면적 관련 필드 상세):');
+                //     allData.forEach((article, idx) => {
+                //         log(`[${idx + 1}/${allData.length}] price="${article.dealOrWarrantPrc}" | area2="${article.area2}" areaName="${article.areaName}" pyeongName="${article.pyeongName}" supplyArea="${article.supplyArea}" exclusiveArea="${article.exclusiveArea}" | floor="${article.floorInfo}" | type="${article.tradeTypeName}"`);
+                //     });
+                // }
+
+                // 면적별 정리 (area2 기준으로 분류)
                 const priceByArea = {};
                 allData.forEach((article, index) => {
 
-                    const area2 = article.area2;
+                    // area2를 기준으로 그룹핑
+                    const actualArea = article.area2;
+                    
                     const structureInfoDetail = getStructureInfoDetail(article);
                     const priceInManWon = parsePrice(article.dealOrWarrantPrc);
                     const tradeType = article.tradeTypeName;
                     const floorInfo = getFloorInfo(article);
                     const isLow = isLowByFloorInfo(floorInfo);
+                    const isExcluded = isExcludedFloor(floorInfo);
 
-                    // area2를 기준으로 그룹핑
-                    const key = area2;
+                    // actualArea를 기준으로 그룹핑
+                    const key = String(actualArea);
 
                     if (!priceByArea[key]) {
                         priceByArea[key] = {
-                            area2: area2,
+                            area2: parseFloat(actualArea),
                             entranceType: structureInfoDetail.entranceType,
                             roomCount: structureInfoDetail.roomCount,
                             bathroomCount: structureInfoDetail.bathroomCount,
                             householdCount: structureInfoDetail.householdCount,
-                            sale: { prices: [], min: null, isLow: false, floorInfo: '' },
-                            rent: { prices: [], min: null, isLow: false, floorInfo: '' },
+                            sale: {
+                                minNormal: null, minNormalIsLow: false, minNormalFloorInfo: '',  // 제외층 제외
+                                minAll: null, minAllIsLow: false, minAllFloorInfo: ''           // 제외층만
+                            },
+                            rent: {
+                                minNormal: null, minNormalIsLow: false, minNormalFloorInfo: '',
+                                minAll: null, minAllIsLow: false, minAllFloorInfo: ''
+                            },
                             saleCnt: 0,
                             rentCnt: 0
                         };
@@ -7224,22 +7332,46 @@ refreshComplexList();
                     }
 
                     if (tradeType === '매매' && article.cpName !== '한국공인중개사협회') {
-                        const cur = priceByArea[key].sale.min;
-                        if (cur === null || priceInManWon < cur) {
-                            priceByArea[key].sale.min = priceInManWon;
-                            priceByArea[key].sale.isLow = isLow;
-                            priceByArea[key].sale.floorInfo = floorInfo;
+                        const numPrice = Number(priceInManWon);
+                        
+                        if (!isExcluded) {
+                            // 제외층 아님: minNormal에 저장
+                            const curNormal = priceByArea[key].sale.minNormal;
+                            if (curNormal === null || (isFinite(numPrice) && numPrice < curNormal)) {
+                                priceByArea[key].sale.minNormal = numPrice;
+                                priceByArea[key].sale.minNormalIsLow = false;
+                                priceByArea[key].sale.minNormalFloorInfo = floorInfo;
+                            }
+                        } else {
+                            // 제외층: minAll에 저장
+                            const curAll = priceByArea[key].sale.minAll;
+                            if (curAll === null || (isFinite(numPrice) && numPrice < curAll)) {
+                                priceByArea[key].sale.minAll = numPrice;
+                                priceByArea[key].sale.minAllIsLow = isLow;
+                                priceByArea[key].sale.minAllFloorInfo = floorInfo;
+                            }
                         }
-                        priceByArea[key].sale.prices.push(priceInManWon);
                         priceByArea[key].saleCnt++;
                     } else if (tradeType === '전세' && article.cpName !== '한국공인중개사협회') {
-                        const cur = priceByArea[key].rent.min;
-                        if (cur === null || priceInManWon < cur) {
-                            priceByArea[key].rent.min = priceInManWon;
-                            priceByArea[key].rent.isLow = isLow;
-                            priceByArea[key].rent.floorInfo = floorInfo;
+                        const numPrice = Number(priceInManWon);
+                        
+                        if (!isExcluded) {
+                            // 제외층 아님: minNormal에 저장
+                            const curNormal = priceByArea[key].rent.minNormal;
+                            if (curNormal === null || (isFinite(numPrice) && numPrice < curNormal)) {
+                                priceByArea[key].rent.minNormal = numPrice;
+                                priceByArea[key].rent.minNormalIsLow = false;
+                                priceByArea[key].rent.minNormalFloorInfo = floorInfo;
+                            }
+                        } else {
+                            // 제외층: minAll에 저장
+                            const curAll = priceByArea[key].rent.minAll;
+                            if (curAll === null || (isFinite(numPrice) && numPrice < curAll)) {
+                                priceByArea[key].rent.minAll = numPrice;
+                                priceByArea[key].rent.minAllIsLow = isLow;
+                                priceByArea[key].rent.minAllFloorInfo = floorInfo;
+                            }
                         }
-                        priceByArea[key].rent.prices.push(priceInManWon);
                         priceByArea[key].rentCnt++;
                     }
                 });
@@ -7274,14 +7406,14 @@ refreshComplexList();
                         구조: data.entranceType,
                         방: data.roomCount,
                         화장실: data.bathroomCount,
-                        매매가: (data.sale.min !== null) ? data.sale.min : 0,
-                        전세가: (data.rent.min !== null) ? data.rent.min : 0,
+                        매매가: (data.sale.minNormal !== null) ? data.sale.minNormal : (data.sale.minAll !== null ? data.sale.minAll : 0),
+                        전세가: (data.rent.minNormal !== null) ? data.rent.minNormal : (data.rent.minAll !== null ? data.rent.minAll : 0),
                         매매물건수: data.saleCnt,
                         전세물건수: data.rentCnt,
-                        매매층: (data.sale.min !== null) ? data.sale.floorInfo : '',
-                        전세층: (data.rent.min !== null) ? data.rent.floorInfo : '',
-                        매매저층여부: (data.sale.min !== null) ? (data.sale.isLow ? '(저)' : '') : '',
-                        전세저층여부: (data.rent.min !== null) ? (data.rent.isLow ? '(저)' : '') : ''
+                        매매층: (data.sale.minNormal !== null) ? data.sale.minNormalFloorInfo : (data.sale.minAll !== null ? data.sale.minAllFloorInfo : ''),
+                        전세층: (data.rent.minNormal !== null) ? data.rent.minNormalFloorInfo : (data.rent.minAll !== null ? data.rent.minAllFloorInfo : ''),
+                        매매저층여부: (data.sale.minNormal !== null) ? '' : (data.sale.minAll !== null ? (data.sale.minAllIsLow ? '(저)' : '') : ''),
+                        전세저층여부: (data.rent.minNormal !== null) ? '' : (data.rent.minAll !== null ? (data.rent.minAllIsLow ? '(저)' : '') : '')
                     });
                 });
 
