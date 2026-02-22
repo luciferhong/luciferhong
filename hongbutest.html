@@ -7658,27 +7658,40 @@ document.head.appendChild(style);
                 return;
             }
 
-            // 지도의 현재 경계 좌표 정보로 화면좌표를 지도좌표로 변환
-            const bounds = window.map.getBounds();
-            const sw = bounds.min; // 남서쪽 좌표 (좌측 하단)
-            const ne = bounds.max; // 북동쪽 좌표 (우측 상단)
-
             // 지도 element의 크기
             const mapElement = window.map.getElement();
             const rect = mapElement.getBoundingClientRect();
+
+            // 지도의 중심 좌표와 경계 정보
+            const center = window.map.getCenter();
+            const bounds = window.map.getBounds();
+            
+            // bounds 객체의 실제 구조를 안전하게 처리
+            // Point 형태로 min/max를 가지고 있으므로, 대신 center를 기준으로 계산
             const mapWidth = rect.width;
             const mapHeight = rect.height;
 
-            // 터치 위치의 상대적 비율
+            // 터치 위치의 화면상 좌표
             const offsetX = touchStartCoords.x - rect.left;
             const offsetY = touchStartCoords.y - rect.top;
-            const ratioX = offsetX / mapWidth;
-            const ratioY = offsetY / mapHeight;
 
-            // 지도 좌표 범위에 비율 적용
+            // 지도 중심으로부터의 상대적 거리
+            const centerX = mapWidth / 2;
+            const centerY = mapHeight / 2;
+            const deltaX = (offsetX - centerX) / centerX;
+            const deltaY = (offsetY - centerY) / centerY;
+
+            // 줌 레벨에 따른 대략적인 좌표 계산
+            // 각 줌 레벨당 약 256 픽셀 = 지구 한 바퀴
+            const zoom = window.map.getZoom();
+            const metersPerPixel = 40075000 / (256 * Math.pow(2, zoom));
+            const latDelta = deltaY * (mapHeight / 2 * metersPerPixel) / 111000;
+            const lngDelta = deltaX * (mapWidth / 2 * metersPerPixel) / (111000 * Math.cos(center.lat() * Math.PI / 180));
+
+            // 중심 좌표에 delta를 더해서 터치 위치의 좌표 계산
             const latlng = new naver.maps.LatLng(
-                ne.lat() - (ne.lat() - sw.lat()) * ratioY,
-                sw.lng() + (ne.lng() - sw.lng()) * ratioX
+                center.lat() + latDelta,
+                center.lng() + lngDelta
             );
 
             showFindWayButtons(latlng, touchStartCoords.x, touchStartCoords.y);
