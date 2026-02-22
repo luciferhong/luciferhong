@@ -7589,6 +7589,39 @@ document.head.appendChild(style);
     // 체크박스 컨테이너를 body에 추가
     document.body.appendChild(checkboxContainer);
 
+    // 길찾기 버튼 표시 및 처리 공통 함수
+    function showFindWayButtons(latlng, mouseX, mouseY) {
+        const startX = latlng.lng();
+        const startY = latlng.lat();
+
+        routeButton.style.left = mouseX + 'px';
+        routeButton.style.top = mouseY + 'px';
+        routeButton.style.display = 'block';
+
+        checkboxContainer.style.left = (mouseX + 65) + 'px';
+        checkboxContainer.style.top = mouseY + 'px';
+        checkboxContainer.style.display = 'block';
+
+        routeButton.onclick = function() {
+            var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
+
+            if (selectedDestinations.length > 0) {
+                var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
+                var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
+
+                iframe.src = url;
+                overlay.style.display = 'flex';
+                routeButton.style.display = 'none';
+                checkboxContainer.style.display = 'none';
+            } else {
+                alert('적어도 하나의 목적지를 선택하세요.');
+            }
+
+            routeButton.style.display = 'none';
+            checkboxContainer.style.display = 'none';
+        };
+    }
+
     // 우클릭 시 이벤트를 등록하여 "길찾기" 버튼을 표시
     naver.maps.Event.addListener(window.map, 'rightclick', function(e) {
 
@@ -7596,52 +7629,11 @@ document.head.appendChild(style);
 			return;
 		}
         var latlng = e.coord;  // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
-        var startX = latlng.lng();  // 우클릭한 위치의 경도
-        var startY = latlng.lat();  // 우클릭한 위치의 위도
-
-        // 우클릭한 화면상의 마우스 좌표 가져오기 (clientX, clientY)
         var mouseEvent = e.pointerEvent;
         var mouseX = mouseEvent.clientX;
         var mouseY = mouseEvent.clientY;
 
-        // 마우스 우클릭 위치에 "길찾기" 버튼과 체크박스 표시
-        routeButton.style.left = mouseX + 'px';
-        routeButton.style.top = mouseY + 'px';
-        routeButton.style.display = 'block';  // 버튼을 화면에 표시
-
-        checkboxContainer.style.left = (mouseX + 65) + 'px';
-        checkboxContainer.style.top = mouseY + 'px';
-        checkboxContainer.style.display = 'block';
-
-        // "길찾기" 버튼 클릭 시 오버레이를 표시하고, iframe에 경로 표시
-        routeButton.onclick = function() {
-            var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
-
-
-            if (selectedDestinations.length > 0) {
-                var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
-
-                // URL에 선택된 목적지 id 추가
-                var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
-                 //var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&mode=transit`;
-                //var url = `http://localhost:8000/test2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
-
-                iframe.src = url;
-                overlay.style.display = 'flex';
-                routeButton.style.display = 'none';
-                checkboxContainer.style.display = 'none';
-               //document.querySelector('.ctn_wrap.open').style.width = '0px';
-              //document.querySelector('.map_wrap').style.width = `calc(100% - 390px)`;
-        //document.querySelector('.map_wrap').style.height = '40%';
-            } else {
-                alert('적어도 하나의 목적지를 선택하세요.');
-            }
-
-
-            // 버튼과 체크박스를 다시 숨김
-            routeButton.style.display = 'none';
-            checkboxContainer.style.display = 'none';
-        };
+        showFindWayButtons(latlng, mouseX, mouseY);
     });
 
     // 지도 클릭 시 "길찾기" 버튼 숨기기
@@ -7651,14 +7643,12 @@ document.head.appendChild(style);
     });
 
     // 📱 모바일 롱터치 (1초 이상) 이벤트 - 우클릭과 동일한 동작
-    let touchStartTime = null;
-    let touchStartCoords = null;
     let touchTimer = null;
+    let touchStartCoords = null;
 
     window.map.getElement().addEventListener('touchstart', function(event) {
         if (event.touches.length > 1) return; // 멀티터치 무시
         
-        touchStartTime = Date.now();
         const touch = event.touches[0];
         touchStartCoords = { x: touch.clientX, y: touch.clientY };
 
@@ -7668,53 +7658,30 @@ document.head.appendChild(style);
                 return;
             }
 
-            // 지도의 현재 중심 또는 터치 위치의 좌표 계산
+            // 지도의 현재 경계 좌표 정보로 화면좌표를 지도좌표로 변환
+            const bounds = window.map.getBounds();
+            const sw = bounds.getSouthWest(); // 남서쪽 좌표 (좌측 하단)
+            const ne = bounds.getNorthEast(); // 북동쪽 좌표 (우측 상단)
+
+            // 지도 element의 크기
             const mapElement = window.map.getElement();
             const rect = mapElement.getBoundingClientRect();
+            const mapWidth = rect.width;
+            const mapHeight = rect.height;
+
+            // 터치 위치의 상대적 비율
             const offsetX = touchStartCoords.x - rect.left;
             const offsetY = touchStartCoords.y - rect.top;
+            const ratioX = offsetX / mapWidth;
+            const ratioY = offsetY / mapHeight;
 
-            // Naver Map의 좌표 변환 (화면 픽셀 -> 지도 좌표)
-            const point = new naver.maps.Point(offsetX, offsetY);
-            const latlng = window.map.unproject(point);
+            // 지도 좌표 범위에 비율 적용
+            const latlng = new naver.maps.LatLng(
+                ne.lat() - (ne.lat() - sw.lat()) * ratioY,
+                sw.lng() + (ne.lng() - sw.lng()) * ratioX
+            );
 
-            if (!latlng) {
-                return;
-            }
-
-            const startX = latlng.lng(); // 경도
-            const startY = latlng.lat(); // 위도
-            const mouseX = touchStartCoords.x;
-            const mouseY = touchStartCoords.y;
-
-            // 롱터치 위치에 "길찾기" 버튼과 체크박스 표시
-            routeButton.style.left = mouseX + 'px';
-            routeButton.style.top = mouseY + 'px';
-            routeButton.style.display = 'block';
-
-            checkboxContainer.style.left = (mouseX + 65) + 'px';
-            checkboxContainer.style.top = mouseY + 'px';
-            checkboxContainer.style.display = 'block';
-
-            // "길찾기" 버튼 클릭 로직
-            routeButton.onclick = function() {
-                var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
-
-                if (selectedDestinations.length > 0) {
-                    var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
-                    var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
-
-                    iframe.src = url;
-                    overlay.style.display = 'flex';
-                    routeButton.style.display = 'none';
-                    checkboxContainer.style.display = 'none';
-                } else {
-                    alert('적어도 하나의 목적지를 선택하세요.');
-                }
-
-                routeButton.style.display = 'none';
-                checkboxContainer.style.display = 'none';
-            };
+            showFindWayButtons(latlng, touchStartCoords.x, touchStartCoords.y);
         }, 1000); // 1초
     });
 
@@ -7732,7 +7699,6 @@ document.head.appendChild(style);
             clearTimeout(touchTimer);
             touchTimer = null;
         }
-        touchStartTime = null;
         touchStartCoords = null;
     });
 };
