@@ -184,6 +184,13 @@ font-weight: 800;
   margin-right: 6px;
 }
 
+/* ===== 검색 필드는 flex 제외 ===== */
+#controls label:has(#apartmentSearchInput) {
+  display: inline-block !important;
+  white-space: normal !important;
+  gap: 0 !important;
+}
+
 
 	#scaleControls {
 		display: flex; /* ✅ 가로 정렬 */
@@ -358,6 +365,46 @@ body.map-fullscreen {
       line-height: 1.6 !important;
     }
   }
+
+  /* ===== 아파트 검색 자동완성 스타일 ===== */
+  .apartment-result-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    font-size: 13px;
+    background: white;
+    transition: background-color 0.15s ease;
+  }
+
+  .apartment-result-item:hover {
+    background-color: #f5f5f5;
+  }
+
+  .apartment-result-item:active {
+    background-color: #e8f4f8;
+  }
+
+  .apartment-result-item strong {
+    color: #0066cc;
+    font-weight: 600;
+  }
+
+  .apartment-result-info {
+    font-size: 12px;
+    color: #666;
+    margin-top: 3px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .apartment-result-info span {
+    background: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
     </style>
 <style id="hongbu-debug-style">
   #hongbuDebugOverlay{
@@ -478,10 +525,13 @@ body.map-fullscreen {
       .replaceAll("'","&#39;");
   }
   function log(level, msg, extra){
-    if (level === 'WARN') return;
-    // info와 gps 관련 오류 필터링
+    // 제외할 로그 레벨
+    if (level === 'WARN' || level === 'INFO' || level === 'STAT') return;
+    
+    // 위치 추적 관련 에러 필터링
     const msgStr = safeStr(msg).toLowerCase();
-    if (msgStr.includes('info') || msgStr.includes('gps')) return;
+    if (msgStr.includes('gps') || msgStr.includes('위치') || msgStr.includes('tracking')) return;
+    
     const line = { level, time: ts(), msg: safeStr(msg), extra: extra ? safeStr(extra) : '' };
     store.push(line);
     while (store.length > MAX_LINES) store.shift();
@@ -655,6 +705,19 @@ body.map-fullscreen {
   <select id="sigunguFilter" disabled>
     <option value="">전체</option>
   </select>
+</label>
+
+<label style="position: relative; width: 240px; display: inline-block;">
+  아파트 검색:
+  <input type="text" id="apartmentSearchInput" placeholder="아파트명 입력..." style="
+    width: 150px;
+    height: 28px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+    font-size: 14px;
+  "/>
 </label>
 
         <label>연도:
@@ -2748,10 +2811,179 @@ async function ensureEmdLayerBoundToMap() {
 			buildRegionFiltersFromApartments();
 			attachRegionFilterEvents();
 			restoreRegionFiltersFromUIState();
+			initApartmentSearch(); // ✅ 검색 기능 초기화
 
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
 		}
+	}
+
+	// ===== 아파트 검색 기능 초기화 =====
+	function initApartmentSearch() {
+		const searchInput = document.getElementById('apartmentSearchInput');
+		
+		// body에 검색 결과 컨테이너 생성
+		let resultsContainer = document.getElementById('apartmentSearchResults');
+		if (!resultsContainer) {
+			resultsContainer = document.createElement('div');
+			resultsContainer.id = 'apartmentSearchResults';
+			resultsContainer.style.cssText = `
+				position: fixed;
+				background: white;
+				border: 1px solid #ccc;
+				max-height: 300px;
+				overflow-y: auto;
+				display: none;
+				box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+				z-index: 10001;
+				width: 500px;
+			`;
+			document.body.appendChild(resultsContainer);
+		}
+
+		if (!searchInput || !resultsContainer) return;
+
+		// 검색 결과 위치 업데이트 함수
+		function updateResultsPosition() {
+			const rect = searchInput.getBoundingClientRect();
+			resultsContainer.style.left = rect.left + 'px';
+			resultsContainer.style.top = (rect.bottom + 5) + 'px';
+		}
+
+		// 검색 입력 이벤트
+		searchInput.addEventListener('input', (e) => {
+			const query = e.target.value.trim();
+			
+			if (query.length === 0) {
+				resultsContainer.style.display = 'none';
+				resultsContainer.innerHTML = '';
+				return;
+			}
+
+			const results = searchApartments(query);
+			
+			if (results.length === 0) {
+				resultsContainer.innerHTML = '<div class="apartment-result-item" style="color: #999;">검색 결과가 없습니다.</div>';
+				resultsContainer.style.display = 'block';
+				updateResultsPosition();
+				return;
+			}
+
+			resultsContainer.innerHTML = results.slice(0, 50).map(apt => `
+				<div class="apartment-result-item" data-apt-id="${apt.id}" style="cursor: pointer;">
+					<strong>${highlightMatches(apt.name, query)}</strong>
+					<div class="apartment-result-info">
+						<span>${apt.sidoNm}</span>
+						<span>${apt.sigunguNm}</span>
+						<span>연식: ${apt.year}</span>
+						<span>세대수: ${apt.units}</span>
+						${apt.distance !== undefined ? `<span style="color: #0066cc; font-weight: 600;">📍 ${apt.distance.toFixed(2)}km</span>` : ''}
+					</div>
+				</div>
+			`).join('');
+
+			// 검색 결과가 있으면 결과 개수 표시
+			if (results.length > 50) {
+				resultsContainer.innerHTML += `<div class="apartment-result-item" style="color: #999; text-align: center; padding: 8px;">... 외 ${results.length - 50}개 더 있습니다.</div>`;
+			}
+
+			resultsContainer.style.display = 'block';
+			updateResultsPosition();
+
+			resultsContainer.querySelectorAll('.apartment-result-item').forEach(item => {
+				item.addEventListener('click', () => {
+					const aptId = item.getAttribute('data-apt-id');
+					const apt = apartmentData.find(a => String(a.id) === aptId);
+					
+					if (apt) {
+						const latlng = new naver.maps.LatLng(apt.lat, apt.lng);
+						window.map.setCenter(latlng);
+						window.map.setZoom(17);
+						resultsContainer.style.display = 'none';
+						searchInput.value = '';
+					}
+				});
+			});
+		});
+
+		document.addEventListener('click', (e) => {
+			if (!e.target.closest('label:has(#apartmentSearchInput)') && e.target !== resultsContainer) {
+				resultsContainer.style.display = 'none';
+			}
+		});
+
+		window.addEventListener('scroll', updateResultsPosition);
+		window.addEventListener('resize', updateResultsPosition);
+	}
+
+	// ===== 아파트 검색 함수 =====
+	function searchApartments(query) {
+		if (!apartmentData || apartmentData.length === 0) return [];
+
+		const lowerQuery = query.toLowerCase();
+		
+		// 검색어를 공백으로 분리 (예: "동대문구 두산" -> ["동대문구", "두산"])
+		const searchTerms = lowerQuery.split(/\s+/).filter(term => term.length > 0);
+		
+		// 모든 검색어가 포함되는 아파트 찾기
+		let results = apartmentData.filter(apt => {
+			const lowerName = apt.name.toLowerCase();
+			const lowerSido = apt.sidoNm.toLowerCase();
+			const lowerSigungu = apt.sigunguNm.toLowerCase();
+			const combinedText = `${lowerName} ${lowerSido} ${lowerSigungu}`;
+			
+			// 모든 검색 단어가 아파트명, 시도명, 시군구명 중 어디든 포함되어야 함
+			return searchTerms.every(term => combinedText.includes(term));
+		});
+		
+		// 지도의 현재 중심 좌표 기준으로 거리순 정렬
+		if (window.map) {
+			const mapCenter = window.map.getCenter();
+			const centerLat = mapCenter.lat();
+			const centerLng = mapCenter.lng();
+			
+			// 각 아파트까지의 거리 계산 (하버사인 공식)
+			results = results.map(apt => {
+				const distance = calculateDistance(centerLat, centerLng, apt.lat, apt.lng);
+				return { ...apt, distance };
+			});
+			
+			// 거리에 따라 정렬 (가까운 순)
+			results.sort((a, b) => a.distance - b.distance);
+		}
+		
+		return results;
+	}
+	
+	// ===== 두 지점 사이의 거리 계산 (하버사인 공식, 단위: km) =====
+	function calculateDistance(lat1, lng1, lat2, lng2) {
+		const R = 6371; // 지구 반지름 (km)
+		const dLat = (lat2 - lat1) * Math.PI / 180;
+		const dLng = (lng2 - lng1) * Math.PI / 180;
+		const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+				  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+				  Math.sin(dLng / 2) * Math.sin(dLng / 2);
+		const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+		return R * c;
+	}
+
+	// ===== 검색 쿼리와 매칭된 부분 하이라이트 =====
+	function highlightMatches(text, query) {
+		const lowerText = text.toLowerCase();
+		const lowerQuery = query.toLowerCase();
+		
+		if (!lowerText.includes(lowerQuery)) {
+			return text;
+		}
+
+		const index = lowerText.indexOf(lowerQuery);
+		if (index === -1) return text;
+
+		return text.substring(0, index) + 
+			   '<mark style="background-color: #ffeb3b; font-weight: 600;">' + 
+			   text.substring(index, index + query.length) + 
+			   '</mark>' + 
+			   text.substring(index + query.length);
 	}
 
 
