@@ -93,14 +93,23 @@
   </div>
 
   <div class="row">
-    <label class="small">음성</label>
-    <select id="voiceSel"></select>
+    <label class="small">TTS 엔진</label>
+    <select id="engineSel">
+      <option value="se" selected>StreamElements (자연스러운)</option>
+      <option value="web">브라우저 기본</option>
+    </select>
+    <span id="webVoiceRow" style="display:none;">
+      <label class="small" style="margin-left:4px;">음성</label>
+      <select id="voiceSel"></select>
+    </span>
     <label class="small">속도</label>
     <select id="rateSel">
+      <option value="0.8">0.8</option>
       <option value="0.9">0.9</option>
       <option value="1.0" selected>1.0</option>
       <option value="1.1">1.1</option>
       <option value="1.2">1.2</option>
+      <option value="1.5">1.5</option>
     </select>
   </div>
 
@@ -128,7 +137,13 @@
 <script>
   const $ = (id) => document.getElementById(id);
 
-  // ----------------- TTS -----------------
+  // ----------------- TTS 공통 -----------------
+  const engineSel = $("engineSel");
+  engineSel.onchange = () => {
+    $("webVoiceRow").style.display = engineSel.value === "web" ? "" : "none";
+  };
+
+  // ----------------- Web Speech TTS -----------------
   const voiceSel = $("voiceSel");
   function loadVoices() {
     const voices = speechSynthesis.getVoices();
@@ -145,13 +160,11 @@
   speechSynthesis.onvoiceschanged = loadVoices;
   loadVoices();
 
-  function speakLines(lines) {
-    if (!lines.length) return;
+  function speakWeb(lines) {
     speechSynthesis.cancel();
     const voices = speechSynthesis.getVoices();
     const selected = voices.find(v => v.name === voiceSel.value);
     const rate = Number($("rateSel").value || 1.0);
-
     for (const line of lines) {
       const u = new SpeechSynthesisUtterance(line);
       u.lang = "ko-KR";
@@ -163,9 +176,98 @@
     }
   }
 
-  $("btnPause").onclick = () => speechSynthesis.pause();
-  $("btnResume").onclick = () => speechSynthesis.resume();
-  $("btnStop").onclick = () => speechSynthesis.cancel();
+  // ----------------- StreamElements TTS -----------------
+  let seQueue    = [];
+  let seAudio    = null;
+  let sePaused   = false;
+  let seStopped  = false;
+
+  function seUrl(text) {
+    return `https://api.streamelements.com/kappa/v2/speech?voice=Seoyeon&text=${encodeURIComponent(text)}`;
+  }
+
+  // 긴 줄을 200자로 짤라 배열로 반환
+  function splitLine(line) {
+    const MAX = 200;
+    if (line.length <= MAX) return [line];
+    const chunks = [];
+    let start = 0;
+    while (start < line.length) {
+      let end = start + MAX;
+      if (end < line.length) {
+        // 쉽표 또는 공백에서 자르기
+        const cut = line.lastIndexOf(",", end);
+        if (cut > start) end = cut + 1;
+      }
+      chunks.push(line.slice(start, end).trim());
+      start = end;
+    }
+    return chunks.filter(Boolean);
+  }
+
+  async function playSE() {
+    if (seStopped || seQueue.length === 0) return;
+    const text = seQueue.shift();
+    const rate = Number($("rateSel").value || 1.0);
+
+    seAudio = new Audio();
+    seAudio.src = seUrl(text);
+    seAudio.playbackRate = rate;
+
+    await new Promise(resolve => {
+      seAudio.onended  = resolve;
+      seAudio.onerror  = resolve;  // 오류 시 다음으로
+      seAudio.play().catch(resolve);
+    });
+
+    // 일시정지 대기
+    while (sePaused && !seStopped) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if (!seStopped) playSE();
+  }
+
+  function speakSE(lines) {
+    // 기존 재생 중단
+    seStopped = true;
+    sePaused  = false;
+    if (seAudio) { seAudio.pause(); seAudio.src = ""; seAudio = null; }
+
+    // 즐 단위로 페로 200자 청크로 분할
+    seQueue   = lines.flatMap(splitLine);
+    seStopped = false;
+    sePaused  = false;
+    playSE();
+  }
+
+  // ----------------- 통합 speakLines -----------------
+  function speakLines(lines) {
+    if (!lines.length) return;
+    if (engineSel.value === "se") speakSE(lines);
+    else speakWeb(lines);
+  }
+
+  function stopAll() {
+    // Web Speech 중단
+    speechSynthesis.cancel();
+    // SE 중단
+    seStopped = true;
+    sePaused  = false;
+    if (seAudio) { seAudio.pause(); seAudio.src = ""; seAudio = null; }
+    seQueue = [];
+  }
+
+  $("btnPause").onclick = () => {
+    speechSynthesis.pause();
+    sePaused = true;
+    if (seAudio) seAudio.pause();
+  };
+  $("btnResume").onclick = () => {
+    speechSynthesis.resume();
+    sePaused = false;
+    if (seAudio) seAudio.play();
+  };
+  $("btnStop").onclick = stopAll;
 
   $("btnSpeakText").onclick = () => {
     const lines = $("text").value.split(/\n+/).map(s => s.trim()).filter(Boolean);
