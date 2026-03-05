@@ -55,12 +55,6 @@
       <option value="60">60개</option>
       <option value="100" selected>100개</option>
     </select>
-
-    <label class="small">빈 시세 제외</label>
-    <select id="skipEmpty">
-      <option value="1" selected>예</option>
-      <option value="0">아니오</option>
-    </select>
   </div>
 
   <div class="filter-row">
@@ -71,6 +65,8 @@
       <option value="광역시">광역시</option>
       <option value="50만↑도시">50만↑도시</option>
     </select>
+    <span class="eok-label" style="margin-left:8px;">시군구</span>
+    <select id="filterRegion"><option value="">전체</option></select>
     <span class="eok-label" style="margin-left:8px;">전용면적(㎡)</span>
     <input type="number" id="filterAreaMin" placeholder="최소" min="0" step="1" style="width:70px;">
     <span class="eok-label">~</span>
@@ -95,7 +91,7 @@
   <div class="row">
     <label class="small">TTS 엔진</label>
     <select id="engineSel">
-      <option value="se" selected>StreamElements (자연스러운)</option>
+      <option value="se" selected>Google TTS (자연스러운)</option>
       <option value="web">브라우저 기본</option>
     </select>
     <span id="webVoiceRow" style="display:none;">
@@ -183,7 +179,7 @@
   let seStopped  = false;
 
   function seUrl(text) {
-    return `https://api.streamelements.com/kappa/v2/speech?voice=Seoyeon&text=${encodeURIComponent(text)}`;
+    return `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=ko&client=tw-ob`;
   }
 
   // 긴 줄을 200자로 짤라 배열로 반환
@@ -210,8 +206,7 @@
     const text = seQueue.shift();
     const rate = Number($("rateSel").value || 1.0);
 
-    seAudio = new Audio();
-    seAudio.src = seUrl(text);
+    seAudio = new Audio(seUrl(text));
     seAudio.playbackRate = rate;
 
     await new Promise(resolve => {
@@ -361,9 +356,9 @@
     return 0; // fallback
   }
 
-  // opts: { minEok, maxEok, areaMin, areaMax, city }  (억 단위 소수점 지원)
+  // opts: { minEok, maxEok, areaMin, areaMax, city, regionFilter }  (억 단위 소수점 지원)
   function rowsToSpeakableLines(rows, opts) {
-    const { minEok=null, maxEok=null, areaMin=null, areaMax=null, city="" } = opts || {};
+    const { minEok=null, maxEok=null, areaMin=null, areaMax=null, city="", regionFilter="" } = opts || {};
     if (rows.length < 2) return [];
     const hi = detectHeaderRow(rows);
     const header = rows[hi].map(h => (h||"").trim());
@@ -387,8 +382,7 @@
     const iSale   = findIdx(["매매가","매매"]);
     const iRent   = findIdx(["전세가","전세"]);
 
-    const skipEmpty = $("skipEmpty").value === "1";
-    const maxN = Number($("maxSel").value || 40);
+    const maxN = Number($("maxSel").value || 100);
 
     // 억 단위 → 만원 단위 (소수점 정밀도 유지, Math.round로 부동소수 오차 방지)
     const minManwon = (minEok != null) ? Math.round(minEok * 10000) : null;
@@ -404,10 +398,13 @@
       const rentRaw = iRent>=0   ? (r[iRent]  ||"").trim() : "";
 
       if (!name) continue;
-      if (skipEmpty && !saleRaw && !rentRaw) continue;
+      // 매매가 또는 전세가 없으면 항상 제외
+      if (!saleRaw && !rentRaw) continue;
 
       // 도시 필터
       if (city && cityVal !== city) continue;
+      // 시군구 필터 (partial match)
+      if (regionFilter && !region.includes(regionFilter)) continue;
 
       // 전용면적 필터 (숫자만 추출해서 비교)
       if (areaMin != null || areaMax != null) {
@@ -445,16 +442,17 @@
   let allRows = null; // 불러온 원본 rows 저장
 
   function getFilterValues() {
-    const minVal     = $("filterMin").value.trim();
-    const maxVal     = $("filterMax").value.trim();
-    const areaMinVal = $("filterAreaMin").value.trim();
-    const areaMaxVal = $("filterAreaMax").value.trim();
-    const minEok  = minVal     !== "" ? parseFloat(minVal)     : null;
-    const maxEok  = maxVal     !== "" ? parseFloat(maxVal)     : null;
-    const areaMin = areaMinVal !== "" ? parseFloat(areaMinVal) : null;
-    const areaMax = areaMaxVal !== "" ? parseFloat(areaMaxVal) : null;
-    const city    = $("filterCity").value;
-    return { minEok, maxEok, areaMin, areaMax, city };
+    const minVal     = $('filterMin').value.trim();
+    const maxVal     = $('filterMax').value.trim();
+    const areaMinVal = $('filterAreaMin').value.trim();
+    const areaMaxVal = $('filterAreaMax').value.trim();
+    const minEok        = minVal     !== '' ? parseFloat(minVal)     : null;
+    const maxEok        = maxVal     !== '' ? parseFloat(maxVal)     : null;
+    const areaMin       = areaMinVal !== '' ? parseFloat(areaMinVal) : null;
+    const areaMax       = areaMaxVal !== '' ? parseFloat(areaMaxVal) : null;
+    const city          = $('filterCity').value;
+    const regionFilter  = $('filterRegion').value;
+    return { minEok, maxEok, areaMin, areaMax, city, regionFilter };
   }
 
   function applyAndRender() {
@@ -463,17 +461,14 @@
       $("filterStat").style.color = "#c00";
       return;
     }
-    const { minEok, maxEok, areaMin, areaMax, city } = getFilterValues();
-    console.log("[필터] minEok:", minEok, "maxEok:", maxEok, "city:", city,
-                "areaMin:", areaMin, "areaMax:", areaMax,
-                "allRows:", allRows.length, "행");
+    const { minEok, maxEok, areaMin, areaMax, city, regionFilter } = getFilterValues();
 
-    const lines = rowsToSpeakableLines(allRows, { minEok, maxEok, areaMin, areaMax, city });
-    console.log("[필터] 결과:", lines.length, "개", lines.slice(0,3));
+    const lines = rowsToSpeakableLines(allRows, { minEok, maxEok, areaMin, areaMax, city, regionFilter });
 
     // 필터 상태 표시
     const parts = [];
     if (city) parts.push(city);
+    if (regionFilter) parts.push(regionFilter);
     if (areaMin != null || areaMax != null) {
       const a1 = areaMin != null ? `${areaMin}㎡` : "";
       const a2 = areaMax != null ? `${areaMax}㎡` : "";
@@ -519,13 +514,52 @@
   }
 
 
+  // 시군구 드롭다운 자동 채우기
+  function populateRegionDropdown(rows, cityFilter) {
+    const hi = detectHeaderRow(rows);
+    const header = rows[hi].map(h => (h||"").trim());
+    const iCity   = header.findIndex(h => h === "도시" || h.includes("도시"));
+    const iRegion = header.findIndex(h => h === "지역(시군구)" || h.includes("시군구"));
+    if (iRegion < 0) return;
+
+    const regionSet = new Set();
+    for (const r of rows.slice(hi + 1)) {
+      const city   = iCity >= 0   ? (r[iCity]  ||"").trim() : "";
+      const region = iRegion >= 0 ? (r[iRegion]||"").trim() : "";
+      if (!region) continue;
+      if (cityFilter && city !== cityFilter) continue;
+      regionSet.add(region);
+    }
+
+    const sel = $("filterRegion");
+    const prev = sel.value;
+    sel.innerHTML = "<option value=''>전체</option>";
+    [...regionSet].sort().forEach(v => {
+      const opt = document.createElement("option");
+      opt.value = v; opt.textContent = v;
+      if (v === prev) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
   $("btnApplyFilter").onclick = applyAndRender;
+
+  // 도시 선택 시 시군구 목록 새로고침 + 필터 적용
+  $("filterCity").onchange = () => {
+    if (allRows) {
+      populateRegionDropdown(allRows, $("filterCity").value);
+    }
+    applyAndRender();
+  };
+
+
   $("btnClearFilter").onclick = () => {
     $("filterMin").value     = "";
     $("filterMax").value     = "";
     $("filterAreaMin").value = "";
     $("filterAreaMax").value = "";
     $("filterCity").value    = "";
+    $("filterRegion").value  = "";
     applyAndRender();
   };
 
@@ -575,6 +609,8 @@
       $("filterAreaMin").value = "";
       $("filterAreaMax").value = "";
       $("filterCity").value    = "";
+      $("filterRegion").value  = "";
+      populateRegionDropdown(rows, "");
       const lines = rowsToSpeakableLines(rows, {});
 
       if (!lines.length) {
