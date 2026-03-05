@@ -4,7 +4,6 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>시세 음성 리더 (체크 선택)</title>
-  <script src="https://code.responsivevoice.org/responsivevoice.js?key=VsAlSHRN"></script>
   <style>
     :root {
       --primary: #4f46e5;
@@ -321,8 +320,8 @@
     <div class="row" style="margin-bottom:10px;">
       <label class="small">엔진</label>
       <select id="engineSel">
-        <option value="web" selected>브라우저 기본</option>
-        <option value="rv">대체목소리 (iOS 권장)</option>
+        <option value="web">브라우저 기본</option>
+        <option value="gtts" selected>Google TTS (iOS 권장)</option>
       </select>
       <span id="webVoiceRow" style="display:none;">
         <select id="voiceSel" style="max-width:200px;"></select>
@@ -435,21 +434,66 @@
     speechSynthesis.speak(u);
   }
 
-  // ----------------- ResponsiveVoice TTS -----------------
-  // iOS는 제스처 컨텍스트 밖에서 speak() 호출이 막힘
-  // → 모든 줄을 하나로 합쳐 단 한 번만 speak() 호출
-  function speakRV(lines) {
-    responsiveVoice.cancel();
+  // ----------------- Google TTS via <audio> (iOS 포함 전 브라우저 지원) -----------------
+  // Audio 요소는 CORS 제한 없이 cross-origin 오디오를 재생할 수 있음
+  // → fetch() 대신 audio.src 방식으로 iOS Safari에서도 정상 동작
+  const gttsAudio = new Audio();
+  let gttsQueue   = [];
+  let gttsStopped = false;
+  let gttsPaused  = false;
+
+  function gttsUrl(text) {
+    return `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=ko&client=tw-ob`;
+  }
+
+  // Google TTS는 요청당 ~200자 제한 → 줄 단위로 분할
+  function splitForGTTS(lines, maxLen = 180) {
+    const chunks = [];
+    for (const line of lines) {
+      if (line.length <= maxLen) {
+        chunks.push(line);
+      } else {
+        const parts = line.split(/,\s*/);
+        let cur = "";
+        for (const p of parts) {
+          const next = cur ? cur + ", " + p : p;
+          if (next.length > maxLen) {
+            if (cur) chunks.push(cur);
+            cur = p;
+          } else {
+            cur = next;
+          }
+        }
+        if (cur) chunks.push(cur);
+      }
+    }
+    return chunks;
+  }
+
+  function playNextGTTS() {
+    if (gttsStopped || gttsPaused || !gttsQueue.length) return;
+    const text = gttsQueue.shift();
     const rate = Number($("rateSel").value || 1.0);
-    const fullText = lines.join(" ");
-    responsiveVoice.speak(fullText, "Korean Female", { rate });
+    gttsAudio.src = gttsUrl(text);
+    gttsAudio.playbackRate = rate;
+    gttsAudio.onended = () => { if (!gttsStopped && !gttsPaused) playNextGTTS(); };
+    gttsAudio.onerror = () => { if (!gttsStopped) playNextGTTS(); }; // 오류 시 다음으로 스킵
+    gttsAudio.play().catch(e => console.warn("GTTS play:", e));
+  }
+
+  function speakGTTS(lines) {
+    gttsStopped = false;
+    gttsPaused  = false;
+    gttsAudio.pause();
+    gttsQueue = splitForGTTS(lines);
+    playNextGTTS();
   }
 
   // ----------------- 통합 speakLines -----------------
   function speakLines(lines) {
     if (!lines.length) return;
-    if (engineSel.value === "rv") {
-      speakRV(lines);
+    if (engineSel.value === "gtts") {
+      speakGTTS(lines);
     } else {
       speechSynthesis.cancel();
       wsStopped = false;
@@ -462,15 +506,15 @@
   }
 
   $("btnPause").onclick = () => {
-    if (engineSel.value === "rv") responsiveVoice.pause();
+    if (engineSel.value === "gtts") { gttsPaused = true; gttsAudio.pause(); }
     else { wsPaused = true; speechSynthesis.pause(); }
   };
   $("btnResume").onclick = () => {
-    if (engineSel.value === "rv") responsiveVoice.resume();
+    if (engineSel.value === "gtts") { gttsPaused = false; gttsAudio.play(); }
     else { wsPaused = false; speechSynthesis.resume(); }
   };
   $("btnStop").onclick = () => {
-    responsiveVoice.cancel();
+    gttsStopped = true; gttsAudio.pause(); gttsAudio.src = ""; gttsQueue = [];
     wsStopped = true; speechSynthesis.cancel();
   };
 
