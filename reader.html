@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>시세 음성 리더 (체크 선택)</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px;max-width:920px;margin:0 auto;}
+    h2{margin:8px 0 12px;}
+    input,select,button,textarea{font-size:16px;padding:10px;}
+    .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center;}
+    input[type=text]{flex:1;min-width:260px;}
+    textarea{width:100%;height:160px;font-size:14px;line-height:1.45;}
+    .hint{color:#555;font-size:13px;line-height:1.6}
+    .pill{display:inline-block;background:#f2f2f2;border-radius:999px;padding:4px 10px;margin-right:6px;}
+    .small{font-size:13px;color:#666}
+    .box{border:1px solid #ddd;border-radius:12px;padding:10px;}
+    .list{max-height:360px;overflow:auto;padding:6px;}
+    .item{display:flex;gap:10px;align-items:flex-start;padding:10px;border-bottom:1px solid #eee;}
+    .item:last-child{border-bottom:none;}
+    .item input{margin-top:4px;transform:scale(1.15);}
+    .item .txt{white-space:pre-wrap;word-break:break-word;line-height:1.45;}
+    .stat{font-size:13px;color:#444}
+    .split{display:grid;grid-template-columns:1fr;gap:10px;}
+    @media (min-width:860px){
+      .split{grid-template-columns:1.2fr 0.8fr;}
+    }
+  </style>
+</head>
+<body>
+  <h2>구글시트 시세 음성 리더 (체크 선택)</h2>
+
+  <div class="hint">
+    <span class="pill">1) 시트 링크</span>
+    <span class="pill">2) 불러오기</span>
+    <span class="pill">3) 체크 후 읽기</span><br/>
+    * 공유는 “링크가 있는 사용자: 보기”면 됩니다.
+  </div>
+
+  <div class="row">
+    <input id="sheetUrl" type="text"
+      value="https://docs.google.com/spreadsheets/d/1qw5F90WSAw5yJedwIUoR7WJ6XE68G62mHRBmN4fPRLQ/edit?gid=1769717938#gid=1769717938"
+      placeholder="구글시트 URL (…/d/시트ID/edit#gid=…)" />
+    <button id="btnLoad">불러오기</button>
+  </div>
+
+  <div class="row">
+    <label class="small">최대 생성</label>
+    <select id="maxSel">
+      <option value="20">20개</option>
+      <option value="40" selected>40개</option>
+      <option value="60">60개</option>
+      <option value="100">100개</option>
+    </select>
+
+    <label class="small">빈 시세 제외</label>
+    <select id="skipEmpty">
+      <option value="1" selected>예</option>
+      <option value="0">아니오</option>
+    </select>
+
+    <label class="small">불러오자마자 전체 체크</label>
+    <select id="autoCheck">
+      <option value="1" selected>예</option>
+      <option value="0">아니오</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <button id="btnSpeakSelected">선택만 읽기</button>
+    <button id="btnPause">일시정지</button>
+    <button id="btnResume">재개</button>
+    <button id="btnStop">정지</button>
+    <span id="loadStatus" style="font-size:13px;color:#0070c0;"></span>
+  </div>
+
+  <div class="row">
+    <label class="small">음성</label>
+    <select id="voiceSel"></select>
+    <label class="small">속도</label>
+    <select id="rateSel">
+      <option value="0.9">0.9</option>
+      <option value="1.0" selected>1.0</option>
+      <option value="1.1">1.1</option>
+      <option value="1.2">1.2</option>
+    </select>
+  </div>
+
+  <div class="split">
+    <div class="box">
+      <div class="row" style="margin:0 0 8px 0;">
+        <button id="btnAll">전체선택</button>
+        <button id="btnNone">전체해제</button>
+        <button id="btnInvert">반전</button>
+        <button id="btnToText">선택 → 아래 텍스트</button>
+        <span class="stat" id="stat">0개 중 0개 선택</span>
+      </div>
+      <div class="list" id="list"></div>
+    </div>
+
+    <div class="box">
+      <div class="hint" style="margin-bottom:6px;">
+        아래 텍스트는 “선택 → 텍스트”를 누르면 채워집니다.<br/>
+        (필요하면 직접 편집 후 ‘선택만 읽기’ 대신 텍스트를 복사해서 다른 TTS에도 사용 가능)
+      </div>
+      <textarea id="text" placeholder="선택 항목을 텍스트로 내려보내거나, 직접 문장을 넣어도 됩니다."></textarea>
+      <div class="row" style="margin:8px 0 0 0;">
+        <button id="btnSpeakText">텍스트 읽기</button>
+        <span class="small">※ 텍스트 읽기는 textarea 내용 줄 단위로 읽습니다.</span>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  // ----------------- TTS -----------------
+  const voiceSel = $("voiceSel");
+  function loadVoices() {
+    const voices = speechSynthesis.getVoices();
+    voiceSel.innerHTML = "";
+    const ko = voices.filter(v => (v.lang||"").toLowerCase().startsWith("ko"));
+    const list = ko.length ? ko : voices;
+    for (const v of list) {
+      const opt = document.createElement("option");
+      opt.value = v.name;
+      opt.textContent = `${v.name} (${v.lang})`;
+      voiceSel.appendChild(opt);
+    }
+  }
+  speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+
+  function speakLines(lines) {
+    if (!lines.length) return;
+    speechSynthesis.cancel();
+    const voices = speechSynthesis.getVoices();
+    const selected = voices.find(v => v.name === voiceSel.value);
+    const rate = Number($("rateSel").value || 1.0);
+
+    for (const line of lines) {
+      const u = new SpeechSynthesisUtterance(line);
+      u.lang = "ko-KR";
+      if (selected) u.voice = selected;
+      u.rate = rate;
+      u.pitch = 1.0;
+      u.volume = 1.0;
+      speechSynthesis.speak(u);
+    }
+  }
+
+  $("btnPause").onclick = () => speechSynthesis.pause();
+  $("btnResume").onclick = () => speechSynthesis.resume();
+  $("btnStop").onclick = () => speechSynthesis.cancel();
+
+  $("btnSpeakText").onclick = () => {
+    const lines = $("text").value.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    speakLines(lines);
+  };
+
+  // ----------------- Sheets URL -> CSV -----------------
+  function parseSheetUrl(url) {
+    const m = url.match(/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    if (!m) throw new Error("시트 ID를 찾을 수 없어요. (spreadsheets/d/...)");
+    const sheetId = m[1];
+    let gid = "0";
+    const gidMatch = url.match(/[#&?]gid=(\d+)/);
+    if (gidMatch) gid = gidMatch[1];
+    return { sheetId, gid };
+  }
+  function csvExportUrl(sheetId, gid) {
+    return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+  }
+
+  // ----------------- CSV parser -----------------
+  function parseCSV(text) {
+    const rows = [];
+    let row = [], cur = "", inQuotes = false;
+    for (let i=0; i<text.length; i++) {
+      const c = text[i];
+      const n = text[i+1];
+      if (c === '"') {
+        if (inQuotes && n === '"') { cur += '"'; i++; }
+        else { inQuotes = !inQuotes; }
+      } else if (c === ',' && !inQuotes) {
+        row.push(cur); cur = "";
+      } else if ((c === '\n' || c === '\r') && !inQuotes) {
+        if (c === '\r' && n === '\n') i++;
+        row.push(cur); rows.push(row);
+        row = []; cur = "";
+      } else {
+        cur += c;
+      }
+    }
+    if (cur.length || row.length) { row.push(cur); rows.push(row); }
+    return rows.filter(r => r.some(cell => (cell||"").trim() !== ""));
+  }
+
+  // ----------------- Value format helpers -----------------
+  function toIntSafe(x) {
+    if (x == null) return null;
+    const s = String(x).replace(/[, ]/g, "").trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+
+  // "만원" -> "억/천" (천만원 단위까지만)
+  function formatMoneyManwonToEok(x) {
+    const s0 = String(x || "").trim();
+    if (!s0 || s0.toUpperCase() === "N") return "";
+    if (/%$/.test(s0)) return s0.replace(/\s+/g, "");
+    const n = toIntSafe(s0);
+    if (n == null) return s0;
+
+    const eok = Math.floor(n / 10000);
+    const manwonR = n % 10000;
+    const cheon = Math.floor(manwonR / 1000);
+
+    if (eok <= 0) {
+      if (cheon > 0) return `${cheon}천`;
+      return `${Math.floor(manwonR/100)}백`;
+    }
+    if (cheon > 0) return `${eok}억${cheon}천`;
+    return `${eok}억`;
+  }
+
+  function ynToKorean(x) {
+    const s = String(x||"").trim().toUpperCase();
+    if (s === "Y") return "예";
+    if (s === "N") return "아니오";
+    return s ? s : "";
+  }
+
+  // ----------------- Your sheet -> speak lines -----------------
+  // 시트 구조: 0행=그룹헤더(병합), 1행=실제 컬럼명, 2행~=데이터
+  // 1행에 단지명·매매가 등 실제 헤더가 있으므로 rows[1]을 헤더로 사용
+  function detectHeaderRow(rows) {
+    // 행 중 '단지명' 또는 '매매가' 가 포함된 첫 번째 행을 헤더로 자동 탐색 (최대 5행)
+    const limit = Math.min(rows.length, 5);
+    for (let i = 0; i < limit; i++) {
+      const joined = rows[i].join(",");
+      if (joined.includes("단지명") || joined.includes("매매가")) return i;
+    }
+    return 0; // fallback
+  }
+
+  function rowsToSpeakableLines(rows) {
+    if (rows.length < 2) return [];
+    const hi = detectHeaderRow(rows);
+    const header = rows[hi].map(h => (h||"").trim());
+
+    const findIdx = (candidates) => {
+      for (let i=0; i<header.length; i++) {
+        const h = header[i] || "";
+        for (const c of candidates) if (h === c) return i;
+      }
+      for (let i=0; i<header.length; i++) {
+        const h = header[i] || "";
+        for (const c of candidates) if (h.includes(c)) return i;
+      }
+      return -1;
+    };
+
+    const iRegion = findIdx(["지역(시군구)"]);
+    const iName   = findIdx(["단지명"]);
+    const iSale   = findIdx(["매매가","매매"]);
+    const iRent   = findIdx(["전세가","전세"]);
+
+    const skipEmpty = $("skipEmpty").value === "1";
+    const maxN = Number($("maxSel").value || 40);
+
+    const lines = [];
+    for (const r of rows.slice(hi + 1)) {
+      const name   = iName>=0   ? (r[iName]||"").trim()   : "";
+      const region = iRegion>=0 ? (r[iRegion]||"").trim() : "";
+      const saleRaw = iSale>=0  ? (r[iSale]||"").trim()   : "";
+      const rentRaw = iRent>=0  ? (r[iRent]||"").trim()   : "";
+
+      if (!name) continue;
+      if (skipEmpty && !saleRaw && !rentRaw) continue;
+
+      const sale = formatMoneyManwonToEok(saleRaw);
+      const rent = formatMoneyManwonToEok(rentRaw);
+
+      const parts = [];
+      if (region) parts.push(region);
+      parts.push(name);
+      if (sale) parts.push(`매매 ${sale}`);
+      if (rent) parts.push(`전세 ${rent}`);
+
+      lines.push(parts.join(", ") + ".");
+      if (lines.length >= maxN) break;
+    }
+    return lines;
+  }
+
+  // ----------------- Checklist UI -----------------
+  const listEl = $("list");
+  let currentLines = [];
+
+  function updateStat() {
+    const boxes = listEl.querySelectorAll('input[type="checkbox"]');
+    const total = boxes.length;
+    const checked = Array.from(boxes).filter(b => b.checked).length;
+    $("stat").textContent = `${total}개 중 ${checked}개 선택`;
+  }
+
+  function renderChecklist(lines) {
+    currentLines = lines.slice();
+    listEl.innerHTML = "";
+
+    const autoCheck = $("autoCheck").value === "1";
+
+    lines.forEach((line, idx) => {
+      const row = document.createElement("div");
+      row.className = "item";
+
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = autoCheck;
+      cb.dataset.idx = String(idx);
+      cb.onchange = updateStat;
+
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      txt.textContent = line;
+
+      // 텍스트 눌러도 체크 토글
+      txt.style.cursor = "pointer";
+      txt.onclick = () => { cb.checked = !cb.checked; updateStat(); };
+
+      row.appendChild(cb);
+      row.appendChild(txt);
+      listEl.appendChild(row);
+    });
+
+    updateStat();
+  }
+
+  function getSelectedLines() {
+    const boxes = listEl.querySelectorAll('input[type="checkbox"]');
+    const selected = [];
+    boxes.forEach(b => {
+      if (b.checked) selected.push(currentLines[Number(b.dataset.idx)]);
+    });
+    return selected.filter(Boolean);
+  }
+
+  $("btnAll").onclick = () => {
+    listEl.querySelectorAll('input[type="checkbox"]').forEach(b => b.checked = true);
+    updateStat();
+  };
+  $("btnNone").onclick = () => {
+    listEl.querySelectorAll('input[type="checkbox"]').forEach(b => b.checked = false);
+    updateStat();
+  };
+  $("btnInvert").onclick = () => {
+    listEl.querySelectorAll('input[type="checkbox"]').forEach(b => b.checked = !b.checked);
+    updateStat();
+  };
+
+  $("btnToText").onclick = () => {
+    const sel = getSelectedLines();
+    $("text").value = sel.join("\n");
+  };
+
+  $("btnSpeakSelected").onclick = () => {
+    const sel = getSelectedLines();
+    if (!sel.length) return alert("체크된 항목이 없어요.");
+    speakLines(sel);
+  };
+
+  // ----------------- Load from sheet -----------------
+  $("btnLoad").onclick = async () => {
+    const btn = $("btnLoad");
+    const status = $("loadStatus");
+    try {
+      const url = $("sheetUrl").value.trim();
+      if (!url) return alert("구글시트 URL을 입력해줘요.");
+
+      const { sheetId, gid } = parseSheetUrl(url);
+      const exportUrl = csvExportUrl(sheetId, gid);
+
+      btn.disabled = true;
+      btn.textContent = "불러오는 중…";
+      status.textContent = "";
+
+      let res;
+      try {
+        res = await fetch(exportUrl, { cache: "no-store" });
+      } catch (fetchErr) {
+        throw new Error("네트워크 오류: " + (fetchErr.message || fetchErr));
+      }
+      if (!res.ok) throw new Error(`불러오기 실패: HTTP ${res.status}`);
+
+      const csv = await res.text();
+      const rows = parseCSV(csv);
+
+      if (rows.length < 2) {
+        renderChecklist([]);
+        status.textContent = "⚠ 데이터 행이 없거나 권한/탭(gid)이 맞지 않을 수 있어요.";
+        status.style.color = "#c00";
+        return;
+      }
+
+      const lines = rowsToSpeakableLines(rows);
+
+      if (!lines.length) {
+        renderChecklist([]);
+        status.textContent = "⚠ 단지 데이터를 인식하지 못했어요. 헤더 행(단지명·매매가)을 확인해주세요.";
+        status.style.color = "#c00";
+        return;
+      }
+
+      renderChecklist(lines);
+      $("text").value = getSelectedLines().join("\n");
+
+      status.textContent = `✓ ${lines.length}개 항목 불러옴`;
+      status.style.color = "#0070c0";
+
+    } catch (e) {
+      status.textContent = "오류: " + (e.message || String(e));
+      status.style.color = "#c00";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "불러오기";
+    }
+  };
+</script>
+</body>
+</html>
