@@ -393,8 +393,26 @@
 
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
 
+  // ----------------- Wake Lock -----------------
+  let wakeLock = null;
+  async function acquireWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
+    document.addEventListener('visibilitychange', reacquireWakeLock);
+  }
+  async function reacquireWakeLock() {
+    if (document.visibilityState === 'visible' && !wsStopped) {
+      try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e) {}
+    }
+  }
+  function releaseWakeLock() {
+    document.removeEventListener('visibilitychange', reacquireWakeLock);
+    if (wakeLock) { wakeLock.release().catch(()=>{}); wakeLock = null; }
+  }
+
   function speakQueue(queue, voice, rate) {
-    if (wsStopped || !queue.length) return;
+    if (wsStopped) { releaseWakeLock(); return; }
+    if (!queue.length) { releaseWakeLock(); return; }
     const text = queue.shift();
     const u = new SpeechSynthesisUtterance(text);
     u.lang  = "ko-KR";
@@ -414,15 +432,16 @@
     speechSynthesis.cancel();
     wsStopped = false;
     wsPaused  = false;
+    acquireWakeLock();
     const voices = speechSynthesis.getVoices();
     const voice  = voices.find(v => v.name === voiceSel.value) || null;
-    const rate   = Number($("rateSel").value || 1.0);
+    const rate   = Number($('rateSel').value || 1.0);
     speakQueue(lines.slice(), voice, rate);
   }
 
   $("btnPause").onclick  = () => { wsPaused = true;  speechSynthesis.pause(); };
   $("btnResume").onclick = () => { wsPaused = false; speechSynthesis.resume(); };
-  $("btnStop").onclick   = () => { wsStopped = true; speechSynthesis.cancel(); };
+  $("btnStop").onclick   = () => { wsStopped = true; speechSynthesis.cancel(); releaseWakeLock(); };
 
   $("btnSpeakText").onclick = () => {
     if (!currentLines.length) return alert("불러온 항목이 없어요.");
