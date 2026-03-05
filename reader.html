@@ -25,6 +25,9 @@
     @media (min-width:860px){
       .split{grid-template-columns:1.2fr 0.8fr;}
     }
+    .filter-row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center;background:#f8f8f8;border-radius:8px;padding:8px 12px;}
+    .filter-row input[type=number]{width:80px;padding:6px 8px;font-size:15px;}
+    .eok-label{font-size:13px;color:#444;}
   </style>
 </head>
 <body>
@@ -64,6 +67,27 @@
       <option value="1" selected>예</option>
       <option value="0">아니오</option>
     </select>
+  </div>
+
+  <div class="filter-row">
+    <span class="eok-label">도시</span>
+    <select id="filterCity">
+      <option value="">전체</option>
+      <option value="수도권">수도권</option>
+      <option value="광역시">광역시</option>
+      <option value="50만↑도시">50만↑도시</option>
+    </select>
+    <span class="eok-label" style="margin-left:8px;">전용면적(㎡)</span>
+    <input type="number" id="filterAreaMin" placeholder="최소" min="0" step="1" style="width:70px;">
+    <span class="eok-label">~</span>
+    <input type="number" id="filterAreaMax" placeholder="최대" min="0" step="1" style="width:70px;">
+    <span class="eok-label" style="margin-left:8px;">매매가(억)</span>
+    <input type="number" id="filterMin" placeholder="최소" min="0" step="0.1" style="width:75px;">
+    <span class="eok-label">~</span>
+    <input type="number" id="filterMax" placeholder="최대" min="0" step="0.1" style="width:75px;">
+    <button id="btnApplyFilter">필터 적용</button>
+    <button id="btnClearFilter">초기화</button>
+    <span id="filterStat" class="eok-label" style="color:#0070c0;"></span>
   </div>
 
   <div class="row">
@@ -245,7 +269,9 @@
     return 0; // fallback
   }
 
-  function rowsToSpeakableLines(rows) {
+  // opts: { minEok, maxEok, areaMin, areaMax, city }  (억 단위 소수점 지원)
+  function rowsToSpeakableLines(rows, opts) {
+    const { minEok=null, maxEok=null, areaMin=null, areaMax=null, city="" } = opts || {};
     if (rows.length < 2) return [];
     const hi = detectHeaderRow(rows);
     const header = rows[hi].map(h => (h||"").trim());
@@ -262,30 +288,56 @@
       return -1;
     };
 
+    const iCity   = findIdx(["도시"]);
     const iRegion = findIdx(["지역(시군구)"]);
     const iName   = findIdx(["단지명"]);
+    const iAreaEx = findIdx(["전용 면적","전용면적"]);
     const iSale   = findIdx(["매매가","매매"]);
     const iRent   = findIdx(["전세가","전세"]);
 
     const skipEmpty = $("skipEmpty").value === "1";
     const maxN = Number($("maxSel").value || 40);
 
+    // 억 단위 → 만원 단위 (소수점 정밀도 유지, Math.round로 부동소수 오차 방지)
+    const minManwon = (minEok != null) ? Math.round(minEok * 10000) : null;
+    const maxManwon = (maxEok != null) ? Math.round(maxEok * 10000) : null;
+
     const lines = [];
     for (const r of rows.slice(hi + 1)) {
-      const name   = iName>=0   ? (r[iName]||"").trim()   : "";
-      const region = iRegion>=0 ? (r[iRegion]||"").trim() : "";
-      const saleRaw = iSale>=0  ? (r[iSale]||"").trim()   : "";
-      const rentRaw = iRent>=0  ? (r[iRent]||"").trim()   : "";
+      const name    = iName>=0   ? (r[iName]  ||"").trim() : "";
+      const cityVal = iCity>=0   ? (r[iCity]  ||"").trim() : "";
+      const region  = iRegion>=0 ? (r[iRegion]||"").trim() : "";
+      const areaVal = iAreaEx>=0 ? (r[iAreaEx]||"").trim() : "";
+      const saleRaw = iSale>=0   ? (r[iSale]  ||"").trim() : "";
+      const rentRaw = iRent>=0   ? (r[iRent]  ||"").trim() : "";
 
       if (!name) continue;
       if (skipEmpty && !saleRaw && !rentRaw) continue;
 
+      // 도시 필터
+      if (city && cityVal !== city) continue;
+
+      // 전용면적 필터 (숫자만 추출해서 비교)
+      if (areaMin != null || areaMax != null) {
+        const areaNum = parseFloat(areaVal);
+        if (isNaN(areaNum)) continue;
+        if (areaMin != null && areaNum < areaMin) continue;
+        if (areaMax != null && areaNum > areaMax) continue;
+      }
+
+      // 매매가 필터 (만원 단위, 소수점 정밀 비교)
+      const saleNum = toIntSafe(saleRaw);
+      if (minManwon != null && (saleNum == null || saleNum < minManwon)) continue;
+      if (maxManwon != null && (saleNum == null || saleNum > maxManwon)) continue;
+
       const sale = formatMoneyManwonToEok(saleRaw);
       const rent = formatMoneyManwonToEok(rentRaw);
+      const areaSpeak = areaVal ? areaVal.replace("㎡", "제곱미터") : "";
 
       const parts = [];
       if (region) parts.push(region);
       parts.push(name);
+      if (areaSpeak) parts.push(`전용 ${areaSpeak}`);
       if (sale) parts.push(`매매 ${sale}`);
       if (rent) parts.push(`전세 ${rent}`);
 
@@ -298,6 +350,54 @@
   // ----------------- Checklist UI -----------------
   const listEl = $("list");
   let currentLines = [];
+  let allRows = null; // 불러온 원본 rows 저장
+
+  function getFilterValues() {
+    const minVal     = $("filterMin").value.trim();
+    const maxVal     = $("filterMax").value.trim();
+    const areaMinVal = $("filterAreaMin").value.trim();
+    const areaMaxVal = $("filterAreaMax").value.trim();
+    const minEok  = minVal     !== "" ? parseFloat(minVal)     : null;
+    const maxEok  = maxVal     !== "" ? parseFloat(maxVal)     : null;
+    const areaMin = areaMinVal !== "" ? parseFloat(areaMinVal) : null;
+    const areaMax = areaMaxVal !== "" ? parseFloat(areaMaxVal) : null;
+    const city    = $("filterCity").value;
+    return { minEok, maxEok, areaMin, areaMax, city };
+  }
+
+  function applyAndRender() {
+    if (!allRows) {
+      $("filterStat").textContent = "⚠ 먼저 '불러오기'를 눌러주세요.";
+      $("filterStat").style.color = "#c00";
+      return;
+    }
+    const { minEok, maxEok, areaMin, areaMax, city } = getFilterValues();
+    console.log("[필터] minEok:", minEok, "maxEok:", maxEok, "city:", city,
+                "areaMin:", areaMin, "areaMax:", areaMax,
+                "allRows:", allRows.length, "행");
+
+    const lines = rowsToSpeakableLines(allRows, { minEok, maxEok, areaMin, areaMax, city });
+    console.log("[필터] 결과:", lines.length, "개", lines.slice(0,3));
+
+    // 필터 상태 표시
+    const parts = [];
+    if (city) parts.push(city);
+    if (areaMin != null || areaMax != null) {
+      const a1 = areaMin != null ? `${areaMin}㎡` : "";
+      const a2 = areaMax != null ? `${areaMax}㎡` : "";
+      parts.push(a1 && a2 ? `전용 ${a1}~${a2}` : a1 ? `전용 ${a1}이상` : `전용 ${a2}이하`);
+    }
+    if (minEok != null) parts.push(`매매 ${minEok}억 이상`);
+    if (maxEok != null) parts.push(`매매 ${maxEok}억 이하`);
+    const statEl = $("filterStat");
+    statEl.style.color = lines.length ? "#0070c0" : "#c00";
+    statEl.textContent = parts.length
+      ? `[${parts.join(", ")}] → ${lines.length}개`
+      : `총 ${lines.length}개`;
+
+    renderChecklist(lines);
+    $("text").value = getSelectedLines().join("\n");
+  }
 
   function updateStat() {
     const boxes = listEl.querySelectorAll('input[type="checkbox"]');
@@ -309,6 +409,12 @@
   function renderChecklist(lines) {
     currentLines = lines.slice();
     listEl.innerHTML = "";
+
+    if (!lines.length) {
+      listEl.innerHTML = '<div style="padding:12px;color:#999;font-size:14px;">표시할 항목이 없습니다.</div>';
+      updateStat();
+      return;
+    }
 
     const autoCheck = $("autoCheck").value === "1";
 
@@ -346,6 +452,16 @@
     });
     return selected.filter(Boolean);
   }
+
+  $("btnApplyFilter").onclick = applyAndRender;
+  $("btnClearFilter").onclick = () => {
+    $("filterMin").value     = "";
+    $("filterMax").value     = "";
+    $("filterAreaMin").value = "";
+    $("filterAreaMax").value = "";
+    $("filterCity").value    = "";
+    applyAndRender();
+  };
 
   $("btnAll").onclick = () => {
     listEl.querySelectorAll('input[type="checkbox"]').forEach(b => b.checked = true);
@@ -404,7 +520,15 @@
         return;
       }
 
-      const lines = rowsToSpeakableLines(rows);
+      allRows = rows;
+
+      // 필터 초기화 후 렌더
+      $("filterMin").value     = "";
+      $("filterMax").value     = "";
+      $("filterAreaMin").value = "";
+      $("filterAreaMax").value = "";
+      $("filterCity").value    = "";
+      const lines = rowsToSpeakableLines(rows, {});
 
       if (!lines.length) {
         renderChecklist([]);
@@ -415,6 +539,7 @@
 
       renderChecklist(lines);
       $("text").value = getSelectedLines().join("\n");
+      $("filterStat").textContent = `총 ${lines.length}개`;
 
       status.textContent = `✓ ${lines.length}개 항목 불러옴`;
       status.style.color = "#0070c0";
