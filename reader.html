@@ -4,6 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>시세 음성 리더 (체크 선택)</title>
+  <script src="https://code.responsivevoice.org/responsivevoice.js?key=FREE"></script>
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px;max-width:920px;margin:0 auto;}
     h2{margin:8px 0 12px;}
@@ -90,8 +91,15 @@
   </div>
 
   <div class="row">
-    <label class="small">음성</label>
-    <select id="voiceSel" style="max-width:220px;"></select>
+    <label class="small">엔진</label>
+    <select id="engineSel">
+      <option value="rv">ResponsiveVoice (iOS 권장)</option>
+      <option value="web">Web Speech (브라우저 음성)</option>
+    </select>
+    <span id="webVoiceRow">
+      <label class="small">음성</label>
+      <select id="voiceSel" style="max-width:220px;"></select>
+    </span>
     <label class="small">속도</label>
     <select id="rateSel">
       <option value="0.8">0.8</option>
@@ -126,6 +134,14 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
+
+  // ----------------- 엔진 선택 -----------------
+  const engineSel = $("engineSel");
+  engineSel.onchange = () => {
+    $("webVoiceRow").style.display = engineSel.value === "web" ? "" : "none";
+  };
+  // 초기 상태 동기화
+  $("webVoiceRow").style.display = engineSel.value === "web" ? "" : "none";
 
   // ----------------- Web Speech TTS -----------------
   const voiceSel = $("voiceSel");
@@ -176,26 +192,69 @@
   speechSynthesis.onvoiceschanged = loadVoices;
   loadVoices();
 
+  // ----------------- ResponsiveVoice TTS -----------------
+  // rvQueue: 연속 재생을 위한 시뮬레이션
+  let rvPlaying = false;
+  let rvStopped = false;
+  let rvQueue   = [];
+
+  function rvVoiceName() {
+    // ResponsiveVoice 한국어 음성리스트 중 첫번째 사용
+    return "Korean Female";
+  }
+
+  function playRVQueue() {
+    if (rvStopped || !rvQueue.length) { rvPlaying = false; return; }
+    rvPlaying = true;
+    const text = rvQueue.shift();
+    const rate = Number($("rateSel").value || 1.0);
+    responsiveVoice.speak(text, rvVoiceName(), {
+      rate,
+      onend: () => { if (!rvStopped) playRVQueue(); else rvPlaying = false; },
+      onerror: () => { if (!rvStopped) playRVQueue(); else rvPlaying = false; }
+    });
+  }
+
+  // ----------------- 통합 speakLines -----------------
   function speakLines(lines) {
     if (!lines.length) return;
-    speechSynthesis.cancel();
-    const voices = speechSynthesis.getVoices();
-    const selected = voices.find(v => v.name === voiceSel.value);
-    const rate = Number($("rateSel").value || 1.0);
-    for (const line of lines) {
-      const u = new SpeechSynthesisUtterance(line);
-      u.lang = "ko-KR";
-      if (selected) u.voice = selected;
-      u.rate = rate;
-      u.pitch = 1.0;
-      u.volume = 1.0;
-      speechSynthesis.speak(u);
+    if (engineSel.value === "rv") {
+      // ResponsiveVoice
+      responsiveVoice.cancel();
+      rvStopped = false;
+      rvQueue   = lines.slice();
+      playRVQueue();
+    } else {
+      // Web Speech
+      speechSynthesis.cancel();
+      const voices = speechSynthesis.getVoices();
+      const selected = voices.find(v => v.name === voiceSel.value);
+      const rate = Number($("rateSel").value || 1.0);
+      for (const line of lines) {
+        const u = new SpeechSynthesisUtterance(line);
+        u.lang = "ko-KR";
+        if (selected) u.voice = selected;
+        u.rate = rate;
+        u.pitch = 1.0;
+        u.volume = 1.0;
+        speechSynthesis.speak(u);
+      }
     }
   }
 
-  $("btnPause").onclick  = () => speechSynthesis.pause();
-  $("btnResume").onclick = () => speechSynthesis.resume();
-  $("btnStop").onclick   = () => speechSynthesis.cancel();
+  $('btnPause').onclick = () => {
+    if (engineSel.value === "rv") responsiveVoice.pause();
+    else speechSynthesis.pause();
+  };
+  $('btnResume').onclick = () => {
+    if (engineSel.value === "rv") responsiveVoice.resume();
+    else speechSynthesis.resume();
+  };
+  $('btnStop').onclick = () => {
+    rvStopped = true; rvQueue = [];
+    if (typeof responsiveVoice !== "undefined") responsiveVoice.cancel();
+    speechSynthesis.cancel();
+  };
 
   $("btnSpeakText").onclick = () => {
     const lines = $("text").value.split(/\n+/).map(s => s.trim()).filter(Boolean);
