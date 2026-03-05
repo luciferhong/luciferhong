@@ -4,7 +4,7 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>시세 음성 리더 (체크 선택)</title>
-  <script src="https://code.responsivevoice.org/responsivevoice.js?key=FREE"></script>
+  <script src="https://code.responsivevoice.org/responsivevoice.js?key=VsAlSHRN"></script>
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px;max-width:920px;margin:0 auto;}
     h2{margin:8px 0 12px;}
@@ -93,10 +93,10 @@
   <div class="row">
     <label class="small">엔진</label>
     <select id="engineSel">
-      <option value="rv">ResponsiveVoice (iOS 권장)</option>
+      <option value="rv" selected>ResponsiveVoice (iOS 권장)</option>
       <option value="web">Web Speech (브라우저 음성)</option>
     </select>
-    <span id="webVoiceRow">
+    <span id="webVoiceRow" style="display:none;">
       <label class="small">음성</label>
       <select id="voiceSel" style="max-width:220px;"></select>
     </span>
@@ -140,11 +140,11 @@
   engineSel.onchange = () => {
     $("webVoiceRow").style.display = engineSel.value === "web" ? "" : "none";
   };
-  // 초기 상태 동기화
-  $("webVoiceRow").style.display = engineSel.value === "web" ? "" : "none";
 
-  // ----------------- Web Speech TTS -----------------
+  // ----------------- Web Speech TTS (iOS onend 호환) -----------------
   const voiceSel = $("voiceSel");
+  let wsStopped  = false;
+  let wsPaused   = false;
 
   function bestKoVoice(voices) {
     const ko = voices.filter(v => (v.lang||"").toLowerCase().startsWith("ko"));
@@ -192,26 +192,34 @@
   speechSynthesis.onvoiceschanged = loadVoices;
   loadVoices();
 
-  // ----------------- ResponsiveVoice TTS -----------------
-  // rvQueue: 연속 재생을 위한 시뮬레이션
-  let rvPlaying = false;
-  let rvStopped = false;
-  let rvQueue   = [];
-
-  function rvVoiceName() {
-    // ResponsiveVoice 한국어 음성리스트 중 첫번째 사용
-    return "Korean Female";
+  // iOS Safari: utterance 등록 후 한국어 음성이 다음 문장으로 자동 넓어가지 않는 버그 있음
+  // onend 콜백으로 한 문장씩 직접 활성화하면 안정적
+  function speakQueue(queue, voice, rate) {
+    if (wsStopped || !queue.length) return;
+    const text = queue.shift();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang  = "ko-KR";
+    if (voice) u.voice = voice;
+    u.rate  = rate;
+    u.pitch = 1.0;
+    u.volume = 1.0;
+    u.onend = () => { if (!wsStopped && !wsPaused) speakQueue(queue, voice, rate); };
+    u.onerror = () => { if (!wsStopped) speakQueue(queue, voice, rate); };
+    speechSynthesis.speak(u);
   }
 
+  // ----------------- ResponsiveVoice TTS -----------------
+  let rvQueue   = [];
+  let rvStopped = false;
+
   function playRVQueue() {
-    if (rvStopped || !rvQueue.length) { rvPlaying = false; return; }
-    rvPlaying = true;
+    if (rvStopped || !rvQueue.length) return;
     const text = rvQueue.shift();
     const rate = Number($("rateSel").value || 1.0);
-    responsiveVoice.speak(text, rvVoiceName(), {
+    responsiveVoice.speak(text, "Korean Female", {
       rate,
-      onend: () => { if (!rvStopped) playRVQueue(); else rvPlaying = false; },
-      onerror: () => { if (!rvStopped) playRVQueue(); else rvPlaying = false; }
+      onend:  () => { if (!rvStopped) playRVQueue(); },
+      onerror:() => { if (!rvStopped) playRVQueue(); }
     });
   }
 
@@ -219,41 +227,33 @@
   function speakLines(lines) {
     if (!lines.length) return;
     if (engineSel.value === "rv") {
-      // ResponsiveVoice
       responsiveVoice.cancel();
       rvStopped = false;
       rvQueue   = lines.slice();
       playRVQueue();
     } else {
-      // Web Speech
       speechSynthesis.cancel();
+      wsStopped = false;
+      wsPaused  = false;
       const voices = speechSynthesis.getVoices();
-      const selected = voices.find(v => v.name === voiceSel.value);
-      const rate = Number($("rateSel").value || 1.0);
-      for (const line of lines) {
-        const u = new SpeechSynthesisUtterance(line);
-        u.lang = "ko-KR";
-        if (selected) u.voice = selected;
-        u.rate = rate;
-        u.pitch = 1.0;
-        u.volume = 1.0;
-        speechSynthesis.speak(u);
-      }
+      const voice  = voices.find(v => v.name === voiceSel.value) || null;
+      const rate   = Number($("rateSel").value || 1.0);
+      speakQueue(lines.slice(), voice, rate);
     }
   }
 
-  $('btnPause').onclick = () => {
+  $("btnPause").onclick = () => {
     if (engineSel.value === "rv") responsiveVoice.pause();
-    else speechSynthesis.pause();
+    else { wsPaused = true; speechSynthesis.pause(); }
   };
-  $('btnResume').onclick = () => {
+  $("btnResume").onclick = () => {
     if (engineSel.value === "rv") responsiveVoice.resume();
-    else speechSynthesis.resume();
+    else { wsPaused = false; speechSynthesis.resume(); }
   };
-  $('btnStop').onclick = () => {
+  $("btnStop").onclick = () => {
     rvStopped = true; rvQueue = [];
-    if (typeof responsiveVoice !== "undefined") responsiveVoice.cancel();
-    speechSynthesis.cancel();
+    responsiveVoice.cancel();
+    wsStopped = true; speechSynthesis.cancel();
   };
 
   $("btnSpeakText").onclick = () => {
