@@ -344,6 +344,7 @@
   const voiceSel = $("voiceSel");
   let wsStopped  = false;
   let wsPaused   = false;
+  let pausedQueue = null, pausedVoice = null, pausedRate = 1.0;
 
   function bestKoVoice(voices) {
     const ko = voices.filter(v => (v.lang||"").toLowerCase().startsWith("ko"));
@@ -412,6 +413,7 @@
 
   function speakQueue(queue, voice, rate) {
     if (wsStopped) { releaseWakeLock(); return; }
+    if (wsPaused)  { pausedQueue = queue; pausedVoice = voice; pausedRate = rate; return; }
     if (!queue.length) { releaseWakeLock(); return; }
     const text = queue.shift();
     const u = new SpeechSynthesisUtterance(text);
@@ -423,7 +425,7 @@
     // iOS는 onend 직후 즉시 다음 utterance를 이어붙이는 버그 → 딜레이로 줄 사이 끊김 확보
     const delay = isIOS ? 400 : 0;
     u.onend  = () => { if (!wsStopped && !wsPaused) setTimeout(() => speakQueue(queue, voice, rate), delay); };
-    u.onerror = () => { if (!wsStopped) setTimeout(() => speakQueue(queue, voice, rate), delay); };
+    u.onerror = () => { if (!wsStopped && !wsPaused) setTimeout(() => speakQueue(queue, voice, rate), delay); };
     speechSynthesis.speak(u);
   }
 
@@ -432,6 +434,7 @@
     speechSynthesis.cancel();
     wsStopped = false;
     wsPaused  = false;
+    pausedQueue = null;
     acquireWakeLock();
     const voices = speechSynthesis.getVoices();
     const voice  = voices.find(v => v.name === voiceSel.value) || null;
@@ -439,8 +442,19 @@
     speakQueue(lines.slice(), voice, rate);
   }
 
-  $("btnPause").onclick  = () => { wsPaused = true;  speechSynthesis.pause(); };
-  $("btnResume").onclick = () => { wsPaused = false; speechSynthesis.resume(); };
+  $("btnPause").onclick  = () => {
+    if (wsStopped || wsPaused) return;
+    wsPaused = true;
+    speechSynthesis.cancel(); // Android에서 pause()가 동작 안 하므로 cancel로 현재 utterance 중단
+  };
+  $("btnResume").onclick = () => {
+    if (!wsPaused) return;
+    wsPaused = false;
+    if (pausedQueue) {
+      speakQueue(pausedQueue, pausedVoice, pausedRate);
+      pausedQueue = null;
+    }
+  };
   $("btnStop").onclick   = () => { wsStopped = true; speechSynthesis.cancel(); releaseWakeLock(); };
 
   $("btnSpeakText").onclick = () => {
