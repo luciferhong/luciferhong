@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>[루시퍼홍] 업무지구 대중교통 원클릭 (최대 3개)</title>
+    <link rel="icon" href="oneclick2.png" type="image/png">
+    
+    <style>
+        .result-container {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-start;
+        }
+        .result {
+            position: relative;
+            width: 440px !important;
+            height: 730px;
+            border: 1px solid #ccc;
+            box-sizing: border-box;
+        }
+        .controls-container {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            gap: 100px;
+            margin-bottom: 10px;
+        }
+        .toggle-container {
+            display: flex;
+            gap: 5px;
+            align-items: center;
+        }
+        .toggle-button {
+            padding: 5px 10px;
+            cursor: pointer;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #f0f0f0;
+        }
+        .toggle-button.active {
+            background-color: #007bff;
+            color: #fff;
+        }
+        .view-large-button {
+            position: absolute;
+            top: 0px;
+            right: 0px;
+            padding: 5px 10px;
+            background-color: #ED7D31;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .result-frame {
+            width: 100%;
+            height: 100%;
+        }
+        .result-large {
+            width: 1200px;
+            height: 800px;
+            z-index: 1000;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+        .close-button {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: red;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            border-radius: 5px;
+            z-index: 1001;
+        }
+    </style>
+</head>
+<body>
+
+<div class="controls-container">
+    <div class="toggle-container">
+        <span class="toggle-button active" id="transitBtn">대중교통</span>
+        <span class="toggle-button" id="carBtn">자동차</span>
+    </div>
+</div>
+
+<div class="result-container">
+    <div class="result"><iframe id="result1" class="result-frame" src="" frameborder="0"></iframe></div>
+    <div class="result"><iframe id="result2" class="result-frame" src="" frameborder="0"></iframe></div>
+    <div class="result"><iframe id="result3" class="result-frame" src="" frameborder="0"></iframe></div>
+</div>
+
+<script>
+    let currentExpandedIframe = null;
+
+    const destinations = [
+        { id: 'chk1', lat: 37.497951, lng: 127.027636, name: '강남역2호선', code: 222 },
+        { id: 'chk2', lat: 37.564719, lng: 126.977022, name: '서울시청역2호선', code: 273 },
+        { id: 'chk3', lat: 37.521624, lng: 126.924374, name: '여의도역5호선', code: 526 },
+        { id: 'chk9', lat: 37.5723,   lng: 126.9791,   name: '광화문역5호선', code: 560 },
+        { id: 'chk4', lat: 37.481339, lng: 126.882734, name: '가산디지털단지역1호선', code: 172 },
+        { id: 'chk8', lat: 37.485266, lng: 126.900198, name: '구로디지털단지역2호선', code: 232 },
+        { id: 'chk5', lat: 37.394768, lng: 127.111699, name: '판교역신분당선', code: 1914 },
+        { id: 'chk6', lat: 37.560143, lng: 126.825231, name: '마곡역5호선', code: 514 },
+        { id: 'chk7', lat: 37.576528, lng: 126.898109, name: 'DMC역6호선', code: 618 }
+    ];
+
+    const MAX_FRAMES = 3;
+    let transportMode = 'transit';
+    let selectedIds = [];
+
+    document.addEventListener('DOMContentLoaded', function () {
+        const urlParams = new URLSearchParams(window.location.search);
+        const startX = urlParams.get('startX');
+        const startY = urlParams.get('startY');
+        const selectedDestinations = urlParams.get('selected');
+        transportMode = urlParams.get('mode') || 'transit';
+
+        if (!selectedDestinations) {
+            alert('선택된 목적지가 없습니다.');
+            return;
+        }
+
+        selectedIds = selectedDestinations.split(',').map(id => id.trim()).slice(0, MAX_FRAMES);
+
+        updateToggleButtons(transportMode);
+
+        if (startX && startY) {
+            updateRoutes(startX, startY);
+        }
+
+        document.getElementById('transitBtn').addEventListener('click', () => toggleMode('transit'));
+        document.getElementById('carBtn').addEventListener('click', () => toggleMode('car'));
+    });
+
+    function toggleMode(mode) {
+        transportMode = mode;
+        updateToggleButtons(mode);
+        const urlParams = new URLSearchParams(window.location.search);
+        const startX = urlParams.get('startX');
+        const startY = urlParams.get('startY');
+        if (startX && startY) updateRoutes(startX, startY);
+    }
+
+    function updateToggleButtons(mode) {
+        document.getElementById('transitBtn').classList.toggle('active', mode === 'transit');
+        document.getElementById('carBtn').classList.toggle('active', mode === 'car');
+    }
+
+    function updateRoutes(startX, startY) {
+        let frameIndex = 1;
+        selectedIds.forEach(id => {
+            const dest = destinations.find(d => d.id === id);
+            if (dest && frameIndex <= MAX_FRAMES) {
+                const iframe = document.getElementById(`result${frameIndex}`);
+                iframe.src = createUrl(startX, startY, dest);
+                createLargeViewButton(`result${frameIndex}`);
+                frameIndex++;
+            }
+        });
+        clearRemainingIframes(frameIndex);
+    }
+
+    function createUrl(startX, startY, dest) {
+        return `https://map.naver.com/p/directions/${startX},${startY},출발지/${dest.lng},${dest.lat},${dest.name},${dest.code},SUBWAY_STATION/-/${transportMode}?c=12.00,0,0,0,dh&appVersion=2`;
+    }
+
+    function clearRemainingIframes(startIndex) {
+        for (let i = startIndex; i <= MAX_FRAMES; i++) {
+            const iframe = document.getElementById(`result${i}`);
+            if (iframe) iframe.src = '';
+        }
+    }
+
+    function createLargeViewButton(resultId) {
+        const container = document.getElementById(resultId).parentElement;
+        if (!container.querySelector('.view-large-button')) {
+            const btn = document.createElement('button');
+            btn.classList.add('view-large-button');
+            btn.textContent = '크게보기';
+            btn.onclick = () => expandIframe(resultId);
+            container.appendChild(btn);
+        }
+    }
+
+    function expandIframe(resultId) {
+        if (currentExpandedIframe && currentExpandedIframe !== resultId) {
+            collapseIframe(currentExpandedIframe);
+        }
+        const container = document.getElementById(resultId).parentElement;
+        container.classList.add('result-large');
+        container.classList.remove('result');
+        currentExpandedIframe = resultId;
+        if (!container.querySelector('.close-button')) {
+            const closeBtn = document.createElement('button');
+            closeBtn.classList.add('close-button');
+            closeBtn.textContent = '닫기';
+            closeBtn.onclick = () => collapseIframe(resultId);
+            container.appendChild(closeBtn);
+        }
+    }
+
+    function collapseIframe(resultId) {
+        const container = document.getElementById(resultId).parentElement;
+        container.classList.remove('result-large');
+        container.classList.add('result');
+        const closeBtn = container.querySelector('.close-button');
+        if (closeBtn) closeBtn.remove();
+        currentExpandedIframe = null;
+    }
+</script>
+
+</body>
+</html>
