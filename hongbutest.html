@@ -745,6 +745,7 @@ body.map-fullscreen {
 <label>최소세대수:
   <input class="filter-num" type="number" id="unitFilter" min="0" value="190" placeholder="최소">
 </label>
+<label><input type="checkbox" id="over85Filter">대평포함</label>
     <label><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label><input type="checkbox" id="toggleSchools" >초</label>
 	<label><input type="checkbox" id="toggleMiddleSchools" >중</label>
@@ -3349,7 +3350,66 @@ function createDefaultMapMarker(apartment) {
 		detailsElement.textContent = `${apartment.year.slice(-5)} ${apartment.units}세대`;
     markerElement.appendChild(nameElement);
     markerElement.appendChild(detailsElement);
-	
+
+	// ✅ 대형단지 배지 (최소 전용면적 >= 86㎡ 이면 우상단에 'L' 표시)
+	(function(){
+		const types = (apartmentDetailData[String(apartment.id)] || {}).타입정보 || [];
+		if (types.length === 0) return;
+		const minArea = Math.min(...types.map(t => Number(t['전용면적']) || 0).filter(a => a > 0));
+		if (!Number.isFinite(minArea) || minArea < 86) return;
+		markerElement.style.position = "relative";
+		const badge = document.createElement("span");
+		badge.textContent = "L";
+		badge.style = `
+			position: absolute;
+			top: -5px;
+			right: -5px;
+			background: #1a56db;
+			color: white;
+			font-size: 9px;
+			font-weight: bold;
+			width: 13px;
+			height: 13px;
+			border-radius: 50%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 1;
+			pointer-events: none;
+			z-index: 10;
+		`;
+		markerElement.appendChild(badge);
+	})();
+
+	// ✅ 소형단지 배지 (최대 전용면적 <= 49㎡ 이면 우상단에 'S' 표시)
+	(function(){
+		const types = (apartmentDetailData[String(apartment.id)] || {}).타입정보 || [];
+		if (types.length === 0) return;
+		const maxArea = Math.max(...types.map(t => Number(t['전용면적']) || 0).filter(a => a > 0));
+		if (!Number.isFinite(maxArea) || maxArea > 49) return;
+		markerElement.style.position = "relative";
+		const badge = document.createElement("span");
+		badge.textContent = "S";
+		badge.style = `
+			position: absolute;
+			top: -5px;
+			right: -5px;
+			background: #e3a008;
+			color: white;
+			font-size: 9px;
+			font-weight: bold;
+			width: 13px;
+			height: 13px;
+			border-radius: 50%;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			line-height: 1;
+			pointer-events: none;
+			z-index: 10;
+		`;
+		markerElement.appendChild(badge);
+	})();
 
 
 
@@ -3558,7 +3618,18 @@ function updateMarkers(bounds) {
     const yearOK = (!fromYear || (builtYear && builtYear >= fromYear)) && (!toYear || (builtYear && builtYear <= toYear));
 //console.log("apartment.sido : "+apartment.sido)
 //console.log("apartment.sigungu : "+apartment.sigungu)
-    return inBounds && unitOK && sidoOK && sigunguOK && yearOK;
+    const includeLarge = document.getElementById('over85Filter')?.checked;
+    let areaOK = true;
+    if (!includeLarge) {
+      // 미체크 시: 최소 전용면적이 86 이상인 단지(대형 단지) 제외
+      const types = (apartmentDetailData[String(apartment.id)] || {}).타입정보 || [];
+      if (types.length > 0) {
+        const minArea = Math.min(...types.map(t => Number(t['전용면적']) || 0).filter(a => a > 0));
+        areaOK = minArea < 86;
+      }
+      // 상세 데이터 없으면 제외하지 않음 (areaOK = true 유지)
+    }
+    return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK;
   });
 
 
@@ -4206,10 +4277,8 @@ let yearFilterTimer = null;
 
 
 function clearApartmentMarkersAndCluster() {
-  const markers = window.apartmentMarkers || {};
-
-  // 1) 지도에서 마커 제거
-  Object.values(markers).forEach(m => {
+  // 1) 지도에서 마커 제거 (로컬 apartmentMarkers 캐시 사용)
+  Object.values(apartmentMarkers).forEach(m => {
     try {
       if (m && typeof m.setMap === "function") m.setMap(null);
     } catch (e) {}
@@ -4222,7 +4291,8 @@ function clearApartmentMarkersAndCluster() {
     }
   } catch (e) {}
 
-  // 3) 캐시 객체 초기화(중요: window에 붙은 걸 바꿔야 함)
+  // 3) 캐시 초기화
+  apartmentMarkers = {};
   window.apartmentMarkers = {};
 }
 
@@ -4247,6 +4317,12 @@ function _applyYearFilterUpdate() {
     if (yearFilterTimer) clearTimeout(yearFilterTimer);
     yearFilterTimer = setTimeout(_applyYearFilterUpdate, 200);
   });
+});
+
+// ✅ 대평포함(over85Filter) 변경 시 지도 즉시 반영
+document.getElementById('over85Filter')?.addEventListener('change', () => {
+  clearApartmentMarkersAndCluster();
+  if (window.map) updateMarkers(window.map.getBounds());
 });
 
 
@@ -4303,8 +4379,9 @@ async function loadApartmentsDetail() {
     // 병합
     apartmentDetailData = Object.assign({}, json1, json2);
 
-    // 마커 갱신
+    // 마커 갱신 (상세 데이터가 새로 로드됐으므로 캐시 초기화 후 재생성 → B 배지 반영)
     if (window.map && window.map.getBounds) {
+      clearApartmentMarkersAndCluster();
       updateMarkers(window.map.getBounds());
     }
   } catch (error) {
