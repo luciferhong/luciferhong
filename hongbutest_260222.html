@@ -184,6 +184,13 @@ font-weight: 800;
   margin-right: 6px;
 }
 
+/* ===== 검색 필드는 flex 제외 ===== */
+#controls label:has(#apartmentSearchInput) {
+  display: inline-block !important;
+  white-space: normal !important;
+  gap: 0 !important;
+}
+
 
 	#scaleControls {
 		display: flex; /* ✅ 가로 정렬 */
@@ -210,6 +217,22 @@ font-weight: 800;
 
 	#scaleControls button:hover {
 		background-color: #f0f0f0;
+	}
+
+	/* ✅ 마커 단지명 hover 확장 (즉시 나타남, 딜레이 없음) */
+	.apartment-marker-container {
+		display: inline-block;
+	}
+	.apartment-marker-container.expanded .apartment-name-marker {
+		max-width: none !important;
+		white-space: normal !important;
+		overflow: visible !important;
+		text-overflow: clip !important;
+	}
+	.apartment-marker-container.expanded .apartment-details-marker {
+		max-width: none !important;
+		overflow: visible !important;
+		text-overflow: clip !important;
 	}
 	.fullscreen-btn {
 		position: fixed;
@@ -358,6 +381,46 @@ body.map-fullscreen {
       line-height: 1.6 !important;
     }
   }
+
+  /* ===== 아파트 검색 자동완성 스타일 ===== */
+  .apartment-result-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    font-size: 13px;
+    background: white;
+    transition: background-color 0.15s ease;
+  }
+
+  .apartment-result-item:hover {
+    background-color: #f5f5f5;
+  }
+
+  .apartment-result-item:active {
+    background-color: #e8f4f8;
+  }
+
+  .apartment-result-item strong {
+    color: #0066cc;
+    font-weight: 600;
+  }
+
+  .apartment-result-info {
+    font-size: 12px;
+    color: #666;
+    margin-top: 3px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .apartment-result-info span {
+    background: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
     </style>
 <style id="hongbu-debug-style">
   #hongbuDebugOverlay{
@@ -478,10 +541,13 @@ body.map-fullscreen {
       .replaceAll("'","&#39;");
   }
   function log(level, msg, extra){
-    if (level === 'WARN') return;
-    // info와 gps 관련 오류 필터링
+    // 제외할 로그 레벨
+    if (level === 'WARN' || level === 'INFO' || level === 'STAT') return;
+    
+    // 위치 추적 관련 에러 필터링
     const msgStr = safeStr(msg).toLowerCase();
-    if (msgStr.includes('info') || msgStr.includes('gps')) return;
+    if (msgStr.includes('gps') || msgStr.includes('위치') || msgStr.includes('tracking')) return;
+    
     const line = { level, time: ts(), msg: safeStr(msg), extra: extra ? safeStr(extra) : '' };
     store.push(line);
     while (store.length > MAX_LINES) store.shift();
@@ -655,6 +721,19 @@ body.map-fullscreen {
   <select id="sigunguFilter" disabled>
     <option value="">전체</option>
   </select>
+</label>
+
+<label style="position: relative; width: 240px; display: inline-block;">
+  아파트 검색:
+  <input type="text" id="apartmentSearchInput" placeholder="아파트명 입력..." style="
+    width: 150px;
+    height: 28px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+    font-size: 14px;
+  "/>
 </label>
 
         <label>연도:
@@ -2748,10 +2827,179 @@ async function ensureEmdLayerBoundToMap() {
 			buildRegionFiltersFromApartments();
 			attachRegionFilterEvents();
 			restoreRegionFiltersFromUIState();
+			initApartmentSearch(); // ✅ 검색 기능 초기화
 
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
 		}
+	}
+
+	// ===== 아파트 검색 기능 초기화 =====
+	function initApartmentSearch() {
+		const searchInput = document.getElementById('apartmentSearchInput');
+		
+		// body에 검색 결과 컨테이너 생성
+		let resultsContainer = document.getElementById('apartmentSearchResults');
+		if (!resultsContainer) {
+			resultsContainer = document.createElement('div');
+			resultsContainer.id = 'apartmentSearchResults';
+			resultsContainer.style.cssText = `
+				position: fixed;
+				background: white;
+				border: 1px solid #ccc;
+				max-height: 300px;
+				overflow-y: auto;
+				display: none;
+				box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+				z-index: 10001;
+				width: 500px;
+			`;
+			document.body.appendChild(resultsContainer);
+		}
+
+		if (!searchInput || !resultsContainer) return;
+
+		// 검색 결과 위치 업데이트 함수
+		function updateResultsPosition() {
+			const rect = searchInput.getBoundingClientRect();
+			resultsContainer.style.left = rect.left + 'px';
+			resultsContainer.style.top = (rect.bottom + 5) + 'px';
+		}
+
+		// 검색 입력 이벤트
+		searchInput.addEventListener('input', (e) => {
+			const query = e.target.value.trim();
+			
+			if (query.length === 0) {
+				resultsContainer.style.display = 'none';
+				resultsContainer.innerHTML = '';
+				return;
+			}
+
+			const results = searchApartments(query);
+			
+			if (results.length === 0) {
+				resultsContainer.innerHTML = '<div class="apartment-result-item" style="color: #999;">검색 결과가 없습니다.</div>';
+				resultsContainer.style.display = 'block';
+				updateResultsPosition();
+				return;
+			}
+
+			resultsContainer.innerHTML = results.slice(0, 50).map(apt => `
+				<div class="apartment-result-item" data-apt-id="${apt.id}" style="cursor: pointer;">
+					<strong>${highlightMatches(apt.name, query)}</strong>
+					<div class="apartment-result-info">
+						<span>${apt.sidoNm}</span>
+						<span>${apt.sigunguNm}</span>
+						<span>연식: ${apt.year}</span>
+						<span>세대수: ${apt.units}</span>
+						${apt.distance !== undefined ? `<span style="color: #0066cc; font-weight: 600;">📍 ${apt.distance.toFixed(2)}km</span>` : ''}
+					</div>
+				</div>
+			`).join('');
+
+			// 검색 결과가 있으면 결과 개수 표시
+			if (results.length > 50) {
+				resultsContainer.innerHTML += `<div class="apartment-result-item" style="color: #999; text-align: center; padding: 8px;">... 외 ${results.length - 50}개 더 있습니다.</div>`;
+			}
+
+			resultsContainer.style.display = 'block';
+			updateResultsPosition();
+
+			resultsContainer.querySelectorAll('.apartment-result-item').forEach(item => {
+				item.addEventListener('click', () => {
+					const aptId = item.getAttribute('data-apt-id');
+					const apt = apartmentData.find(a => String(a.id) === aptId);
+					
+					if (apt) {
+						const latlng = new naver.maps.LatLng(apt.lat, apt.lng);
+						window.map.setCenter(latlng);
+						window.map.setZoom(17);
+						resultsContainer.style.display = 'none';
+						searchInput.value = '';
+					}
+				});
+			});
+		});
+
+		document.addEventListener('click', (e) => {
+			if (!e.target.closest('label:has(#apartmentSearchInput)') && e.target !== resultsContainer) {
+				resultsContainer.style.display = 'none';
+			}
+		});
+
+		window.addEventListener('scroll', updateResultsPosition);
+		window.addEventListener('resize', updateResultsPosition);
+	}
+
+	// ===== 아파트 검색 함수 =====
+	function searchApartments(query) {
+		if (!apartmentData || apartmentData.length === 0) return [];
+
+		const lowerQuery = query.toLowerCase();
+		
+		// 검색어를 공백으로 분리 (예: "동대문구 두산" -> ["동대문구", "두산"])
+		const searchTerms = lowerQuery.split(/\s+/).filter(term => term.length > 0);
+		
+		// 모든 검색어가 포함되는 아파트 찾기
+		let results = apartmentData.filter(apt => {
+			const lowerName = apt.name.toLowerCase();
+			const lowerSido = apt.sidoNm.toLowerCase();
+			const lowerSigungu = apt.sigunguNm.toLowerCase();
+			const combinedText = `${lowerName} ${lowerSido} ${lowerSigungu}`;
+			
+			// 모든 검색 단어가 아파트명, 시도명, 시군구명 중 어디든 포함되어야 함
+			return searchTerms.every(term => combinedText.includes(term));
+		});
+		
+		// 지도의 현재 중심 좌표 기준으로 거리순 정렬
+		if (window.map) {
+			const mapCenter = window.map.getCenter();
+			const centerLat = mapCenter.lat();
+			const centerLng = mapCenter.lng();
+			
+			// 각 아파트까지의 거리 계산 (하버사인 공식)
+			results = results.map(apt => {
+				const distance = calculateDistance(centerLat, centerLng, apt.lat, apt.lng);
+				return { ...apt, distance };
+			});
+			
+			// 거리에 따라 정렬 (가까운 순)
+			results.sort((a, b) => a.distance - b.distance);
+		}
+		
+		return results;
+	}
+	
+	// ===== 두 지점 사이의 거리 계산 (하버사인 공식, 단위: km) =====
+	function calculateDistance(lat1, lng1, lat2, lng2) {
+		const R = 6371; // 지구 반지름 (km)
+		const dLat = (lat2 - lat1) * Math.PI / 180;
+		const dLng = (lng2 - lng1) * Math.PI / 180;
+		const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+				  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+				  Math.sin(dLng / 2) * Math.sin(dLng / 2);
+		const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+		return R * c;
+	}
+
+	// ===== 검색 쿼리와 매칭된 부분 하이라이트 =====
+	function highlightMatches(text, query) {
+		const lowerText = text.toLowerCase();
+		const lowerQuery = query.toLowerCase();
+		
+		if (!lowerText.includes(lowerQuery)) {
+			return text;
+		}
+
+		const index = lowerText.indexOf(lowerQuery);
+		if (index === -1) return text;
+
+		return text.substring(0, index) + 
+			   '<mark style="background-color: #ffeb3b; font-weight: 600;">' + 
+			   text.substring(index, index + query.length) + 
+			   '</mark>' + 
+			   text.substring(index + query.length);
 	}
 
 
@@ -3031,6 +3279,7 @@ function createDefaultMapMarker(apartment) {
 	if (yearValue >= 0 && yearValue < 10) fongColor = "black"; 
 
 		const markerElement = document.createElement("div");
+		markerElement.className = "apartment-marker-container"; /* ✅ 클래스 추가 */
 		markerElement.style = `
 			background-color: ${bgColor};
 			color: ${fongColor};
@@ -3046,6 +3295,7 @@ function createDefaultMapMarker(apartment) {
 		`;
 
 		const nameElement = document.createElement("div");
+		nameElement.className = "apartment-name-marker"; /* ✅ 클래스 추가 */
 		nameElement.style = `
 			background: white;
 			color: black;
@@ -3061,8 +3311,9 @@ function createDefaultMapMarker(apartment) {
 			overflow: hidden;
 			text-overflow: ellipsis;
 		`;
-
+		
 		const detailsElement = document.createElement("div");
+		detailsElement.className = "apartment-details-marker"; /* ✅ 클래스 추가 */
 		detailsElement.style = `
 			font-size: 12px;
 			padding: 2px 5px;
@@ -3070,10 +3321,31 @@ function createDefaultMapMarker(apartment) {
 			max-width: 85px;
 			display: flex;
 			justify-content: center;
+			overflow: hidden;
+			text-overflow: ellipsis;
 		`;
 
-
-		nameElement.textContent = apartment.name.length > 7 ? apartment.name.slice(0, 6) + "..." : apartment.name;
+		/* ✅ 전체 마커에 호버 이벤트 (nameElement와 detailsElement 모두 확장) */
+		const shortName = apartment.name.length > 7 ? apartment.name.slice(0, 6) + "..." : apartment.name;
+		nameElement.textContent = shortName; /* 초기: 줄인 이름 */
+		
+		const handleMouseEnter = () => {
+			markerElement.classList.add('expanded');
+			nameElement.textContent = apartment.name; /* 호버: 전체 이름 */
+		};
+		const handleMouseLeave = () => {
+			markerElement.classList.remove('expanded');
+			nameElement.textContent = shortName; /* 호버 해제: 줄인 이름 */
+		};
+		
+		markerElement.addEventListener('mouseenter', handleMouseEnter);
+		markerElement.addEventListener('mouseleave', handleMouseLeave);
+		
+		/* ✅ 마커 객체에 핸들러 저장 (나중에 제거할 때 사용) */
+		markerElement.__hoverHandlers = {
+			enter: handleMouseEnter,
+			leave: handleMouseLeave
+		};
 		detailsElement.textContent = `${apartment.year.slice(-5)} ${apartment.units}세대`;
     markerElement.appendChild(nameElement);
     markerElement.appendChild(detailsElement);
@@ -3244,6 +3516,14 @@ function updateMarkers(bounds) {
 		if (!showApartments) {
 			Object.values(apartmentMarkers).forEach(marker => {
 				if (marker instanceof naver.maps.Marker) {
+					/* ✅ 마커 엘리먼트의 호버 리스너도 제거 */
+					const markerElement = marker.getIcon?.()?.content;
+					if (markerElement && markerElement.__hoverHandlers) {
+						markerElement.removeEventListener('mouseenter', markerElement.__hoverHandlers.enter);
+						markerElement.removeEventListener('mouseleave', markerElement.__hoverHandlers.leave);
+						delete markerElement.__hoverHandlers;
+					}
+					
 					marker.setMap(null);
 				}
 			});
@@ -3300,6 +3580,15 @@ Object.keys(apartmentMarkers).forEach(id => {
     try {
       if (m && typeof m.setMap === "function") {
         naver.maps.Event && naver.maps.Event.clearInstanceListeners && naver.maps.Event.clearInstanceListeners(m);
+        
+        /* ✅ 마커 엘리먼트의 호버 리스너도 제거 */
+        const markerElement = m.getIcon?.()?.content;
+        if (markerElement && markerElement.__hoverHandlers) {
+          markerElement.removeEventListener('mouseenter', markerElement.__hoverHandlers.enter);
+          markerElement.removeEventListener('mouseleave', markerElement.__hoverHandlers.leave);
+          delete markerElement.__hoverHandlers;
+        }
+        
         m.setMap(null);
       }
     } catch (e) {}
@@ -3321,6 +3610,15 @@ Object.keys(apartmentMarkers).forEach(id => {
 				Object.values(apartmentMarkers).forEach(marker => {
 					if (marker instanceof naver.maps.Marker) {
 						naver.maps.Event.clearInstanceListeners(marker);
+						
+						/* ✅ 마커 엘리먼트의 호버 리스너도 제거 */
+						const markerElement = marker.getIcon?.()?.content;
+						if (markerElement && markerElement.__hoverHandlers) {
+							markerElement.removeEventListener('mouseenter', markerElement.__hoverHandlers.enter);
+							markerElement.removeEventListener('mouseleave', markerElement.__hoverHandlers.leave);
+							delete markerElement.__hoverHandlers;
+						}
+						
 						marker.setMap(null);
 					}
 				});
@@ -5042,7 +5340,8 @@ const MAP_FULLSCREEN_KEY = "mapPseudoFullscreen_v1";
 function _isSkippableUiEl(el) {
   if (!el || !el.id) return true;
   const type = (el.getAttribute("type") || "").toLowerCase();
-  return type === "file" || el.id === "gpxFileInput" || el.id === "memoRestoreInput";
+  // ✅ apartmentSearchInput(검색어) 제외
+  return type === "file" || el.id === "gpxFileInput" || el.id === "memoRestoreInput" || el.id === "apartmentSearchInput";
 }
 
 // DOM에서 현재 UI 상태 수집
@@ -7445,6 +7744,12 @@ async function getMemoFromIndexedDB(id) {
 
 
 async function findWay() {
+    // ✅ 중복 실행 방지
+    if (window.__findWayInitialized) {
+        return;
+    }
+    window.__findWayInitialized = true;
+    
     // 오버레이 생성
     var overlay = document.createElement('div');
     overlay.style.position = 'fixed';
@@ -7530,7 +7835,8 @@ async function findWay() {
     const destinations = [
         { id: 'chk1', lat: 37.497951, lng: 127.027636, name: '강남역2호선', code: 222 },
         { id: 'chk2', lat: 37.564719, lng: 126.977022, name: '서울시청역2호선', code: 273 },
-        { id: 'chk3', lat: 37.521624, lng: 126.924374, name: '여의도역5호선', code: 526 },
+        { id: 'chk3', lat: 37.521624, lng: 126.924374, name: '여의도역5호선', code: 526 },        
+        { id: 'chk9', lat: 37.5723, lng: 126.9791, name: '광화문역5호선', code: 560 },
         { id: 'chk4', lat: 37.481339, lng: 126.882734, name: '가산디지털단지역1호선', code: 172 },
         { id: 'chk8', lat: 37.485266, lng: 126.900198, name: '구로지디털단지역2호선', code: 232 },
         { id: 'chk5', lat: 37.394768, lng: 127.111699, name: '판교역신분당선', code: 1914 },
@@ -7586,13 +7892,16 @@ document.head.appendChild(style);
 
     // 우클릭 시 이벤트를 등록하여 "길찾기" 버튼을 표시
     naver.maps.Event.addListener(window.map, 'rightclick', function(e) {
-
+        console.log('✅ 우클릭 감지됨');
 		if(!document.getElementById("toggleFindWay")?.checked){
+			console.log('❌ 길찾기 토글이 OFF 상태');
 			return;
 		}
         var latlng = e.coord;  // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
         var startX = latlng.lng();  // 우클릭한 위치의 경도
         var startY = latlng.lat();  // 우클릭한 위치의 위도
+        
+        console.log(`✅ 출발지: startX=${startX}, startY=${startY}`);
 
         // 우클릭한 화면상의 마우스 좌표 가져오기 (clientX, clientY)
         var mouseEvent = e.pointerEvent;
@@ -7607,17 +7916,30 @@ document.head.appendChild(style);
         checkboxContainer.style.left = (mouseX + 65) + 'px';
         checkboxContainer.style.top = mouseY + 'px';
         checkboxContainer.style.display = 'block';
+        console.log('✅ 체크박스 컨테이너 표시됨');
 
         // "길찾기" 버튼 클릭 시 오버레이를 표시하고, iframe에 경로 표시
         routeButton.onclick = function() {
+            // ✅ 디버깅: 모든 체크박스 상태 로그
+            console.log('========== 길찾기 요청 ==========');
+            console.log('Destinations 배열:', destinations);
+            destinations.forEach(dest => {
+                const checkbox = document.getElementById(dest.id);
+                console.log(`[${dest.id}] ${dest.name}: ${checkbox ? checkbox.checked : 'NOT FOUND'}`);
+            });
+            
             var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
-
+            console.log('선택된 목적지:', selectedDestinations.map(d => d.name));
 
             if (selectedDestinations.length > 0) {
                 var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
+                console.log('생성된 IDs:', destinationIds);
 
                 // URL에 선택된 목적지 id 추가
                 var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
+                //var url = `http://localhost:8000/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
+                console.log('최종 URL:', url);
+                console.log('================================');
                  //var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&mode=transit`;
                 //var url = `http://localhost:8000/test2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
 
