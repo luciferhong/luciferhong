@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>강남 거리 지도</title>
   <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
   <style>
@@ -17,6 +17,27 @@
       display: flex;
       flex-direction: column;
       height: 100vh;
+    }
+
+    /* ─── 모바일: 스크롤 레이아웃 ─── */
+    @media (max-width: 768px) {
+      html, body {
+        height: auto;
+        overflow: auto;
+      }
+      body {
+        height: auto;
+        min-height: 100vh;
+      }
+      #map {
+        height: 75vmax !important;
+        min-height: 400px !important;
+        flex: none !important;
+      }
+      #distanceSummary {
+        flex-wrap: wrap;
+        gap: 4px 12px;
+      }
     }
 
     /* ─── 상단 패널 ─── */
@@ -1024,6 +1045,9 @@ function setupRuler() {
   let rulerPtA = null;
   let rulerMarkerA = null;
   let rulerClickListener = null;
+  let rulerMoveListeners = [];
+  let previewLine = null;
+  let previewLabel = null;
 
   // 완료된 측정들을 모두 보관
   const rulerHistory = []; // [{ markerA, markerB, line, midLabel }]
@@ -1044,6 +1068,16 @@ function setupRuler() {
     return wrap;
   }
 
+  function clearPreview() {
+    if (previewLine)  { previewLine.setMap(null);  previewLine = null; }
+    if (previewLabel) { previewLabel.setMap(null); previewLabel = null; }
+  }
+
+  function clearMoveListeners() {
+    rulerMoveListeners.forEach(l => naver.maps.Event.removeListener(l));
+    rulerMoveListeners = [];
+  }
+
   function removeMeasurement(m) {
     if (m.markerA)  m.markerA.setMap(null);
     if (m.markerB)  m.markerB.setMap(null);
@@ -1058,6 +1092,8 @@ function setupRuler() {
     rulerActive = false;
     btn.classList.remove('active');
     document.body.classList.remove('ruler-mode');
+    clearPreview();
+    clearMoveListeners();
     if (rulerClickListener) {
       naver.maps.Event.removeListener(rulerClickListener);
       rulerClickListener = null;
@@ -1082,7 +1118,46 @@ function setupRuler() {
           clickable: false
         });
         rulerStep = 1;
+
+        // 마우스 이동 시 실시간 미리보기
+        // map + 기존 완료된 선/마커 위에서도 mousemove 받기 위해 모두 등록
+        const moveHandler = ev => {
+          const pos = ev.coord;
+          const dist = haversineKm(rulerPtA.lat(), rulerPtA.lng(), pos.lat(), pos.lng());
+          const distStr = dist >= 1 ? `${dist.toFixed(2)} km` : `${Math.round(dist * 1000)} m`;
+
+          if (!previewLine) {
+            previewLine = new naver.maps.Polyline({
+              map, path: [rulerPtA, pos],
+              strokeColor: '#f0c000', strokeWeight: 2,
+              strokeOpacity: 0.6, strokeStyle: 'shortdash',
+              clickable: false
+            });
+            const pvEl = document.createElement('div');
+            pvEl.style.cssText = 'background:rgba(240,192,0,0.9);color:#000;font-size:12px;font-weight:700;padding:2px 8px;border-radius:8px;white-space:nowrap;pointer-events:none;box-shadow:0 1px 4px rgba(0,0,0,.2);';
+            pvEl.id = '_rulerPvLabel';
+            previewLabel = new naver.maps.Marker({
+              position: pos, map,
+              icon: { content: pvEl, anchor: new naver.maps.Point(-10, 20) },
+              clickable: false
+            });
+          } else {
+            previewLine.setPath([rulerPtA, pos]);
+            previewLabel.setPosition(pos);
+          }
+          const pvEl = document.getElementById('_rulerPvLabel');
+          if (pvEl) pvEl.textContent = distStr;
+        };
+
+        rulerMoveListeners.push(naver.maps.Event.addListener(map, 'mousemove', moveHandler));
+        rulerHistory.forEach(m => {
+          if (m.line) rulerMoveListeners.push(naver.maps.Event.addListener(m.line, 'mousemove', moveHandler));
+        });
+
       } else {
+        clearPreview();
+        clearMoveListeners();
+
         const markerB = new naver.maps.Marker({
           position: latlng, map,
           icon: { content: makePinEl(), anchor: new naver.maps.Point(5, 5) },
