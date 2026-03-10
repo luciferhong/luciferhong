@@ -116,7 +116,24 @@
       font-weight: 600;
       color: #222;
       min-height: 18px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
+    .apt-findway-btn {
+      margin-left: auto;
+      flex-shrink: 0;
+      background: #1a6e3c;
+      color: #fff;
+      border: none;
+      border-radius: 5px;
+      padding: 3px 9px;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+      line-height: 1.5;
+    }
+    .apt-findway-btn:hover { background: #155c32; }
     .apt-selected .apt-dist {
       display: inline-block;
       margin-left: 8px;
@@ -395,8 +412,37 @@
       white-space: nowrap;
       box-shadow: 0 2px 6px rgba(0,0,0,.3);
       pointer-events: auto;
-      cursor: text;
+      cursor: pointer;
     }
+    .map-pin-rename-btn {
+      position: absolute;
+      bottom: calc(100% + 4px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(30,30,30,0.88);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 5px;
+      white-space: nowrap;
+      cursor: pointer;
+      display: none;
+      pointer-events: auto;
+      user-select: none;
+      z-index: 10;
+    }
+    .map-pin-rename-btn::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      left: -6px;
+      right: -6px;
+      height: 8px;
+    }
+    .map-pin-rename-btn:hover { background: rgba(0,0,0,1); }
+    .map-pin-marker { position: relative; }
+    .map-pin-marker:hover .map-pin-rename-btn { display: block; }
     .map-pin-arrow {
       width: 0; height: 0;
       border-left: 6px solid transparent;
@@ -588,12 +634,14 @@
 
 <!-- 우클릭 컨텍스트 메뉴 -->
 <div id="mapContextMenu">
-  <div class="ctx-menu-header">📍 시작지점 등록</div>
-  <div class="ctx-menu-coords" id="ctxCoords"></div>
-  <div class="ctx-menu-item ctx-apt1" id="ctxApt1">🔵 지점 1로 등록</div>
-  <div class="ctx-menu-item ctx-apt2" id="ctxApt2">🟠 지점 2로 등록</div>
-  <div class="ctx-menu-item" id="ctxApt3" style="color:#e91e8c;font-weight:700;padding:11px 14px;cursor:pointer;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:8px;">🔴 지점 3로 등록</div>
-  <div class="ctx-menu-divider" style="height:1px;background:#e8e8e8;margin:2px 0"></div>
+  <div id="ctxRegisterSection">
+    <div class="ctx-menu-header">📍 시작지점 등록</div>
+    <div class="ctx-menu-coords" id="ctxCoords"></div>
+    <div class="ctx-menu-item ctx-apt1" id="ctxApt1">🔵 지점 1로 등록</div>
+    <div class="ctx-menu-item ctx-apt2" id="ctxApt2">🟠 지점 2로 등록</div>
+    <div class="ctx-menu-item" id="ctxApt3" style="color:#e91e8c;font-weight:700;padding:11px 14px;cursor:pointer;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:8px;">🔴 지점 3로 등록</div>
+    <div class="ctx-menu-divider" style="height:1px;background:#e8e8e8;margin:2px 0"></div>
+  </div>
   <div class="ctx-menu-subheader">🗺️ 업무지구 길찾기</div>
   <div class="ctx-dest-item"><input type="checkbox" id="fw_chk1" checked><label for="fw_chk1">강남역 2호선</label></div>
   <div class="ctx-dest-item"><input type="checkbox" id="fw_chk2" checked><label for="fw_chk2">서울시청역 2호선</label></div>
@@ -655,6 +703,7 @@ let polylines = [null, null, null];
 let distanceLabels = [null, null, null];
 const LABEL_PREFIXES = ['🔵 ', '🟠 ', '🟣 '];
 let customLabels = ['지점 1', '지점 2', '지점 3'];
+let markerZoomState = null; // { idx, prevCenter, prevZoom }
 
 // ─── 색상 (apt1=파랑, apt2=빨강, apt3=보라) ───
 const COLORS = ['#2D5DA7', '#E97132', '#e91e8c'];
@@ -716,33 +765,36 @@ function createAptMarkerEl(apt, idx) {
     prefix.style.flexShrink = '0';
     prefix.contentEditable = 'false';
 
-    // 수정 가능한 텍스트
+    // 텍스트 (읽기 전용, 이름변경 버튼으로만 편집)
     const editSpan = document.createElement('span');
-    editSpan.contentEditable = 'true';
     editSpan.style.outline = 'none';
     editSpan.style.minWidth = '20px';
     editSpan.textContent = customLabels[idx];
 
-    ['mousedown','mouseup','click','dblclick'].forEach(ev =>
+    // mousedown/mouseup 막아 지도 드래그 방지 (click은 통과 → 줌 토글)
+    ['mousedown', 'mouseup'].forEach(ev =>
       label.addEventListener(ev, e => e.stopPropagation()));
-    editSpan.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); editSpan.blur(); }
-      e.stopPropagation();
-    });
-    editSpan.addEventListener('blur', () => {
-      const newText = editSpan.textContent.trim();
-      if (newText) {
-        customLabels[idx] = newText;
-        if (selectedApt[idx]) selectedApt[idx].name = LABEL_PREFIXES[idx] + newText;
-        // 텍스트 길이가 바뀌면 anchor가 틀려지므로 마커 재생성
-        setTimeout(() => updateMapForApt(idx), 0);
-      } else {
-        editSpan.textContent = customLabels[idx];
-      }
-    });
 
     label.appendChild(prefix);
     label.appendChild(editSpan);
+
+    // 이름변경 버튼 (호버 시 표시)
+    const renameBtn = document.createElement('div');
+    renameBtn.className = 'map-pin-rename-btn';
+    renameBtn.textContent = '✏️ 이름변경';
+    renameBtn.addEventListener('mousedown', e => e.stopPropagation());
+    renameBtn.addEventListener('mouseup',   e => e.stopPropagation());
+    renameBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const newName = prompt('지점 이름을 입력하세요:', customLabels[idx]);
+      if (newName !== null && newName.trim()) {
+        customLabels[idx] = newName.trim();
+        if (selectedApt[idx]) selectedApt[idx].name = LABEL_PREFIXES[idx] + newName.trim();
+        setTimeout(() => updateMapForApt(idx), 0);
+      }
+    });
+    wrap.appendChild(renameBtn);
+
     const arrow = document.createElement('div');
     arrow.className = 'map-pin-arrow';
     arrow.style.borderTopColor = bg;
@@ -777,6 +829,8 @@ function updateMapForApt(idx) {
   if (aptMarkers[idx]) { aptMarkers[idx].setMap(null); aptMarkers[idx] = null; }
   if (polylines[idx])  { polylines[idx].setMap(null);  polylines[idx] = null; }
   if (distanceLabels[idx]) { distanceLabels[idx].setMap(null); distanceLabels[idx] = null; }
+  // 마커 재생성 시 줌 상태 초기화
+  if (markerZoomState && markerZoomState.idx === idx) markerZoomState = null;
 
   const apt = selectedApt[idx];
   if (!apt) { updateSummary(); return; }
@@ -813,6 +867,27 @@ function updateMapForApt(idx) {
     map: map,
     icon: { content: el, anchor }
   });
+
+  // 마커 클릭 시 zoom 17 토글
+  function handleMarkerClick() {
+    const curZoom = map.getZoom();
+    if (markerZoomState && markerZoomState.idx === idx && curZoom === 17) {
+      map.setCenter(markerZoomState.prevCenter);
+      map.setZoom(markerZoomState.prevZoom);
+      markerZoomState = null;
+    } else {
+      markerZoomState = { idx, prevCenter: map.getCenter(), prevZoom: curZoom };
+      map.setCenter(new naver.maps.LatLng(apt.lat, apt.lng));
+      map.setZoom(17);
+    }
+  }
+  if (apt.isCustom) {
+    // 커스텀 핀은 label이 mousedown/mouseup을 막아 Naver 이벤트가 전달 안 되므로
+    // wrap(el)에 직접 DOM click 리스너 추가
+    el.addEventListener('click', handleMarkerClick);
+  } else {
+    naver.maps.Event.addListener(aptMarkers[idx], 'click', handleMarkerClick);
+  }
 
   // 강남역까지 선 그리기
   const gangnamLatLng = new naver.maps.LatLng(GANGNAM.lat, GANGNAM.lng);
@@ -943,6 +1018,14 @@ function setupSearch(idx) {
     selectedApt[idx] = apt;
     const dist = haversineKm(apt.lat, apt.lng, GANGNAM.lat, GANGNAM.lng).toFixed(2);
     selDiv.innerHTML = `<span>${apt.name}</span><span class="apt-dist">📍 ${dist} km</span>`;
+    const findBtn = document.createElement('button');
+    findBtn.className = 'apt-findway-btn';
+    findBtn.textContent = '🗺️ 길찾기';
+    findBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.openFindwayMenu(apt.lat, apt.lng, findBtn);
+    });
+    selDiv.appendChild(findBtn);
     input.value = '';
     card.classList.add('has-selection');
     closeDrop();
@@ -1581,11 +1664,27 @@ function setupMapRightClick() {
   // 초기 상태 적용
   updateFwCheckboxStates();
 
+  const registerSection = document.getElementById('ctxRegisterSection');
+
+  window.openFindwayMenu = function(lat, lng, buttonEl) {
+    pendingLatLng = new naver.maps.LatLng(lat, lng);
+    registerSection.style.display = 'none';
+    menu.style.display = 'block';
+    const rect = buttonEl.getBoundingClientRect();
+    const mr   = menu.getBoundingClientRect();
+    let x = rect.left, y = rect.bottom + 4;
+    if (x + mr.width  > window.innerWidth)  x = window.innerWidth  - mr.width  - 4;
+    if (y + mr.height > window.innerHeight) y = rect.top - mr.height - 4;
+    menu.style.left = x + 'px';
+    menu.style.top  = y + 'px';
+  };
+
   naver.maps.Event.addListener(map, 'rightclick', (e) => {
     pendingLatLng = e.latlng;
     const lat = pendingLatLng.lat().toFixed(5);
     const lng = pendingLatLng.lng().toFixed(5);
     coords.textContent = `위도 ${lat}  경도 ${lng}`;
+    registerSection.style.display = '';
 
     const me = e.domEvent || e;
     let x = me.clientX + 6, y = me.clientY;
@@ -1612,6 +1711,14 @@ function setupMapRightClick() {
     const selDiv = document.getElementById(`selected${idx + 1}`);
     const card   = document.getElementById(`card${idx + 1}`);
     selDiv.innerHTML = `<span>지도 선택 위치</span><span class="apt-dist">📍 ${dist} km</span>`;
+    const findBtn = document.createElement('button');
+    findBtn.className = 'apt-findway-btn';
+    findBtn.textContent = '🗺️ 길찾기';
+    findBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.openFindwayMenu(apt.lat, apt.lng, findBtn);
+    });
+    selDiv.appendChild(findBtn);
     card.classList.add('has-selection');
     updateMapForApt(idx);
     menu.style.display = 'none';
