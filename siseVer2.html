@@ -71,7 +71,7 @@
 		
 
 		/* 드롭다운/입력 크기 컴팩트 (1900px에 맞춤) */
-		#sidoFilter, #sigunguFilter, #yearFromFilter, #yearToFilter {
+		#sidoFilter, #yearFromFilter, #yearToFilter {
 			height: 28px;
 			padding: 3px 5px;
 			font-size: 13px;
@@ -83,9 +83,72 @@
 			box-sizing: border-box;
 		}
 		
-		#sidoFilter, #sigunguFilter {
+		#sidoFilter {
 			min-width: 75px;
 			width: 75px;
+		}
+
+		/* ✅ 시군구 체크박스 드롭다운 */
+		#sigunguFilterWrapper {
+			display: inline-block;
+			position: relative;
+			vertical-align: middle;
+		}
+		#sigunguFilterDisplay {
+			border: 1px solid #cbd3e0;
+			padding: 3px 8px;
+			display: inline-flex;
+			align-items: center;
+			position: relative;
+			background-color: #fff;
+			border-radius: 4px;
+			min-width: 90px;
+			font-size: 13px;
+			cursor: pointer;
+			box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+			padding-right: 22px;
+			height: 28px;
+			box-sizing: border-box;
+			user-select: none;
+		}
+		#sigunguFilterDisplay:hover {
+			border-color: #4A90E2;
+			box-shadow: 0 2px 6px rgba(74,144,226,0.2);
+		}
+		#sigunguToggleBtn {
+			position: absolute;
+			right: 6px;
+			top: 50%;
+			transform: translateY(-50%);
+			cursor: pointer;
+			font-weight: bold;
+			user-select: none;
+			pointer-events: none;
+			font-size: 11px;
+			color: #555;
+		}
+		#sigunguFilter {
+			position: absolute;
+			top: 100%;
+			left: 0;
+			right: 0;
+			min-width: 130px;
+			background-color: #fff;
+			border: none;
+			border-radius: 4px;
+			max-height: 0;
+			transition: max-height 0.3s ease;
+			overflow: hidden;
+			padding: 0;
+			margin-top: 2px;
+			z-index: 10001;
+		}
+		#sigunguFilter.expanded {
+			max-height: 50vh;
+			overflow-y: auto;
+			padding: 4px 8px;
+			border: 1px solid #cbd3e0;
+			box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 		}
 		
 		#unitFilter {
@@ -118,12 +181,12 @@
 			width: 55px;
 		}
 		
-		#sidoFilter:hover, #sigunguFilter:hover, #yearFromFilter:hover, #yearToFilter:hover {
+		#sidoFilter:hover, #yearFromFilter:hover, #yearToFilter:hover {
 			border-color: #4A90E2;
 			box-shadow: 0 2px 6px rgba(74, 144, 226, 0.2);
 		}
 		
-		#sidoFilter:focus, #sigunguFilter:focus, #yearFromFilter:focus, #yearToFilter:focus {
+		#sidoFilter:focus, #yearFromFilter:focus, #yearToFilter:focus {
 			border-color: #2D5DA7;
 			box-shadow: 0 0 6px rgba(45, 93, 167, 0.4);
 			outline: none;
@@ -305,8 +368,14 @@ buttonContainer {
     <label for="sidoFilter">시도 :</label>
     <select id="sidoFilter"><option value="">전체</option></select>
     <span style="width: 10px;"></span>
-    <label for="sigunguFilter">시군구 :</label>
-    <select id="sigunguFilter" disabled><option value="">전체</option></select>
+    <label>시군구 :</label>
+    <div id="sigunguFilterWrapper">
+        <div id="sigunguFilterDisplay">
+            <span id="sigunguDisplayText">전체</span>
+            <span id="sigunguToggleBtn">▼</span>
+        </div>
+        <div id="sigunguFilter"></div>
+    </div>
     <span style="width: 10px;"></span>
     <label for="unitFilter">최소 세대수 :</label>
     <input type="number" id="unitFilter" min="0" value="190">
@@ -943,100 +1012,152 @@ buttonContainer {
 
 
 // ==============================
-// ✅ 시도/시군구 필터 (hongbutest와 동일: value=코드, label=이름)
-//  - 시도: value=sido, label=sidoNm
-//  - 시군구: value=sigungu, label=sigunguNm (선택된 시도 기준)
+// ✅ 시도/시군구 필터
+//  - 시도: <select> value=sido 코드
+//  - 시군구: 체크박스 드롭다운 (supply.html 방식)
 // ==============================
-function getFilterEls() {
-	return {
-		sidoSel: document.getElementById('sidoFilter'),
-		sigunguSel: document.getElementById('sigunguFilter'),
-	};
-}
 
-// ▼ 옵션 채우기 유틸 (items: string | {value, label})
+// 선택된 시군구 코드 Set (비어있으면 전체)
+let selectedSigunguSet = new Set();
+let _sigunguDropdownExpanded = false;
+let _bySidoCache = new Map(); // 시도코드 -> { name, sigungu: Map(코드->이름) }
+
+function getSidoSel() { return document.getElementById('sidoFilter'); }
+function getSigunguFilterDiv() { return document.getElementById('sigunguFilter'); }
+
+// ▼ 시도 옵션 채우기 유틸 (select 전용)
 function fillOptions(selectEl, items) {
 	const prev = selectEl.value;
 	selectEl.innerHTML = '';
-
-	// 첫 옵션: 전체(빈값)
 	const optAll = document.createElement('option');
 	optAll.value = '';
 	optAll.textContent = '전체';
 	selectEl.appendChild(optAll);
-
 	(items || []).forEach(item => {
 		const opt = document.createElement('option');
-		if (typeof item === 'string') {
-			opt.value = item;
-			opt.textContent = item;
-		} else {
-			opt.value = item.value;
-			opt.textContent = item.label;
-		}
+		opt.value = (typeof item === 'string') ? item : item.value;
+		opt.textContent = (typeof item === 'string') ? item : item.label;
 		selectEl.appendChild(opt);
 	});
+	if ([...selectEl.options].some(o => o.value === prev)) selectEl.value = prev;
+	else selectEl.value = '';
+}
 
-	// 이전 선택 유지(가능하면)
-	if ([...selectEl.options].some(o => o.value === prev)) {
-		selectEl.value = prev;
+// ▼ 시군구 체크박스 목록 업데이트 (supply.html의 updateSigunguFilters와 동일)
+function buildSigunguCheckboxes() {
+	const sigunguFilter = getSigunguFilterDiv();
+	if (!sigunguFilter) return;
+	sigunguFilter.innerHTML = '';
+	selectedSigunguSet.clear();
+
+	const sidoSel = getSidoSel();
+	const selectedSidoCode = (sidoSel ? sidoSel.value : '').trim();
+
+	if (!selectedSidoCode || !_bySidoCache.has(selectedSidoCode)) {
+		const msgDiv = document.createElement('div');
+		msgDiv.style.cssText = 'color:#999;padding:4px 0;white-space:nowrap;font-size:13px;';
+		msgDiv.textContent = '시도를 선택하세요';
+		sigunguFilter.appendChild(msgDiv);
+		_updateSigunguDisplay();
+		return;
+	}
+
+	const sigunguMap = _bySidoCache.get(selectedSidoCode).sigungu;
+	const sigunguArray = Array.from(sigunguMap.entries())
+		.map(([code, name]) => ({ code, name }))
+		.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+
+	// 전체 체크박스
+	const allLabel = document.createElement('label');
+	allLabel.style.cssText = 'display:block;padding:2px 0;cursor:pointer;margin:0;line-height:1.4;font-size:13px;';
+	allLabel.innerHTML = `<input type="checkbox" value="__ALL__" style="accent-color:blue;"> 전체`;
+	sigunguFilter.appendChild(allLabel);
+	const allCheckbox = allLabel.querySelector('input');
+
+	allCheckbox.addEventListener('change', function() {
+		selectedSigunguSet.clear();
+		sigunguFilter.querySelectorAll('input:not([value="__ALL__"])').forEach(cb => { cb.checked = false; });
+		allCheckbox.checked = true;
+		_updateSigunguDisplay();
+		applyRegionFilterUpdate();
+	});
+
+	// 개별 시군구 체크박스
+	sigunguArray.forEach(({ code, name }) => {
+		const label = document.createElement('label');
+		label.style.cssText = 'display:block;padding:2px 0;cursor:pointer;margin:0;line-height:1.4;font-size:13px;';
+		label.innerHTML = `<input type="checkbox" value="${code}" style="accent-color:orange;"> ${name}`;
+		sigunguFilter.appendChild(label);
+		const cb = label.querySelector('input');
+
+		cb.addEventListener('change', function() {
+			if (this.checked) selectedSigunguSet.add(code);
+			else selectedSigunguSet.delete(code);
+
+			const allCb = sigunguFilter.querySelector('input[value="__ALL__"]');
+			if (selectedSigunguSet.size === sigunguArray.length) {
+				selectedSigunguSet.clear();
+				allCb.checked = true;
+				sigunguFilter.querySelectorAll('input:not([value="__ALL__"])').forEach(c => { c.checked = false; });
+			} else if (selectedSigunguSet.size === 0) {
+				allCb.checked = true;
+				sigunguFilter.querySelectorAll('input:not([value="__ALL__"])').forEach(c => { c.checked = false; });
+			} else {
+				allCb.checked = false;
+			}
+			_updateSigunguDisplay();
+			applyRegionFilterUpdate();
+		});
+	});
+
+	// 초기: 전체 체크
+	allCheckbox.checked = true;
+	_updateSigunguDisplay();
+}
+
+function _updateSigunguDisplay() {
+	const txt = document.getElementById('sigunguDisplayText');
+	if (!txt) return;
+	if (selectedSigunguSet.size === 0) {
+		txt.textContent = '전체';
 	} else {
-		selectEl.value = '';
+		txt.textContent = selectedSigunguSet.size + '개 선택';
 	}
 }
 
 // ▼ 시도/시군구 옵션 구성 (apartmentData 기반)
-//   - 시도: label=시도명(sidoNm), value=시도코드(sido)
-//   - 시군구: label=시군구명(sigunguNm), value=시군구코드(sigungu)
 function buildRegionFiltersFromApartments() {
-	const { sidoSel, sigunguSel } = getFilterEls();
-	if (!sidoSel || !sigunguSel || !Array.isArray(apartmentData)) return;
+	const sidoSel = getSidoSel();
+	if (!sidoSel || !Array.isArray(apartmentData)) return;
 
 	// 시도코드 -> { name: 시도명, sigungu: Map(시군구코드 -> 시군구명) }
-	const bySido = new Map();
+	_bySidoCache = new Map();
 	apartmentData.forEach(a => {
 		const sc = String(a.sido || '').trim();
 		const sn = String(a.sidoNm || '').trim();
 		const gc = String(a.sigungu || '').trim();
 		const gn = String(a.sigunguNm || '').trim();
 		if (!sc) return;
-		if (!bySido.has(sc)) bySido.set(sc, { name: sn || sc, sigungu: new Map() });
-		if (gc) bySido.get(sc).sigungu.set(gc, gn || gc);
+		if (!_bySidoCache.has(sc)) _bySidoCache.set(sc, { name: sn || sc, sigungu: new Map() });
+		if (gc) _bySidoCache.get(sc).sigungu.set(gc, gn || gc);
 	});
 
-	// 지역 필드가 없으면 비활성화
-	if (bySido.size === 0) {
+	if (_bySidoCache.size === 0) {
 		sidoSel.disabled = true;
-		sigunguSel.disabled = true;
-		sidoSel.title = "apt.json에 sido/sidoNm(시도코드/명) 필드가 없어 필터를 사용할 수 없습니다.";
-		sigunguSel.title = "apt.json에 sigungu/sigunguNm(시군구코드/명) 필드가 없어 필터를 사용할 수 없습니다.";
+		sidoSel.title = 'apt.json에 sido/sidoNm 필드가 없어 필터를 사용할 수 없습니다.';
 		fillOptions(sidoSel, []);
-		fillOptions(sigunguSel, []);
+		buildSigunguCheckboxes();
 		return;
 	}
 
-	// 시도 옵션: value=코드, label=이름
-	const sidoItems = Array.from(bySido.entries())
+	const sidoItems = Array.from(_bySidoCache.entries())
 		.map(([code, obj]) => ({ value: code, label: obj.name }))
 		.sort((a, b) => a.label.localeCompare(b.label, 'ko'));
 	fillOptions(sidoSel, sidoItems);
-
-	// 선택된 시도에 따라 시군구 옵션 생성
-	const selectedSidoCode = (sidoSel.value || '').trim();
-	if (selectedSidoCode && bySido.has(selectedSidoCode)) {
-		const sigunguItems = Array.from(bySido.get(selectedSidoCode).sigungu.entries())
-			.map(([code, name]) => ({ value: code, label: name }))
-			.sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-		fillOptions(sigunguSel, sigunguItems);
-		sigunguSel.disabled = false;
-	} else {
-		fillOptions(sigunguSel, []);
-		sigunguSel.disabled = true;
-	}
+	buildSigunguCheckboxes();
 }
 
 function applyRegionFilterUpdate() {
-	// 필터가 바뀌면: 마커 캐시를 비우고 현재 bounds로 다시 그림
 	try {
 		if (window.apartmentMarkers) {
 			Object.values(window.apartmentMarkers).forEach(m => {
@@ -1058,17 +1179,48 @@ function applyRegionFilterUpdate() {
 }
 
 function attachRegionFilterEvents() {
-	const { sidoSel, sigunguSel } = getFilterEls();
-	if (!sidoSel || !sigunguSel) return;
+	const sidoSel = getSidoSel();
+	if (!sidoSel) return;
 
+	// 시도 변경 → 시군구 체크박스 갱신
 	sidoSel.addEventListener('change', () => {
-		buildRegionFiltersFromApartments();
+		buildSigunguCheckboxes();
+		// 드롭다운 닫기
+		_sigunguDropdownExpanded = false;
+		const sf = getSigunguFilterDiv();
+		if (sf) sf.classList.remove('expanded');
+		const btn = document.getElementById('sigunguToggleBtn');
+		if (btn) btn.textContent = '▼';
 		applyRegionFilterUpdate();
 	});
 
-	sigunguSel.addEventListener('change', () => {
-		applyRegionFilterUpdate();
-	});
+	// 시군구 드롭다운 토글
+	const display = document.getElementById('sigunguFilterDisplay');
+	const sigunguFilter = getSigunguFilterDiv();
+	const toggleBtn = document.getElementById('sigunguToggleBtn');
+
+	if (display && sigunguFilter && toggleBtn) {
+		display.addEventListener('click', function(e) {
+			e.stopPropagation();
+			_sigunguDropdownExpanded = !_sigunguDropdownExpanded;
+			if (_sigunguDropdownExpanded) sigunguFilter.classList.add('expanded');
+			else sigunguFilter.classList.remove('expanded');
+			toggleBtn.textContent = _sigunguDropdownExpanded ? '▲' : '▼';
+		});
+
+		sigunguFilter.addEventListener('click', function(e) {
+			e.stopPropagation();
+		});
+
+		document.addEventListener('click', function(e) {
+			const wrapper = document.getElementById('sigunguFilterWrapper');
+			if (wrapper && !wrapper.contains(e.target)) {
+				_sigunguDropdownExpanded = false;
+				sigunguFilter.classList.remove('expanded');
+				toggleBtn.textContent = '▼';
+			}
+		});
+	}
 }
 
 function initRegionFilters(){
@@ -1416,7 +1568,7 @@ function removeAllLines() {
 
 		const minUnits = parseInt(document.getElementById("unitFilter").value, 10) || 0;
 		const selectedSido = document.getElementById("sidoFilter") ? document.getElementById("sidoFilter").value : "";
-		const selectedSigungu = document.getElementById("sigunguFilter") ? document.getElementById("sigunguFilter").value : "";
+		// selectedSigunguSet: 전역 Set, 비어있으면 전체
 		const showApartments = document.getElementById("toggleApartments").checked;
 		const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
 
@@ -1429,7 +1581,7 @@ function removeAllLines() {
 			const inBounds = bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng));
 			const unitOK = apartment.units >= minUnits;
 			const sidoOK = !selectedSido || apartment.sido === selectedSido;
-			const sigunguOK = !selectedSigungu || apartment.sigungu === selectedSigungu;
+			const sigunguOK = selectedSigunguSet.size === 0 || selectedSigunguSet.has(apartment.sigungu);
 			const builtYear = _siseExtractBuiltYear(apartment);
 			const yearOK = (!fromYear || (builtYear && builtYear >= fromYear)) && (!toYear || (builtYear && builtYear <= toYear));
 			return inBounds && unitOK && sidoOK && sigunguOK && yearOK;
