@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -165,6 +165,92 @@ font-weight: 800;
   outline:none;
   border-color:#2D5DA7;
   box-shadow:0 0 5px rgba(74,144,226,0.35);
+}
+
+/* ✅ 시도 셀렉트 - 시군구 드롭다운과 동일한 디자인 */
+#sidoFilter {
+  height: 28px;
+  padding: 3px 8px;
+  font-size: 13px;
+  border: 1px solid #cbd3e0;
+  border-radius: 4px;
+  background-color: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+  box-sizing: border-box;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+#sidoFilter:hover {
+  border-color: #4A90E2;
+  box-shadow: 0 2px 6px rgba(74,144,226,0.2);
+}
+#sidoFilter:focus {
+  border-color: #2D5DA7;
+  box-shadow: 0 0 5px rgba(74,144,226,0.35);
+}
+
+/* ✅ 시군구 체크박스 드롭다운 */
+#sigunguFilterWrapper {
+  display: inline-block;
+  position: relative;
+  vertical-align: middle;
+}
+#sigunguFilterDisplay {
+  border: 1px solid #cbd3e0;
+  padding: 3px 8px;
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  background-color: #fff;
+  border-radius: 4px;
+  min-width: 90px;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+  padding-right: 22px;
+  height: 28px;
+  box-sizing: border-box;
+  user-select: none;
+}
+#sigunguFilterDisplay:hover {
+  border-color: #4A90E2;
+  box-shadow: 0 2px 6px rgba(74,144,226,0.2);
+}
+#sigunguToggleBtn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  font-weight: bold;
+  user-select: none;
+  pointer-events: none;
+  font-size: 11px;
+  color: #555;
+}
+#sigunguFilter {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  min-width: 130px;
+  background-color: #fff;
+  border: none;
+  border-radius: 4px;
+  max-height: 0;
+  transition: max-height 0.3s ease;
+  overflow: hidden;
+  padding: 0;
+  margin-top: 2px;
+  z-index: 10001;
+}
+#sigunguFilter.expanded {
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 4px 8px;
+  border: 1px solid #cbd3e0;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }
 
 /* 기존 #controls 규칙에 아래 3줄만 추가 */
@@ -717,11 +803,15 @@ body.map-fullscreen {
     <option value="">전체</option>
   </select>
 </label>
-<label>시군구:
-  <select id="sigunguFilter" disabled>
-    <option value="">전체</option>
-  </select>
-</label>
+<span style="white-space:nowrap;display:inline-flex;align-items:center;gap:4px;margin-right:6px;">시군구:
+  <div id="sigunguFilterWrapper">
+    <div id="sigunguFilterDisplay">
+      <span id="sigunguDisplayText">전체</span>
+      <span id="sigunguToggleBtn">▼</span>
+    </div>
+    <div id="sigunguFilter"></div>
+  </div>
+</span>
 
 <label style="position: relative; width: 240px; display: inline-block;">
   아파트 검색:
@@ -802,6 +892,7 @@ body.map-fullscreen {
 		<button id="clearMap">경로 초기화</button>
         <button id="downloadGPX">GPX 다운로드</button>
         <button id="uploadGPX">GPX 불러오기</button>
+        <button id="continuePolyline">GPX 이어 그리기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
         
 <button id="showInguBtn" style="display: block;">인구데이터</button>
@@ -995,6 +1086,9 @@ function closeImageModal(){
                 this.currentPath = [];
                 this.currentPolyline = null;
                 this.markers = [];
+                this.kmMarkers = [];          // 완료된 경로의 km 마커
+                this._currentPathKmMarkers = []; // 그리는 중인 경로의 km 마커
+                this._completedPathsDistanceM = 0; // 완료된 경로들의 누적 거리(m)
                 this.initUI();
             }
 				
@@ -1002,6 +1096,7 @@ function closeImageModal(){
 				document.getElementById("startPolyline").addEventListener("click", () => this.startPolylineMode());
 				document.getElementById("undoLastPointButton").addEventListener("click", () => this.undoLastPoint());
 				document.getElementById("completePolyline").addEventListener("click", () => this.completePolyline()); // ✅ 추가됨*				
+				document.getElementById("continuePolyline").addEventListener("click", () => this.continuePolylineMode());
 				document.getElementById("downloadGPX").addEventListener("click", () => this.downloadGPX());
 				 // ✅ 시세지도 백업 (익스포트)
 				document.getElementById("siseExportBtn").addEventListener("click", () => {
@@ -1108,12 +1203,14 @@ function closeImageModal(){
 
 				naver.maps.Event.addListener(this.map, "click", (e) => {
 					if (!this.currentPolyline) {
-						console.warn("⚠️ 경로 그리기 모드가 아님");
-						return; // 🚫 실행 중단 (오류 방지)
+						return;
 					}
 					this.currentPath.push(e.coord);
 					this.currentPolyline.setPath(this.currentPath);
 					this.addMilestoneMarker(e.coord);
+					// km 마커 갱신 (현재 그리는 경로)
+					this._currentPathKmMarkers.forEach(m => m.setMap(null));
+					this._currentPathKmMarkers = this._addKmMarkersForPath(this.currentPath, this._completedPathsDistanceM);
 				});
 
 				naver.maps.Event.addListener(this.map, "rightclick", () => {
@@ -1142,6 +1239,7 @@ function closeImageModal(){
 					this.clearMap({ forgetStoredGpx: false }); // 기존 경로 초기화
 				}
 
+				this._isContinuing = false;
 				this.currentPath = [];
 				this.markers = [];
 				this.currentPolyline = new naver.maps.Polyline({
@@ -1151,6 +1249,49 @@ function closeImageModal(){
 					strokeWeight: 3.33,
 					strokeOpacity: 0.8
 				});	
+			}
+
+			continuePolylineMode() {
+				if (this.shapes.length === 0) {
+					alert("이어 그릴 경로가 없습니다. 먼저 GPX를 불러오거나 경로를 그리세요.");
+					return;
+				}
+
+				// 현재 그리고 있는 중이면 먼저 완료
+				if (this.currentPolyline) {
+					this.completePolyline();
+				}
+
+				// 마지막 shape의 마지막 좌표 추출
+				const lastShape = this.shapes[this.shapes.length - 1];
+				const pathCoords = [];
+				lastShape.polyline.getPath().forEach(c => pathCoords.push(c));
+				if (pathCoords.length === 0) {
+					alert("경로 데이터를 읽을 수 없습니다.");
+					return;
+				}
+				const lastCoord = pathCoords[pathCoords.length - 1];
+
+				// 마지막 좌표에서 이어 그리기 시작
+				this._isContinuing = true;
+				this.currentPath = [lastCoord];
+				this.markers = [];
+				this.currentPolyline = new naver.maps.Polyline({
+					map: this.map,
+					path: this.currentPath,
+					strokeColor: "#FF0000",
+					strokeWeight: 3.33,
+					strokeOpacity: 0.8
+				});
+				// 연결 지점 표시 (주황 점)
+				new naver.maps.Marker({
+					position: lastCoord,
+					map: this.map,
+					icon: {
+						content: `<div style="width:12px;height:12px;background:#FF7700;border-radius:50%;border:2px solid #fff;box-shadow:0 0 3px #000;"></div>`,
+						anchor: new naver.maps.Point(6, 6)
+					}
+				});
 			}
 		
 			downloadGPX() {
@@ -1183,7 +1324,18 @@ function closeImageModal(){
 
             completePolyline() {
                 if (this.currentPolyline && this.currentPath.length > 1) {
-                    this.addStartEndMarkers();
+                    if (!this._isContinuing) {
+                        // 새 경로: 출발 + 도착 마커 모두 추가
+                        this.addStartEndMarkers();
+                    } else {
+                        // 이어 그리기: 도착 마커만 추가 (연결 지점에 중복 출발 마커 생략)
+                        this.createEndMarker(this.currentPath[this.currentPath.length - 1]);
+                    }
+                    this._isContinuing = false;
+                    // km 마커 확정: currentPath km 마커를 kmMarkers로 이동
+                    this.kmMarkers.push(...this._currentPathKmMarkers);
+                    this._currentPathKmMarkers = [];
+                    this._completedPathsDistanceM += this.calculateTotalDistance(this.currentPath);
                     this.shapes.push({ polyline: this.currentPolyline, markers: [...this.markers] });
                     this.currentPolyline = null;
                 }
@@ -1250,21 +1402,26 @@ function closeImageModal(){
 					this.endMarker = null; // 도착 마커 변수 초기화
 				}
 
-				// 데이터 초기화
-				this.shapes = [];
-				this.markers = [];
-				this.currentPath = [];
-				this.currentPolyline = null;
-			
+			// km 마커 삭제
+			(this.kmMarkers || []).forEach(m => m.setMap(null));
+			(this._currentPathKmMarkers || []).forEach(m => m.setMap(null));
 
-				// ✅ 마지막 불러온 GPX 기록도 삭제 (사용자가 "경로 초기화"를 눌렀을 때만)
-				if (forgetStoredGpx) {
-					deleteHongbuSetting("lastGpxPath").catch(console.warn);
-				}
+			// 데이터 초기화
+			this.shapes = [];
+			this.markers = [];
+			this.currentPath = [];
+			this.currentPolyline = null;
+			this.kmMarkers = [];
+			this._currentPathKmMarkers = [];
+			this._completedPathsDistanceM = 0;
+
+			// ✅ 마지막 불러온 GPX 기록도 삭제 (사용자가 "경로 초기화"를 눌렀을 때만)
+			if (forgetStoredGpx) {
+				deleteHongbuSetting("lastGpxPath").catch(console.warn);
 			}
+		}
 
 		loadGPX(file) {
-
 			this.clearMap({ forgetStoredGpx: false });
 			const reader = new FileReader();
 			reader.onload = (event) => {
@@ -1285,7 +1442,6 @@ function closeImageModal(){
 				}
 
 				this.drawGPXPath(path);
-				this.updateEndMarker(path); // 🔹 GPX 로드 후 도착 마커 업데이트
 
 				// ✅ 마지막 불러온 GPX 경로 저장 (IndexedDB settings)
 				try {
@@ -1344,11 +1500,16 @@ function closeImageModal(){
 			this.shapes.push({ polyline });
 
 			this.createLabeledMarker(path[0], "출발");
-			this.createEndMarker(path[path.length - 1]);
+			this.createEndMarker(path[path.length - 1], path);
+
+			// km 마커 추가
+			const kmMs = this._addKmMarkersForPath(path, this._completedPathsDistanceM);
+			this.kmMarkers.push(...kmMs);
+			this._completedPathsDistanceM += this.calculateTotalDistance(path);
 		}
 
-		createEndMarker(coord) {
-			const totalDistance = this.calculateTotalDistance(); // m 단위로 가져옴
+		createEndMarker(coord, path) {
+			const totalDistance = this.calculateTotalDistance(path); // path 지정 시 해당 경로, 없으면 currentPath
 			const formattedDistance = totalDistance >= 1000 
 				? (totalDistance / 1000).toFixed(2) + "km" 
 				: totalDistance.toFixed(0) + "m";
@@ -1407,6 +1568,7 @@ function closeImageModal(){
 
 
         undoLastPoint() {
+			if (!this.currentPolyline) return; // 그리기 모드가 아닐 때 무시
 			if (this.currentPath.length > 0) {
 				this.currentPath.pop(); // 마지막 좌표 삭제
 				this.currentPolyline.setPath(this.currentPath); // 반영
@@ -1414,7 +1576,46 @@ function closeImageModal(){
 				// 마지막 마커 삭제
 				const lastMarker = this.markers.pop();
 				if (lastMarker) lastMarker.setMap(null);
+
+				// km 마커 갱신
+				this._currentPathKmMarkers.forEach(m => m.setMap(null));
+				this._currentPathKmMarkers = this._addKmMarkersForPath(this.currentPath, this._completedPathsDistanceM);
 			}
+		}
+
+		// 경로를 따라 1km마다 km 표시 마커 생성
+		_addKmMarkersForPath(path, offsetM) {
+			const newMarkers = [];
+			if (path.length < 2) return newMarkers;
+
+			let cumDist = 0;
+			let nextKmTarget = Math.floor(offsetM / 1000) * 1000 + 1000;
+
+			for (let i = 1; i < path.length; i++) {
+				const segLen = this.computeDistance(path[i - 1], path[i]);
+				const distBefore = offsetM + cumDist;
+				cumDist += segLen;
+				const distAfter = offsetM + cumDist;
+
+				while (nextKmTarget <= distAfter) {
+					const ratio = segLen > 0 ? (nextKmTarget - distBefore) / segLen : 0;
+					const lat = path[i - 1].y + ratio * (path[i].y - path[i - 1].y);
+					const lng = path[i - 1].x + ratio * (path[i].x - path[i - 1].x);
+					const kmLabel = (nextKmTarget / 1000) + 'km';
+					const marker = new naver.maps.Marker({
+						position: new naver.maps.LatLng(lat, lng),
+						map: this.map,
+						zIndex: 200,
+						icon: {
+							content: `<div style="background:#1a73e8;color:#fff;font-size:11px;font-weight:bold;padding:2px 6px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.45);">${kmLabel}</div>`,
+							anchor: new naver.maps.Point(17, 10)
+						}
+					});
+					newMarkers.push(marker);
+					nextKmTarget += 1000;
+				}
+			}
+			return newMarkers;
 		}
 
     }
@@ -1591,7 +1792,6 @@ function __setCadastralLayer(on){
 				const path = saved.map(p => new naver.maps.LatLng(p.lat, p.lon));
 				window.mapHandler.clearMap({ forgetStoredGpx: false });
 				window.mapHandler.drawGPXPath(path);
-				window.mapHandler.updateEndMarker(path);
 			}
 		} catch (e) {
 			console.warn("lastGpxPath 복원 실패:", e);
@@ -3592,9 +3792,8 @@ function updateMarkers(bounds) {
 		}
 
 // ▼ 추가: 현재 선택된 시도/시군구 읽기
-  const { sidoSel, sigunguSel } = getFilterEls();
+  const { sidoSel } = getFilterEls();
   const selectedSido = (sidoSel?.value || '').trim();     // '' => 전체
-  const selectedSigungu = (sigunguSel?.value || '').trim(); // '' => 전체
 
 	//범위 벗어나면 마커 삭제
 	removeLinesOutsideBounds(bounds)
@@ -3613,7 +3812,7 @@ function updateMarkers(bounds) {
     const unitOK = apartment.units >= minUnits;
 
     const sidoOK = !selectedSido || (apartment.sido || '').trim() === selectedSido;
-    const sigunguOK = !selectedSigungu || (apartment.sigungu || '').trim() === selectedSigungu;
+    const sigunguOK = selectedSigunguSet.size === 0 || selectedSigunguSet.has((apartment.sigungu || '').trim());
     const builtYear = _hongbuExtractBuiltYear(apartment);
     const yearOK = (!fromYear || (builtYear && builtYear >= fromYear)) && (!toYear || (builtYear && builtYear <= toYear));
 //console.log("apartment.sido : "+apartment.sido)
@@ -4117,11 +4316,9 @@ await initIndexedDB();
 	// ✅ 1) 아파트(마커) 먼저 로드
 	await loadApartments();
 
-	// ✅ 2) 나머지는 병렬 로드 (초/중/환경/스벅/상세/길찾기 등)
+	// ✅ 2) 나머지는 병렬 로드 (환경/스벅/상세/길찾기 등)
 	Promise.allSettled([
 		loadApartmentsDetail(),
-		loadSchools(),
-		loadMiddleSchools(),
 		loadFacilities(),
 		loadStarbucks(),
 		findWay(),
@@ -4542,10 +4739,6 @@ apartmentInfo.setAttribute("data-id", apartmentId);
   infoDiv.innerHTML = infoHtml;
  infoDiv.style.display = "block";
 
-const cs = window.getComputedStyle(infoDiv);
-console.log("[DBG] apartmentInfo z-index:", cs.zIndex, "display:", cs.display, "position:", cs.position);
-
-
   loadNote(apartmentId);
 
   setTimeout(() => { 
@@ -4717,9 +4910,7 @@ document.addEventListener("click", (event) => {
  const id = apartmentInfo.getAttribute("data-id");
       const memo = document.getElementById("noteText")?.value?.trim();
       const images = aptMemoImageList?.[id] ?? [];
-console.log(id);
-console.log(memo);
-console.log(images);
+
       //if ((memo && memo !== "") || images.length > 0) {
         saveNote(id); // ✅ 자동 저장
       //}
@@ -4813,7 +5004,6 @@ async function loadMiddleSchools() {
     try {
         const response = await fetch("middleSchools.json");
         let middleSchools = await response.json();
-		console.log(middleSchools);
         // ✅ 중복 제거: 학교 ID를 기준으로 첫 번째 값만 유지
         const uniqueSchools = [];
         const seenIds = new Set();
@@ -4827,6 +5017,7 @@ async function loadMiddleSchools() {
 
         //console.log("✅ 중복 제거 완료: 총", uniqueSchools.length, "개 학교 로드됨");
 
+        console.log(`✅ loaded middleSchools.json: ${uniqueSchools.length}`);
         window.middleSchoolData = uniqueSchools; // ✅ 중복 제거된 데이터 저장
 
         // ✅ 마커 업데이트
@@ -4861,7 +5052,6 @@ function updateMiddleSchoolMarkers() {
     let filteredSchools = window.middleSchoolData.filter(school =>
         bounds.hasLatLng(new naver.maps.LatLng(school["위도"], school["경도"]))
     );
-	console.log(filteredSchools);
     filteredSchools.forEach(school => {
     // ✅ 마커 컨테이너를 markerElement로 활용
     const markerElement = document.createElement("div");
@@ -5437,6 +5627,8 @@ function collectUIState() {
       state[el.id] = el.value;
     }
   });
+  // 시군구 다중 선택 저장 (Set → Array)
+  try { state['sigunguSelectedCodes'] = [...(selectedSigunguSet || [])]; } catch(e) {}
   return state;
 }
 
@@ -7969,18 +8161,13 @@ document.head.appendChild(style);
 
     // 우클릭 시 이벤트를 등록하여 "길찾기" 버튼을 표시
     naver.maps.Event.addListener(window.map, 'rightclick', function(e) {
-        console.log('✅ 우클릭 감지됨');
 		if(!document.getElementById("toggleFindWay")?.checked){
-			console.log('❌ 길찾기 토글이 OFF 상태');
 			return;
 		}
         var latlng = e.coord;  // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
         var startX = latlng.lng();  // 우클릭한 위치의 경도
         var startY = latlng.lat();  // 우클릭한 위치의 위도
         
-        console.log(`✅ 출발지: startX=${startX}, startY=${startY}`);
-
-        // 우클릭한 화면상의 마우스 좌표 가져오기 (clientX, clientY)
         var mouseEvent = e.pointerEvent;
         var mouseX = mouseEvent.clientX;
         var mouseY = mouseEvent.clientY;
@@ -7993,30 +8180,16 @@ document.head.appendChild(style);
         checkboxContainer.style.left = (mouseX + 65) + 'px';
         checkboxContainer.style.top = mouseY + 'px';
         checkboxContainer.style.display = 'block';
-        console.log('✅ 체크박스 컨테이너 표시됨');
 
         // "길찾기" 버튼 클릭 시 오버레이를 표시하고, iframe에 경로 표시
         routeButton.onclick = function() {
-            // ✅ 디버깅: 모든 체크박스 상태 로그
-            console.log('========== 길찾기 요청 ==========');
-            console.log('Destinations 배열:', destinations);
-            destinations.forEach(dest => {
-                const checkbox = document.getElementById(dest.id);
-                console.log(`[${dest.id}] ${dest.name}: ${checkbox ? checkbox.checked : 'NOT FOUND'}`);
-            });
-            
             var selectedDestinations = destinations.filter(dest => document.getElementById(dest.id).checked);
-            console.log('선택된 목적지:', selectedDestinations.map(d => d.name));
 
             if (selectedDestinations.length > 0) {
                 var destinationIds = selectedDestinations.map(dest => dest.id).join(',');
-                console.log('생성된 IDs:', destinationIds);
 
                 // URL에 선택된 목적지 id 추가
                 var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
-                //var url = `http://localhost:8000/public2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
-                console.log('최종 URL:', url);
-                console.log('================================');
                  //var url = `https://luciferhong.github.io/luciferhong/public2.html?startX=${startX}&startY=${startY}&mode=transit`;
                 //var url = `http://localhost:8000/test2.html?startX=${startX}&startY=${startY}&selected=${destinationIds}`;
 
@@ -8167,26 +8340,40 @@ function updateHeaderArrows() {
 // ▼ 필터 셀렉트 참조
 
 async function restoreRegionFiltersFromUIState() {
-  const { sidoSel, sigunguSel } = getFilterEls();
-  if (!sidoSel || !sigunguSel) return;
+  const { sidoSel } = getFilterEls();
+  if (!sidoSel) return;
 
   let saved = null;
   try { saved = await getHongbuSetting(UI_STATE_KEY); } catch(e) { saved = null; }
   if (!saved || typeof saved !== 'object') return;
 
   const savedSido = (saved['sidoFilter'] ?? saved['sidoSelect'] ?? '').toString().trim();
-  const savedSigungu = (saved['sigunguFilter'] ?? saved['sigunguSelect'] ?? '').toString().trim();
+  const savedSigunguCodes = Array.isArray(saved['sigunguSelectedCodes']) ? saved['sigunguSelectedCodes'] : [];
 
   // 1) 시도 복원
   if (savedSido && Array.from(sidoSel.options).some(o => o.value === savedSido)) {
     sidoSel.value = savedSido;
-    // 시도 기준으로 시군구 옵션 재생성
+    // 시도 기준으로 시군구 체크박스 재생성
     buildRegionFiltersFromApartments();
   }
 
-  // 2) 시군구 복원
-  if (savedSigungu && Array.from(sigunguSel.options).some(o => o.value === savedSigungu)) {
-    sigunguSel.value = savedSigungu;
+  // 2) 시군구 다중 선택 복원
+  if (savedSigunguCodes.length > 0) {
+    const sigunguFilter = document.getElementById('sigunguFilter');
+    if (sigunguFilter) {
+      selectedSigunguSet.clear();
+      savedSigunguCodes.forEach(code => {
+        const cb = sigunguFilter.querySelector(`input[value="${CSS.escape(code)}"]`);
+        if (cb) {
+          cb.checked = true;
+          selectedSigunguSet.add(code);
+        }
+      });
+      // 전체 체크박스 상태 조정
+      const allCb = sigunguFilter.querySelector('input[value="__ALL__"]');
+      if (allCb) allCb.checked = (selectedSigunguSet.size === 0);
+      _updateSigunguDisplay();
+    }
   }
 
   // 3) 지도/마커에 즉시 반영
@@ -8196,7 +8383,6 @@ async function restoreRegionFiltersFromUIState() {
 function getFilterEls() {
   return {
     sidoSel: document.getElementById('sidoFilter'),
-    sigunguSel: document.getElementById('sigunguFilter'),
   };
 }
 
@@ -8234,43 +8420,121 @@ function fillOptions(selectEl, items) {
   }
 }
 
+// 선택된 시군구 코드 Set (비어있으면 전체)
+let selectedSigunguSet = new Set();
+let _sigunguDropdownExpanded = false;
+let _bySidoCache = new Map();
+
+// ▼ 시군구 체크박스 목록 업데이트
+function buildSigunguCheckboxes() {
+  const sigunguFilter = document.getElementById('sigunguFilter');
+  if (!sigunguFilter) return;
+  sigunguFilter.innerHTML = '';
+  selectedSigunguSet.clear();
+
+  const sidoSel = document.getElementById('sidoFilter');
+  const selectedSidoCode = (sidoSel ? sidoSel.value : '').trim();
+
+  if (!selectedSidoCode || !_bySidoCache.has(selectedSidoCode)) {
+    const msgDiv = document.createElement('div');
+    msgDiv.style.cssText = 'color:#999;padding:4px 0;white-space:nowrap;font-size:13px;';
+    msgDiv.textContent = '시도를 선택하세요';
+    sigunguFilter.appendChild(msgDiv);
+    _updateSigunguDisplay();
+    return;
+  }
+
+  const sigunguMap = _bySidoCache.get(selectedSidoCode).sigungu;
+  const sigunguArray = Array.from(sigunguMap.entries())
+    .map(([code, name]) => ({ code, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+
+  // 전체 체크박스
+  const allLabel = document.createElement('label');
+  allLabel.style.cssText = 'display:block;padding:2px 0;cursor:pointer;margin:0;line-height:1.4;font-size:13px;';
+  allLabel.innerHTML = `<input type="checkbox" value="__ALL__" style="accent-color:blue;"> 전체`;
+  sigunguFilter.appendChild(allLabel);
+  const allCheckbox = allLabel.querySelector('input');
+
+  allCheckbox.addEventListener('change', function() {
+    selectedSigunguSet.clear();
+    sigunguFilter.querySelectorAll('input:not([value="__ALL__"])').forEach(cb => { cb.checked = false; });
+    allCheckbox.checked = true;
+    _updateSigunguDisplay();
+    window.__suppressAutoFocusRegion = false; // 사용자 직접 선택 → 지역 포커싱 허용
+    applyRegionFilterUpdate();
+  });
+
+  // 개별 시군구 체크박스
+  sigunguArray.forEach(({ code, name }) => {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:block;padding:2px 0;cursor:pointer;margin:0;line-height:1.4;font-size:13px;';
+    label.innerHTML = `<input type="checkbox" value="${code}" style="accent-color:orange;"> ${name}`;
+    sigunguFilter.appendChild(label);
+    const cb = label.querySelector('input');
+
+    cb.addEventListener('change', function() {
+      if (this.checked) selectedSigunguSet.add(code);
+      else selectedSigunguSet.delete(code);
+
+      const allCb = sigunguFilter.querySelector('input[value="__ALL__"]');
+      if (selectedSigunguSet.size === sigunguArray.length) {
+        selectedSigunguSet.clear();
+        allCb.checked = true;
+        sigunguFilter.querySelectorAll('input:not([value="__ALL__"])').forEach(c => { c.checked = false; });
+      } else if (selectedSigunguSet.size === 0) {
+        allCb.checked = true;
+        sigunguFilter.querySelectorAll('input:not([value="__ALL__"])').forEach(c => { c.checked = false; });
+      } else {
+        allCb.checked = false;
+      }
+      _updateSigunguDisplay();
+      saveUIStateDebounced();
+      window.__suppressAutoFocusRegion = false; // 사용자 직접 선택 → 지역 포커싱 허용
+      applyRegionFilterUpdate();
+    });
+  });
+
+  // 초기: 전체 체크
+  allCheckbox.checked = true;
+  _updateSigunguDisplay();
+}
+
+function _updateSigunguDisplay() {
+  const txt = document.getElementById('sigunguDisplayText');
+  if (!txt) return;
+  if (selectedSigunguSet.size === 0) {
+    txt.textContent = '전체';
+  } else {
+    txt.textContent = selectedSigunguSet.size + '개 선택';
+  }
+}
+
 // ▼ 시도/시군구 옵션 구성 (apartmentData 기반)
-//   - 시도: label=시도명(sidoNm), value=시도코드(sido)
-//   - 시군구: label=시군구명(sigunguNm), value=시군구코드(sigungu)
 function buildRegionFiltersFromApartments() {
-  const { sidoSel, sigunguSel } = getFilterEls();
-  if (!sidoSel || !sigunguSel || !Array.isArray(apartmentData)) return;
+  const sidoSel = document.getElementById('sidoFilter');
+  if (!sidoSel || !Array.isArray(apartmentData)) return;
 
   // 시도코드 -> { name: 시도명, sigungu: Map(시군구코드 -> 시군구명) }
-  const bySido = new Map();
+  _bySidoCache = new Map();
   apartmentData.forEach(a => {
     const sc = String(a.sido || '').trim();
     const sn = String(a.sidoNm || '').trim();
     const gc = String(a.sigungu || '').trim();
     const gn = String(a.sigunguNm || '').trim();
     if (!sc) return;
-    if (!bySido.has(sc)) bySido.set(sc, { name: sn || sc, sigungu: new Map() });
-    if (gc) bySido.get(sc).sigungu.set(gc, gn || gc);
+    if (!_bySidoCache.has(sc)) _bySidoCache.set(sc, { name: sn || sc, sigungu: new Map() });
+    if (gc) _bySidoCache.get(sc).sigungu.set(gc, gn || gc);
   });
 
   // 시도 옵션: value=코드, label=이름
-  const sidoItems = Array.from(bySido.entries())
+  const sidoItems = Array.from(_bySidoCache.entries())
     .map(([code, obj]) => ({ value: code, label: obj.name }))
     .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
   fillOptions(sidoSel, sidoItems);
 
-  // 선택된 시도에 따라 시군구 옵션 생성
-  const selectedSidoCode = (sidoSel.value || '').trim();
-  if (selectedSidoCode && bySido.has(selectedSidoCode)) {
-    const sigunguItems = Array.from(bySido.get(selectedSidoCode).sigungu.entries())
-      .map(([code, name]) => ({ value: code, label: name }))
-      .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-    fillOptions(sigunguSel, sigunguItems); // value=코드, label=이름
-    sigunguSel.disabled = false;
-  } else {
-    fillOptions(sigunguSel, []);
-    sigunguSel.disabled = true;
-  }
+  // 시군구 체크박스 생성
+  buildSigunguCheckboxes();
 }
 
 
@@ -8298,22 +8562,48 @@ function applyRegionFilterUpdate() {
   }
 }
 
-// ▼ 필터 변경 이벤트
+// ▼ 필터 변경 이벤트 (1회만 호출할 것)
 function attachRegionFilterEvents() {
-  const { sidoSel, sigunguSel } = getFilterEls();
-  if (!sidoSel || !sigunguSel) return;
+  if (window.__regionFilterEventsAttached) return;
+  window.__regionFilterEventsAttached = true;
 
-  // 시도 변경시: 시군구 목록 재구성 + 즉시 반영
+  const { sidoSel } = getFilterEls();
+  if (!sidoSel) return;
+
+  // 시도 변경시: 시군구 체크박스 재구성 + 즉시 반영
   sidoSel.addEventListener('change', (e) => {
-    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false; // ✅ 사용자 직접 변경시에만 지역 포커싱 허용
-    buildRegionFiltersFromApartments();
+    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false;
+    buildSigunguCheckboxes();
+    // 드롭다운 닫기
+    _sigunguDropdownExpanded = false;
+    document.getElementById('sigunguFilter')?.classList.remove('expanded');
+    const btn = document.getElementById('sigunguToggleBtn');
+    if (btn) btn.textContent = '▼';
     applyRegionFilterUpdate();
   });
 
-  // 시군구 변경시: '전체' 포함 즉시 반영
-  sigunguSel.addEventListener('change', (e) => {
-    if (e && e.isTrusted) window.__suppressAutoFocusRegion = false; // ✅ 사용자 직접 변경시에만 지역 포커싱 허용
-    applyRegionFilterUpdate();
+  // 시군구 드롭다운 토글
+  // stopPropagation 없이 wrapper.contains() 로만 제어 → 상태 꼬임 방지
+  const display = document.getElementById('sigunguFilterDisplay');
+  if (display) {
+    display.addEventListener('click', function() {
+      const sf = document.getElementById('sigunguFilter');
+      const btn = document.getElementById('sigunguToggleBtn');
+      if (!sf || !btn) return;
+      _sigunguDropdownExpanded = !_sigunguDropdownExpanded;
+      sf.classList.toggle('expanded', _sigunguDropdownExpanded);
+      btn.textContent = _sigunguDropdownExpanded ? '▲' : '▼';
+    });
+  }
+
+  // 외부 클릭 시 닫기 (wrapper 밖이면 닫음, 안이면 무시)
+  document.addEventListener('click', function(e) {
+    const wrapper = document.getElementById('sigunguFilterWrapper');
+    if (!wrapper || wrapper.contains(e.target)) return;
+    _sigunguDropdownExpanded = false;
+    document.getElementById('sigunguFilter')?.classList.remove('expanded');
+    const btn = document.getElementById('sigunguToggleBtn');
+    if (btn) btn.textContent = '▼';
   });
 }
 
@@ -8321,22 +8611,23 @@ function attachRegionFilterEvents() {
 function getFilterEls() {
   return {
     sidoSel: document.getElementById('sidoFilter'),
-    sigunguSel: document.getElementById('sigunguFilter'),
   };
 }
 
 // ✅ 선택된 시군구/시도의 "첫 번째 아파트" 좌표로 지도 이동
 function focusMapToSelectedRegion(zoomLevel = 15) {
   if (!window.map || !Array.isArray(apartmentData)) return;
-  const { sidoSel, sigunguSel } = getFilterEls();
-  const sigCode = (sigunguSel?.value || '').trim();
+  const { sidoSel } = getFilterEls();
   const siCode  = (sidoSel?.value    || '').trim();
 
   let target = null;
-  if (sigCode) {
-    target = apartmentData.find(a => String(a.sigungu).trim() === sigCode);
+  // 시군구 단일 선택일 때만 해당 시군구로 이동 (다중 선택 시 이동 안 함)
+  if (selectedSigunguSet.size === 1) {
+    const firstCode = [...selectedSigunguSet][0];
+    target = apartmentData.find(a => String(a.sigungu).trim() === firstCode);
   }
-  if (!target && siCode) {
+  // 시군구 미선택(전체)이고 시도만 선택된 경우 시도로 이동
+  if (!target && selectedSigunguSet.size === 0 && siCode) {
     target = apartmentData.find(a => String(a.sido).trim() === siCode);
   }
   if (!target) return;
