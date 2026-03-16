@@ -18,6 +18,7 @@
     <div id="controls">
         <button id="startPolyline">경로 그리기</button>
 		<button id="completePolyline">경로 그리기 완료</button>
+		<button id="continuePolyline">GPX 이어 그리기</button>
         <button id="downloadGPX">GPX 다운로드</button>
         <button id="uploadGPX">GPX 불러오기</button>
         <input type="file" id="gpxFileInput" style="display: none;" accept=".gpx">
@@ -32,12 +33,16 @@
                 this.currentPath = [];
                 this.currentPolyline = null;
                 this.markers = [];
+                this.kmMarkers = [];
+                this._currentPathKmMarkers = [];
+                this._completedPathsDistanceM = 0;
                 this.initUI();
             }
 				
             initUI() {
 				document.getElementById("startPolyline").addEventListener("click", () => this.startPolylineMode());
-				document.getElementById("completePolyline").addEventListener("click", () => this.completePolyline()); // ✅ 추가됨*				
+			document.getElementById("completePolyline").addEventListener("click", () => this.completePolyline());
+			document.getElementById("continuePolyline").addEventListener("click", () => this.continuePolylineMode());
 				document.getElementById("downloadGPX").addEventListener("click", () => this.downloadGPX());
 				document.getElementById("uploadGPX").addEventListener("click", () => document.getElementById("gpxFileInput").click());
 
@@ -55,9 +60,12 @@
 				});
 
 				naver.maps.Event.addListener(this.map, "click", (e) => {
+					if (!this.currentPolyline) return;
 					this.currentPath.push(e.coord);
 					this.currentPolyline.setPath(this.currentPath);
 					this.addMilestoneMarker(e.coord);
+					this._currentPathKmMarkers.forEach(m => m.setMap(null));
+					this._currentPathKmMarkers = this._addKmMarkersForPath(this.currentPath, this._completedPathsDistanceM);
 				});
 
 				naver.maps.Event.addListener(this.map, "rightclick", () => {
@@ -83,9 +91,10 @@
 					const userConfirmed = confirm("이전에 그린 경로가 삭제됩니다. 계속하시겠습니까?");
 					if (!userConfirmed) return;
 
-					this.clearMap(); // 기존 경로 초기화
+					this.clearMap();
 				}
 
+				this._isContinuing = false;
 				this.currentPath = [];
 				this.markers = [];
 				this.currentPolyline = new naver.maps.Polyline({
@@ -97,6 +106,42 @@
 				});	
 			}
 		
+			continuePolylineMode() {
+				if (this.shapes.length === 0) {
+					alert("이어 그릴 경로가 없습니다. 먼저 GPX를 불러오거나 경로를 그리세요.");
+					return;
+				}
+				if (this.currentPolyline) {
+					this.completePolyline();
+				}
+				const lastShape = this.shapes[this.shapes.length - 1];
+				const pathCoords = [];
+				lastShape.polyline.getPath().forEach(c => pathCoords.push(c));
+				if (pathCoords.length === 0) {
+					alert("경로 데이터를 읽을 수 없습니다.");
+					return;
+				}
+				const lastCoord = pathCoords[pathCoords.length - 1];
+				this._isContinuing = true;
+				this.currentPath = [lastCoord];
+				this.markers = [];
+				this.currentPolyline = new naver.maps.Polyline({
+					map: this.map,
+					path: this.currentPath,
+					strokeColor: "#FF0000",
+					strokeWeight: 3.33,
+					strokeOpacity: 0.8
+				});
+				new naver.maps.Marker({
+					position: lastCoord,
+					map: this.map,
+					icon: {
+						content: `<div style="width:12px;height:12px;background:#FF7700;border-radius:50%;border:2px solid #fff;box-shadow:0 0 3px #000;"></div>`,
+						anchor: new naver.maps.Point(6, 6)
+					}
+				});
+			}
+
 			downloadGPX() {
 				if (this.shapes.length === 0) {
 					alert("다운로드할 경로가 없습니다.");
@@ -124,7 +169,15 @@
 
             completePolyline() {
                 if (this.currentPolyline && this.currentPath.length > 1) {
-                    this.addStartEndMarkers();
+                    if (!this._isContinuing) {
+                        this.addStartEndMarkers();
+                    } else {
+                        this.createEndMarker(this.currentPath[this.currentPath.length - 1]);
+                    }
+                    this._isContinuing = false;
+                    this.kmMarkers.push(...this._currentPathKmMarkers);
+                    this._currentPathKmMarkers = [];
+                    this._completedPathsDistanceM += this.calculateTotalDistance(this.currentPath);
                     this.shapes.push({ polyline: this.currentPolyline, markers: [...this.markers] });
                     this.currentPolyline = null;
                 }
@@ -162,39 +215,30 @@
             }
 			clearMap() {
 				if (!Array.isArray(this.shapes)) {
-					this.shapes = []; // shapes가 배열이 아니면 초기화
+					this.shapes = [];
 				}
-
-				// 기존 경로 및 마커 제거
 				this.shapes.forEach(({ polyline, markers }) => {
 					if (polyline) polyline.setMap(null);
-					if (Array.isArray(markers)) {
-						markers.forEach(marker => marker.setMap(null));
-					}
+					if (Array.isArray(markers)) markers.forEach(m => m.setMap(null));
 				});
-
-				// 🔹 현재 그리고 있는 polyline도 제거
 				if (this.currentPolyline) {
 					this.currentPolyline.setMap(null);
 					this.currentPolyline = null;
 				}
-
-				// 🔹 출발 & 도착 마커 삭제
-				if (Array.isArray(this.markers)) {
-					this.markers.forEach(marker => marker.setMap(null));
-				}
-
-				// 🔹 도착 마커 삭제 추가
+				if (Array.isArray(this.markers)) this.markers.forEach(m => m.setMap(null));
 				if (this.endMarker) {
 					this.endMarker.setMap(null);
-					this.endMarker = null; // 도착 마커 변수 초기화
+					this.endMarker = null;
 				}
-
-				// 데이터 초기화
+				(this.kmMarkers || []).forEach(m => m.setMap(null));
+				(this._currentPathKmMarkers || []).forEach(m => m.setMap(null));
 				this.shapes = [];
 				this.markers = [];
 				this.currentPath = [];
 				this.currentPolyline = null;
+				this.kmMarkers = [];
+				this._currentPathKmMarkers = [];
+				this._completedPathsDistanceM = 0;
 			}
 
 		loadGPX(file) {
@@ -219,7 +263,6 @@
 				}
 
 				this.drawGPXPath(path);
-				this.updateEndMarker(path); // 🔹 GPX 로드 후 도착 마커 업데이트
 			};
 			reader.readAsText(file);
 		}
@@ -269,11 +312,15 @@
 			this.shapes.push({ polyline });
 
 			this.createLabeledMarker(path[0], "출발");
-			this.createEndMarker(path[path.length - 1]);
+			this.createEndMarker(path[path.length - 1], path);
+
+			const kmMs = this._addKmMarkersForPath(path, this._completedPathsDistanceM);
+			this.kmMarkers.push(...kmMs);
+			this._completedPathsDistanceM += this.calculateTotalDistance(path);
 		}
 
-					createEndMarker(coord) {
-			const totalDistance = this.calculateTotalDistance(); // m 단위로 가져옴
+					createEndMarker(coord, path) {
+				const totalDistance = this.calculateTotalDistance(path);
 			const formattedDistance = totalDistance >= 1000 
 				? (totalDistance / 1000).toFixed(2) + "km" 
 				: totalDistance.toFixed(0) + "m";
@@ -332,14 +379,46 @@
 
 
         undoLastPoint() {
+			if (!this.currentPolyline) return;
 			if (this.currentPath.length > 0) {
-				this.currentPath.pop(); // 마지막 좌표 삭제
-				this.currentPolyline.setPath(this.currentPath); // 반영
-
-				// 마지막 마커 삭제
+				this.currentPath.pop();
+				this.currentPolyline.setPath(this.currentPath);
 				const lastMarker = this.markers.pop();
 				if (lastMarker) lastMarker.setMap(null);
+				this._currentPathKmMarkers.forEach(m => m.setMap(null));
+				this._currentPathKmMarkers = this._addKmMarkersForPath(this.currentPath, this._completedPathsDistanceM);
 			}
+		}
+
+		_addKmMarkersForPath(path, offsetM) {
+			const newMarkers = [];
+			if (path.length < 2) return newMarkers;
+			let cumDist = 0;
+			let nextKmTarget = Math.floor(offsetM / 1000) * 1000 + 1000;
+			for (let i = 1; i < path.length; i++) {
+				const segLen = this.computeDistance(path[i - 1], path[i]);
+				const distBefore = offsetM + cumDist;
+				cumDist += segLen;
+				const distAfter = offsetM + cumDist;
+				while (nextKmTarget <= distAfter) {
+					const ratio = segLen > 0 ? (nextKmTarget - distBefore) / segLen : 0;
+					const lat = path[i - 1].y + ratio * (path[i].y - path[i - 1].y);
+					const lng = path[i - 1].x + ratio * (path[i].x - path[i - 1].x);
+					const kmLabel = (nextKmTarget / 1000) + 'km';
+					const marker = new naver.maps.Marker({
+						position: new naver.maps.LatLng(lat, lng),
+						map: this.map,
+						zIndex: 200,
+						icon: {
+							content: `<div style="background:#1a73e8;color:#fff;font-size:11px;font-weight:bold;padding:2px 6px;border-radius:10px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.45);">${kmLabel}</div>`,
+							anchor: new naver.maps.Point(17, 10)
+						}
+					});
+					newMarkers.push(marker);
+					nextKmTarget += 1000;
+				}
+			}
+			return newMarkers;
 		}
 
     }
