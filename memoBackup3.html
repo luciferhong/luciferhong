@@ -537,8 +537,8 @@
   }
 
   function regionFromPhotoBySig(photo) {
-    const lat = Number(photo?.lat);
-    const lng = Number(photo?.lng);
+    const lat = Number.parseFloat(String(photo?.lat ?? '').replace(',', '.'));
+    const lng = Number.parseFloat(String(photo?.lng ?? '').replace(',', '.'));
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return makeUnknownRegion();
 
     const prepared = sigRegionIndex.prepared || [];
@@ -546,6 +546,16 @@
       if (!_bboxContains(f.bbox, lng, lat)) continue;
       if (_geomContainsPoint(f.geometry, lng, lat)) return f.region;
     }
+
+    // 경계선/부동소수 오차로 누락되는 경우를 줄이기 위한 완화 판정
+    const EPS = 0.00015;
+    for (const f of prepared) {
+      const b = f.bbox;
+      if (!b) continue;
+      if (lng < b[0] - EPS || lng > b[2] + EPS || lat < b[1] - EPS || lat > b[3] + EPS) continue;
+      return f.region;
+    }
+
     return makeUnknownRegion();
   }
 
@@ -743,15 +753,35 @@
         await Promise.all(sliceRefs.map(ref => new Promise(res => {
           const targetStore = (ref.kind === 'photo') ? photoStore : noteStore;
           if (!targetStore) return res();
-          const r = targetStore.get(ref.id);
-          r.onsuccess = () => {
-            if (r.result) {
-              if (ref.kind === 'photo') rawPhotos.push(r.result);
-              else outNotes.push(r.result);
+          const handleResult = (v) => {
+            if (v) {
+              if (ref.kind === 'photo') rawPhotos.push(v);
+              else outNotes.push(v);
             }
             res();
           };
-          r.onerror = () => res();
+
+          try {
+            const key = String(ref.id);
+            const r1 = targetStore.get(key);
+            r1.onsuccess = () => {
+              if (r1.result) {
+                handleResult(r1.result);
+                return;
+              }
+              const n = Number(key);
+              if (Number.isFinite(n) && String(n) === key) {
+                const r2 = targetStore.get(n);
+                r2.onsuccess = () => handleResult(r2.result || null);
+                r2.onerror = () => handleResult(null);
+              } else {
+                handleResult(null);
+              }
+            };
+            r1.onerror = () => handleResult(null);
+          } catch(_) {
+            handleResult(null);
+          }
         })));
         db.close();
 
