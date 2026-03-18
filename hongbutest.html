@@ -6166,8 +6166,9 @@ function __createPhotoMemoMarker(memo) {
 
       alert(`[이미지로드시작] ID ${id}`);
       alert(`[진단] fullBlob: ${fullBlob instanceof Blob ? 'Blob있음':'없음'}, fullDataUrl: ${fullDataUrl ? 'URL있음':'없음'}`);
-      const useBlobUrl = (fullBlob instanceof Blob);
-      const fullUrl = useBlobUrl ? URL.createObjectURL(fullBlob) : fullDataUrl;
+      const useDataUrl = !!(fullDataUrl && fullDataUrl.startsWith("data:"));
+      const useBlobUrl = !useDataUrl && (fullBlob instanceof Blob);
+      const fullUrl = useDataUrl ? fullDataUrl : (useBlobUrl ? URL.createObjectURL(fullBlob) : "");
       alert(`[진단] fullUrl생성됨: ${fullUrl ? fullUrl.substring(0, 50) : 'null'}`);
       const previewImg = new Image();
       let didBlobFallback = false;
@@ -6195,6 +6196,15 @@ function __createPhotoMemoMarker(memo) {
               previewImg.src = fallbackDataUrl;
               return;
             }
+          } catch(_) {}
+        }
+
+        if (useDataUrl && (fullBlob instanceof Blob) && !didBlobFallback) {
+          didBlobFallback = true;
+          try {
+            alert(`[폴백시도] ID ${id} - DataURL 실패, Blob URL로 재시도`);
+            previewImg.src = URL.createObjectURL(fullBlob);
+            return;
           } catch(_) {}
         }
 
@@ -6303,12 +6313,12 @@ async function __loadAndCreatePhotoMemoMarker(entry) {
 // 지도 이동으로 마커가 다시 나타나는 경로와 동일하게 현재 화면 마커를 재로드
 async function __reloadVisiblePhotoMemoMarkersLikeMapMove() {
   if (!window.__photoMemoVisible || !window.map || !(window.map instanceof naver.maps.Map)) return;
-  
+
   // 0) 인덱스가 로드되어 있지 않으면 먼저 로드
   if (!window.__photoMemoIndexLoaded) {
     try { await loadPhotoMemoIndexOnce(); } catch(_) {}
   }
-  
+
   const bounds = window.map.getBounds?.();
   if (!bounds) return;
 
@@ -6326,13 +6336,42 @@ async function __reloadVisiblePhotoMemoMarkersLikeMapMove() {
     try { __removePhotoMemoMarker(id); } catch(_) {}
   });
 
-  // 2) 첫 번째 재로드 (16ms 대기)
-  await new Promise((resolve) => setTimeout(resolve, 16));
-  try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
-  
-  // 3) iOS 렌더링 안정성을 위해 두 번 호출 (추가 80ms 대기)
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
+  // 2) 실제 지도 이동과 동일한 idle 사이클을 강제로 한 번 발생
+  const mapRef = window.map;
+  const waitIdleOnce = () => new Promise((resolve) => {
+    let listener = null;
+    try {
+      listener = naver.maps.Event.addListener(mapRef, "idle", () => {
+        try { if (listener) naver.maps.Event.removeListener(listener); } catch(_) {}
+        resolve(true);
+      });
+    } catch(_) {
+      resolve(false);
+    }
+    setTimeout(() => {
+      try { if (listener) naver.maps.Event.removeListener(listener); } catch(_) {}
+      resolve(false);
+    }, 700);
+  });
+
+  try {
+    const center = mapRef.getCenter?.();
+    if (!center) {
+      try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
+      return;
+    }
+
+    // iOS에서 동일 경로를 타기 위해 실제 panBy -> idle -> setCenter -> idle 순서를 강제
+    const firstIdle = waitIdleOnce();
+    try { mapRef.panBy(new naver.maps.Point(2, 0)); } catch(_) {}
+    await firstIdle;
+
+    const secondIdle = waitIdleOnce();
+    try { mapRef.setCenter(center); } catch(_) {}
+    await secondIdle;
+  } catch(_) {
+    try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
+  }
 }
 
 // 경량 인덱스만 로드 (Blob 없음) — 화면 로드 시 전체 Blob 로드 대신 좌표/ID만
@@ -9329,12 +9368,24 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
     const normalizedThumbDataUrl = normalizedThumbBlob instanceof Blob
       ? await __blobToDataUrl(normalizedThumbBlob)
       : (typeof record.thumbDataUrl === "string" ? record.thumbDataUrl : "");
+    let normalizedImageDataUrl = normalizedImageBlob instanceof Blob
+      ? await __blobToDataUrl(normalizedImageBlob)
+      : (typeof record.imageDataUrl === "string" ? record.imageDataUrl : "");
+    if (!normalizedImageDataUrl || !normalizedImageDataUrl.startsWith("data:")) {
+      try {
+        const canvas = document.getElementById("modalCanvas");
+        if (canvas && canvas.width > 1 && canvas.height > 1 && typeof canvas.toDataURL === "function") {
+          normalizedImageDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+        }
+      } catch(_) {}
+    }
 
     const { thumbBlob, ...recordWithoutLegacyThumbBlob } = record;
     const nextRecord = {
       ...recordWithoutLegacyThumbBlob,
       note: nextNote,
       imageBlob: normalizedImageBlob || record.imageBlob,
+      imageDataUrl: normalizedImageDataUrl || record.imageDataUrl || normalizedThumbDataUrl,
       thumbDataUrl: normalizedThumbDataUrl,
     };
 
