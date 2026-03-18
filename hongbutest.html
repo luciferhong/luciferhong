@@ -6413,19 +6413,14 @@ function __showPhotoMemoMenuAtCoord(coord) {
 function __coordFromClientXY(clientX, clientY) {
   try {
     const mapEl = document.getElementById("map");
-    const proj = window.map?.getProjection?.();
-    if (!mapEl || !proj || typeof clientX !== "number" || typeof clientY !== "number") return null;
+    if (!mapEl || typeof clientX !== "number" || typeof clientY !== "number") return null;
 
     const rect = mapEl.getBoundingClientRect();
     const offsetX = clientX - rect.left;
     const offsetY = clientY - rect.top;
 
-    if (typeof proj.fromOffsetToCoord === "function") {
-      return proj.fromOffsetToCoord(new naver.maps.Point(offsetX, offsetY));
-    }
-
-    // 일부 Android/WebView 환경에서 fromPointToCoord(offset) 결과가 크게 어긋날 수 있어
-    // 안전한 bounds 보간으로 좌표를 추정한다.
+    // 갤럭시/Android에서 projection 변환 편차를 피하기 위해
+    // 터치 픽셀을 현재 bounds에 직접 매핑해 좌표를 계산한다.
     const bounds = window.map?.getBounds?.();
     if (bounds && rect.width > 0 && rect.height > 0) {
       const sw = bounds.getSW?.();
@@ -6434,7 +6429,20 @@ function __coordFromClientXY(clientX, clientY) {
         const rx = Math.max(0, Math.min(1, offsetX / rect.width));
         const ry = Math.max(0, Math.min(1, offsetY / rect.height));
         const lng = sw.lng() + (ne.lng() - sw.lng()) * rx;
-        const lat = ne.lat() - (ne.lat() - sw.lat()) * ry;
+
+        // 위도는 Web Mercator y로 보간해야 화면상의 세로 비율과 맞는다.
+        const clampLat = (v) => Math.max(-85.05112878, Math.min(85.05112878, v));
+        const latToMercY = (lat) => {
+          const r = clampLat(lat) * Math.PI / 180;
+          return Math.log(Math.tan(Math.PI / 4 + r / 2));
+        };
+        const mercYToLat = (my) => (2 * Math.atan(Math.exp(my)) - Math.PI / 2) * 180 / Math.PI;
+
+        const yTop = latToMercY(ne.lat());
+        const yBottom = latToMercY(sw.lat());
+        const y = yTop + (yBottom - yTop) * ry;
+        const lat = mercYToLat(y);
+
         return new naver.maps.LatLng(lat, lng);
       }
     }
@@ -6447,7 +6455,9 @@ async function __handlePhotoMemoMapTap(point, opts = {}) {
     if (!window.__photoMemoAddMode) return;
     if (!point || (point.clientX === 0 && point.clientY === 0)) return;
 
-    const coord = opts.coord || __coordFromClientXY(point.clientX, point.clientY);
+    // 모바일(iPhone/Android)은 터치 픽셀 기준 좌표를 우선 사용해 일관성 확보
+    const touchCoord = point?.isTouch ? __coordFromClientXY(point.clientX, point.clientY) : null;
+    const coord = touchCoord || opts.coord || __coordFromClientXY(point.clientX, point.clientY);
     if (!coord) return;
     if (!window.__photoMemoIndexLoaded) await loadPhotoMemoIndexOnce();
 
