@@ -160,7 +160,74 @@ font-weight: 800;
   box-shadow:0 2px 8px rgba(45,93,167,0.35) !important;
   background:#eef4ff !important;
 }
+
+/* ✅ 포토메모 메모 입력 모달 */
+#photoMemoNoteModal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 1000010;
+  justify-content: center;
+  align-items: center;
+}
+#photoMemoNoteModal.show { display: flex; }
+#photoMemoNoteModalInner {
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px;
+  width: min(340px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+}
+#photoMemoNotePreview {
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #f0f0f0;
+}
+#photoMemoNoteInput {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 15px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 72px;
+}
+.photo-memo-note-btns {
+  display: flex;
+  gap: 8px;
+}
+.photo-memo-note-btns button {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+#photoMemoNoteSave  { background: #2D5DA7; color: #fff; }
+#photoMemoNoteCancel{ background: #f0f0f0; color: #333; }
 </style>
+
+<!-- ✅ 포토메모 메모 입력 모달 -->
+<div id="photoMemoNoteModal">
+  <div id="photoMemoNoteModalInner">
+    <img id="photoMemoNotePreview" src="" alt="preview" />
+    <textarea id="photoMemoNoteInput" placeholder="메모를 입력하세요 (선택사항)"></textarea>
+    <div class="photo-memo-note-btns">
+      <button id="photoMemoNoteSave">💾 저장</button>
+      <button id="photoMemoNoteCancel">취소</button>
+    </div>
+  </div>
+</div>
+
 
 
 
@@ -1035,6 +1102,42 @@ body.map-fullscreen {
 <div id="imageModal" style="display:none;">
   <canvas id="modalCanvas" style="max-width:90vw; max-height:90vh; border-radius:8px;"></canvas>
 
+  <div id="photoMemoEditPanel" style="
+    position: absolute;
+    left: 50%;
+    bottom: 20px;
+    transform: translateX(-50%);
+    width: min(520px, 92vw);
+    background: rgba(255,255,255,0.96);
+    border-radius: 10px;
+    padding: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+    display: none;
+    z-index: 2;">
+    <textarea id="photoMemoEditInput" placeholder="포토메모를 입력하세요" style="
+      width: 100%;
+      min-height: 80px;
+      box-sizing: border-box;
+      resize: vertical;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 8px;
+    "></textarea>
+    <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button id="savePhotoMemoNoteButton" style="
+        background:#2563eb;
+        color:#fff;
+        border:none;
+        padding:8px 12px;
+        border-radius:8px;
+        cursor:pointer;
+        display:none;">💾 메모 저장</button>
+    </div>
+  </div>
+
   <!-- 📋 복사 버튼 -->
   <button id="copyImageButton" style="
     position: absolute; 
@@ -1083,6 +1186,7 @@ body.map-fullscreen {
 //이미지 확대 여부
 window.imageModalShowYn = false;
 window.__openedPhotoMemoId = null;
+window.__openedPhotoMemoRecord = null;
 
 // ==============================
 // ✅ Memory leak 방지 유틸 (메모/이미지/캔버스)
@@ -1140,11 +1244,31 @@ function __setPhotoMemoModalContext(photoMemoId){
   if (btn) btn.style.display = window.__openedPhotoMemoId ? "inline-block" : "none";
 }
 
+function __setPhotoMemoModalRecord(photoMemoRecord){
+  window.__openedPhotoMemoRecord = photoMemoRecord || null;
+  __setPhotoMemoModalContext(photoMemoRecord?.id || null);
+
+  const panel = document.getElementById("photoMemoEditPanel");
+  const input = document.getElementById("photoMemoEditInput");
+  const saveBtn = document.getElementById("savePhotoMemoNoteButton");
+  const isPhotoMemo = !!photoMemoRecord;
+
+  if (panel) panel.style.display = isPhotoMemo ? "block" : "none";
+  if (input) input.value = isPhotoMemo ? String(photoMemoRecord.note || "") : "";
+  if (saveBtn) saveBtn.style.display = isPhotoMemo ? "inline-block" : "none";
+}
+
+function __updatePhotoMemoIndexNote(id, note) {
+  const key = String(id);
+  const item = (window.__photoMemoIndex || []).find(x => String(x.id) === key);
+  if (item) item.note = String(note || "");
+}
+
 function closeImageModal(){
   const modal = document.getElementById("imageModal");
   if(modal) modal.style.display = "none";
   __clearModalCanvas();
-  __setPhotoMemoModalContext(null);
+  __setPhotoMemoModalRecord(null);
   window.lastOpenedBase64 = null;
   window.imageModalShowYn = false;
 }
@@ -5833,7 +5957,7 @@ function __createPhotoMemoMarker(memo) {
       const fullUrl = URL.createObjectURL(fullBlob);
       const previewImg = new Image();
       previewImg.onload = () => {
-        __setPhotoMemoModalContext(id);
+        __setPhotoMemoModalRecord(memo);
         modalCanvas.width = previewImg.width;
         modalCanvas.height = previewImg.height;
         modalCtx.drawImage(previewImg, 0, 0);
@@ -5966,14 +6090,22 @@ function setupPhotoMemoInputHandlerOnce() {
       const p = window.__photoMemoPendingCoord;
       if (!file || !p || typeof p.lat !== "number" || typeof p.lng !== "number") return;
 
-      const id = __uuidv4();
-      const thumbBlob = await __fileToThumbBlob(file, 96, 0.82);
-      const rec = {
+        const thumbBlob = await __fileToThumbBlob(file, 96, 0.82);
+
+        // 썸네일 미리보기 표시 후 메모 입력 모달 열기
+        const note = await __showPhotoMemoNoteModal(thumbBlob);
+        if (note === null) {
+          // 취소: pending 좌표 유지 (사용자가 다시 시도할 수 있도록)
+          return;
+        }
+
+        const id = __uuidv4();
+        const rec = {
         id,
         lat: p.lat,
         lng: p.lng,
         createdAt: Date.now(),
-        note: "",
+          note: note.trim(),
         imageBlob: file,
         thumbBlob
       };
@@ -5994,6 +6126,43 @@ function setupPhotoMemoInputHandlerOnce() {
 
   inputs.forEach((inp) => inp.addEventListener("change", onPicked));
 }
+
+  // 메모 입력 모달: Promise<string>(저장) | null(취소)
+  function __showPhotoMemoNoteModal(thumbBlob) {
+    return new Promise((resolve) => {
+      const modal    = document.getElementById("photoMemoNoteModal");
+      const preview  = document.getElementById("photoMemoNotePreview");
+      const textarea = document.getElementById("photoMemoNoteInput");
+      const btnSave  = document.getElementById("photoMemoNoteSave");
+      const btnCancel= document.getElementById("photoMemoNoteCancel");
+      if (!modal || !preview || !textarea || !btnSave || !btnCancel) { resolve(""); return; }
+
+      let previewUrl = null;
+      if (thumbBlob instanceof Blob) {
+        previewUrl = URL.createObjectURL(thumbBlob);
+        preview.src = previewUrl;
+      } else {
+        preview.src = "";
+      }
+      textarea.value = "";
+      modal.classList.add("show");
+      setTimeout(() => textarea.focus(), 100);
+
+      function cleanup(note) {
+        modal.classList.remove("show");
+        if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch(_) {} previewUrl = null; }
+        preview.src = "";
+        textarea.value = "";
+        btnSave.removeEventListener("click", onSave);
+        btnCancel.removeEventListener("click", onCancel);
+        resolve(note);
+      }
+      function onSave()   { cleanup(textarea.value); }
+      function onCancel() { cleanup(null); }
+      btnSave.addEventListener("click", onSave);
+      btnCancel.addEventListener("click", onCancel);
+    });
+  }
 
 window.__photoMemoAddMode = window.__photoMemoAddMode || false; // 카메라 버튼으로 켜는 "위치 선택 모드"
 
@@ -6978,8 +7147,8 @@ function handleMouseUp() {
 }
 function handleKeyDown(event) {
     const activeElement = document.activeElement;
-console.log("activeMarker :")
-console.log(activeMarker)
+//console.log("activeMarker :")
+//console.log(activeMarker)
 
 	// ✅ case 2: 지도 마커 이동용 WASD
 
@@ -8674,12 +8843,29 @@ document.getElementById("deletePhotoMemoButton")?.addEventListener("click", asyn
 
   try {
     await __photoMemoDelete(photoMemoId);
-    window.__photoMemoAll = (window.__photoMemoAll || []).filter(x => String(x.id) !== String(photoMemoId));
+    window.__photoMemoIndex = (window.__photoMemoIndex || []).filter(x => String(x.id) !== String(photoMemoId));
     __removePhotoMemoMarker(photoMemoId);
     closeImageModal();
   } catch (e) {
     console.error("포토메모 삭제 실패:", e);
     alert("포토메모 삭제 실패");
+  }
+});
+
+document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", async () => {
+  const record = window.__openedPhotoMemoRecord;
+  const input = document.getElementById("photoMemoEditInput");
+  if (!record || !input) return;
+
+  const nextNote = String(input.value || "").trim();
+  try {
+    record.note = nextNote;
+    await __photoMemoPut(record);
+    __updatePhotoMemoIndexNote(record.id, nextNote);
+    try { showToast("포토메모를 저장했습니다.", 1400); } catch(_) {}
+  } catch (e) {
+    console.error("포토메모 메모 저장 실패:", e);
+    alert("포토메모 메모 저장 실패");
   }
 });
 
