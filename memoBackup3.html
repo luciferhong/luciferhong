@@ -337,7 +337,7 @@
       const canonical = sigunguNameByCode.get(`${sCode}:${gCode}`);
       if (canonical) return canonical;
     }
-    return gName || gCode;
+    return gName || gCode; 
   }
 
   async function collectUsedAptIds() {
@@ -350,9 +350,22 @@
     return set;
   }
 
+  function preloadCanonicalRegionMapFromApt(arr) {
+    for (const a of arr || []) {
+      const rawSidoCode = String(a?.sido ?? a?.sidoCode ?? '').trim();
+      const rawSidoName = String(a?.sidoNm ?? a?.sidoName ?? '').trim();
+      _registerSidoFromApt(rawSidoCode, rawSidoName);
+      _registerSigunguFromApt(
+        _normalizeSidoCode(rawSidoCode) || rawSidoCode,
+        String(a?.sigungu ?? a?.sigunguCode ?? '').trim(),
+        String(a?.sigunguNm ?? a?.sigunguName ?? '').trim()
+      );
+    }
+  }
+
   async function loadFilteredAptIndexFromSamePath() {
     showBusy('아파트 데이터(apt.json) 불러오는 중…');
-    try {
+    try { 
       const usedIds = await collectUsedAptIds(); // 내용 있는 메모 기준
       const res = await fetch('apt.json', { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -364,13 +377,15 @@
         (Array.isArray(data?.apartments) ? data.apartments :
          Array.isArray(data?.data) ? data.data : []);
 
+      // apt.json 전체를 기준으로 시도/시군구 기준명 맵을 먼저 구성한다.
+      preloadCanonicalRegionMapFromApt(arr);
+
       for (const a of arr) {
         const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
         if (!id || !usedIds.has(id)) continue;
 
         const rawSidoCode = String(a.sido ?? a.sidoCode ?? '').trim();
         const rawSidoName = String(a.sidoNm ?? a.sidoName ?? '').trim();
-        _registerSidoFromApt(rawSidoCode, rawSidoName);
 
         aptIndex.set(id, {
           sido: _normalizeSidoCode(rawSidoCode) || rawSidoCode,
@@ -378,14 +393,8 @@
           sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
           sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
         });
-
-        _registerSigunguFromApt(
-          _normalizeSidoCode(rawSidoCode) || rawSidoCode,
-          String(a.sigungu ?? a.sigunguCode ?? '').trim(),
-          String(a.sigunguNm ?? a.sigunguName ?? '').trim()
-        );
       }
-      setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (필요 항목만)`);
+      setAptStatus(`아파트 ${aptIndex.size}건 로딩됨 (필요 항목 + 기준명 ${sigunguNameByCode.size}개)`);
       hideBusy();
       return true;
     } catch (e) {
