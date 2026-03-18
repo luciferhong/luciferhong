@@ -539,6 +539,10 @@ buttonContainer {
   display: none;
   justify-content: center;
   align-items: center;
+  flex-direction: column;
+  gap: 12px;
+  padding: 70px 16px 20px;
+  box-sizing: border-box;
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.8);
@@ -548,8 +552,8 @@ buttonContainer {
 }
 
 #modalCanvas {
-  max-width: 90%;
-  max-height: 90%;
+  max-width: 90vw;
+  max-height: calc(100vh - 240px);
   border-radius: 8px;
 }
 
@@ -1103,10 +1107,7 @@ body.map-fullscreen {
   <canvas id="modalCanvas" style="max-width:90vw; max-height:90vh; border-radius:8px;"></canvas>
 
   <div id="photoMemoEditPanel" style="
-    position: absolute;
-    left: 50%;
-    bottom: 20px;
-    transform: translateX(-50%);
+    position: relative;
     width: min(520px, 92vw);
     background: rgba(255,255,255,0.96);
     border-radius: 10px;
@@ -1127,6 +1128,14 @@ body.map-fullscreen {
       margin-bottom: 8px;
     "></textarea>
     <div style="display:flex; justify-content:flex-end; gap:8px;">
+      <button id="closePhotoMemoModalButton" style="
+        background:#e5e7eb;
+        color:#111827;
+        border:none;
+        padding:8px 12px;
+        border-radius:8px;
+        cursor:pointer;
+        display:none;">닫기</button>
       <button id="savePhotoMemoNoteButton" style="
         background:#2563eb;
         color:#fff;
@@ -1251,11 +1260,13 @@ function __setPhotoMemoModalRecord(photoMemoRecord){
   const panel = document.getElementById("photoMemoEditPanel");
   const input = document.getElementById("photoMemoEditInput");
   const saveBtn = document.getElementById("savePhotoMemoNoteButton");
+  const closeBtn = document.getElementById("closePhotoMemoModalButton");
   const isPhotoMemo = !!photoMemoRecord;
 
   if (panel) panel.style.display = isPhotoMemo ? "block" : "none";
   if (input) input.value = isPhotoMemo ? String(photoMemoRecord.note || "") : "";
   if (saveBtn) saveBtn.style.display = isPhotoMemo ? "inline-block" : "none";
+  if (closeBtn) closeBtn.style.display = isPhotoMemo ? "inline-block" : "none";
 }
 
 function __updatePhotoMemoIndexNote(id, note) {
@@ -6209,18 +6220,44 @@ function __hidePhotoMemoMenu() {
   if (menu) menu.style.display = "none";
 }
 
+function __extractClientPointFromMapEvent(e) {
+  try {
+    const de = e?.domEvent || e;
+    const touch = de?.changedTouches?.[0]
+      || de?.touches?.[0]
+      || de?.originalEvent?.changedTouches?.[0]
+      || de?.originalEvent?.touches?.[0]
+      || null;
+
+    const clientX = typeof de?.clientX === "number" ? de.clientX : touch?.clientX;
+    const clientY = typeof de?.clientY === "number" ? de.clientY : touch?.clientY;
+    if (typeof clientX === "number" && typeof clientY === "number") {
+      return { clientX, clientY };
+    }
+  } catch(e) {}
+  return null;
+}
+
 function __showPhotoMemoMenuAtClientXY(clientX, clientY) {
   const menu = __ensurePhotoMemoMenu();
   const mapEl = document.getElementById("map");
   if (!menu || !mapEl) return;
 
   const rect = mapEl.getBoundingClientRect();
-  const x = Math.max(8, Math.min(rect.width - 8, clientX - rect.left));
-  const y = Math.max(8, Math.min(rect.height - 8, clientY - rect.top));
+  menu.style.display = "inline-flex";
+  menu.style.visibility = "hidden";
+  menu.style.transform = "translate(0, 0)";
+
+  const menuWidth = menu.offsetWidth || 140;
+  const menuHeight = menu.offsetHeight || 44;
+  const rawX = clientX - rect.left;
+  const rawY = clientY - rect.top;
+  const x = Math.max(8, Math.min(rect.width - menuWidth - 8, rawX - (menuWidth * 0.1)));
+  const y = Math.max(8, Math.min(rect.height - menuHeight - 8, rawY - menuHeight - 10));
 
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
-  menu.style.transform = "translate(-10%, -110%)";
+  menu.style.visibility = "visible";
   menu.style.display = "inline-flex";
 }
 
@@ -6299,12 +6336,9 @@ function setupPhotoMemoAddMode(map) {
           // ✅ document click handler가 메뉴를 즉시 닫는 것 방지
           try { e?.domEvent?.stopPropagation?.(); } catch(_) {}
 
-          const de = e?.domEvent;
-          // ✅ 모바일(아이폰) touch 이벤트는 changedTouches에 좌표가 있음
-          const cx = de?.clientX ?? de?.changedTouches?.[0]?.clientX;
-          const cy = de?.clientY ?? de?.changedTouches?.[0]?.clientY;
-          if (typeof cx === "number" && typeof cy === "number" && (cx !== 0 || cy !== 0)) {
-            __showPhotoMemoMenuAtClientXY(cx, cy);
+          const point = __extractClientPointFromMapEvent(e);
+          if (point && (point.clientX !== 0 || point.clientY !== 0)) {
+            __showPhotoMemoMenuAtClientXY(point.clientX, point.clientY);
           } else {
             __showPhotoMemoMenuAtCoord(coord);
           }
@@ -8867,6 +8901,10 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
     console.error("포토메모 메모 저장 실패:", e);
     alert("포토메모 메모 저장 실패");
   }
+});
+
+document.getElementById("closePhotoMemoModalButton")?.addEventListener("click", () => {
+  closeImageModal();
 });
 
 document.getElementById("downloadImageButton").addEventListener("click", () => {
