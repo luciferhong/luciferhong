@@ -314,10 +314,19 @@
   // ==========================
   const aptIndex = new Map(); // aptId -> {sido, sidoNm, sigungu, sigunguNm}
   const sigunguNameByCode = new Map(); // key: `${sidoCode}:${sigunguCode}` -> canonical name
+  const sigunguNameByCode5 = new Map(); // key: `${sigunguCode5}` -> canonical name
+
+  function _normalizeSigunguCode(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return '';
+    if (/^\d{5}$/.test(s)) return s;
+    const m = s.match(/\d{5}/);
+    return m ? m[0] : '';
+  }
 
   function _registerSigunguFromApt(sidoCodeRaw, sigunguCodeRaw, sigunguNameRaw) {
     const sidoCode = _normalizeSidoCode(sidoCodeRaw);
-    const sigunguCode = String(sigunguCodeRaw ?? '').trim();
+    const sigunguCode = _normalizeSigunguCode(sigunguCodeRaw);
     const sigunguName = String(sigunguNameRaw ?? '').trim();
     if (!/^\d{2}$/.test(sidoCode) || !/^\d{5}$/.test(sigunguCode) || !sigunguName) return;
 
@@ -327,15 +336,24 @@
     if (!prev || sigunguName.length > prev.length) {
       sigunguNameByCode.set(key, sigunguName);
     }
+
+    const prev5 = sigunguNameByCode5.get(sigunguCode);
+    if (!prev5 || sigunguName.length > prev5.length) {
+      sigunguNameByCode5.set(sigunguCode, sigunguName);
+    }
   }
 
   function _normalizeSigunguName(sidoCode, sigunguCode, sigunguName) {
     const sCode = _normalizeSidoCode(sidoCode);
-    const gCode = String(sigunguCode ?? '').trim();
+    const gCode = _normalizeSigunguCode(sigunguCode) || String(sigunguCode ?? '').trim();
     const gName = String(sigunguName ?? '').trim();
     if (/^\d{2}$/.test(sCode) && /^\d{5}$/.test(gCode)) {
       const canonical = sigunguNameByCode.get(`${sCode}:${gCode}`);
       if (canonical) return canonical;
+    }
+    if (/^\d{5}$/.test(gCode)) {
+      const canonical5 = sigunguNameByCode5.get(gCode);
+      if (canonical5) return canonical5;
     }
     return gName || gCode; 
   }
@@ -373,6 +391,7 @@
 
       aptIndex.clear();
       sigunguNameByCode.clear();
+      sigunguNameByCode5.clear();
       const arr = Array.isArray(data) ? data :
         (Array.isArray(data?.apartments) ? data.apartments :
          Array.isArray(data?.data) ? data.data : []);
@@ -413,7 +432,7 @@
 
     let sidoCode = _normalizeSidoCode(a.sido);
     let sidoName = String(a.sidoNm || '').trim();
-    let sigunguCode = String(a.sigungu || '').trim();
+    let sigunguCode = _normalizeSigunguCode(a.sigungu) || String(a.sigungu || '').trim();
     let sigunguName = String(a.sigunguNm || '').trim();
 
     // ✅ 시도 코드/이름 정규화: 이름만 있어도 코드로 통일
@@ -432,7 +451,7 @@
           && String(r.sigunguName || '').trim() === String(wantedName || '').trim();
       });
       if (matched?.region?.sigunguCode) {
-        sigunguCode = String(matched.region.sigunguCode).trim();
+        sigunguCode = _normalizeSigunguCode(matched.region.sigunguCode) || String(matched.region.sigunguCode).trim();
         if (!sigunguName) sigunguName = String(matched.region.sigunguName || '').trim();
       }
     }
@@ -516,7 +535,7 @@
     const sidoCodeRaw = props.sido_cd ?? props.sd_cd ?? props.SIDO_CD ?? props.A1_CD ?? '';
     const sidoNameRaw = props.sido_nm ?? props.sdo_nm ?? props.sd_nm ?? props.A1 ?? '';
 
-    const sigunguCode = String(sigunguCodeRaw || '').trim() || String(sigunguNameRaw || '').trim();
+    const sigunguCode = _normalizeSigunguCode(sigunguCodeRaw) || String(sigunguCodeRaw || '').trim() || String(sigunguNameRaw || '').trim();
     let sigunguName = String(sigunguNameRaw || '').trim() || sigunguCode;
 
     let sidoCode = _normalizeSidoCode(sidoCodeRaw);
