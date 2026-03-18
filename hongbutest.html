@@ -41,6 +41,8 @@ let emdGeojsonRaw = null;
   /* 전체화면일 때 상단 타이틀/컨트롤 숨김(선택) */
   body.fullscreen-active > h1,
   body.fullscreen-active > #controls { display: none !important; }
+  body.fullscreen-active > #routeDrawHelp,
+  body.map-fullscreen > #routeDrawHelp { display: none !important; }
 
 html, body { margin:0; padding:0; overflow-x:hidden; }
 
@@ -1178,7 +1180,7 @@ body.map-fullscreen {
     </div>
     <div id="locationButton" title="현재 위치">📍</div> <!-- ✅ 현재 위치 버튼 -->
     <div id="stopTrackingButton" style="display:none" title="위치 추적 중지">🛑</div> <!-- ✅ 위치 추적 중지 버튼 -->
-    <span style="font-size: 14px; color: gray;">
+    <span id="routeDrawHelp" style="font-size: 14px; color: gray;">
         백스페이스 : 직전 취소<br>
         ESC, 마우스 우클릭, [경로 그리기 완료] 버튼 클릭 : 그리기 종료<br>
         모바일에서도 경로그리기, 다운로드 가능합니다
@@ -1221,6 +1223,7 @@ body.map-fullscreen {
 window.imageModalShowYn = false;
 window.__openedPhotoMemoId = null;
 window.__openedPhotoMemoRecord = null;
+window.__imageModalScrollY = window.__imageModalScrollY || 0;
 
 // ==============================
 // ✅ Memory leak 방지 유틸 (메모/이미지/캔버스)
@@ -1302,12 +1305,24 @@ function __updatePhotoMemoIndexNote(id, note) {
 
 function closeImageModal(){
   const modal = document.getElementById("imageModal");
+  const restoreY = Number.isFinite(window.__imageModalScrollY) ? window.__imageModalScrollY : (window.scrollY || 0);
+  try {
+    const activeEl = document.activeElement;
+    if (activeEl && typeof activeEl.blur === "function") activeEl.blur();
+  } catch(_) {}
+  try {
+    const editInput = document.getElementById("photoMemoEditInput");
+    if (editInput && typeof editInput.blur === "function") editInput.blur();
+  } catch(_) {}
   if(modal) modal.style.display = "none";
   __clearModalCanvas();
   __setPhotoMemoModalRecord(null);
   window.__photoMemoModalOpening = false;
   window.lastOpenedBase64 = null;
   window.imageModalShowYn = false;
+  setTimeout(() => {
+    try { window.scrollTo(0, restoreY); } catch(_) {}
+  }, 0);
 }
 
 
@@ -5097,6 +5112,7 @@ const previewImg = new Image();
               modalCanvas.width = previewImg.width;
               modalCanvas.height = previewImg.height;
               modalCtx.drawImage(previewImg, 0, 0);
+              window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
               modal.style.display = "flex";
               window.imageModalShowYn = true;
             };
@@ -6082,6 +6098,7 @@ function __createPhotoMemoMarker(memo) {
         modalCanvas.width = previewImg.width;
         modalCanvas.height = previewImg.height;
         modalCtx.drawImage(previewImg, 0, 0);
+        window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
         modal.style.display = "flex";
         window.imageModalShowYn = true;
         window.__photoMemoModalOpening = false;
@@ -8472,6 +8489,7 @@ const img = new Image();
 		modalCanvas.width = img.width;
 		modalCanvas.height = img.height;
 		ctx.drawImage(img, 0, 0);
+    window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
 		modal.style.display = "flex";
 		window.imageModalShowYn = true;
 	  };
@@ -8586,6 +8604,7 @@ preview.innerHTML = "";
     modalCanvas.width = fullImage.width;
     modalCanvas.height = fullImage.height;
     modalCtx.drawImage(fullImage, 0, 0);
+    window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
     modal.style.display = "flex";
     window.imageModalShowYn = true;
   };
@@ -8674,6 +8693,7 @@ function showImageModal(src) {
     modalCanvas.width = img.width;
     modalCanvas.height = img.height;
     ctx.drawImage(img, 0, 0);
+    window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
     modal.style.display = "flex";
     window.imageModalShowYn = true;
     window.lastOpenedBase64 = src;
@@ -9148,7 +9168,8 @@ document.getElementById("deletePhotoMemoButton")?.addEventListener("click", asyn
   }
 });
 
-document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", async () => {
+document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", async (ev) => {
+  try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch(_) {}
   const record = window.__openedPhotoMemoRecord;
   const input = document.getElementById("photoMemoEditInput");
   if (!record || !input) return;
@@ -9186,15 +9207,23 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
     try {
       const key = String(nextRecord.id);
       const bounds = window.map?.getBounds?.();
+      const fresh = await __photoMemoGetById(key).catch(() => null);
+      const markerRecord = fresh || nextRecord;
+      const latNum = Number.parseFloat(markerRecord?.lat);
+      const lngNum = Number.parseFloat(markerRecord?.lng);
       __removePhotoMemoMarker(key);
       if (
         window.__photoMemoVisible &&
         bounds &&
-        typeof nextRecord.lat === "number" &&
-        typeof nextRecord.lng === "number" &&
-        bounds.hasLatLng(new naver.maps.LatLng(nextRecord.lat, nextRecord.lng))
+        Number.isFinite(latNum) &&
+        Number.isFinite(lngNum) &&
+        bounds.hasLatLng(new naver.maps.LatLng(latNum, lngNum))
       ) {
-        __createPhotoMemoMarker(nextRecord);
+        __createPhotoMemoMarker({
+          ...markerRecord,
+          lat: latNum,
+          lng: lngNum,
+        });
       }
     } catch(_) {}
 
@@ -9206,7 +9235,8 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
   }
 });
 
-document.getElementById("closePhotoMemoModalButton")?.addEventListener("click", () => {
+document.getElementById("closePhotoMemoModalButton")?.addEventListener("click", (ev) => {
+  try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch(_) {}
   closeImageModal();
 });
 
