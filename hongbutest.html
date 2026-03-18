@@ -5892,8 +5892,10 @@ async function __photoMemoPut(rec) {
         reject(new Error("photoMemo id is required"));
         return;
       }
+      tx.oncomplete = () => { try { db.close(); } catch(e) {} resolve(true); };
+      tx.onerror = (e) => { try { db.close(); } catch(_) {} reject(e?.target?.error || tx.error); };
+      tx.onabort = (e) => { try { db.close(); } catch(_) {} reject(e?.target?.error || tx.error || new Error("photoMemo tx aborted")); };
       const req = store.put(normalizedRec);
-      req.onsuccess = () => { try { db.close(); } catch(e) {} resolve(true); };
       req.onerror = (e) => { try { db.close(); } catch(_) {} reject(e.target.error); };
     } catch(e) {
       try { db.close(); } catch(_) {}
@@ -6117,7 +6119,7 @@ function __createPhotoMemoMarker(memo) {
     icon: { content: markerElement, anchor: new naver.maps.Point(19, 19) }
   });
 
-  const openPhotoMemoModal = () => {
+  const openPhotoMemoModal = async () => {
     try {
       // 모바일 브라우저별 click/touch/pointer 중복 신호를 안전하게 흡수
       if (window.__photoMemoModalOpening) return;
@@ -6129,10 +6131,25 @@ function __createPhotoMemoMarker(memo) {
       if (!modal || !modalCanvas || !modalCtx) { window.__photoMemoModalOpening = false; return; }
       try { __clearModalCanvas(); } catch(e) {}
 
-      const fullBlob = memo.imageBlob || memo.thumbBlob;
-      const fullDataUrl = (typeof memo.imageDataUrl === "string" && memo.imageDataUrl.startsWith("data:"))
-        ? memo.imageDataUrl
-        : ((typeof memo.thumbDataUrl === "string" && memo.thumbDataUrl.startsWith("data:")) ? memo.thumbDataUrl : "");
+      let workingMemo = memo;
+      let fullBlob = workingMemo.imageBlob || workingMemo.thumbBlob;
+      let fullDataUrl = (typeof workingMemo.imageDataUrl === "string" && workingMemo.imageDataUrl.startsWith("data:"))
+        ? workingMemo.imageDataUrl
+        : ((typeof workingMemo.thumbDataUrl === "string" && workingMemo.thumbDataUrl.startsWith("data:")) ? workingMemo.thumbDataUrl : "");
+
+      // iOS에서 수정 직후 in-memory record가 비어있는 경우가 있어 DB fresh fallback으로 보강
+      if (!(fullBlob instanceof Blob) && !fullDataUrl) {
+        try {
+          const fresh = await __photoMemoGetById(id);
+          if (fresh) {
+            workingMemo = fresh;
+            fullBlob = fresh.imageBlob || fresh.thumbBlob;
+            fullDataUrl = (typeof fresh.imageDataUrl === "string" && fresh.imageDataUrl.startsWith("data:"))
+              ? fresh.imageDataUrl
+              : ((typeof fresh.thumbDataUrl === "string" && fresh.thumbDataUrl.startsWith("data:")) ? fresh.thumbDataUrl : "");
+          }
+        } catch(_) {}
+      }
 
       if (!(fullBlob instanceof Blob) && !fullDataUrl) {
         window.__photoMemoModalOpening = false;
@@ -6142,7 +6159,7 @@ function __createPhotoMemoMarker(memo) {
       const fullUrl = (fullBlob instanceof Blob) ? URL.createObjectURL(fullBlob) : fullDataUrl;
       const previewImg = new Image();
       previewImg.onload = () => {
-        __setPhotoMemoModalRecord(memo);
+        __setPhotoMemoModalRecord(workingMemo);
         modalCanvas.width = previewImg.width;
         modalCanvas.height = previewImg.height;
         modalCtx.drawImage(previewImg, 0, 0);
