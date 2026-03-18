@@ -1281,6 +1281,7 @@ function closeImageModal(){
   if(modal) modal.style.display = "none";
   __clearModalCanvas();
   __setPhotoMemoModalRecord(null);
+  window.__photoMemoModalOpening = false;
   window.lastOpenedBase64 = null;
   window.imageModalShowYn = false;
 }
@@ -5957,19 +5958,18 @@ function __createPhotoMemoMarker(memo) {
 
   const openPhotoMemoModal = () => {
     try {
-      const now = Date.now();
-      // touchend + click 이 연달아 들어오는 모바일 중복 호출 방지
-      if (window.__photoMemoModalOpenAt && now - window.__photoMemoModalOpenAt < 220) return;
-      window.__photoMemoModalOpenAt = now;
+      // 모바일 브라우저별 click/touch/pointer 중복 신호를 안전하게 흡수
+      if (window.__photoMemoModalOpening) return;
+      window.__photoMemoModalOpening = true;
 
       const modal = document.getElementById("imageModal");
       const modalCanvas = document.getElementById("modalCanvas");
       const modalCtx = modalCanvas?.getContext?.("2d");
-      if (!modal || !modalCanvas || !modalCtx) return;
+      if (!modal || !modalCanvas || !modalCtx) { window.__photoMemoModalOpening = false; return; }
       try { __clearModalCanvas(); } catch(e) {}
 
       const fullBlob = memo.imageBlob || memo.thumbBlob;
-      if (!(fullBlob instanceof Blob)) return;
+      if (!(fullBlob instanceof Blob)) { window.__photoMemoModalOpening = false; return; }
       const fullUrl = URL.createObjectURL(fullBlob);
       const previewImg = new Image();
       previewImg.onload = () => {
@@ -5979,17 +5979,28 @@ function __createPhotoMemoMarker(memo) {
         modalCtx.drawImage(previewImg, 0, 0);
         modal.style.display = "flex";
         window.imageModalShowYn = true;
+        window.__photoMemoModalOpening = false;
         setTimeout(() => { try { URL.revokeObjectURL(fullUrl); } catch(e) {} }, 1500);
       };
-      previewImg.onerror = () => { try { URL.revokeObjectURL(fullUrl); } catch(e) {} };
+      previewImg.onerror = () => {
+        window.__photoMemoModalOpening = false;
+        try { URL.revokeObjectURL(fullUrl); } catch(e) {}
+      };
       previewImg.src = fullUrl;
-    } catch(e) {}
+    } catch(e) { window.__photoMemoModalOpening = false; }
   };
 
   // 클릭: 큰 사진 보기(기존 imageModal 재사용)
   naver.maps.Event.addListener(marker, "click", openPhotoMemoModal);
 
   // 모바일에서 click 누락되는 케이스 보강: 썸네일 DOM의 touchend도 직접 처리
+  markerElement.addEventListener("pointerup", (ev) => {
+    try {
+      ev.preventDefault();
+      ev.stopPropagation();
+    } catch(_) {}
+    openPhotoMemoModal();
+  });
   markerElement.addEventListener("touchend", (ev) => {
     try {
       ev.preventDefault();

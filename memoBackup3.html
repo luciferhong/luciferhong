@@ -115,9 +115,44 @@
     '52': '전북특별자치도',
   };
 
-  const SIDO_NAME_CODE_MAP = Object.fromEntries(
+  let SIDO_NAME_CODE_MAP = Object.fromEntries(
     Object.entries(SIDO_CODE_NAME_MAP).map(([code, name]) => [name, code])
   );
+
+  function _normalizeSidoCode(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return '';
+    if (/^\d{2}$/.test(s)) return s;
+    if (/^\d{5,10}$/.test(s)) return s.slice(0, 2);
+    return SIDO_NAME_CODE_MAP[s] || '';
+  }
+
+  function _rebuildSidoNameCodeMap() {
+    const next = {};
+    for (const [code, name] of Object.entries(SIDO_CODE_NAME_MAP)) {
+      const nm = String(name || '').trim();
+      if (!nm) continue;
+      next[nm] = code;
+
+      // apt.json에 시/특별시 표기가 혼재되어도 같은 코드로 매핑되도록 별칭 등록
+      if (nm.endsWith('특별시')) next[nm.replace('특별시', '시')] = code;
+      if (nm.endsWith('광역시')) next[nm.replace('광역시', '시')] = code;
+      if (nm.endsWith('특별자치도')) next[nm.replace('특별자치도', '도')] = code;
+    }
+    SIDO_NAME_CODE_MAP = next;
+  }
+
+  function _registerSidoFromApt(sidoCodeRaw, sidoNameRaw) {
+    const code = _normalizeSidoCode(sidoCodeRaw);
+    const name = String(sidoNameRaw ?? '').trim();
+    if (!code || !name) return;
+
+    // apt.json에서 온 이름을 기준명으로 사용
+    SIDO_CODE_NAME_MAP[code] = name;
+    _rebuildSidoNameCodeMap();
+  }
+
+  _rebuildSidoNameCodeMap();
 
   // ==========================
   // UI
@@ -297,9 +332,14 @@
       for (const a of arr) {
         const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
         if (!id || !usedIds.has(id)) continue;
+
+        const rawSidoCode = String(a.sido ?? a.sidoCode ?? '').trim();
+        const rawSidoName = String(a.sidoNm ?? a.sidoName ?? '').trim();
+        _registerSidoFromApt(rawSidoCode, rawSidoName);
+
         aptIndex.set(id, {
-          sido: String(a.sido ?? a.sidoCode ?? '').trim(),
-          sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+          sido: _normalizeSidoCode(rawSidoCode) || rawSidoCode,
+          sidoNm: rawSidoName || SIDO_CODE_NAME_MAP[_normalizeSidoCode(rawSidoCode)] || '',
           sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
           sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
         });
@@ -321,7 +361,7 @@
     const a = aptIndex.get(id);
     if (!a) return null;
 
-    let sidoCode = String(a.sido || '').trim();
+    let sidoCode = _normalizeSidoCode(a.sido);
     let sidoName = String(a.sidoNm || '').trim();
     let sigunguCode = String(a.sigungu || '').trim();
     let sigunguName = String(a.sigunguNm || '').trim();
@@ -429,7 +469,7 @@
     const sigunguCode = String(sigunguCodeRaw || '').trim() || String(sigunguNameRaw || '').trim();
     const sigunguName = String(sigunguNameRaw || '').trim() || sigunguCode;
 
-    let sidoCode = String(sidoCodeRaw || '').trim();
+    let sidoCode = _normalizeSidoCode(sidoCodeRaw);
     if (!sidoCode && /^\d{5}$/.test(sigunguCode)) sidoCode = sigunguCode.slice(0, 2);
     if (!sidoCode) sidoCode = String(sidoNameRaw || '').trim();
 
