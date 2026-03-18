@@ -6265,47 +6265,29 @@ async function __loadAndCreatePhotoMemoMarker(entry) {
   finally { window.__photoMemoLoadingIds.delete(id); }
 }
 
-// 저장 직후 현재 화면의 단일 포토메모 마커를 강제로 재생성
-async function __forceRefreshPhotoMemoMarker(id, fallbackRecord = null) {
-  const key = String(id);
-  try { __removePhotoMemoMarker(key); } catch(_) {}
-
+// 지도 이동으로 마커가 다시 나타나는 경로와 동일하게 현재 화면 마커를 재로드
+async function __reloadVisiblePhotoMemoMarkersLikeMapMove() {
   if (!window.__photoMemoVisible || !window.map || !(window.map instanceof naver.maps.Map)) return;
   const bounds = window.map.getBounds?.();
   if (!bounds) return;
 
-  let fresh = null;
-  try { fresh = await __photoMemoGetById(key); } catch(_) { fresh = null; }
-
-  const rec = fresh || fallbackRecord;
-  if (!rec) return;
-
-  const latNum = Number.parseFloat(rec.lat);
-  const lngNum = Number.parseFloat(rec.lng);
-  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return;
-  if (!bounds.hasLatLng(new naver.maps.LatLng(latNum, lngNum))) return;
-
-  // 인덱스 동기화
-  try {
-    const idx = (window.__photoMemoIndex || []).find((x) => String(x.id) === key);
-    if (idx) {
-      idx.lat = latNum;
-      idx.lng = lngNum;
-      if (typeof rec.note === "string") idx.note = rec.note;
+  // 1) 현재 화면에 보이는 마커를 제거 (영역 이탈 시 제거되는 동작과 동일)
+  const visibleIds = [];
+  for (const entry of (window.__photoMemoIndex || [])) {
+    const latNum = Number.parseFloat(entry?.lat);
+    const lngNum = Number.parseFloat(entry?.lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) continue;
+    if (bounds.hasLatLng(new naver.maps.LatLng(latNum, lngNum))) {
+      visibleIds.push(String(entry.id));
     }
-  } catch(_) {}
+  }
+  visibleIds.forEach((id) => {
+    try { __removePhotoMemoMarker(id); } catch(_) {}
+  });
 
-  // iOS에서 동일 tick 재생성이 불안정할 수 있어 1프레임 지연 후 재생성
+  // 2) 다음 tick에서 bounds 업데이트 경로로 다시 로드
   await new Promise((resolve) => setTimeout(resolve, 16));
-
-  try {
-    __createPhotoMemoMarker({
-      ...rec,
-      id: key,
-      lat: latNum,
-      lng: lngNum,
-    });
-  } catch(_) {}
+  try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
 }
 
 // 경량 인덱스만 로드 (Blob 없음) — 화면 로드 시 전체 Blob 로드 대신 좌표/ID만
@@ -9309,8 +9291,8 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
     window.__openedPhotoMemoRecord = nextRecord;
     __updatePhotoMemoIndexNote(nextRecord.id, nextNote);
 
-    // 저장 직후 현재 화면에서 해당 썸네일을 강제 재생성
-    try { await __forceRefreshPhotoMemoMarker(nextRecord.id, nextRecord); } catch(_) {}
+    // 저장 직후 지도 이동 복구와 동일한 경로로 현재 화면 썸네일 재로드
+    try { await __reloadVisiblePhotoMemoMarkersLikeMapMove(); } catch(_) {}
 
     closeImageModal();
     try { showToast("포토메모를 저장했습니다.", 1400); } catch(_) {}
