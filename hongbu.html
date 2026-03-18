@@ -5991,6 +5991,24 @@ async function __blobToDataUrl(blob) {
   });
 }
 
+function __dataUrlToBlob(dataUrl) {
+  try {
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+    const parts = dataUrl.split(",");
+    if (parts.length < 2) return null;
+    const header = parts[0];
+    const body = parts[1];
+    const mime = (header.match(/data:([^;]+)/)?.[1]) || "application/octet-stream";
+    const byteString = atob(body);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    return new Blob([ab], { type: mime });
+  } catch(_) {
+    return null;
+  }
+}
+
 function __bindPhotoMemoMarkerImage(img, memo, id) {
   const key = String(id);
 
@@ -6177,6 +6195,15 @@ function __createPhotoMemoMarker(memo) {
         modalCanvas.width = previewImg.width;
         modalCanvas.height = previewImg.height;
         modalCtx.drawImage(previewImg, 0, 0);
+        try {
+          if (typeof fullDataUrl === "string" && fullDataUrl.startsWith("data:")) {
+            window.lastOpenedBase64 = fullDataUrl;
+          } else if (typeof workingMemo?.imageDataUrl === "string" && workingMemo.imageDataUrl.startsWith("data:")) {
+            window.lastOpenedBase64 = workingMemo.imageDataUrl;
+          } else if (typeof modalCanvas.toDataURL === "function") {
+            window.lastOpenedBase64 = modalCanvas.toDataURL("image/jpeg", 0.92);
+          }
+        } catch(_) {}
         window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
         modal.style.display = "flex";
         window.imageModalShowYn = true;
@@ -6418,9 +6445,18 @@ function setupPhotoMemoInputHandlerOnce() {
       const p = window.__photoMemoPendingCoord;
       if (!file || !p || typeof p.lat !== "number" || typeof p.lng !== "number") return;
 
-        const thumbBlob = await __fileToThumbBlob(file, 96, 0.82);
+        // 아파트 메모와 동일하게 원본을 1600px / JPEG 0.82로 압축 저장
+        const originalDataUrl = await __blobToDataUrl(file);
+        let compressedDataUrl = originalDataUrl;
+        try {
+          compressedDataUrl = await compressImage(originalDataUrl, 1600, 0.82);
+        } catch(_) {
+          compressedDataUrl = originalDataUrl;
+        }
+        const compressedBlob = __dataUrlToBlob(compressedDataUrl) || file;
+        const thumbBlob = await __fileToThumbBlob(compressedBlob, 96, 0.82);
         const thumbDataUrl = await __blobToDataUrl(thumbBlob);
-        const imageDataUrl = await __blobToDataUrl(file);
+        const imageDataUrl = compressedDataUrl;
 
         // 썸네일 미리보기 표시 후 메모 입력 모달 열기
         const note = await __showPhotoMemoNoteModal(thumbDataUrl || thumbBlob);
@@ -6436,7 +6472,7 @@ function setupPhotoMemoInputHandlerOnce() {
         lng: p.lng,
         createdAt: Date.now(),
           note: note.trim(),
-        imageBlob: file,
+        imageBlob: compressedBlob,
         imageDataUrl,
         thumbDataUrl
       };
@@ -9400,14 +9436,38 @@ document.getElementById("closePhotoMemoModalButton")?.addEventListener("click", 
   closeImageModal();
 });
 
-document.getElementById("downloadImageButton").addEventListener("click", () => {
-  if (!window.lastOpenedBase64) {
+document.getElementById("downloadImageButton").addEventListener("click", async () => {
+  let downloadSrc = (typeof window.lastOpenedBase64 === "string") ? window.lastOpenedBase64 : "";
+
+  if (!downloadSrc) {
+    const rec = window.__openedPhotoMemoRecord;
+    if (typeof rec?.imageDataUrl === "string" && rec.imageDataUrl.startsWith("data:")) {
+      downloadSrc = rec.imageDataUrl;
+    } else if (rec?.imageBlob instanceof Blob) {
+      downloadSrc = await __blobToDataUrl(rec.imageBlob);
+    } else if (typeof rec?.thumbDataUrl === "string" && rec.thumbDataUrl.startsWith("data:")) {
+      downloadSrc = rec.thumbDataUrl;
+    }
+  }
+
+  if (!downloadSrc) {
+    try {
+      const canvas = document.getElementById("modalCanvas");
+      if (canvas && canvas.width > 1 && canvas.height > 1 && typeof canvas.toDataURL === "function") {
+        downloadSrc = canvas.toDataURL("image/jpeg", 0.92);
+      }
+    } catch(_) {}
+  }
+
+  if (!downloadSrc) {
     alert("❌ 다운로드할 이미지가 없습니다.");
     return;
   }
 
+  window.lastOpenedBase64 = downloadSrc;
+
   const a = document.createElement("a");
-  a.href = window.lastOpenedBase64;
+  a.href = downloadSrc;
 
   // ✅ 한국 시간 기준으로 파일명 생성
   const now = new Date();
