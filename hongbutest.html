@@ -6195,6 +6195,15 @@ function __createPhotoMemoMarker(memo) {
         modalCanvas.width = previewImg.width;
         modalCanvas.height = previewImg.height;
         modalCtx.drawImage(previewImg, 0, 0);
+        try {
+          if (typeof fullDataUrl === "string" && fullDataUrl.startsWith("data:")) {
+            window.lastOpenedBase64 = fullDataUrl;
+          } else if (typeof workingMemo?.imageDataUrl === "string" && workingMemo.imageDataUrl.startsWith("data:")) {
+            window.lastOpenedBase64 = workingMemo.imageDataUrl;
+          } else if (typeof modalCanvas.toDataURL === "function") {
+            window.lastOpenedBase64 = modalCanvas.toDataURL("image/jpeg", 0.92);
+          }
+        } catch(_) {}
         window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
         modal.style.display = "flex";
         window.imageModalShowYn = true;
@@ -9427,14 +9436,38 @@ document.getElementById("closePhotoMemoModalButton")?.addEventListener("click", 
   closeImageModal();
 });
 
-document.getElementById("downloadImageButton").addEventListener("click", () => {
-  if (!window.lastOpenedBase64) {
+document.getElementById("downloadImageButton").addEventListener("click", async () => {
+  let downloadSrc = (typeof window.lastOpenedBase64 === "string") ? window.lastOpenedBase64 : "";
+
+  if (!downloadSrc) {
+    const rec = window.__openedPhotoMemoRecord;
+    if (typeof rec?.imageDataUrl === "string" && rec.imageDataUrl.startsWith("data:")) {
+      downloadSrc = rec.imageDataUrl;
+    } else if (rec?.imageBlob instanceof Blob) {
+      downloadSrc = await __blobToDataUrl(rec.imageBlob);
+    } else if (typeof rec?.thumbDataUrl === "string" && rec.thumbDataUrl.startsWith("data:")) {
+      downloadSrc = rec.thumbDataUrl;
+    }
+  }
+
+  if (!downloadSrc) {
+    try {
+      const canvas = document.getElementById("modalCanvas");
+      if (canvas && canvas.width > 1 && canvas.height > 1 && typeof canvas.toDataURL === "function") {
+        downloadSrc = canvas.toDataURL("image/jpeg", 0.92);
+      }
+    } catch(_) {}
+  }
+
+  if (!downloadSrc) {
     alert("❌ 다운로드할 이미지가 없습니다.");
     return;
   }
 
+  window.lastOpenedBase64 = downloadSrc;
+
   const a = document.createElement("a");
-  a.href = window.lastOpenedBase64;
+  a.href = downloadSrc;
 
   // ✅ 한국 시간 기준으로 파일명 생성
   const now = new Date();
