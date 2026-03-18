@@ -6198,8 +6198,6 @@ function __createPhotoMemoMarker(memo) {
         try {
           if (typeof fullDataUrl === "string" && fullDataUrl.startsWith("data:")) {
             window.lastOpenedBase64 = fullDataUrl;
-          } else if (typeof workingMemo?.imageDataUrl === "string" && workingMemo.imageDataUrl.startsWith("data:")) {
-            window.lastOpenedBase64 = workingMemo.imageDataUrl;
           } else if (typeof modalCanvas.toDataURL === "function") {
             window.lastOpenedBase64 = modalCanvas.toDataURL("image/jpeg", 0.92);
           }
@@ -6456,7 +6454,6 @@ function setupPhotoMemoInputHandlerOnce() {
         const compressedBlob = __dataUrlToBlob(compressedDataUrl) || file;
         const thumbBlob = await __fileToThumbBlob(compressedBlob, 96, 0.82);
         const thumbDataUrl = await __blobToDataUrl(thumbBlob);
-        const imageDataUrl = compressedDataUrl;
 
         // 썸네일 미리보기 표시 후 메모 입력 모달 열기
         const note = await __showPhotoMemoNoteModal(thumbDataUrl || thumbBlob);
@@ -6472,8 +6469,7 @@ function setupPhotoMemoInputHandlerOnce() {
         lng: p.lng,
         createdAt: Date.now(),
           note: note.trim(),
-        imageBlob: compressedBlob,
-        imageDataUrl,
+        imageDataUrl: compressedDataUrl,
         thumbDataUrl
       };
 
@@ -9377,9 +9373,18 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
 
   const nextNote = String(input.value || "").trim();
   try {
-    const sourceImageBlob = (record.imageBlob instanceof Blob)
-      ? record.imageBlob
-      : ((record.thumbBlob instanceof Blob) ? record.thumbBlob : null);
+    const sourceImageDataUrl = (typeof record.imageDataUrl === "string" && record.imageDataUrl.startsWith("data:"))
+      ? record.imageDataUrl
+      : "";
+    const sourceImageBlob = sourceImageDataUrl
+      ? __dataUrlToBlob(sourceImageDataUrl)
+      : ((record.imageBlob instanceof Blob)
+          ? record.imageBlob
+          : ((record.thumbBlob instanceof Blob)
+              ? record.thumbBlob
+              : ((typeof record.thumbDataUrl === "string" && record.thumbDataUrl.startsWith("data:"))
+                  ? __dataUrlToBlob(record.thumbDataUrl)
+                  : null)));
     const normalizedImageBlob = sourceImageBlob instanceof Blob
       ? sourceImageBlob.slice(
           0,
@@ -9389,30 +9394,22 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
             : "image/jpeg"
         )
       : null;
+      const normalizedImageDataUrl = normalizedImageBlob instanceof Blob
+        ? await __blobToDataUrl(normalizedImageBlob)
+        : sourceImageDataUrl;
     const normalizedThumbBlob = normalizedImageBlob
       ? await __fileToThumbBlob(normalizedImageBlob, 96, 0.82)
-      : ((record.thumbBlob instanceof Blob) ? record.thumbBlob : null);
+        : ((typeof record.thumbDataUrl === "string" && record.thumbDataUrl.startsWith("data:"))
+            ? __dataUrlToBlob(record.thumbDataUrl)
+            : ((record.thumbBlob instanceof Blob) ? record.thumbBlob : null));
     const normalizedThumbDataUrl = normalizedThumbBlob instanceof Blob
       ? await __blobToDataUrl(normalizedThumbBlob)
       : (typeof record.thumbDataUrl === "string" ? record.thumbDataUrl : "");
-    let normalizedImageDataUrl = normalizedImageBlob instanceof Blob
-      ? await __blobToDataUrl(normalizedImageBlob)
-      : (typeof record.imageDataUrl === "string" ? record.imageDataUrl : "");
-    if (!normalizedImageDataUrl || !normalizedImageDataUrl.startsWith("data:")) {
-      try {
-        const canvas = document.getElementById("modalCanvas");
-        if (canvas && canvas.width > 1 && canvas.height > 1 && typeof canvas.toDataURL === "function") {
-          normalizedImageDataUrl = canvas.toDataURL("image/jpeg", 0.92);
-        }
-      } catch(_) {}
-    }
-
-    const { thumbBlob, ...recordWithoutLegacyThumbBlob } = record;
+      const { thumbBlob, imageBlob, ...recordWithoutLegacyThumbBlob } = record;
     const nextRecord = {
       ...recordWithoutLegacyThumbBlob,
       note: nextNote,
-      imageBlob: normalizedImageBlob || record.imageBlob,
-      imageDataUrl: normalizedImageDataUrl || record.imageDataUrl || normalizedThumbDataUrl,
+        imageDataUrl: normalizedImageDataUrl || sourceImageDataUrl || normalizedThumbDataUrl,
       thumbDataUrl: normalizedThumbDataUrl,
     };
 
