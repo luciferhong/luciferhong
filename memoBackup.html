@@ -81,8 +81,78 @@
   // IndexedDB
   // ==========================
   const DB_NAME = 'hongbuMemo';
-  const DB_VERSION = 4;
+  const DB_VERSION = 5;
   const STORE_NOTES = 'apartmentNotes';
+  const STORE_PHOTOS = 'photoMemos';
+
+  // hongbutest와 동일 계열의 SIG 파일명 우선 사용, 없으면 대체 세트 시도
+  const SIG_GEOJSON_CANDIDATE_SETS = [
+    [
+      'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson',
+      'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson',
+    ]
+  ];
+
+  const SIDO_CODE_NAME_MAP = {
+    '11': '서울특별시',
+    '26': '부산광역시',
+    '27': '대구광역시',
+    '28': '인천광역시',
+    '29': '광주광역시',
+    '30': '대전광역시',
+    '31': '울산광역시',
+    '36': '세종특별자치시',
+    '41': '경기도',
+    '42': '강원특별자치도',
+    '43': '충청북도',
+    '44': '충청남도',
+    '45': '전북특별자치도',
+    '46': '전라남도',
+    '47': '경상북도',
+    '48': '경상남도',
+    '50': '제주특별자치도',
+    '51': '강원특별자치도',
+    '52': '전북특별자치도',
+  };
+
+  let SIDO_NAME_CODE_MAP = Object.fromEntries(
+    Object.entries(SIDO_CODE_NAME_MAP).map(([code, name]) => [name, code])
+  );
+
+  function _normalizeSidoCode(raw) {
+    const s = String(raw ?? '').trim();
+    if (!s) return '';
+    if (/^\d{2}$/.test(s)) return s;
+    if (/^\d{5,10}$/.test(s)) return s.slice(0, 2);
+    return SIDO_NAME_CODE_MAP[s] || '';
+  }
+
+  function _rebuildSidoNameCodeMap() {
+    const next = {};
+    for (const [code, name] of Object.entries(SIDO_CODE_NAME_MAP)) {
+      const nm = String(name || '').trim();
+      if (!nm) continue;
+      next[nm] = code;
+
+      // apt.json에 시/특별시 표기가 혼재되어도 같은 코드로 매핑되도록 별칭 등록
+      if (nm.endsWith('특별시')) next[nm.replace('특별시', '시')] = code;
+      if (nm.endsWith('광역시')) next[nm.replace('광역시', '시')] = code;
+      if (nm.endsWith('특별자치도')) next[nm.replace('특별자치도', '도')] = code;
+    }
+    SIDO_NAME_CODE_MAP = next;
+  }
+
+  function _registerSidoFromApt(sidoCodeRaw, sidoNameRaw) {
+    const code = _normalizeSidoCode(sidoCodeRaw);
+    const name = String(sidoNameRaw ?? '').trim();
+    if (!code || !name) return;
+
+    // apt.json에서 온 이름을 기준명으로 사용
+    SIDO_CODE_NAME_MAP[code] = name;
+    _rebuildSidoNameCodeMap();
+  }
+
+  _rebuildSidoNameCodeMap();
 
   // ==========================
   // UI
@@ -145,6 +215,19 @@
     return String(n?.id ?? n?.aptId ?? n?.apartmentId ?? '').trim();
   }
 
+  function photoIdOf(p) {
+    return String(p?.id ?? '').trim();
+  }
+
+  function makeUnknownRegion() {
+    return {
+      sidoCode: '__UNKNOWN_SIDO__',
+      sidoName: '미분류',
+      sigunguCode: '__UNKNOWN_SIGUNGU__',
+      sigunguName: '미분류',
+    };
+  }
+
   // 디바운스(선택 변경 연타 시 불필요 렌더링 방지)
   function debounce(fn, t=120) {
     let timer;
@@ -152,6 +235,29 @@
       clearTimeout(timer);
       timer = setTimeout(() => fn(...args), t);
     };
+  }
+
+  // ==========================
+  // 유틸
+  // ==========================
+  function blobToDataUrl(blob) {
+    return new Promise((resolve) => {
+      if (!(blob instanceof Blob)) return resolve(null);
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function serializePhotoForExport(photo) {
+    const { imageBlob, thumbBlob, ...rest } = photo;
+    const result = { ...rest };
+    const imgUrl = await blobToDataUrl(imageBlob);
+    const thmUrl = await blobToDataUrl(thumbBlob);
+    if (imgUrl) result.imageDataUrl = imgUrl;
+    if (thmUrl) result.thumbDataUrl = thmUrl;
+    return result;
   }
 
   // ==========================
@@ -165,10 +271,14 @@
     });
   }
 
-  async function iterateNotes(visitor) {
+  async function iterateStore(storeName, visitor) {
     const db = await openDB();
-    const tx = db.transaction([STORE_NOTES], 'readonly');
-    const st = tx.objectStore(STORE_NOTES);
+    if (!db.objectStoreNames.contains(storeName)) {
+      db.close();
+      return;
+    }
+    const tx = db.transaction([storeName], 'readonly');
+    const st = tx.objectStore(storeName);
     await new Promise((resolve, reject) => {
       const req = st.openCursor();
       req.onsuccess = async e => {
@@ -181,6 +291,22 @@
       req.onerror = () => reject(new Error('cursor 실패'));
     });
     db.close();
+  }
+
+  async function iterateNotes(visitor) {
+    await iterateStore(STORE_NOTES, visitor);
+  }
+
+  async function iteratePhotoMemos(visitor) {
+    await iterateStore(STORE_PHOTOS, visitor);
+  }
+
+  function hasPhotoImage(p) {
+    const hasBlob = (p?.imageBlob instanceof Blob) || (p?.thumbBlob instanceof Blob);
+    const hasDataUrl =
+      (typeof p?.imageDataUrl === 'string' && p.imageDataUrl.startsWith('data:')) ||
+      (typeof p?.thumbDataUrl === 'string' && p.thumbDataUrl.startsWith('data:'));
+    return !!(hasBlob || hasDataUrl);
   }
 
   // ==========================
@@ -214,9 +340,14 @@
       for (const a of arr) {
         const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
         if (!id || !usedIds.has(id)) continue;
+
+        const rawSidoCode = String(a.sido ?? a.sidoCode ?? '').trim();
+        const rawSidoName = String(a.sidoNm ?? a.sidoName ?? '').trim();
+        _registerSidoFromApt(rawSidoCode, rawSidoName);
+
         aptIndex.set(id, {
-          sido: String(a.sido ?? a.sidoCode ?? '').trim(),
-          sidoNm: String(a.sidoNm ?? a.sidoName ?? '').trim(),
+          sido: _normalizeSidoCode(rawSidoCode) || rawSidoCode,
+          sidoNm: rawSidoName || SIDO_CODE_NAME_MAP[_normalizeSidoCode(rawSidoCode)] || '',
           sigungu: String(a.sigungu ?? a.sigunguCode ?? '').trim(),
           sigunguNm: String(a.sigunguNm ?? a.sigunguName ?? '').trim(),
         });
@@ -237,12 +368,195 @@
     if (!id) return null;
     const a = aptIndex.get(id);
     if (!a) return null;
+
+    let sidoCode = _normalizeSidoCode(a.sido);
+    let sidoName = String(a.sidoNm || '').trim();
+    let sigunguCode = String(a.sigungu || '').trim();
+    let sigunguName = String(a.sigunguNm || '').trim();
+
+    // ✅ 시도 코드/이름 정규화: 이름만 있어도 코드로 통일
+    if (!/^\d{2}$/.test(sidoCode)) {
+      const candidateCode = SIDO_NAME_CODE_MAP[sidoCode] || SIDO_NAME_CODE_MAP[sidoName] || '';
+      if (candidateCode) sidoCode = candidateCode;
+    }
+    if (!sidoName) sidoName = SIDO_CODE_NAME_MAP[sidoCode] || sidoCode;
+
+    // ✅ 시군구 코드/이름 정규화: 이름만 있을 때 SIG 인덱스에서 코드 매칭
+    if (!/^\d{5}$/.test(sigunguCode)) {
+      const wantedName = sigunguName || sigunguCode;
+      const matched = (sigRegionIndex.prepared || []).find(f => {
+        const r = f.region || {};
+        return String(r.sidoCode || '').trim() === String(sidoCode || '').trim()
+          && String(r.sigunguName || '').trim() === String(wantedName || '').trim();
+      });
+      if (matched?.region?.sigunguCode) {
+        sigunguCode = String(matched.region.sigunguCode).trim();
+        if (!sigunguName) sigunguName = String(matched.region.sigunguName || '').trim();
+      }
+    }
+    if (!sigunguName) sigunguName = sigunguCode;
+
     return {
-      sidoCode: a.sido || '',
-      sidoName: a.sidoNm || a.sido || '',
-      sigunguCode: a.sigungu || '',
-      sigunguName: a.sigunguNm || a.sigungu || '',
+      sidoCode,
+      sidoName,
+      sigunguCode,
+      sigunguName,
     };
+  }
+
+  // ==========================
+  // SIG 기반 포토메모 지역 판별
+  // ==========================
+  const sigRegionIndex = {
+    prepared: null, // [{bbox:[minLng,minLat,maxLng,maxLat], geometry, region}]
+    loaded: false,
+    sourceName: '',
+  };
+
+  function _bboxContains(b, lng, lat) {
+    return !!b && lng >= b[0] && lng <= b[2] && lat >= b[1] && lat <= b[3];
+  }
+
+  function _pointInRing(ptLng, ptLat, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1];
+      const xj = ring[j][0], yj = ring[j][1];
+      const intersect = ((yi > ptLat) !== (yj > ptLat)) &&
+        (ptLng < (xj - xi) * (ptLat - yi) / ((yj - yi) || 1e-12) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  }
+
+  function _pointInPolygon(ptLng, ptLat, polygonCoords) {
+    if (!polygonCoords || !polygonCoords.length) return false;
+    const outer = polygonCoords[0];
+    if (!_pointInRing(ptLng, ptLat, outer)) return false;
+    for (let i = 1; i < polygonCoords.length; i++) {
+      if (_pointInRing(ptLng, ptLat, polygonCoords[i])) return false; // hole
+    }
+    return true;
+  }
+
+  function _geomContainsPoint(geom, lng, lat) {
+    if (!geom || !geom.type) return false;
+    if (geom.type === 'Polygon') return _pointInPolygon(lng, lat, geom.coordinates);
+    if (geom.type === 'MultiPolygon') {
+      return (geom.coordinates || []).some(poly => _pointInPolygon(lng, lat, poly));
+    }
+    return false;
+  }
+
+  function _computeBBox(geom) {
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    const walk = (arr) => {
+      for (const it of arr || []) {
+        if (Array.isArray(it) && typeof it[0] === 'number' && typeof it[1] === 'number') {
+          const lng = it[0], lat = it[1];
+          if (lng < minLng) minLng = lng;
+          if (lng > maxLng) maxLng = lng;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+        } else if (Array.isArray(it)) {
+          walk(it);
+        }
+      }
+    };
+    walk(geom?.coordinates || []);
+    if (!isFinite(minLng)) return null;
+    return [minLng, minLat, maxLng, maxLat];
+  }
+
+  function _pickRegionFromSigProps(props = {}) {
+    const sigunguCodeRaw = props.sgg_cd ?? props.sig_cd ?? props.SIG_CD ?? props.code ?? props.sggCode ?? '';
+    const sigunguNameRaw = props.sgg_nm ?? props.sig_kor_nm ?? props.SIG_KOR_NM ?? props.NAME ?? props.name ?? props.A2 ?? '';
+    const sidoCodeRaw = props.sido_cd ?? props.sd_cd ?? props.SIDO_CD ?? props.A1_CD ?? '';
+    const sidoNameRaw = props.sido_nm ?? props.sdo_nm ?? props.sd_nm ?? props.A1 ?? '';
+
+    const sigunguCode = String(sigunguCodeRaw || '').trim() || String(sigunguNameRaw || '').trim();
+    const sigunguName = String(sigunguNameRaw || '').trim() || sigunguCode;
+
+    let sidoCode = _normalizeSidoCode(sidoCodeRaw);
+    if (!sidoCode && /^\d{5}$/.test(sigunguCode)) sidoCode = sigunguCode.slice(0, 2);
+    if (!sidoCode) sidoCode = String(sidoNameRaw || '').trim();
+
+      const sidoName = String(sidoNameRaw || '').trim() || SIDO_CODE_NAME_MAP[sidoCode] || sidoCode;
+
+    if (!sidoCode) return null;
+    return { sidoCode, sidoName, sigunguCode, sigunguName };
+  }
+
+  function _prepareSigFeatures(fc) {
+    const out = [];
+    for (const f of (fc?.features || [])) {
+      const geom = f?.geometry;
+      if (!geom) continue;
+      const bbox = _computeBBox(geom);
+      if (!bbox) continue;
+      const region = _pickRegionFromSigProps(f?.properties || {});
+      if (!region || !region.sidoCode) continue;
+      out.push({ bbox, geometry: geom, region });
+    }
+    return out;
+  }
+
+  async function _fetchMergedFeatureCollection(parts) {
+    const results = await Promise.all(parts.map(async p => {
+      const res = await fetch(p, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${p}`);
+      return res.json();
+    }));
+    const merged = { type: 'FeatureCollection', features: [] };
+    for (const fc of results) {
+      if (fc?.type === 'FeatureCollection' && Array.isArray(fc.features)) merged.features.push(...fc.features);
+    }
+    return merged;
+  }
+
+  async function ensureSigRegionIndex() {
+    if (sigRegionIndex.loaded) return true;
+
+    for (const set of SIG_GEOJSON_CANDIDATE_SETS) {
+      try {
+        const fc = await _fetchMergedFeatureCollection(set);
+        const prepared = _prepareSigFeatures(fc);
+        if (prepared.length > 0) {
+          sigRegionIndex.prepared = prepared;
+          sigRegionIndex.loaded = true;
+          sigRegionIndex.sourceName = set.join(', ');
+          return true;
+        }
+      } catch (e) {
+        // 다음 후보 세트 시도
+      }
+    }
+    sigRegionIndex.prepared = [];
+    sigRegionIndex.loaded = true;
+    return false;
+  }
+
+  function regionFromPhotoBySig(photo) {
+    const lat = Number.parseFloat(String(photo?.lat ?? '').replace(',', '.'));
+    const lng = Number.parseFloat(String(photo?.lng ?? '').replace(',', '.'));
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return makeUnknownRegion();
+
+    const prepared = sigRegionIndex.prepared || [];
+    for (const f of prepared) {
+      if (!_bboxContains(f.bbox, lng, lat)) continue;
+      if (_geomContainsPoint(f.geometry, lng, lat)) return f.region;
+    }
+
+    // 경계선/부동소수 오차로 누락되는 경우를 줄이기 위한 완화 판정
+    const EPS = 0.00015;
+    for (const f of prepared) {
+      const b = f.bbox;
+      if (!b) continue;
+      if (lng < b[0] - EPS || lng > b[2] + EPS || lat < b[1] - EPS || lat > b[3] + EPS) continue;
+      return f.region;
+    }
+
+    return makeUnknownRegion();
   }
 
   // ==========================
@@ -250,42 +564,70 @@
   // ==========================
   const regionCache = {
     bySido: new Map(),     // sido -> { name, sigungu: Map(sig -> {name,count}), count }
-    noteRegion: new Map(), // noteId -> {sidoCode, sigunguCode, ...}
+    itemRegion: new Map(), // key(note:ID/photo:ID) -> {sidoCode, sigunguCode, ...}
+    itemMeta: new Map(),   // key -> { kind, id }
   };
+
+  function addRegionToCache(region) {
+    if (!region || !region.sidoCode) return;
+    if (!regionCache.bySido.has(region.sidoCode)) {
+      regionCache.bySido.set(region.sidoCode, {
+        name: region.sidoName || region.sidoCode,
+        sigungu: new Map(),
+        count: 0,
+      });
+    }
+    const s = regionCache.bySido.get(region.sidoCode);
+    s.count++;
+
+    if (region.sigunguCode) {
+      const cur = s.sigungu.get(region.sigunguCode) || {
+        name: region.sigunguName || region.sigunguCode,
+        count: 0,
+      };
+      cur.count++;
+      s.sigungu.set(region.sigunguCode, cur);
+    }
+  }
 
   async function buildRegionCacheOnce() {
     regionCache.bySido.clear();
-    regionCache.noteRegion.clear();
+    regionCache.itemRegion.clear();
+    regionCache.itemMeta.clear();
 
-    if (aptIndex.size === 0) return;
+    // 메모/포토가 동일한 지역 키를 쓰도록 SIG 인덱스를 먼저 준비
+    await ensureSigRegionIndex();
 
-    await iterateNotes(n => {
-      if (!hasMemoContent(n)) return;
-      const r = regionFromNoteViaApt(n);
-      if (!r || !r.sidoCode) return;
+    // 1) apartmentNotes: aptIndex 매핑으로 지역 판별
+    if (aptIndex.size > 0) {
+      await iterateNotes(n => {
+        if (!hasMemoContent(n)) return;
+        const r = regionFromNoteViaApt(n);
+        if (!r || !r.sidoCode) return;
 
-      const id = noteIdOf(n);
+        const id = noteIdOf(n);
+        if (!id) return;
+        const key = `note:${id}`;
+
+        regionCache.itemRegion.set(key, r);
+        regionCache.itemMeta.set(key, { kind: 'note', id });
+        addRegionToCache(r);
+      });
+    }
+
+    // 2) photoMemos: SIG 경계로 지역 판별
+    await iteratePhotoMemos(p => {
+      const id = photoIdOf(p);
       if (!id) return;
-      regionCache.noteRegion.set(id, r);
+      const hasImage = hasPhotoImage(p);
+      if (!hasImage) return;
 
-      if (!regionCache.bySido.has(r.sidoCode)) {
-        regionCache.bySido.set(r.sidoCode, {
-          name: r.sidoName || r.sidoCode,
-          sigungu: new Map(),
-          count: 0
-        });
-      }
-      const s = regionCache.bySido.get(r.sidoCode);
-      s.count++;
+      const r = regionFromPhotoBySig(p);
+      const key = `photo:${id}`;
 
-      if (r.sigunguCode) {
-        const cur = s.sigungu.get(r.sigunguCode) || {
-          name: r.sigunguName || r.sigunguCode,
-          count: 0
-        };
-        cur.count++;
-        s.sigungu.set(r.sigunguCode, cur);
-      }
+      regionCache.itemRegion.set(key, r);
+      regionCache.itemMeta.set(key, { kind: 'photo', id });
+      addRegionToCache(r);
     });
   }
 
@@ -316,7 +658,7 @@
     const gSel = (els.sigungu.value || '').trim();
     let cnt = 0;
 
-    for (const r of regionCache.noteRegion.values()) {
+    for (const r of regionCache.itemRegion.values()) {
       if (sSel && String(r.sidoCode || '').trim() !== sSel) continue;
       if (gSel && String(r.sigunguCode || '').trim() !== gSel) continue;
       cnt++;
@@ -328,7 +670,7 @@
   async function rebuildFiltersFromCache(showModal=true) {
     if (showModal) showBusy('지역 목록을 구성하는 중…');
 
-    if (aptIndex.size === 0) {
+    if (regionCache.bySido.size === 0) {
       els.sigungu.disabled = true;
       fillOptions(els.sido, []);
       fillOptions(els.sigungu, []);
@@ -348,46 +690,46 @@
   // 백업 (10개 분할 · 지연 생성)
   // ==========================
   async function backupSelectedNotes() {
-    showBusy('선택된 메모를 수집하는 중…');
-
-    if (aptIndex.size === 0) {
-      hideBusy();
-      alert('apt.json이 로드되지 않았습니다.');
-      return;
-    }
+    showBusy('선택된 메모/포토메모를 수집하는 중…');
 
     els.downloads.innerHTML = '';
 
     // ✅ DB 전체 순회 대신 캐시에서 ID만 추림(초고속)
     const sSel = (els.sido.value || '').trim();
     const gSel = (els.sigungu.value || '').trim();
-    const selectedIdsSnapshot = [];
-    for (const [id, r] of regionCache.noteRegion.entries()) {
+    const selectedRefsSnapshot = [];
+    let selectedNoteCount = 0;
+    let selectedPhotoCount = 0;
+    for (const [key, r] of regionCache.itemRegion.entries()) {
       if (sSel && String(r.sidoCode || '').trim() !== sSel) continue;
       if (gSel && String(r.sigunguCode || '').trim() !== gSel) continue;
-      selectedIdsSnapshot.push(id);
+      const meta = regionCache.itemMeta.get(key);
+      if (!meta) continue;
+      selectedRefsSnapshot.push(meta);
+      if (meta.kind === 'note') selectedNoteCount++;
+      if (meta.kind === 'photo') selectedPhotoCount++;
     }
 
-    if (selectedIdsSnapshot.length === 0) {
+    if (selectedRefsSnapshot.length === 0) {
       hideBusy();
-      alert('선택한 지역에 해당하는 메모가 없습니다.');
+      alert('선택한 지역에 해당하는 메모/포토메모가 없습니다.');
       return;
     }
 
     const chunkSize = 10; // PART당 메모 개수
-    const totalParts = Math.ceil(selectedIdsSnapshot.length / chunkSize);
+    const totalParts = Math.ceil(selectedRefsSnapshot.length / chunkSize);
 
     const now = new Date();
     const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
     const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
 
     const head = document.createElement('div');
-    head.innerHTML = `<h3>📁 총 ${totalParts}개의 백업 파일 · 메모 ${selectedIdsSnapshot.length}건</h3>`;
+    head.innerHTML = `<h3>📁 총 ${totalParts}개의 백업 파일 · 메모 ${selectedNoteCount}건 · 포토 ${selectedPhotoCount}건</h3>`;
     els.downloads.appendChild(head);
 
-    for (let p = 1, i = 0; i < selectedIdsSnapshot.length; p++, i += chunkSize) {
+    for (let p = 1, i = 0; i < selectedRefsSnapshot.length; p++, i += chunkSize) {
       const startIdx = i;
-      const endIdx = Math.min(i + chunkSize, selectedIdsSnapshot.length);
+      const endIdx = Math.min(i + chunkSize, selectedRefsSnapshot.length);
       const plannedCount = endIdx - startIdx;
 
       const btn = document.createElement('button');
@@ -399,25 +741,72 @@
       btn.onclick = async () => {
         showBusy(`PART ${partNo} 생성 중…`);
         const db = await openDB();
-        const tx = db.transaction([STORE_NOTES], 'readonly');
-        const st = tx.objectStore(STORE_NOTES);
+        const txStores = [STORE_NOTES];
+        if (db.objectStoreNames.contains(STORE_PHOTOS)) txStores.push(STORE_PHOTOS);
+        const tx = db.transaction(txStores, 'readonly');
+        const noteStore = tx.objectStore(STORE_NOTES);
+        const photoStore = db.objectStoreNames.contains(STORE_PHOTOS) ? tx.objectStore(STORE_PHOTOS) : null;
 
-        const sliceIds = selectedIdsSnapshot.slice(sliceStart, sliceEnd);
-        const out = [];
-        await Promise.all(sliceIds.map(id => new Promise(res => {
-          const r = st.get(id);
-          r.onsuccess = () => { if (r.result) out.push(r.result); res(); };
-          r.onerror   = () => res();
+        const sliceRefs = selectedRefsSnapshot.slice(sliceStart, sliceEnd);
+        const outNotes = [];
+        const rawPhotos = [];
+        await Promise.all(sliceRefs.map(ref => new Promise(res => {
+          const targetStore = (ref.kind === 'photo') ? photoStore : noteStore;
+          if (!targetStore) return res();
+          const handleResult = (v) => {
+            if (v) {
+              if (ref.kind === 'photo') rawPhotos.push(v);
+              else outNotes.push(v);
+            }
+            res();
+          };
+
+          try {
+            const key = String(ref.id);
+            const r1 = targetStore.get(key);
+            r1.onsuccess = () => {
+              if (r1.result) {
+                handleResult(r1.result);
+                return;
+              }
+              const n = Number(key);
+              if (Number.isFinite(n) && String(n) === key) {
+                const r2 = targetStore.get(n);
+                r2.onsuccess = () => handleResult(r2.result || null);
+                r2.onerror = () => handleResult(null);
+              } else {
+                handleResult(null);
+              }
+            };
+            r1.onerror = () => handleResult(null);
+          } catch(_) {
+            handleResult(null);
+          }
         })));
         db.close();
 
-        const json = JSON.stringify(out);
+        // Blob → data URL 변환 (JSON 직렬화를 위해)
+        const outPhotos = await Promise.all(rawPhotos.map(serializePhotoForExport));
+
+        const payload = {
+          meta: {
+            exportedAt: new Date().toISOString(),
+            part: partNo,
+            totalParts,
+            selectedSido: sSel || null,
+            selectedSigungu: gSel || null,
+          },
+          apartmentNotes: outNotes,
+          photoMemos: outPhotos,
+        };
+
+        const json = JSON.stringify(payload);
         const blob = new Blob([json], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
 
         const a = document.createElement('a');
         a.href = url;
-        a.download = `홍부_메모백업_${ts}_part${partNo}_${out.length}개.json`;
+        a.download = `홍부_메모백업_${ts}_part${partNo}_메모${outNotes.length}_포토${outPhotos.length}.json`;
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
@@ -463,3 +852,4 @@
 </script>
 </body>
 </html>
+
