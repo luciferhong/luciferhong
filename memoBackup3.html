@@ -468,11 +468,35 @@
   // ==========================
   // SIG 기반 포토메모 지역 판별
   // ==========================
+  const SIG_GRID_STEP = 0.1; // 그리드 셀 크기(도): ~11km × ~11km
+
   const sigRegionIndex = {
     prepared: null, // [{bbox:[minLng,minLat,maxLng,maxLat], geometry, region}]
+    grid: null,     // Map<"x,y" -> feature[]>  좌표→시군구 고속 조회용
     loaded: false,
     sourceName: '',
   };
+
+  // SIG 로드 시 1회만 실행: bbox 기반 그리드에 각 폴리곤을 등록
+  function _buildSigGridIndex(prepared) {
+    const grid = new Map();
+    const step = SIG_GRID_STEP;
+    for (const f of prepared) {
+      const [minLng, minLat, maxLng, maxLat] = f.bbox;
+      const x0 = Math.floor(minLng / step);
+      const x1 = Math.floor(maxLng / step);
+      const y0 = Math.floor(minLat / step);
+      const y1 = Math.floor(maxLat / step);
+      for (let x = x0; x <= x1; x++) {
+        for (let y = y0; y <= y1; y++) {
+          const key = `${x},${y}`;
+          if (!grid.has(key)) grid.set(key, []);
+          grid.get(key).push(f);
+        }
+      }
+    }
+    return grid;
+  }
 
   function _bboxContains(b, lng, lat) {
     return !!b && lng >= b[0] && lng <= b[2] && lat >= b[1] && lat <= b[3];
@@ -585,6 +609,7 @@
         const prepared = _prepareSigFeatures(fc);
         if (prepared.length > 0) {
           sigRegionIndex.prepared = prepared;
+          sigRegionIndex.grid = _buildSigGridIndex(prepared);
           sigRegionIndex.loaded = true;
           sigRegionIndex.sourceName = set.join(', ');
           return true;
@@ -603,18 +628,61 @@
     const lng = Number.parseFloat(String(photo?.lng ?? '').replace(',', '.'));
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return makeUnknownRegion();
 
+    const step = SIG_GRID_STEP;
+    const gx = Math.floor(lng / step);
+    const gy = Math.floor(lat / step);
+
+    // ① 그리드 조회: 해당 셀 후보만 point-in-polygon 검사 (평균 2~3건)
+    if (sigRegionIndex.grid) {
+      const candidates = sigRegionIndex.grid.get(`${gx},${gy}`) || [];
+      for (const f of candidates) {
+        if (!_bboxContains(f.bbox, lng, lat)) continue;
+        if (_geomContainsPoint(f.geometry, lng, lat)) return f.region;
+      }
+
+      // ② 경계 오차 보정: 인접 3×3 셀까지 확인
+      const EPS = 0.00015;
+      const seen = new Set();
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          if (dx === 0 && dy === 0) continue; // 이미 위에서 확인
+          const cell = sigRegionIndex.grid.get(`${gx + dx},${gy + dy}`) || [];
+          for (const f of cell) {
+            if (seen.has(f)) continue;
+            seen.add(f);
+            const b = f.bbox;
+            if (!b) continue;
+            if (lng < b[0] - EPS || lng > b[2] + EPS || lat < b[1] - EPS || lat > b[3] + EPS) continue;
+            if (_geomContainsPoint(f.geometry, lng, lat)) return f.region;
+          }
+        }
+      }
+      // 인접 셀에서도 못 찾으면 완화 bbox 반환
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const cell = sigRegionIndex.grid.get(`${gx + dx},${gy + dy}`) || [];
+          for (const f of cell) {
+            const b = f.bbox;
+            if (!b) continue;
+            if (lng < b[0] - EPS || lng > b[2] + EPS || lat < b[1] - EPS || lat > b[3] + EPS) continue;
+            return f.region;
+          }
+        }
+      }
+      return makeUnknownRegion();
+    }
+
+    // ③ 그리드 없을 때 폴백: 전체 선형 스캔
     const prepared = sigRegionIndex.prepared || [];
     for (const f of prepared) {
       if (!_bboxContains(f.bbox, lng, lat)) continue;
       if (_geomContainsPoint(f.geometry, lng, lat)) return f.region;
     }
-
-    // 경계선/부동소수 오차로 누락되는 경우를 줄이기 위한 완화 판정
-    const EPS = 0.00015;
+    const EPS2 = 0.00015;
     for (const f of prepared) {
       const b = f.bbox;
       if (!b) continue;
-      if (lng < b[0] - EPS || lng > b[2] + EPS || lat < b[1] - EPS || lat > b[3] + EPS) continue;
+      if (lng < b[0] - EPS2 || lng > b[2] + EPS2 || lat < b[1] - EPS2 || lat > b[3] + EPS2) continue;
       return f.region;
     }
 
