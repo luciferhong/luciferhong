@@ -5991,6 +5991,24 @@ async function __blobToDataUrl(blob) {
   });
 }
 
+function __dataUrlToBlob(dataUrl) {
+  try {
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+    const parts = dataUrl.split(",");
+    if (parts.length < 2) return null;
+    const header = parts[0];
+    const body = parts[1];
+    const mime = (header.match(/data:([^;]+)/)?.[1]) || "application/octet-stream";
+    const byteString = atob(body);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    return new Blob([ab], { type: mime });
+  } catch(_) {
+    return null;
+  }
+}
+
 function __bindPhotoMemoMarkerImage(img, memo, id) {
   const key = String(id);
 
@@ -6418,9 +6436,18 @@ function setupPhotoMemoInputHandlerOnce() {
       const p = window.__photoMemoPendingCoord;
       if (!file || !p || typeof p.lat !== "number" || typeof p.lng !== "number") return;
 
-        const thumbBlob = await __fileToThumbBlob(file, 96, 0.82);
+        // 아파트 메모와 동일하게 원본을 1600px / JPEG 0.82로 압축 저장
+        const originalDataUrl = await __blobToDataUrl(file);
+        let compressedDataUrl = originalDataUrl;
+        try {
+          compressedDataUrl = await compressImage(originalDataUrl, 1600, 0.82);
+        } catch(_) {
+          compressedDataUrl = originalDataUrl;
+        }
+        const compressedBlob = __dataUrlToBlob(compressedDataUrl) || file;
+        const thumbBlob = await __fileToThumbBlob(compressedBlob, 96, 0.82);
         const thumbDataUrl = await __blobToDataUrl(thumbBlob);
-        const imageDataUrl = await __blobToDataUrl(file);
+        const imageDataUrl = compressedDataUrl;
 
         // 썸네일 미리보기 표시 후 메모 입력 모달 열기
         const note = await __showPhotoMemoNoteModal(thumbDataUrl || thumbBlob);
@@ -6436,7 +6463,7 @@ function setupPhotoMemoInputHandlerOnce() {
         lng: p.lng,
         createdAt: Date.now(),
           note: note.trim(),
-        imageBlob: file,
+        imageBlob: compressedBlob,
         imageDataUrl,
         thumbDataUrl
       };
