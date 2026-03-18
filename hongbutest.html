@@ -5883,7 +5883,16 @@ async function __photoMemoPut(rec) {
     try {
       const tx = db.transaction(["photoMemos"], "readwrite");
       const store = tx.objectStore("photoMemos");
-      const req = store.put(rec);
+      const normalizedRec = {
+        ...(rec || {}),
+        id: String(rec?.id || ""),
+      };
+      if (!normalizedRec.id) {
+        try { db.close(); } catch(_) {}
+        reject(new Error("photoMemo id is required"));
+        return;
+      }
+      const req = store.put(normalizedRec);
       req.onsuccess = () => { try { db.close(); } catch(e) {} resolve(true); };
       req.onerror = (e) => { try { db.close(); } catch(_) {} reject(e.target.error); };
     } catch(e) {
@@ -5900,8 +5909,24 @@ async function __photoMemoDelete(id) {
     try {
       const tx = db.transaction(["photoMemos"], "readwrite");
       const store = tx.objectStore("photoMemos");
-      const req = store.delete(String(id));
-      req.onsuccess = () => { try { db.close(); } catch(e) {} resolve(true); };
+      const keyStr = String(id);
+      const req = store.delete(keyStr);
+      req.onsuccess = () => {
+        const numeric = Number.parseInt(keyStr, 10);
+        if (!Number.isFinite(numeric) || String(numeric) !== keyStr) {
+          try { db.close(); } catch(e) {}
+          resolve(true);
+          return;
+        }
+        try {
+          const req2 = store.delete(numeric);
+          req2.onsuccess = () => { try { db.close(); } catch(e) {} resolve(true); };
+          req2.onerror = () => { try { db.close(); } catch(e) {} resolve(true); };
+        } catch(_) {
+          try { db.close(); } catch(e) {}
+          resolve(true);
+        }
+      };
       req.onerror = (e) => { try { db.close(); } catch(_) {} reject(e.target.error); };
     } catch(e) {
       try { db.close(); } catch(_) {}
@@ -5917,8 +5942,31 @@ async function __photoMemoGetById(id) {
     try {
       const tx = db.transaction(["photoMemos"], "readonly");
       const store = tx.objectStore("photoMemos");
-      const req = store.get(String(id));
-      req.onsuccess = () => { try { db.close(); } catch(e) {} resolve(req.result || null); };
+      const keyStr = String(id);
+      const req = store.get(keyStr);
+      req.onsuccess = () => {
+        if (req.result) {
+          try { db.close(); } catch(e) {}
+          resolve(req.result || null);
+          return;
+        }
+
+        const numeric = Number.parseInt(keyStr, 10);
+        if (!Number.isFinite(numeric) || String(numeric) !== keyStr) {
+          try { db.close(); } catch(e) {}
+          resolve(null);
+          return;
+        }
+
+        try {
+          const req2 = store.get(numeric);
+          req2.onsuccess = () => { try { db.close(); } catch(e) {} resolve(req2.result || null); };
+          req2.onerror = () => { try { db.close(); } catch(e) {} resolve(null); };
+        } catch(_) {
+          try { db.close(); } catch(e) {}
+          resolve(null);
+        }
+      };
       req.onerror = () => { try { db.close(); } catch(e) {} resolve(null); };
     } catch(e) {
       try { db.close(); } catch(_) {}
