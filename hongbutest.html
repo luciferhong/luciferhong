@@ -6265,6 +6265,49 @@ async function __loadAndCreatePhotoMemoMarker(entry) {
   finally { window.__photoMemoLoadingIds.delete(id); }
 }
 
+// 저장 직후 현재 화면의 단일 포토메모 마커를 강제로 재생성
+async function __forceRefreshPhotoMemoMarker(id, fallbackRecord = null) {
+  const key = String(id);
+  try { __removePhotoMemoMarker(key); } catch(_) {}
+
+  if (!window.__photoMemoVisible || !window.map || !(window.map instanceof naver.maps.Map)) return;
+  const bounds = window.map.getBounds?.();
+  if (!bounds) return;
+
+  let fresh = null;
+  try { fresh = await __photoMemoGetById(key); } catch(_) { fresh = null; }
+
+  const rec = fresh || fallbackRecord;
+  if (!rec) return;
+
+  const latNum = Number.parseFloat(rec.lat);
+  const lngNum = Number.parseFloat(rec.lng);
+  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) return;
+  if (!bounds.hasLatLng(new naver.maps.LatLng(latNum, lngNum))) return;
+
+  // 인덱스 동기화
+  try {
+    const idx = (window.__photoMemoIndex || []).find((x) => String(x.id) === key);
+    if (idx) {
+      idx.lat = latNum;
+      idx.lng = lngNum;
+      if (typeof rec.note === "string") idx.note = rec.note;
+    }
+  } catch(_) {}
+
+  // iOS에서 동일 tick 재생성이 불안정할 수 있어 1프레임 지연 후 재생성
+  await new Promise((resolve) => setTimeout(resolve, 16));
+
+  try {
+    __createPhotoMemoMarker({
+      ...rec,
+      id: key,
+      lat: latNum,
+      lng: lngNum,
+    });
+  } catch(_) {}
+}
+
 // 경량 인덱스만 로드 (Blob 없음) — 화면 로드 시 전체 Blob 로드 대신 좌표/ID만
 async function loadPhotoMemoIndexOnce() {
   if (window.__photoMemoIndexLoaded) return window.__photoMemoIndex;
@@ -9266,31 +9309,8 @@ document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", as
     window.__openedPhotoMemoRecord = nextRecord;
     __updatePhotoMemoIndexNote(nextRecord.id, nextNote);
 
-    // 메모 수정 시 썸네일 Blob은 다시 만들지 않는다.
-    // 다만 모바일에서 일부 마커 DOM/touch 상태가 꼬이는 경우가 있어
-    // 현재 표시 중인 마커는 한 번 재생성해 이벤트를 새로 붙인다.
-    try {
-      const key = String(nextRecord.id);
-      const bounds = window.map?.getBounds?.();
-      const fresh = await __photoMemoGetById(key).catch(() => null);
-      const markerRecord = fresh || nextRecord;
-      const latNum = Number.parseFloat(markerRecord?.lat);
-      const lngNum = Number.parseFloat(markerRecord?.lng);
-      __removePhotoMemoMarker(key);
-      if (
-        window.__photoMemoVisible &&
-        bounds &&
-        Number.isFinite(latNum) &&
-        Number.isFinite(lngNum) &&
-        bounds.hasLatLng(new naver.maps.LatLng(latNum, lngNum))
-      ) {
-        __createPhotoMemoMarker({
-          ...markerRecord,
-          lat: latNum,
-          lng: lngNum,
-        });
-      }
-    } catch(_) {}
+    // 저장 직후 현재 화면에서 해당 썸네일을 강제 재생성
+    try { await __forceRefreshPhotoMemoMarker(nextRecord.id, nextRecord); } catch(_) {}
 
     closeImageModal();
     try { showToast("포토메모를 저장했습니다.", 1400); } catch(_) {}
