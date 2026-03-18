@@ -6048,8 +6048,16 @@ function __createPhotoMemoMarker(memo) {
       try { __clearModalCanvas(); } catch(e) {}
 
       const fullBlob = memo.imageBlob || memo.thumbBlob;
-      if (!(fullBlob instanceof Blob)) { window.__photoMemoModalOpening = false; return; }
-      const fullUrl = URL.createObjectURL(fullBlob);
+      const fullDataUrl = (typeof memo.imageDataUrl === "string" && memo.imageDataUrl.startsWith("data:"))
+        ? memo.imageDataUrl
+        : ((typeof memo.thumbDataUrl === "string" && memo.thumbDataUrl.startsWith("data:")) ? memo.thumbDataUrl : "");
+
+      if (!(fullBlob instanceof Blob) && !fullDataUrl) {
+        window.__photoMemoModalOpening = false;
+        return;
+      }
+
+      const fullUrl = (fullBlob instanceof Blob) ? URL.createObjectURL(fullBlob) : fullDataUrl;
       const previewImg = new Image();
       previewImg.onload = () => {
         __setPhotoMemoModalRecord(memo);
@@ -6059,11 +6067,15 @@ function __createPhotoMemoMarker(memo) {
         modal.style.display = "flex";
         window.imageModalShowYn = true;
         window.__photoMemoModalOpening = false;
-        setTimeout(() => { try { URL.revokeObjectURL(fullUrl); } catch(e) {} }, 1500);
+        if (fullBlob instanceof Blob) {
+          setTimeout(() => { try { URL.revokeObjectURL(fullUrl); } catch(e) {} }, 1500);
+        }
       };
       previewImg.onerror = () => {
         window.__photoMemoModalOpening = false;
-        try { URL.revokeObjectURL(fullUrl); } catch(e) {}
+        if (fullBlob instanceof Blob) {
+          try { URL.revokeObjectURL(fullUrl); } catch(e) {}
+        }
       };
       previewImg.src = fullUrl;
     } catch(e) { window.__photoMemoModalOpening = false; }
@@ -6411,8 +6423,20 @@ function __coordFromClientXY(clientX, clientY) {
     if (typeof proj.fromOffsetToCoord === "function") {
       return proj.fromOffsetToCoord(new naver.maps.Point(offsetX, offsetY));
     }
-    if (typeof proj.fromPointToCoord === "function") {
-      return proj.fromPointToCoord(new naver.maps.Point(offsetX, offsetY));
+
+    // 일부 Android/WebView 환경에서 fromPointToCoord(offset) 결과가 크게 어긋날 수 있어
+    // 안전한 bounds 보간으로 좌표를 추정한다.
+    const bounds = window.map?.getBounds?.();
+    if (bounds && rect.width > 0 && rect.height > 0) {
+      const sw = bounds.getSW?.();
+      const ne = bounds.getNE?.();
+      if (sw && ne) {
+        const rx = Math.max(0, Math.min(1, offsetX / rect.width));
+        const ry = Math.max(0, Math.min(1, offsetY / rect.height));
+        const lng = sw.lng() + (ne.lng() - sw.lng()) * rx;
+        const lat = ne.lat() - (ne.lat() - sw.lat()) * ry;
+        return new naver.maps.LatLng(lat, lng);
+      }
     }
   } catch(e) {}
   return null;
