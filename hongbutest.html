@@ -4229,11 +4229,39 @@ let schoolMarkers = []; // ✅ 지도에 표시된 학교 마커 저장
 // ================================
 let activeSchoolZoneId = null;
 let activeSchoolZonePolygons = [];
+let activeSchoolInfoWindow = null;
+let activeSchoolDetailButtonEl = null;
+let activeSchoolDetailButtonId = null;
 
 function clearActiveSchoolZone() {
     activeSchoolZonePolygons.forEach(p => { try { p.setMap(null); } catch (e) {} });
     activeSchoolZonePolygons = [];
     activeSchoolZoneId = null;
+}
+
+function closeActiveSchoolInfoWindow() {
+  if (!activeSchoolInfoWindow) return;
+  try { activeSchoolInfoWindow.close(); } catch (e) {}
+  activeSchoolInfoWindow = null;
+}
+
+function clearActiveSchoolDetailButton() {
+  if (activeSchoolDetailButtonEl) {
+    activeSchoolDetailButtonEl.style.display = "none";
+  }
+  activeSchoolDetailButtonEl = null;
+  activeSchoolDetailButtonId = null;
+}
+
+function setActiveSchoolDetailButton(buttonEl, schoolId) {
+  if (activeSchoolDetailButtonEl && activeSchoolDetailButtonEl !== buttonEl) {
+    activeSchoolDetailButtonEl.style.display = "none";
+  }
+  activeSchoolDetailButtonEl = buttonEl;
+  activeSchoolDetailButtonId = schoolId;
+  if (activeSchoolDetailButtonEl) {
+    activeSchoolDetailButtonEl.style.display = "flex";
+  }
 }
 
 function _getSchoolZoneId(school) {
@@ -4301,6 +4329,70 @@ function toggleSchoolZoneBySchool(school) {
     // 다른 학교면 교체
     drawSchoolZoneById(id);
 }
+
+function _fmtSchoolNum(v) {
+    return Number.isFinite(Number(v)) ? Number(v) : "-";
+}
+
+function renderSchoolDetailContent(school) {
+
+    const rows = [
+        ["1학년", _fmtSchoolNum(school?.firstYearClassroomCount), _fmtSchoolNum(school?.firstYearStudentCount)],
+        ["2학년", _fmtSchoolNum(school?.secondYearClassroomCount), _fmtSchoolNum(school?.secondYearStudentCount)],
+        ["3학년", _fmtSchoolNum(school?.thirdYearClassroomCount), _fmtSchoolNum(school?.thirdYearStudentCount)],
+        ["4학년", _fmtSchoolNum(school?.fourthYearClassroomCount), _fmtSchoolNum(school?.fourthYearStudentCount)],
+        ["5학년", _fmtSchoolNum(school?.fifthYearClassroomCount), _fmtSchoolNum(school?.fifthYearStudentCount)],
+        ["6학년", _fmtSchoolNum(school?.sixthYearClassroomCount), _fmtSchoolNum(school?.sixthYearStudentCount)],
+        ["특수학급", _fmtSchoolNum(school?.specialClassroomCount), _fmtSchoolNum(school?.specialClassroomStudentCount)]
+    ];
+
+    const detailTable = `
+      <div style="margin-top:0;">
+        <table style="width:100%; border-collapse:collapse; font-size:12px;">
+          <thead>
+            <tr>
+              <th style="padding:6px; border:1px solid #d9d9d9; background:#f6f7fb;">학년</th>
+              <th style="padding:6px; border:1px solid #d9d9d9; background:#f6f7fb;">학급수</th>
+              <th style="padding:6px; border:1px solid #d9d9d9; background:#f6f7fb;">학생수</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td style="padding:6px; border:1px solid #d9d9d9; text-align:center;">${r[0]}</td>
+                <td style="padding:6px; border:1px solid #d9d9d9; text-align:center;">${r[1]}</td>
+                <td style="padding:6px; border:1px solid #d9d9d9; text-align:center;">${r[2]}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    return `
+      <div style="min-width:280px; max-width:320px; padding:10px 12px; background:#fff; border:1px solid #90a9cf; border-radius:10px; box-shadow:0 4px 14px rgba(0,0,0,.15);">
+        ${detailTable}
+      </div>
+    `;
+}
+
+function openSchoolDetailPopup(school, marker) {
+    if (!school || !marker || !window.map) return;
+
+    closeActiveSchoolInfoWindow();
+
+    const infoWindow = new naver.maps.InfoWindow({
+      content: renderSchoolDetailContent(school),
+        borderWidth: 0,
+        backgroundColor: "transparent",
+    disableAnchor: true,
+    pixelOffset: new naver.maps.Point(0, 0)
+    });
+
+  infoWindow.open(window.map, window.map.getCenter());
+    activeSchoolInfoWindow = infoWindow;
+}
+
 function normalizeVertexLists(v) {
   // 이미 배열이면 그대로
   if (Array.isArray(v)) return v;
@@ -4377,6 +4469,8 @@ async function loadSchools() {
     // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거
     naver.maps.Event.addListener(window.map, "click", function () {
       clearActiveSchoolZone();
+      closeActiveSchoolInfoWindow();
+      clearActiveSchoolDetailButton();
     });
 
   } catch (error) {
@@ -4392,8 +4486,12 @@ function updateSchoolMarkers() {
     schoolMarkers.forEach(marker => marker.setMap(null));
     schoolMarkers = [];
 
-    if (!showSchools) return; // 초등학교 표시 체크 해제 시 종료
+    if (!showSchools) {
+      clearActiveSchoolDetailButton();
+      return; // 초등학교 표시 체크 해제 시 종료
+    }
 	if (window.map.getZoom() < 14) { 
+			clearActiveSchoolDetailButton();
 			return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
 	}
     let bounds = window.map.getBounds();
@@ -4439,8 +4537,39 @@ infoBox.textContent =
   `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
 
 
+    const infoWrap = document.createElement("div");
+    infoWrap.style = "position: relative; display: inline-block;";
+
+    const detailBtn = document.createElement("button");
+    detailBtn.textContent = "상세정보";
+    detailBtn.style = `
+      position: absolute;
+      left: 100%;
+      top: 0;
+      height: 100%;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      margin: 0;
+      appearance: none;
+      border: 1px solid #4a90e2;
+      background: #eef5ff;
+      color: #1757a8;
+      border-radius: 6px;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      z-index: 1;
+    `;
+    detailBtn.style.display = "none";
+
+    infoWrap.appendChild(infoBox);
+    infoWrap.appendChild(detailBtn);
+
     markerElement.appendChild(markerIcon);
-    markerElement.appendChild(infoBox);
+    markerElement.appendChild(infoWrap);
 
     const marker = new naver.maps.Marker({
         position: new naver.maps.LatLng(school.latitude, school.longitude),
@@ -4451,10 +4580,30 @@ infoBox.textContent =
     // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
     addMarkerRightClickEvent(marker, markerElement);
 
+    detailBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openSchoolDetailPopup(school, marker);
+    });
+
     // ✅ 좌클릭: 배정범위(폴리곤) 토글
     naver.maps.Event.addListener(marker, "click", () => {
-        toggleSchoolZoneBySchool(school);
+      const schoolId = _getSchoolZoneId(school);
+      const wasSameSchool = activeSchoolZoneId === schoolId;
+
+      toggleSchoolZoneBySchool(school);
+
+      if (wasSameSchool) {
+        clearActiveSchoolDetailButton();
+        closeActiveSchoolInfoWindow();
+      } else {
+        setActiveSchoolDetailButton(detailBtn, schoolId);
+      }
     });
+
+    if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) {
+      setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
+    }
 
     schoolMarkers.push(marker);
 });
