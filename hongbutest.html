@@ -2354,6 +2354,7 @@ console.log("hideLocationPopup");
 const EMD_GEOJSON_PARTS = ["emd_wgs84_utf8_part01.geojson", "emd_wgs84_utf8_part02.geojson", "emd_wgs84_utf8_part03.geojson", "emd_wgs84_utf8_part04.geojson"];
 const ADM_GEOJSON_PARTS = ["adm_part_001.geojson", "adm_part_002.geojson"];
 const EMD_POPULATION_JSON_URL = "emd_population_stats.json";
+const ADM_POPULATION_JSON_URL = "adm_population_stats.json";
 // ✅ 행정동(ADM) 경계 GeoJSON (24MB 분할)
 // ✅ UTF-8 GeoJSON (A2 한글 포함)  // ✅ 파일명/경로 맞춰주세요
 
@@ -2385,6 +2386,7 @@ let emdLabels = [];
 let admGeojsonRaw = null;
 let admPrepared = null;
 let admPolygons = [];
+let admPopulationMap = null; // { [admCode10]: { totalPopulation, personsPerHousehold } }
 
 let admLabels = [];
 let admRedrawTimer = null;
@@ -2844,6 +2846,36 @@ async function loadAdmBoundaryOnce() {
   admLoaded = true;
 }
 
+async function loadAdmPopulationOnce() {
+  if (admPopulationMap) return;
+  try {
+    const res = await fetch(ADM_POPULATION_JSON_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Fetch failed: ${ADM_POPULATION_JSON_URL} ${res.status}`);
+    const data = await res.json();
+    admPopulationMap = data?.items || {};
+  } catch (e) {
+    console.warn("ADM population JSON load failed:", e);
+    admPopulationMap = {};
+  }
+}
+
+function getAdmCodeFromProps(props) {
+  const raw = props?.adm_cd2 ?? props?.adm_cd ?? props?.ADM_CD ?? props?.code ?? "";
+  return String(raw).replace(/\D/g, "").slice(0, 10);
+}
+
+function formatAdmSublineByCode(admCode10) {
+  if (!admCode10 || !admPopulationMap) return "";
+  const item = admPopulationMap[admCode10];
+  if (!item) return "";
+
+  const pop = Number(item.totalPopulation);
+  const pph = Number(item.personsPerHousehold);
+  const popText = Number.isFinite(pop) ? pop.toLocaleString("ko-KR") : "-";
+  const pphText = Number.isFinite(pph) ? pph.toFixed(2).replace(/\.00$/, "") : "-";
+  return `인구 ${popText} / 세대당 ${pphText}`;
+}
+
 function prepareAdmPreparedOnce() {
   if (admPrepared) return;
   if (!admGeojsonRaw) throw new Error("ADM GeoJSON not loaded");
@@ -2864,14 +2896,16 @@ function clearAdmLabels() {
   }
 }
 
-function addAdmLabel(latlng, text, bbox, forcedFontSizePx) {
+function addAdmLabel(latlng, text, bbox, forcedFontSizePx, fitText) {
   if (!text || !bbox || !window.map) return;
+
+  const measureText = fitText || String(text).replace(/<[^>]*>/g, "");
 
   const fs = (typeof forcedFontSizePx === "number")
     ? forcedFontSizePx
     : _label_calcFitFontSize({
         bbox,
-        text,
+        text: measureText,
         map: window.map,
         paddingPx: 8,
         min: 9,
@@ -2885,7 +2919,7 @@ function addAdmLabel(latlng, text, bbox, forcedFontSizePx) {
     clickable: false,
     zIndex: 999998, // 법정동 라벨보다 약간 아래
     icon: {
-      content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af;">${text}</div>`,
+      content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:normal; text-align:center; line-height:1.15;">${text}</div>`,
       anchor: new naver.maps.Point(0, 0)
     }
   });
@@ -2931,18 +2965,29 @@ function shouldShowAdminBoundary() {
 
 function redrawAdmByBounds() {
   try { prepareAdmPreparedOnce(); } catch(e) { console.error('ADM prepare 실패:', e); return; }
+
+  if (!admPopulationMap) {
+    loadAdmPopulationOnce().then(() => {
+      try { scheduleAdmRedraw(); } catch (e) {}
+    }).catch(() => {});
+  }
+
   if (!window.map) return;
 
   if (!shouldShowAdminBoundary()) {
     clearAdmPolygons();
-  clearAdmLabels();
-  return;
+    clearAdmLabels();
+    return;
   }
 
   const bounds = window.map.getBounds();
   if (!bounds) return;
 
   clearAdmPolygons();
+  clearAdmLabels();
+
+  const labelCap = 200;
+  const labelCandidates = [];
 
   for (const f of admPrepared) {
     if (!bboxIntersects(bounds, f.bbox)) continue;
@@ -2951,11 +2996,41 @@ function redrawAdmByBounds() {
     // ✅ 행정동 라벨
     const fullName = (f.properties && (f.properties.adm_nm || f.properties.NAME || f.properties.A2 || f.properties.name)) || "";
     const name = String(fullName).trim().split(/\s+/).pop() || "";
-if (name) {
-      const center = getLabelLatLngByPolylabel(f.geometry, f.bbox);
-      addAdmLabel(center, name, f.bbox);
+    if (name && labelCandidates.length < labelCap) {
+      const admCode10 = getAdmCodeFromProps(f.properties);
+      const subline = formatAdmSublineByCode(admCode10);
+      labelCandidates.push({ name, subline, bbox: f.bbox, geometry: f.geometry });
     }
-}
+  }
+
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map: window.map,
+      paddingPx: 8,
+      min: 9,
+      max: 20,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+
+  if (!isFinite(minFit) || minFit <= 0) return;
+
+  let uniformFit = minFit;
+  const maxLabelSize = window.matchMedia && window.matchMedia('(max-width: 768px)').matches ? 18 : 20;
+  uniformFit = Math.min(uniformFit, maxLabelSize);
+
+  for (const c of labelCandidates) {
+    const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    const sublinePx = Math.max(8, Math.round(uniformFit * 0.68));
+    const html = c.subline
+      ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
+      : c.name;
+    addAdmLabel(center, html, c.bbox, uniformFit, c.name);
+  }
 }
 
 function scheduleAdmRedraw() {
@@ -2968,6 +3043,7 @@ function scheduleAdmRedraw() {
 async function ensureAdmLayerBoundToMap() {
   // GeoJSON 한번만 로드
   await loadAdmBoundaryOnce();
+  await loadAdmPopulationOnce();
 
   if (admBoundMap !== window.map) {
     admBoundMap = window.map;
