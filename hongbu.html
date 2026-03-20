@@ -7043,6 +7043,35 @@ async function __handlePhotoMemoMapTap(point, opts = {}) {
   } catch(_) {}
 }
 
+function __cancelPhotoMemoAddFlow() {
+  try {
+    const mapEl = document.getElementById("map");
+    if (mapEl?.__photoMemoFallbackTimer) {
+      clearTimeout(mapEl.__photoMemoFallbackTimer);
+      mapEl.__photoMemoFallbackTimer = null;
+    }
+  } catch(_) {}
+
+  try {
+    const cameraInput = document.getElementById("photoMemoCameraInput");
+    const fileInput = document.getElementById("photoMemoFileInput");
+    if (cameraInput) cameraInput.value = "";
+    if (fileInput) fileInput.value = "";
+  } catch(_) {}
+
+  window.__photoMemoMenuJustOpenedAt = 0;
+  setPhotoMemoAddMode(false, { clearPending: true, hideMenu: true });
+}
+
+function __isPhotoMemoActionMenuOpen() {
+  const menu = document.getElementById("photoMemoActionMenu");
+  return !!(menu && menu.style.display && menu.style.display !== "none");
+}
+
+function __shouldCancelPhotoMemoAddFlow() {
+  return !!(window.__photoMemoAddMode || window.__photoMemoPendingCoord || __isPhotoMemoActionMenuOpen());
+}
+
 function setPhotoMemoAddMode(on, opts = {}) {
   const clearPending = (opts && Object.prototype.hasOwnProperty.call(opts, "clearPending"))
     ? !!opts.clearPending
@@ -7113,11 +7142,11 @@ function setupPhotoMemoAddMode(map) {
       mapEl.__photoMemoTouchEndHandler = async (ev) => {
         try {
           if (!window.__photoMemoAddMode) return;
-          try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
           const target = ev.target;
           const menu = document.getElementById("photoMemoActionMenu");
           const btn = document.getElementById("mapPhotoBtn");
           if (menu?.contains?.(target) || btn?.contains?.(target)) return;
+          try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
 
           const now = Date.now();
           if (window.__photoMemoMapDomTapAt && now - window.__photoMemoMapDomTapAt < 250) return;
@@ -7138,11 +7167,11 @@ function setupPhotoMemoAddMode(map) {
         try {
           if (!window.__photoMemoAddMode) return;
           if (ev.pointerType !== "touch") return;
-          try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
           const target = ev.target;
           const menu = document.getElementById("photoMemoActionMenu");
           const btn = document.getElementById("mapPhotoBtn");
           if (menu?.contains?.(target) || btn?.contains?.(target)) return;
+          try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
 
           const now = Date.now();
           if (window.__photoMemoMapDomTapAt && now - window.__photoMemoMapDomTapAt < 250) return;
@@ -10699,10 +10728,29 @@ document.getElementById("unitFilter")
       camBtn.setAttribute('aria-label', '사진 메모 추가');
       camBtn.textContent = '📷';
       mapEl.appendChild(camBtn);
-      camBtn.addEventListener('click', async (ev) => {
-        try { ev?.stopPropagation?.(); } catch(e) {}
+      const onPhotoBtnPress = async (ev) => {
+        try {
+          ev?.preventDefault?.();
+          ev?.stopPropagation?.();
+        } catch(e) {}
+
+        const now = Date.now();
+        if (camBtn.__photoMemoPressAt && now - camBtn.__photoMemoPressAt < 350) return;
+        camBtn.__photoMemoPressAt = now;
+
+        if (__shouldCancelPhotoMemoAddFlow()) {
+          __cancelPhotoMemoAddFlow();
+          return;
+        }
+
         try { await loadPhotoMemosOnce(); } catch(e) {}
-        setPhotoMemoAddMode(!window.__photoMemoAddMode);
+        setPhotoMemoAddMode(true);
+      };
+
+      camBtn.addEventListener('click', onPhotoBtnPress);
+      camBtn.addEventListener('touchend', onPhotoBtnPress, { passive: false });
+      camBtn.addEventListener('pointerup', (ev) => {
+        if (ev.pointerType === 'touch') onPhotoBtnPress(ev);
       });
     }
 
