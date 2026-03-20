@@ -2353,11 +2353,14 @@ console.log("hideLocationPopup");
 // =========================
 const EMD_GEOJSON_PARTS = ["emd_wgs84_utf8_part01.geojson", "emd_wgs84_utf8_part02.geojson", "emd_wgs84_utf8_part03.geojson", "emd_wgs84_utf8_part04.geojson"];
 const ADM_GEOJSON_PARTS = ["adm_part_001.geojson", "adm_part_002.geojson"];
+const EMD_POPULATION_JSON_URL = "emd_population_stats.json";
+const ADM_POPULATION_JSON_URL = "adm_population_stats.json";
 // ✅ 행정동(ADM) 경계 GeoJSON (24MB 분할)
 // ✅ UTF-8 GeoJSON (A2 한글 포함)  // ✅ 파일명/경로 맞춰주세요
 
 let emdGeojson = null;
 let emdPrepared = null;   // { bbox:[minLng,minLat,maxLng,maxLat], geometry, properties }[]
+let emdPopulationMap = null; // { [emdCode8]: { totalPopulation, personsPerHousehold } }
 
 // ==============================
 // ✅ SIG(시군구) 경계 표시 (줌 14 이하)
@@ -2383,6 +2386,7 @@ let emdLabels = [];
 let admGeojsonRaw = null;
 let admPrepared = null;
 let admPolygons = [];
+let admPopulationMap = null; // { [admCode10]: { totalPopulation, personsPerHousehold } }
 
 let admLabels = [];
 let admRedrawTimer = null;
@@ -2635,14 +2639,16 @@ function _label_calcFitFontSize({
 
 
 
-function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
+function addEmdLabel(latlng, text, bbox, forcedFontSizePx, fitText) {
   if (!text || !bbox || !window.map) return;
+
+  const measureText = fitText || String(text).replace(/<[^>]*>/g, "");
 
   const fs = (typeof forcedFontSizePx === "number")
     ? forcedFontSizePx
     : _label_calcFitFontSize({
         bbox,
-        text,
+        text: measureText,
         map: window.map,
         paddingPx: 8,
         min: 9,
@@ -2658,7 +2664,7 @@ function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
     clickable: false,
     zIndex: 999999,
     icon: {
-      content: `<div class="emd-label" style="font-size:${fs}px">${text}</div>`,
+      content: `<div class="emd-label" style="font-size:${fs}px; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15;">${text}</div>`,
       anchor: new naver.maps.Point(0, 0)
     }
   });
@@ -2785,6 +2791,37 @@ async function loadEmdBoundaryOnce() {
   emdGeojsonRaw = merged;
 }
 
+async function loadEmdPopulationOnce() {
+  if (emdPopulationMap) return;
+  try {
+    const res = await fetch(EMD_POPULATION_JSON_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Fetch failed: ${EMD_POPULATION_JSON_URL} ${res.status}`);
+    const data = await res.json();
+    emdPopulationMap = data?.items || {};
+  } catch (e) {
+    console.warn("EMD population JSON load failed:", e);
+    emdPopulationMap = {};
+  }
+}
+
+function getEmdCodeFromProps(props) {
+  const raw = props?.A1 ?? props?.EMD_CD ?? props?.emd_cd ?? props?.code ?? "";
+  return String(raw).replace(/\D/g, "").slice(0, 8);
+}
+
+function formatEmdSublineByCode(emdCode8) {
+  if (!emdCode8 || !emdPopulationMap) return "";
+  const item = emdPopulationMap[emdCode8];
+  if (!item) return "";
+
+  const pop = Number(item.totalPopulation);
+  const pph = Number(item.personsPerHousehold);
+  const popText = Number.isFinite(pop) ? pop.toLocaleString("ko-KR") : "-";
+  const pphText = Number.isFinite(pph) ? pph.toFixed(2).replace(/\.00$/, "") : "-";
+
+  return `인구 ${popText} / 세대당 ${pphText}`;
+}
+
 
 // ==============================
 // ✅ ADM(행정동) boundary loader
@@ -2809,6 +2846,36 @@ async function loadAdmBoundaryOnce() {
   admLoaded = true;
 }
 
+async function loadAdmPopulationOnce() {
+  if (admPopulationMap) return;
+  try {
+    const res = await fetch(ADM_POPULATION_JSON_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Fetch failed: ${ADM_POPULATION_JSON_URL} ${res.status}`);
+    const data = await res.json();
+    admPopulationMap = data?.items || {};
+  } catch (e) {
+    console.warn("ADM population JSON load failed:", e);
+    admPopulationMap = {};
+  }
+}
+
+function getAdmCodeFromProps(props) {
+  const raw = props?.adm_cd2 ?? props?.adm_cd ?? props?.ADM_CD ?? props?.code ?? "";
+  return String(raw).replace(/\D/g, "").slice(0, 10);
+}
+
+function formatAdmSublineByCode(admCode10) {
+  if (!admCode10 || !admPopulationMap) return "";
+  const item = admPopulationMap[admCode10];
+  if (!item) return "";
+
+  const pop = Number(item.totalPopulation);
+  const pph = Number(item.personsPerHousehold);
+  const popText = Number.isFinite(pop) ? pop.toLocaleString("ko-KR") : "-";
+  const pphText = Number.isFinite(pph) ? pph.toFixed(2).replace(/\.00$/, "") : "-";
+  return `인구 ${popText} / 세대당 ${pphText}`;
+}
+
 function prepareAdmPreparedOnce() {
   if (admPrepared) return;
   if (!admGeojsonRaw) throw new Error("ADM GeoJSON not loaded");
@@ -2829,14 +2896,16 @@ function clearAdmLabels() {
   }
 }
 
-function addAdmLabel(latlng, text, bbox, forcedFontSizePx) {
+function addAdmLabel(latlng, text, bbox, forcedFontSizePx, fitText) {
   if (!text || !bbox || !window.map) return;
+
+  const measureText = fitText || String(text).replace(/<[^>]*>/g, "");
 
   const fs = (typeof forcedFontSizePx === "number")
     ? forcedFontSizePx
     : _label_calcFitFontSize({
         bbox,
-        text,
+        text: measureText,
         map: window.map,
         paddingPx: 8,
         min: 9,
@@ -2850,7 +2919,7 @@ function addAdmLabel(latlng, text, bbox, forcedFontSizePx) {
     clickable: false,
     zIndex: 999998, // 법정동 라벨보다 약간 아래
     icon: {
-      content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af;">${text}</div>`,
+      content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15;">${text}</div>`,
       anchor: new naver.maps.Point(0, 0)
     }
   });
@@ -2896,18 +2965,29 @@ function shouldShowAdminBoundary() {
 
 function redrawAdmByBounds() {
   try { prepareAdmPreparedOnce(); } catch(e) { console.error('ADM prepare 실패:', e); return; }
+
+  if (!admPopulationMap) {
+    loadAdmPopulationOnce().then(() => {
+      try { scheduleAdmRedraw(); } catch (e) {}
+    }).catch(() => {});
+  }
+
   if (!window.map) return;
 
   if (!shouldShowAdminBoundary()) {
     clearAdmPolygons();
-  clearAdmLabels();
-  return;
+    clearAdmLabels();
+    return;
   }
 
   const bounds = window.map.getBounds();
   if (!bounds) return;
 
   clearAdmPolygons();
+  clearAdmLabels();
+
+  const labelCap = 200;
+  const labelCandidates = [];
 
   for (const f of admPrepared) {
     if (!bboxIntersects(bounds, f.bbox)) continue;
@@ -2916,11 +2996,41 @@ function redrawAdmByBounds() {
     // ✅ 행정동 라벨
     const fullName = (f.properties && (f.properties.adm_nm || f.properties.NAME || f.properties.A2 || f.properties.name)) || "";
     const name = String(fullName).trim().split(/\s+/).pop() || "";
-if (name) {
-      const center = getLabelLatLngByPolylabel(f.geometry, f.bbox);
-      addAdmLabel(center, name, f.bbox);
+    if (name && labelCandidates.length < labelCap) {
+      const admCode10 = getAdmCodeFromProps(f.properties);
+      const subline = formatAdmSublineByCode(admCode10);
+      labelCandidates.push({ name, subline, bbox: f.bbox, geometry: f.geometry });
     }
-}
+  }
+
+  let minFit = Infinity;
+  for (const c of labelCandidates) {
+    const fs = _label_calcFitFontSize({
+      bbox: c.bbox,
+      text: c.name,
+      map: window.map,
+      paddingPx: 8,
+      min: 9,
+      max: 20,
+      hideIfTooSmall: true
+    });
+    if (fs > 0 && fs < minFit) minFit = fs;
+  }
+
+  if (!isFinite(minFit) || minFit <= 0) return;
+
+  let uniformFit = minFit;
+  const maxLabelSize = window.matchMedia && window.matchMedia('(max-width: 768px)').matches ? 18 : 20;
+  uniformFit = Math.min(uniformFit, maxLabelSize);
+
+  for (const c of labelCandidates) {
+    const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
+    const sublinePx = Math.max(8, Math.round(uniformFit * 0.68));
+    const html = c.subline
+      ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
+      : c.name;
+    addAdmLabel(center, html, c.bbox, uniformFit, c.name);
+  }
 }
 
 function scheduleAdmRedraw() {
@@ -2933,6 +3043,7 @@ function scheduleAdmRedraw() {
 async function ensureAdmLayerBoundToMap() {
   // GeoJSON 한번만 로드
   await loadAdmBoundaryOnce();
+  await loadAdmPopulationOnce();
 
   if (admBoundMap !== window.map) {
     admBoundMap = window.map;
@@ -2996,6 +3107,12 @@ function shouldShowEmdBoundary() {
 function redrawEmdByBounds() {
   try { prepareEmdPreparedOnce(); } catch(e) { console.error('redrawEmdByBounds prepare 실패:', e); return; }
 
+  if (!emdPopulationMap) {
+    loadEmdPopulationOnce().then(() => {
+      try { scheduleEmdRedraw(); } catch (e) {}
+    }).catch(() => {});
+  }
+
   if (!window.map) return;
 
   const z = window.map.getZoom();
@@ -3025,7 +3142,11 @@ function redrawEmdByBounds() {
     // 라벨 후보 수집
     if (z >= 15 && labelCandidates.length < labelCap) {
       const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
-      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+      if (name) {
+        const emdCode8 = getEmdCodeFromProps(f.properties);
+        const subline = formatEmdSublineByCode(emdCode8);
+        labelCandidates.push({ name, subline, bbox: f.bbox, geometry: f.geometry });
+      }
     }
   }
 
@@ -3054,7 +3175,11 @@ function redrawEmdByBounds() {
 // 3) 모든 라벨을 '최소 폰트'로 통일해서 렌더링 (항상 bbox 안에 들어감)
   for (const c of labelCandidates) {
     const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-    addEmdLabel(latlng, c.name, c.bbox, uniformFit);
+    const sublinePx = Math.max(8, Math.round(uniformFit * 0.68));
+    const html = c.subline
+      ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
+      : c.name;
+    addEmdLabel(latlng, html, c.bbox, uniformFit, c.name);
   }
 }
 
@@ -3277,6 +3402,7 @@ function scheduleEmdRedraw() {
 async function ensureEmdLayerBoundToMap() {
 	// GeoJSON 한번만 로드
 	await loadEmdBoundaryOnce();
+  await loadEmdPopulationOnce();
 
 	// createMap()은 지도를 '재생성'하므로, map 인스턴스가 바뀔 때마다 이벤트를 다시 바인딩해야 함
 	if (emdBoundMap !== window.map) {
@@ -4229,11 +4355,44 @@ let schoolMarkers = []; // ✅ 지도에 표시된 학교 마커 저장
 // ================================
 let activeSchoolZoneId = null;
 let activeSchoolZonePolygons = [];
+let activeSchoolInfoWindow = null;
+let activeSchoolDetailButtonEl = null;
+let activeSchoolDetailButtonId = null;
 
 function clearActiveSchoolZone() {
     activeSchoolZonePolygons.forEach(p => { try { p.setMap(null); } catch (e) {} });
     activeSchoolZonePolygons = [];
     activeSchoolZoneId = null;
+}
+
+function closeActiveSchoolInfoWindow() {
+  if (!activeSchoolInfoWindow) return;
+  try { activeSchoolInfoWindow.close(); } catch (e) {}
+  activeSchoolInfoWindow = null;
+}
+
+function clearActiveSchoolDetailButton() {
+  if (activeSchoolDetailButtonEl) {
+    activeSchoolDetailButtonEl.style.display = "none";
+  }
+  activeSchoolDetailButtonEl = null;
+  activeSchoolDetailButtonId = null;
+}
+
+function setActiveSchoolDetailButton(buttonEl, schoolId) {
+  if (activeSchoolDetailButtonEl && activeSchoolDetailButtonEl !== buttonEl) {
+    activeSchoolDetailButtonEl.style.display = "none";
+  }
+  activeSchoolDetailButtonEl = buttonEl;
+  activeSchoolDetailButtonId = schoolId;
+  if (activeSchoolDetailButtonEl) {
+    const labelEl = activeSchoolDetailButtonEl.previousElementSibling;
+    if (labelEl) {
+      const h = Math.ceil(labelEl.getBoundingClientRect().height);
+      if (h > 0) activeSchoolDetailButtonEl.style.height = `${h}px`;
+    }
+    activeSchoolDetailButtonEl.style.display = "flex";
+  }
 }
 
 function _getSchoolZoneId(school) {
@@ -4301,6 +4460,70 @@ function toggleSchoolZoneBySchool(school) {
     // 다른 학교면 교체
     drawSchoolZoneById(id);
 }
+
+function _fmtSchoolNum(v) {
+    return Number.isFinite(Number(v)) ? Number(v) : "-";
+}
+
+function renderSchoolDetailContent(school) {
+
+    const rows = [
+        ["1학년", _fmtSchoolNum(school?.firstYearClassroomCount), _fmtSchoolNum(school?.firstYearStudentCount)],
+        ["2학년", _fmtSchoolNum(school?.secondYearClassroomCount), _fmtSchoolNum(school?.secondYearStudentCount)],
+        ["3학년", _fmtSchoolNum(school?.thirdYearClassroomCount), _fmtSchoolNum(school?.thirdYearStudentCount)],
+        ["4학년", _fmtSchoolNum(school?.fourthYearClassroomCount), _fmtSchoolNum(school?.fourthYearStudentCount)],
+        ["5학년", _fmtSchoolNum(school?.fifthYearClassroomCount), _fmtSchoolNum(school?.fifthYearStudentCount)],
+        ["6학년", _fmtSchoolNum(school?.sixthYearClassroomCount), _fmtSchoolNum(school?.sixthYearStudentCount)],
+        ["특수학급", _fmtSchoolNum(school?.specialClassroomCount), _fmtSchoolNum(school?.specialClassroomStudentCount)]
+    ];
+
+    const detailTable = `
+      <div style="margin-top:0;">
+        <table style="width:100%; border-collapse:collapse; font-size:16px;">
+          <thead>
+            <tr>
+              <th style="padding:6px; border:1px solid #d9d9d9; background:#f6f7fb;">학년</th>
+              <th style="padding:6px; border:1px solid #d9d9d9; background:#f6f7fb;">학급수</th>
+              <th style="padding:6px; border:1px solid #d9d9d9; background:#f6f7fb;">학생수</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr>
+                <td style="padding:6px; border:1px solid #d9d9d9; text-align:center;">${r[0]}</td>
+                <td style="padding:6px; border:1px solid #d9d9d9; text-align:center;">${r[1]}</td>
+                <td style="padding:6px; border:1px solid #d9d9d9; text-align:center;">${r[2]}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    return `
+      <div style="min-width:280px; max-width:320px; padding:10px 12px; background:#fff; border:1px solid #90a9cf; border-radius:10px; box-shadow:0 4px 14px rgba(0,0,0,.15);">
+        ${detailTable}
+      </div>
+    `;
+}
+
+function openSchoolDetailPopup(school, marker) {
+    if (!school || !marker || !window.map) return;
+
+    closeActiveSchoolInfoWindow();
+
+    const infoWindow = new naver.maps.InfoWindow({
+      content: renderSchoolDetailContent(school),
+        borderWidth: 0,
+        backgroundColor: "transparent",
+    disableAnchor: true,
+    pixelOffset: new naver.maps.Point(0, 0)
+    });
+
+  infoWindow.open(window.map, window.map.getCenter());
+    activeSchoolInfoWindow = infoWindow;
+}
+
 function normalizeVertexLists(v) {
   // 이미 배열이면 그대로
   if (Array.isArray(v)) return v;
@@ -4377,6 +4600,8 @@ async function loadSchools() {
     // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거
     naver.maps.Event.addListener(window.map, "click", function () {
       clearActiveSchoolZone();
+      closeActiveSchoolInfoWindow();
+      clearActiveSchoolDetailButton();
     });
 
   } catch (error) {
@@ -4392,8 +4617,12 @@ function updateSchoolMarkers() {
     schoolMarkers.forEach(marker => marker.setMap(null));
     schoolMarkers = [];
 
-    if (!showSchools) return; // 초등학교 표시 체크 해제 시 종료
+    if (!showSchools) {
+      clearActiveSchoolDetailButton();
+      return; // 초등학교 표시 체크 해제 시 종료
+    }
 	if (window.map.getZoom() < 14) { 
+			clearActiveSchoolDetailButton();
 			return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
 	}
     let bounds = window.map.getBounds();
@@ -4439,8 +4668,39 @@ infoBox.textContent =
   `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
 
 
+    const infoWrap = document.createElement("div");
+    infoWrap.style = "position: relative; display: inline-block;";
+
+    const detailBtn = document.createElement("button");
+    detailBtn.textContent = "상세정보";
+    detailBtn.style = `
+      position: absolute;
+      left: 100%;
+      top: 0;
+      height: 100%;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      margin: 0;
+      appearance: none;
+      border: 1px solid #4a90e2;
+      background: #eef5ff;
+      color: #1757a8;
+      border-radius: 6px;
+      padding: 0 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      z-index: 1;
+    `;
+    detailBtn.style.display = "none";
+
+    infoWrap.appendChild(infoBox);
+    infoWrap.appendChild(detailBtn);
+
     markerElement.appendChild(markerIcon);
-    markerElement.appendChild(infoBox);
+    markerElement.appendChild(infoWrap);
 
     const marker = new naver.maps.Marker({
         position: new naver.maps.LatLng(school.latitude, school.longitude),
@@ -4451,10 +4711,30 @@ infoBox.textContent =
     // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
     addMarkerRightClickEvent(marker, markerElement);
 
+    detailBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openSchoolDetailPopup(school, marker);
+    });
+
     // ✅ 좌클릭: 배정범위(폴리곤) 토글
     naver.maps.Event.addListener(marker, "click", () => {
-        toggleSchoolZoneBySchool(school);
+      const schoolId = _getSchoolZoneId(school);
+      const wasSameSchool = activeSchoolZoneId === schoolId;
+
+      toggleSchoolZoneBySchool(school);
+
+      if (wasSameSchool) {
+        clearActiveSchoolDetailButton();
+        closeActiveSchoolInfoWindow();
+      } else {
+        setActiveSchoolDetailButton(detailBtn, schoolId);
+      }
     });
+
+    if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) {
+      setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
+    }
 
     schoolMarkers.push(marker);
 });

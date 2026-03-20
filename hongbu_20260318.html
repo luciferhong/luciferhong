@@ -41,6 +41,8 @@ let emdGeojsonRaw = null;
   /* 전체화면일 때 상단 타이틀/컨트롤 숨김(선택) */
   body.fullscreen-active > h1,
   body.fullscreen-active > #controls { display: none !important; }
+  body.fullscreen-active > #routeDrawHelp,
+  body.map-fullscreen > #routeDrawHelp { display: none !important; }
 
 html, body { margin:0; padding:0; overflow-x:hidden; }
 
@@ -71,7 +73,9 @@ html, body { margin:0; padding:0; overflow-x:hidden; }
   cursor: pointer; z-index: 10000;
 }
 .map-locate-btn { top: 10px; }      /* 현재 위치 (좌상단 아이콘 아래) */
-.map-stoptrack-btn { top: 50px; }  /* 추적 중지 */
+.map-stoptrack-btn { top: 98px; }  /* 추적 중지 */
+#mapPhotoBtn{ display:flex; }
+.map-photo-btn{ top: 66px; }       /* ✅ 사진 메모 모드(카메라) */
 #mapStopBtn { display: none !important; }
 
 
@@ -109,7 +113,124 @@ font-weight: 800;
   pointer-events: none;
   text-shadow: 0 0 2px rgba(255,255,255,0.9), 0 0 6px rgba(255,255,255,0.7);
 }
+
+/* ✅ 지도 사진 메모(좌표 기반) 썸네일 마커 */
+.photo-memo-marker{
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: #fff;
+  border: 2px solid rgba(255,255,255,0.95);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+}
+.photo-memo-marker img{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display:block;
+}
+
+/* ✅ 사진 메모 액션 메뉴(촬영/파일) */
+.photo-memo-menu{
+  position:absolute;
+  z-index: 10002;
+  background:#fff;
+  border:1px solid rgba(0,0,0,0.15);
+  border-radius:10px;
+  box-shadow:0 8px 18px rgba(0,0,0,0.25);
+  padding:8px;
+  display:none;
+  gap:8px;
+}
+.photo-memo-menu button{
+  margin:0;
+  padding:8px 10px;
+  border:1px solid rgba(0,0,0,0.15);
+  background:#fff;
+  border-radius:10px;
+  cursor:pointer;
+  font-size:14px;
+  white-space:nowrap;
+}
+.photo-memo-menu button:hover{ background:#f3f6ff; }
+.map-photo-btn.active{
+  border-color:#2D5DA7 !important;
+  box-shadow:0 2px 8px rgba(45,93,167,0.35) !important;
+  background:#eef4ff !important;
+}
+
+/* ✅ 포토메모 메모 입력 모달 */
+#photoMemoNoteModal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 1000010;
+  justify-content: center;
+  align-items: center;
+}
+#photoMemoNoteModal.show { display: flex; }
+#photoMemoNoteModalInner {
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px;
+  width: min(340px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+}
+#photoMemoNotePreview {
+  width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #f0f0f0;
+}
+#photoMemoNoteInput {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 15px;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 72px;
+}
+.photo-memo-note-btns {
+  display: flex;
+  gap: 8px;
+}
+.photo-memo-note-btns button {
+  flex: 1;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  cursor: pointer;
+}
+#photoMemoNoteSave  { background: #2D5DA7; color: #fff; }
+#photoMemoNoteCancel{ background: #f0f0f0; color: #333; }
 </style>
+
+<!-- ✅ 포토메모 메모 입력 모달 -->
+<div id="photoMemoNoteModal">
+  <div id="photoMemoNoteModalInner">
+    <img id="photoMemoNotePreview" src="" alt="preview" />
+    <textarea id="photoMemoNoteInput" placeholder="메모를 입력하세요 (선택사항)"></textarea>
+    <div class="photo-memo-note-btns">
+      <button id="photoMemoNoteSave">💾 저장</button>
+      <button id="photoMemoNoteCancel">취소</button>
+    </div>
+  </div>
+</div>
+
 
 
 
@@ -421,6 +542,8 @@ buttonContainer {
   display: none;
   justify-content: center;
   align-items: center;
+  padding: calc(env(safe-area-inset-top, 0px) + 10px) 10px calc(env(safe-area-inset-bottom, 0px) + 10px);
+  box-sizing: border-box;
   position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.8);
@@ -429,10 +552,98 @@ buttonContainer {
   will-change: opacity;
 }
 
-#modalCanvas {
-  max-width: 90%;
-  max-height: 90%;
+#imageModalContent {
+  width: min(96vw, 720px);
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 20px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#imageModalTopBar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#imageModalTopBar button {
+  background: rgba(255,255,255,0.98);
+  border: none;
+  padding: 8px 12px;
   border-radius: 8px;
+  cursor: pointer;
+}
+
+#deletePhotoMemoButton {
+  background: #dc2626 !important;
+  color: #fff;
+}
+
+#imageModalCanvasWrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 4px;
+  border-radius: 12px;
+}
+
+#modalCanvas {
+  max-width: 100%;
+  max-height: none;
+  border-radius: 8px;
+}
+
+#photoMemoEditPanel {
+  width: 100%;
+  background: rgba(255,255,255,0.98);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  display: none;
+  z-index: 2;
+  box-sizing: border-box;
+}
+
+#photoMemoEditInput {
+  width: 100%;
+  min-height: 80px;
+  max-height: 28vh;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+#photoMemoEditActions {
+  display:flex;
+  justify-content:flex-end;
+  gap:8px;
+  flex-wrap: wrap;
+}
+
+#photoMemoEditActions button {
+  border:none;
+  padding:10px 14px;
+  border-radius:8px;
+  cursor:pointer;
+}
+
+#closePhotoMemoModalButton {
+  background:#e5e7eb;
+  color:#111827;
+}
+
+#savePhotoMemoNoteButton {
+  background:#2563eb;
+  color:#fff;
 }
 
 #mapWrapper.fullscreen {
@@ -849,6 +1060,7 @@ body.map-fullscreen {
 	<label><input type="checkbox" id="toggleBlankMap">백지도</label>
 
 	<label><input type="checkbox" id="toggleCadastralMap">지적편집도</label>
+	<label><input type="checkbox" id="togglePhotoMemo">포토메모</label>
 <!-- 
 	<label class="only-pc" style="color: red; margin-left: auto; white-space: nowrap;">
   길찾기할 때 출발시각은 현재 컴퓨터 시각에 맞춰집니다. 평일 오전 7시반으로 맞추면 출발시각이 해당 시각으로 변경됩니다
@@ -900,9 +1112,12 @@ body.map-fullscreen {
    <!--  <button onclick="backupMemoDB()">🗂️ 메모 백업</button> -->
 <button onclick="window.open('memoBackup.html', '_blank')">📦 메모 백업</button>
     <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
-	<button onclick="deleteMemoDB()">🗑️ 메모 일괄 삭제</button>
+	<button onclick="deleteMemoDB()">🗑️ 단지메모 일괄 삭제</button>
+  <button onclick="deletePhotoMemoDB()">📸 포토메모 일괄 삭제</button>
 
     <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
+    <input type="file" id="photoMemoCameraInput" accept="image/*" capture="environment" style="display:none" />
+    <input type="file" id="photoMemoFileInput" accept="image/*" style="display:none" />
 </div>
 
 <button
@@ -965,7 +1180,7 @@ body.map-fullscreen {
     </div>
     <div id="locationButton" title="현재 위치">📍</div> <!-- ✅ 현재 위치 버튼 -->
     <div id="stopTrackingButton" style="display:none" title="위치 추적 중지">🛑</div> <!-- ✅ 위치 추적 중지 버튼 -->
-    <span style="font-size: 14px; color: gray;">
+    <span id="routeDrawHelp" style="font-size: 14px; color: gray;">
         백스페이스 : 직전 취소<br>
         ESC, 마우스 우클릭, [경로 그리기 완료] 버튼 클릭 : 그리기 종료<br>
         모바일에서도 경로그리기, 다운로드 가능합니다
@@ -979,33 +1194,25 @@ body.map-fullscreen {
 <!-- 이미지 모달 -->
 <!--<div id="imageModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100vh; background-color:rgba(0,0,0,0.8); justify-content:center; align-items:center; z-index:99999;">-->
 <div id="imageModal" style="display:none;">
-  <canvas id="modalCanvas" style="max-width:90vw; max-height:90vh; border-radius:8px;"></canvas>
+  <div id="imageModalContent">
+    <div id="imageModalTopBar">
+      <button id="deletePhotoMemoButton" style="display:none;">🗑️ 삭제</button>
+      <button id="downloadImageButton">⬇️ 다운로드</button>
+      <button id="copyImageButton">📋 복사</button>
+    </div>
 
-  <!-- 📋 복사 버튼 -->
-  <button id="copyImageButton" style="
-    position: absolute; 
-    top: 20px; 
-    right: 20px;  
-    background: white; 
-    border: none; 
-    padding: 8px 12px; 
-    border-radius: 4px; 
-    cursor: pointer;">
-    📋 복사
-  </button>
+    <div id="imageModalCanvasWrap">
+      <canvas id="modalCanvas"></canvas>
+    </div>
 
-  <!-- ✅ ⬇️ 다운로드 버튼 (복사 버튼 왼쪽에 위치) -->
-  <button id="downloadImageButton" style="
-    position: absolute; 
-    top: 20px; 
-    right: 100px;  
-    background: white; 
-    border: none; 
-    padding: 8px 12px; 
-    border-radius: 4px; 
-    cursor: pointer;">
-    ⬇️ 다운로드
-  </button>
+    <div id="photoMemoEditPanel">
+      <textarea id="photoMemoEditInput" placeholder="포토메모를 입력하세요"></textarea>
+      <div id="photoMemoEditActions">
+        <button id="closePhotoMemoModalButton" style="display:none;">닫기</button>
+        <button id="savePhotoMemoNoteButton" style="display:none;">💾 메모 저장</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 
@@ -1014,6 +1221,9 @@ body.map-fullscreen {
 <script>
 //이미지 확대 여부
 window.imageModalShowYn = false;
+window.__openedPhotoMemoId = null;
+window.__openedPhotoMemoRecord = null;
+window.__imageModalScrollY = window.__imageModalScrollY || 0;
 
 // ==============================
 // ✅ Memory leak 방지 유틸 (메모/이미지/캔버스)
@@ -1065,12 +1275,54 @@ function __clearModalCanvas(){
   }catch(e){ console.warn("clear canvas failed:", e); }
 }
 
+function __setPhotoMemoModalContext(photoMemoId){
+  window.__openedPhotoMemoId = photoMemoId ? String(photoMemoId) : null;
+  const btn = document.getElementById("deletePhotoMemoButton");
+  if (btn) btn.style.display = window.__openedPhotoMemoId ? "inline-block" : "none";
+}
+
+function __setPhotoMemoModalRecord(photoMemoRecord){
+  window.__openedPhotoMemoRecord = photoMemoRecord || null;
+  __setPhotoMemoModalContext(photoMemoRecord?.id || null);
+
+  const panel = document.getElementById("photoMemoEditPanel");
+  const input = document.getElementById("photoMemoEditInput");
+  const saveBtn = document.getElementById("savePhotoMemoNoteButton");
+  const closeBtn = document.getElementById("closePhotoMemoModalButton");
+  const isPhotoMemo = !!photoMemoRecord;
+
+  if (panel) panel.style.display = isPhotoMemo ? "block" : "none";
+  if (input) input.value = isPhotoMemo ? String(photoMemoRecord.note || "") : "";
+  if (saveBtn) saveBtn.style.display = isPhotoMemo ? "inline-block" : "none";
+  if (closeBtn) closeBtn.style.display = isPhotoMemo ? "inline-block" : "none";
+}
+
+function __updatePhotoMemoIndexNote(id, note) {
+  const key = String(id);
+  const item = (window.__photoMemoIndex || []).find(x => String(x.id) === key);
+  if (item) item.note = String(note || "");
+}
+
 function closeImageModal(){
   const modal = document.getElementById("imageModal");
+  const restoreY = Number.isFinite(window.__imageModalScrollY) ? window.__imageModalScrollY : (window.scrollY || 0);
+  try {
+    const activeEl = document.activeElement;
+    if (activeEl && typeof activeEl.blur === "function") activeEl.blur();
+  } catch(_) {}
+  try {
+    const editInput = document.getElementById("photoMemoEditInput");
+    if (editInput && typeof editInput.blur === "function") editInput.blur();
+  } catch(_) {}
   if(modal) modal.style.display = "none";
   __clearModalCanvas();
+  __setPhotoMemoModalRecord(null);
+  window.__photoMemoModalOpening = false;
   window.lastOpenedBase64 = null;
   window.imageModalShowYn = false;
+  setTimeout(() => {
+    try { window.scrollTo(0, restoreY); } catch(_) {}
+  }, 0);
 }
 
 
@@ -1137,7 +1389,7 @@ function closeImageModal(){
 					const confirmReset = confirm("⚠️ 시세 데이터를 초기화하면 복구할 수 없습니다. 시세지도 백업을 권장드립니다. \n계속하시겠습니까?");
 					if (!confirmReset) return;
 
-					const request = indexedDB.open("hongbu", 5);
+					const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
 					request.onsuccess = function(event) {
 						const db = event.target.result;
 						const transaction = db.transaction(["apartments"], "readwrite");
@@ -1163,7 +1415,7 @@ function closeImageModal(){
 					const confirmReset = confirm("⚠️ 시세지도Ver2 데이터를 초기화하면 복구할 수 없습니다. 시세지도Ver2에서 백업을 권장드립니다. \n계속하시겠습니까?");
 					if (!confirmReset) return;
 
-					const request = indexedDB.open("hongbu", 5);
+					const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
 					request.onsuccess = function(event) {
 						const db = event.target.result;
 						const transaction = db.transaction(["importSiseVer2"], "readwrite");
@@ -1728,6 +1980,9 @@ function __setCadastralLayer(on){
 
 		window.map = new naver.maps.Map("map", mapOptions);
 
+		// ✅ 지도 좌표 기반 사진 메모(카메라 버튼 모드) 훅 바인딩
+		try { setupPhotoMemoAddMode(window.map); } catch(e) {}
+
 		// ✅ 법정동(EMD) 경계: 현재 화면(bounds) 내만 렌더링 (성능 최적화)
 		ensureEmdLayerBoundToMap().catch(console.warn);
 		// ✅ 행정동(ADM) 경계: 현재 화면(bounds) 내만 렌더링
@@ -1904,6 +2159,20 @@ setupRightClickEvent(); // 길찾기용 우클릭 이벤트
   // ✅ 백지도 OFF로 돌아올 때, 지적편집도 체크가 켜져 있으면 레이어를 다시 올림
   if (!useBlank) {
     __setCadastralLayer(!!cadastralEl?.checked);
+  }
+});
+
+// ✅ 포토메모 토글 — 체크 ON: 인덱스 로드 후 현재 범위 마커 표시, OFF: 모든 마커 제거
+document.getElementById("togglePhotoMemo")?.addEventListener("change", async function() {
+  window.__photoMemoVisible = this.checked;
+  if (this.checked) {
+    await loadPhotoMemoIndexOnce();
+    updatePhotoMemoMarkersByBounds();
+  } else {
+    // 모든 포토메모 마커 제거 및 ObjectURL 해제
+    for (const id of Array.from(window.__photoMemoMarkers.keys())) {
+      __removePhotoMemoMarker(id);
+    }
   }
 });
 
@@ -3363,6 +3632,9 @@ function updateMarkerStyleAndSave(id, selectedColor, textColor, fontSize) {
 // - 마커가 생성/갱신될 때 해당 id의 메모 존재 여부만 IndexedDB에서 확인(getKey/get)
 // - 결과는 캐시(Map)하여 반복 조회 방지
 // ================================
+const HONGBU_DB_VERSION = 5;
+const HONGBU_MEMO_DB_VERSION = 5;
+
 window.__memoPresenceCache = window.__memoPresenceCache || new Map();
 window.__memoPresencePending = window.__memoPresencePending || new Map();
 window.__memoDbPromise = window.__memoDbPromise || null;
@@ -3370,7 +3642,7 @@ function openHongbuMemoDBOnce() {
   if (window.__memoDbPromise) return window.__memoDbPromise;
 
   window.__memoDbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open("hongbuMemo", 4);
+    const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
     // ✅ 추가: 첫 생성/업그레이드시 스토어 보장
     req.onupgradeneeded = (event) => {
@@ -3416,7 +3688,7 @@ async function memoExistsLazy(id) {
       await initMemoIndexedDB();
       // ✅ 매번 새로운 DB 연결 열기 (캐시된 연결이 아닌 독립적인 연결)
       return await new Promise((resolve) => {
-        const req = indexedDB.open("hongbuMemo", 4);
+        const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
         req.onsuccess = (e) => {
           const db = e.target.result;
           try {
@@ -4337,6 +4609,7 @@ await initIndexedDB();
 // ✅ 0) 메모 DB + 메모 존재 키셋을 가장 먼저 준비 (아파트 마커/메모 아이콘이 최우선)
 	await initMemoIndexedDB();
 	await loadMemoKeySetOnce();
+	// ✅ 0-1) 포토메모 인덱스(경량)는 체크박스 ON 시 로드 — 초기화 시 자동 로드 안 함
 
 	// ✅ 1) 아파트(마커) 먼저 로드
 	await loadApartments();
@@ -4839,6 +5112,7 @@ const previewImg = new Image();
               modalCanvas.width = previewImg.width;
               modalCanvas.height = previewImg.height;
               modalCtx.drawImage(previewImg, 0, 0);
+              window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
               modal.style.display = "flex";
               window.imageModalShowYn = true;
             };
@@ -4912,47 +5186,41 @@ showSiseVer2DataToggle(apartmentId);
 	}
 
 
-document.addEventListener("click", (event) => {
+function __closeApartmentInfo() {
     const apartmentInfo = document.getElementById("apartmentInfo");
-    const imageModal = document.getElementById("imageModal");
+    if (!apartmentInfo || apartmentInfo.style.display !== "block") return;
 
-    // apartmentInfo가 존재하지 않으면 리턴
-    if (!apartmentInfo) return;
+    const id = apartmentInfo.getAttribute("data-id");
+    saveNote(id);
 
-    setTimeout(() => {
-        // 🔒 모달이 열려있으면 닫지 않음
+    apartmentInfo.style.display = "none";
+    // ✅ 메모 팝업 닫힐 때 큰 데이터 참조 해제
+    try { closeImageModal(); } catch(e){}
+    try { if (__currentMemoAptId) { __memoKeepOnly(__currentMemoAptId); } } catch(e){}
+    try {
+      if (window.aptMemoImageList) {
+        Object.keys(window.aptMemoImageList).forEach((key) => {
+          if (String(key) === String(__currentMemoAptId || "")) return;
+          delete window.aptMemoImageList[key];
+        });
+      }
+    } catch(e){}
+    try { __currentMemoAptId = null; } catch(e){}
+}
 
-        if (window.imageModalShowYn === true) { return; }
+document.addEventListener("pointerdown", (event) => {
+    const apartmentInfo = document.getElementById("apartmentInfo");
 
-        // apartmentInfo 내부 클릭이면 닫지 않음
-        if (apartmentInfo.contains(event.target)) return;
+    if (!apartmentInfo || apartmentInfo.style.display !== "block") return;
+    if (window.imageModalShowYn === true) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (apartmentInfo.contains(event.target)) return;
 
-        // 그 외엔 닫기
-        if (apartmentInfo.style.display === "block") {
-//console.log("실행됨");
-
- const apartmentInfo = document.getElementById("apartmentInfo");
- const id = apartmentInfo.getAttribute("data-id");
-      const memo = document.getElementById("noteText")?.value?.trim();
-      const images = aptMemoImageList?.[id] ?? [];
-
-      //if ((memo && memo !== "") || images.length > 0) {
-        saveNote(id); // ✅ 자동 저장
-      //}
-
-
-
-
-            apartmentInfo.style.display = "none";
-            // ✅ 메모 팝업 닫힐 때 큰 데이터 참조 해제
-            try { closeImageModal(); } catch(e){}
-            try { if (__currentMemoAptId) { __memoKeepOnly(__currentMemoAptId); } } catch(e){}
-            try { if (window.aptMemoImageList) { window.aptMemoImageList = {}; } } catch(e){}
-            try { __currentMemoAptId = null; } catch(e){}
-
-        }
+    clearTimeout(window.__apartmentInfoOutsideCloseTimer);
+    window.__apartmentInfoOutsideCloseTimer = setTimeout(() => {
+      try { __closeApartmentInfo(); } catch(_) {}
     }, 0);
-});
+}, true);
 
 
 
@@ -5422,7 +5690,7 @@ var activeMarkerSet = null;
 // ✅ IndexedDB 초기화
 function initIndexedDB() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 5);
+        const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
 
         request.onupgradeneeded = function(event) {
             const db = event.target.result;
@@ -5457,12 +5725,17 @@ function initIndexedDB() {
 }
 function initMemoIndexedDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbuMemo", 4);
+    const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
     request.onupgradeneeded = function (event) {
       const db = event.target.result;
       if (!db.objectStoreNames.contains("apartmentNotes")) {
         db.createObjectStore("apartmentNotes", { keyPath: "id" });
+      }
+      // ✅ 지도 특정 좌표에 붙이는 사진 메모
+      if (!db.objectStoreNames.contains("photoMemos")) {
+        const store = db.createObjectStore("photoMemos", { keyPath: "id" });
+        store.createIndex("createdAt", "createdAt", { unique: false });
       }
     };
 
@@ -5470,7 +5743,7 @@ function initMemoIndexedDB() {
       const db = event.target.result;
 
       // ✅ iOS 꼬임 복구: 이미 v4인데 store가 없으면 DB를 지우고 재생성 유도
-      if (!db.objectStoreNames.contains("apartmentNotes")) {
+      if (!db.objectStoreNames.contains("apartmentNotes") || !db.objectStoreNames.contains("photoMemos")) {
         db.close();
         const del = indexedDB.deleteDatabase("hongbuMemo");
         del.onsuccess = () => resolve(initMemoIndexedDB());
@@ -5496,7 +5769,7 @@ async function loadMemoKeySetOnce() {
   await initMemoIndexedDB();
 
   return new Promise((resolve) => {
-    const req = indexedDB.open("hongbuMemo", 4);
+    const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
     req.onerror = () => {
       window.__hongbuMemoKeySet = new Set();
       window.__hongbuMemoKeySetReady = true;
@@ -5557,12 +5830,1025 @@ async function loadMemoKeySetOnce() {
   });
 }
 
+// ================================
+// ✅ 지도 사진 메모 (좌표 기반, IndexedDB: hongbuMemo.photoMemos)
+// - 모바일: 지도 롱탭(길게 누르기)
+// - PC: 지도 롱클릭(좌클릭 길게)
+// - 저장: Blob(원본) + Blob(썸네일)
+// ================================
+window.__photoMemoIndex = window.__photoMemoIndex || [];          // 경량 인덱스: [{id,lat,lng,createdAt,note}]
+window.__photoMemoMarkers = window.__photoMemoMarkers || new Map();       // id -> naver.maps.Marker
+window.__photoMemoObjectUrls = window.__photoMemoObjectUrls || new Map(); // id -> objectURL
+window.__photoMemoPendingCoord = null;                                    // {lat,lng}
+window.__photoMemoIndexLoaded = window.__photoMemoIndexLoaded || false;   // 인덱스 로드 완료 여부
+window.__photoMemoLoadingIds = window.__photoMemoLoadingIds || new Set(); // DB에서 로딩 중인 id 집합
+window.__photoMemoVisible = window.__photoMemoVisible || false;           // 포토메모 체크박스 상태
+
+function __uuidv4() {
+  try {
+    if (crypto?.randomUUID) return crypto.randomUUID();
+  } catch(e) {}
+  return "pm_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
+}
+
+function __openHongbuMemoDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+    request.onsuccess = (event) => resolve(event.target.result);
+    request.onerror = (e) => reject(e.target.error);
+  });
+}
+
+async function __photoMemoGetAll() {
+  await initMemoIndexedDB();
+  const db = await __openHongbuMemoDb();
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(["photoMemos"], "readonly");
+      const store = tx.objectStore("photoMemos");
+      const req = store.getAll();
+      req.onsuccess = () => { try { db.close(); } catch(e) {} resolve(req.result || []); };
+      req.onerror = () => { try { db.close(); } catch(e) {} resolve([]); };
+    } catch(e) {
+      try { db.close(); } catch(_) {}
+      resolve([]);
+    }
+  });
+}
+
+async function __photoMemoPut(rec) {
+  await initMemoIndexedDB();
+  const db = await __openHongbuMemoDb();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction(["photoMemos"], "readwrite");
+      const store = tx.objectStore("photoMemos");
+      const normalizedRec = {
+        ...(rec || {}),
+        id: String(rec?.id || ""),
+      };
+      if (!normalizedRec.id) {
+        try { db.close(); } catch(_) {}
+        reject(new Error("photoMemo id is required"));
+        return;
+      }
+      tx.oncomplete = () => { try { db.close(); } catch(e) {} resolve(true); };
+      tx.onerror = (e) => { try { db.close(); } catch(_) {} reject(e?.target?.error || tx.error); };
+      tx.onabort = (e) => { try { db.close(); } catch(_) {} reject(e?.target?.error || tx.error || new Error("photoMemo tx aborted")); };
+      const req = store.put(normalizedRec);
+      req.onerror = (e) => { try { db.close(); } catch(_) {} reject(e.target.error); };
+    } catch(e) {
+      try { db.close(); } catch(_) {}
+      reject(e);
+    }
+  });
+}
+
+async function __photoMemoDelete(id) {
+  await initMemoIndexedDB();
+  const db = await __openHongbuMemoDb();
+  return new Promise((resolve, reject) => {
+    try {
+      const tx = db.transaction(["photoMemos"], "readwrite");
+      const store = tx.objectStore("photoMemos");
+      const keyStr = String(id);
+      const req = store.delete(keyStr);
+      req.onsuccess = () => {
+        const numeric = Number.parseInt(keyStr, 10);
+        if (!Number.isFinite(numeric) || String(numeric) !== keyStr) {
+          try { db.close(); } catch(e) {}
+          resolve(true);
+          return;
+        }
+        try {
+          const req2 = store.delete(numeric);
+          req2.onsuccess = () => { try { db.close(); } catch(e) {} resolve(true); };
+          req2.onerror = () => { try { db.close(); } catch(e) {} resolve(true); };
+        } catch(_) {
+          try { db.close(); } catch(e) {}
+          resolve(true);
+        }
+      };
+      req.onerror = (e) => { try { db.close(); } catch(_) {} reject(e.target.error); };
+    } catch(e) {
+      try { db.close(); } catch(_) {}
+      reject(e);
+    }
+  });
+}
+
+async function __photoMemoGetById(id) {
+  await initMemoIndexedDB();
+  const db = await __openHongbuMemoDb();
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(["photoMemos"], "readonly");
+      const store = tx.objectStore("photoMemos");
+      const keyStr = String(id);
+      const req = store.get(keyStr);
+      req.onsuccess = () => {
+        if (req.result) {
+          try { db.close(); } catch(e) {}
+          resolve(req.result || null);
+          return;
+        }
+
+        const numeric = Number.parseInt(keyStr, 10);
+        if (!Number.isFinite(numeric) || String(numeric) !== keyStr) {
+          try { db.close(); } catch(e) {}
+          resolve(null);
+          return;
+        }
+
+        try {
+          const req2 = store.get(numeric);
+          req2.onsuccess = () => { try { db.close(); } catch(e) {} resolve(req2.result || null); };
+          req2.onerror = () => { try { db.close(); } catch(e) {} resolve(null); };
+        } catch(_) {
+          try { db.close(); } catch(e) {}
+          resolve(null);
+        }
+      };
+      req.onerror = () => { try { db.close(); } catch(e) {} resolve(null); };
+    } catch(e) {
+      try { db.close(); } catch(_) {}
+      resolve(null);
+    }
+  });
+}
+
+async function __blobToDataUrl(blob) {
+  return new Promise((resolve) => {
+    if (!(blob instanceof Blob)) return resolve("");
+    try {
+      const reader = new FileReader();
+      reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(blob);
+    } catch (e) {
+      resolve("");
+    }
+  });
+}
+
+function __dataUrlToBlob(dataUrl) {
+  try {
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+    const parts = dataUrl.split(",");
+    if (parts.length < 2) return null;
+    const header = parts[0];
+    const body = parts[1];
+    const mime = (header.match(/data:([^;]+)/)?.[1]) || "application/octet-stream";
+    const byteString = atob(body);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    return new Blob([ab], { type: mime });
+  } catch(_) {
+    return null;
+  }
+}
+
+function __bindPhotoMemoMarkerImage(img, memo, id) {
+  const key = String(id);
+
+  const applyBlob = (blob) => {
+    if (!(blob instanceof Blob)) return false;
+    try { __revokePhotoMemoUrl(key); } catch(_) {}
+    const url = URL.createObjectURL(blob);
+    window.__photoMemoObjectUrls.set(key, url);
+    img.src = url;
+    return true;
+  };
+
+  const applyDataUrl = (dataUrl) => {
+    if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return false;
+    try { __revokePhotoMemoUrl(key); } catch(_) {}
+    img.src = dataUrl;
+    return true;
+  };
+
+  img.dataset.pmErrStep = "0";
+  img.onerror = async () => {
+    const step = Number(img.dataset.pmErrStep || "0");
+
+    // 1차 복구: thumbDataUrl 실패 시 legacy thumbBlob 또는 원본 이미지로 대체
+    if (step === 0) {
+      img.dataset.pmErrStep = "1";
+      if (applyBlob(memo.thumbBlob) || applyBlob(memo.imageBlob)) return;
+    }
+
+    // 2차 복구: DB에서 최신 레코드 재조회 후 재시도
+    if (step <= 1) {
+      img.dataset.pmErrStep = "2";
+      try {
+        const fresh = await __photoMemoGetById(key);
+        if (fresh) {
+          memo.thumbDataUrl = fresh.thumbDataUrl;
+          memo.thumbBlob = fresh.thumbBlob;
+          memo.imageBlob = fresh.imageBlob;
+          if (applyDataUrl(fresh.thumbDataUrl) || applyBlob(fresh.thumbBlob) || applyBlob(fresh.imageBlob)) return;
+        }
+      } catch(_) {}
+    }
+
+    // 더 이상 재시도하지 않음
+    img.onerror = null;
+  };
+
+  // 기본: data URL 썸네일 우선, legacy thumbBlob fallback, 마지막으로 원본 이미지
+  if (!applyDataUrl(memo.thumbDataUrl) && !applyBlob(memo.thumbBlob)) {
+    applyBlob(memo.imageBlob);
+  }
+}
+
+async function __fileToThumbBlob(file, size = 96, quality = 0.82) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = size;
+          canvas.height = size;
+          const ctx = canvas.getContext("2d");
+          // center-crop
+          const sw = img.naturalWidth || img.width;
+          const sh = img.naturalHeight || img.height;
+          const s = Math.min(sw, sh);
+          const sx = (sw - s) / 2;
+          const sy = (sh - s) / 2;
+          ctx.drawImage(img, sx, sy, s, s, 0, 0, size, size);
+          canvas.toBlob((blob) => {
+            try { URL.revokeObjectURL(url); } catch(e) {}
+            resolve(blob || file);
+          }, "image/jpeg", quality);
+        } catch(e) {
+          try { URL.revokeObjectURL(url); } catch(_) {}
+          resolve(file);
+        }
+      };
+      img.onerror = () => {
+        try { URL.revokeObjectURL(url); } catch(_) {}
+        resolve(file);
+      };
+      img.src = url;
+    } catch(e) {
+      resolve(file);
+    }
+  });
+}
+
+function __revokePhotoMemoUrl(id) {
+  try {
+    const u = window.__photoMemoObjectUrls.get(String(id));
+    if (u) URL.revokeObjectURL(u);
+  } catch(e) {}
+  window.__photoMemoObjectUrls.delete(String(id));
+}
+
+function __removePhotoMemoMarker(id) {
+  const key = String(id);
+  const marker = window.__photoMemoMarkers.get(key);
+  if (marker) {
+    try { marker.setMap(null); } catch(e) {}
+  }
+  window.__photoMemoMarkers.delete(key);
+  __revokePhotoMemoUrl(key);
+}
+
+function __createPhotoMemoMarker(memo) {
+  if (!window.map || !(window.map instanceof naver.maps.Map)) return null;
+  const id = String(memo.id);
+  if (window.__photoMemoMarkers.has(id)) return window.__photoMemoMarkers.get(id);
+
+  const markerElement = document.createElement("div");
+  markerElement.className = "photo-memo-marker";
+
+  const img = document.createElement("img");
+  __bindPhotoMemoMarkerImage(img, memo, id);
+  markerElement.appendChild(img);
+
+  const marker = new naver.maps.Marker({
+    position: new naver.maps.LatLng(memo.lat, memo.lng),
+    map: window.map,
+    zIndex: 999999,
+    icon: { content: markerElement, anchor: new naver.maps.Point(19, 19) }
+  });
+
+  const openPhotoMemoModal = async () => {
+    try {
+      // 모바일 브라우저별 click/touch/pointer 중복 신호를 안전하게 흡수
+      if (window.__photoMemoModalOpening) return;
+      window.__photoMemoModalOpening = true;
+
+      const modal = document.getElementById("imageModal");
+      const modalCanvas = document.getElementById("modalCanvas");
+      const modalCtx = modalCanvas?.getContext?.("2d");
+      if (!modal || !modalCanvas || !modalCtx) { window.__photoMemoModalOpening = false; return; }
+      try { __clearModalCanvas(); } catch(e) {}
+
+      let workingMemo = memo;
+      let fullBlob = (workingMemo.imageBlob instanceof Blob) ? workingMemo.imageBlob : null;
+      let fullDataUrl = (typeof workingMemo.imageDataUrl === "string" && workingMemo.imageDataUrl.startsWith("data:"))
+        ? workingMemo.imageDataUrl
+        : "";
+      let fallbackBlob = (workingMemo.thumbBlob instanceof Blob) ? workingMemo.thumbBlob : null;
+      let fallbackDataUrl = (typeof workingMemo.thumbDataUrl === "string" && workingMemo.thumbDataUrl.startsWith("data:"))
+        ? workingMemo.thumbDataUrl
+        : "";
+
+      // 저장 직후 stale closure 문제를 피하기 위해 클릭 시 DB 최신본을 항상 우선 사용
+      try {
+        const fresh = await __photoMemoGetById(id);
+        if (fresh) {
+          workingMemo = fresh;
+          fullBlob = (fresh.imageBlob instanceof Blob) ? fresh.imageBlob : null;
+          fullDataUrl = (typeof fresh.imageDataUrl === "string" && fresh.imageDataUrl.startsWith("data:"))
+            ? fresh.imageDataUrl
+            : "";
+          fallbackBlob = (fresh.thumbBlob instanceof Blob) ? fresh.thumbBlob : null;
+          fallbackDataUrl = (typeof fresh.thumbDataUrl === "string" && fresh.thumbDataUrl.startsWith("data:"))
+            ? fresh.thumbDataUrl
+            : "";
+        }
+      } catch(e) {}
+
+      if (!(fullBlob instanceof Blob) && !fullDataUrl) {
+        fullBlob = fallbackBlob;
+        fullDataUrl = fallbackDataUrl;
+      }
+
+      if (!(fullBlob instanceof Blob) && !fullDataUrl) {
+        window.__photoMemoModalOpening = false;
+        return;
+      }
+
+      const useDataUrl = !!(fullDataUrl && fullDataUrl.startsWith("data:"));
+      const useBlobUrl = !useDataUrl && (fullBlob instanceof Blob);
+      const fullUrl = useDataUrl ? fullDataUrl : (useBlobUrl ? URL.createObjectURL(fullBlob) : "");
+      const previewImg = new Image();
+      let didBlobFallback = false;
+      previewImg.onload = () => {
+        __setPhotoMemoModalRecord(workingMemo);
+        modalCanvas.width = previewImg.width;
+        modalCanvas.height = previewImg.height;
+        modalCtx.drawImage(previewImg, 0, 0);
+        try {
+          if (typeof fullDataUrl === "string" && fullDataUrl.startsWith("data:")) {
+            window.lastOpenedBase64 = fullDataUrl;
+          } else if (typeof modalCanvas.toDataURL === "function") {
+            window.lastOpenedBase64 = modalCanvas.toDataURL("image/jpeg", 0.92);
+          }
+        } catch(_) {}
+        window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
+        modal.style.display = "flex";
+        window.imageModalShowYn = true;
+        window.__photoMemoModalOpening = false;
+        if (useBlobUrl) {
+          setTimeout(() => { try { URL.revokeObjectURL(fullUrl); } catch(e) {} }, 1500);
+        }
+      };
+      previewImg.onerror = async () => {
+        if (useBlobUrl && !didBlobFallback) {
+          didBlobFallback = true;
+          try {
+            const fallbackDataUrl = await __blobToDataUrl(fullBlob);
+            if (fallbackDataUrl && fallbackDataUrl.startsWith("data:")) {
+              previewImg.src = fallbackDataUrl;
+              return;
+            }
+          } catch(_) {}
+        }
+
+        if (useDataUrl && (fullBlob instanceof Blob) && !didBlobFallback) {
+          didBlobFallback = true;
+          try {
+            previewImg.src = URL.createObjectURL(fullBlob);
+            return;
+          } catch(_) {}
+        }
+
+        window.__photoMemoModalOpening = false;
+        if (useBlobUrl) {
+          try { URL.revokeObjectURL(fullUrl); } catch(e) {}
+        }
+      };
+      previewImg.src = fullUrl;
+    } catch(e) { window.__photoMemoModalOpening = false; }
+  };
+
+  // 클릭: 큰 사진 보기(기존 imageModal 재사용)
+  naver.maps.Event.addListener(marker, "click", openPhotoMemoModal);
+
+  // 모바일에서 click 누락되는 케이스 보강: 썸네일 DOM의 touchend도 직접 처리
+  markerElement.addEventListener("pointerup", (ev) => {
+    try {
+      ev.preventDefault();
+      ev.stopPropagation();
+    } catch(_) {}
+    openPhotoMemoModal();
+  });
+  
+  markerElement.addEventListener("touchend", (ev) => {
+    try {
+      ev.preventDefault();
+      ev.stopPropagation();
+    } catch(_) {}
+    openPhotoMemoModal();
+  });
+
+  // 우클릭(PC): 삭제
+  naver.maps.Event.addListener(marker, "rightclick", async () => {
+    if (!confirm("이 사진 메모를 삭제할까요?")) return;
+    try {
+      await __photoMemoDelete(id);
+      window.__photoMemoIndex = window.__photoMemoIndex.filter(x => String(x.id) !== id);
+      __removePhotoMemoMarker(id);
+    } catch(e) {
+      alert("삭제 실패");
+    }
+  });
+
+  window.__photoMemoMarkers.set(id, marker);
+  return marker;
+}
+
+function updatePhotoMemoMarkersByBounds() {
+  if (!window.map || !(window.map instanceof naver.maps.Map)) return;
+  if (!window.__photoMemoVisible) return;           // 체크박스 OFF면 아무것도 안 함
+  if (!window.__photoMemoIndexLoaded) return;       // 인덱스가 아직 로드 안 됨
+
+  const bounds = window.map.getBounds?.();
+  if (!bounds) return;
+
+  const inView = new Set();
+  for (const entry of window.__photoMemoIndex) {
+    try {
+      if (typeof entry.lat !== "number" || typeof entry.lng !== "number") continue;
+      if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng))) {
+        const id = String(entry.id);
+        inView.add(id);
+        // 마커 없고 아직 로딩 중이 아닐 때만 DB에서 full record 불러와 마커 생성
+        if (!window.__photoMemoMarkers.has(id) && !window.__photoMemoLoadingIds.has(id)) {
+          __loadAndCreatePhotoMemoMarker(entry);
+        }
+      }
+    } catch(e) {}
+  }
+
+  // 범위 밖이거나 체크박스 OFF 시 마커 제거
+  for (const id of Array.from(window.__photoMemoMarkers.keys())) {
+    if (!inView.has(id)) __removePhotoMemoMarker(id);
+  }
+}
+
+// 지정 항목의 전체 record를 DB에서 읽어와 마커 생성 (Blob을 lazy-load)
+async function __loadAndCreatePhotoMemoMarker(entry) {
+  const id = String(entry.id);
+  if (window.__photoMemoLoadingIds.has(id)) return;
+  window.__photoMemoLoadingIds.add(id);
+  try {
+    const db = await __openHongbuMemoDb();
+    const full = await new Promise((res) => {
+      try {
+        const tx = db.transaction(["photoMemos"], "readonly");
+        const req = tx.objectStore("photoMemos").get(id);
+        req.onsuccess = () => { try { db.close(); } catch(_) {} res(req.result || null); };
+        req.onerror  = () => { try { db.close(); } catch(_) {} res(null); };
+      } catch(e) { try { db.close(); } catch(_) {} res(null); }
+    });
+    if (full && window.__photoMemoVisible) __createPhotoMemoMarker(full);
+  } catch(e) {}
+  finally { window.__photoMemoLoadingIds.delete(id); }
+}
+
+// 지도 이동으로 마커가 다시 나타나는 경로와 동일하게 현재 화면 마커를 재로드
+async function __reloadVisiblePhotoMemoMarkersLikeMapMove() {
+  if (!window.__photoMemoVisible || !window.map || !(window.map instanceof naver.maps.Map)) return;
+
+  // 0) 인덱스가 로드되어 있지 않으면 먼저 로드
+  if (!window.__photoMemoIndexLoaded) {
+    try { await loadPhotoMemoIndexOnce(); } catch(_) {}
+  }
+
+  const bounds = window.map.getBounds?.();
+  if (!bounds) return;
+
+  // 1) 현재 화면에 보이는 마커를 제거 (영역 이탈 시 제거되는 동작과 동일)
+  const visibleIds = [];
+  for (const entry of (window.__photoMemoIndex || [])) {
+    const latNum = Number.parseFloat(entry?.lat);
+    const lngNum = Number.parseFloat(entry?.lng);
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) continue;
+    if (bounds.hasLatLng(new naver.maps.LatLng(latNum, lngNum))) {
+      visibleIds.push(String(entry.id));
+    }
+  }
+  visibleIds.forEach((id) => {
+    try { __removePhotoMemoMarker(id); } catch(_) {}
+  });
+
+  // 2) 실제 지도 이동과 동일한 idle 사이클을 강제로 한 번 발생
+  const mapRef = window.map;
+  const waitIdleOnce = () => new Promise((resolve) => {
+    let listener = null;
+    try {
+      listener = naver.maps.Event.addListener(mapRef, "idle", () => {
+        try { if (listener) naver.maps.Event.removeListener(listener); } catch(_) {}
+        resolve(true);
+      });
+    } catch(_) {
+      resolve(false);
+    }
+    setTimeout(() => {
+      try { if (listener) naver.maps.Event.removeListener(listener); } catch(_) {}
+      resolve(false);
+    }, 700);
+  });
+
+  try {
+    const center = mapRef.getCenter?.();
+    if (!center) {
+      try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
+      return;
+    }
+
+    // iOS에서 동일 경로를 타기 위해 실제 panBy -> idle -> setCenter -> idle 순서를 강제
+    const firstIdle = waitIdleOnce();
+    try { mapRef.panBy(new naver.maps.Point(2, 0)); } catch(_) {}
+    await firstIdle;
+
+    const secondIdle = waitIdleOnce();
+    try { mapRef.setCenter(center); } catch(_) {}
+    await secondIdle;
+  } catch(_) {
+    try { updatePhotoMemoMarkersByBounds(); } catch(_) {}
+  }
+}
+
+// 경량 인덱스만 로드 (Blob 없음) — 화면 로드 시 전체 Blob 로드 대신 좌표/ID만
+async function loadPhotoMemoIndexOnce() {
+  if (window.__photoMemoIndexLoaded) return window.__photoMemoIndex;
+  try {
+    await initMemoIndexedDB();
+    const db = await __openHongbuMemoDb();
+    const index = await new Promise((resolve) => {
+      const results = [];
+      try {
+        const tx = db.transaction(["photoMemos"], "readonly");
+        const store = tx.objectStore("photoMemos");
+        const req = store.openCursor();
+        req.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const v = cursor.value;
+            // Blob 필드를 제외한 경량 항목만 추출
+            results.push({ id: v.id, lat: Number(v.lat), lng: Number(v.lng), createdAt: v.createdAt || 0, note: v.note || "" });
+            cursor.continue();
+          } else {
+            try { db.close(); } catch(_) {}
+            resolve(results);
+          }
+        };
+        req.onerror = () => { try { db.close(); } catch(_) {} resolve([]); };
+      } catch(e) { try { db.close(); } catch(_) {} resolve([]); }
+    });
+    window.__photoMemoIndex = index;
+    window.__photoMemoIndexLoaded = true;
+    return window.__photoMemoIndex;
+  } catch(e) {
+    window.__photoMemoIndex = [];
+    window.__photoMemoIndexLoaded = true;
+    return window.__photoMemoIndex;
+  }
+}
+
+// 하위 호환 — 기존 호출 코드가 있는 경우를 대비
+async function loadPhotoMemosOnce() { return loadPhotoMemoIndexOnce(); }
+
+function setupPhotoMemoInputHandlerOnce() {
+  // 카메라/파일 2개 input 모두를 같은 핸들러로 처리
+  const cameraInput = document.getElementById("photoMemoCameraInput");
+  const fileInput = document.getElementById("photoMemoFileInput");
+  const inputs = [cameraInput, fileInput].filter(Boolean);
+  if (inputs.length === 0) return;
+  if (window.__photoMemoInputsBound) return;
+  window.__photoMemoInputsBound = true;
+
+  const onPicked = async (e) => {
+    try {
+      const file = e.target.files?.[0];
+      const p = window.__photoMemoPendingCoord;
+      if (!file || !p || typeof p.lat !== "number" || typeof p.lng !== "number") return;
+
+        // 아파트 메모와 동일하게 원본을 1600px / JPEG 0.82로 압축 저장
+        const originalDataUrl = await __blobToDataUrl(file);
+        let compressedDataUrl = originalDataUrl;
+        try {
+          compressedDataUrl = await compressImage(originalDataUrl, 1600, 0.82);
+        } catch(_) {
+          compressedDataUrl = originalDataUrl;
+        }
+        const compressedBlob = __dataUrlToBlob(compressedDataUrl) || file;
+        const thumbBlob = await __fileToThumbBlob(compressedBlob, 96, 0.82);
+        const thumbDataUrl = await __blobToDataUrl(thumbBlob);
+
+        // 썸네일 미리보기 표시 후 메모 입력 모달 열기
+        const note = await __showPhotoMemoNoteModal(thumbDataUrl || thumbBlob);
+        if (note === null) {
+          // 취소: pending 좌표 유지 (사용자가 다시 시도할 수 있도록)
+          return;
+        }
+
+        const id = __uuidv4();
+        const rec = {
+        id,
+        lat: p.lat,
+        lng: p.lng,
+        createdAt: Date.now(),
+          note: note.trim(),
+        imageDataUrl: compressedDataUrl,
+        thumbDataUrl
+      };
+
+      await __photoMemoPut(rec);
+      // 경량 인덱스에 추가 (Blob 없이)
+      window.__photoMemoIndex.push({ id: rec.id, lat: rec.lat, lng: rec.lng, createdAt: rec.createdAt, note: rec.note });
+      window.__photoMemoPendingCoord = null;
+
+      // 포토메모 체크박스 ON일 때만 즉시 마커 생성
+      if (window.__photoMemoVisible) __createPhotoMemoMarker(rec);
+    } catch (err) {
+      alert("사진 저장 실패");
+    } finally {
+      try { e.target.value = ""; } catch(_) {}
+    }
+  };
+
+  inputs.forEach((inp) => inp.addEventListener("change", onPicked));
+}
+
+  // 메모 입력 모달: Promise<string>(저장) | null(취소)
+  function __showPhotoMemoNoteModal(thumbPreviewSource) {
+    return new Promise((resolve) => {
+      const modal    = document.getElementById("photoMemoNoteModal");
+      const preview  = document.getElementById("photoMemoNotePreview");
+      const textarea = document.getElementById("photoMemoNoteInput");
+      const btnSave  = document.getElementById("photoMemoNoteSave");
+      const btnCancel= document.getElementById("photoMemoNoteCancel");
+      if (!modal || !preview || !textarea || !btnSave || !btnCancel) { resolve(""); return; }
+
+      let previewUrl = null;
+      if (typeof thumbPreviewSource === "string" && thumbPreviewSource.startsWith("data:")) {
+        preview.src = thumbPreviewSource;
+      } else if (thumbPreviewSource instanceof Blob) {
+        previewUrl = URL.createObjectURL(thumbPreviewSource);
+        preview.src = previewUrl;
+      } else {
+        preview.src = "";
+      }
+      textarea.value = "";
+      modal.classList.add("show");
+      setTimeout(() => textarea.focus(), 100);
+
+      function cleanup(note) {
+        modal.classList.remove("show");
+        if (previewUrl) { try { URL.revokeObjectURL(previewUrl); } catch(_) {} previewUrl = null; }
+        preview.src = "";
+        textarea.value = "";
+        btnSave.removeEventListener("click", onSave);
+        btnCancel.removeEventListener("click", onCancel);
+        resolve(note);
+      }
+      function onSave()   { cleanup(textarea.value); }
+      function onCancel() { cleanup(null); }
+      btnSave.addEventListener("click", onSave);
+      btnCancel.addEventListener("click", onCancel);
+    });
+  }
+
+window.__photoMemoAddMode = window.__photoMemoAddMode || false; // 카메라 버튼으로 켜는 "위치 선택 모드"
+
+function __ensurePhotoMemoMenu() {
+  const mapEl = document.getElementById("map");
+  if (!mapEl) return null;
+  let menu = document.getElementById("photoMemoActionMenu");
+  if (menu) return menu;
+
+  menu = document.createElement("div");
+  menu.id = "photoMemoActionMenu";
+  menu.className = "photo-memo-menu";
+  menu.innerHTML = `
+    <button type="button" data-action="camera">📷 촬영</button>
+    <button type="button" data-action="file">🖼️ 파일</button>
+    <button type="button" data-action="cancel">취소</button>
+  `;
+  mapEl.appendChild(menu);
+
+  menu.addEventListener("click", (ev) => {
+    const btn = ev.target?.closest?.("button");
+    const act = btn?.getAttribute?.("data-action");
+    if (!act) return;
+    if (act === "cancel") return __hidePhotoMemoMenu();
+
+    if (act === "camera") {
+      const input = document.getElementById("photoMemoCameraInput");
+      if (input) input.click();
+    } else if (act === "file") {
+      const input = document.getElementById("photoMemoFileInput");
+      if (input) input.click();
+    }
+    __hidePhotoMemoMenu();
+    // 1회성: 메뉴에서 선택하면 모드 OFF
+    // 단, 파일 선택 change 이벤트 전에 pending 좌표를 지우면 저장이 중단되므로 유지한다.
+    setPhotoMemoAddMode(false, { clearPending: false });
+  });
+
+  return menu;
+}
+
+function __hidePhotoMemoMenu() {
+  const menu = document.getElementById("photoMemoActionMenu");
+  if (menu) menu.style.display = "none";
+}
+
+function __extractClientPointFromMapEvent(e) {
+  try {
+    const de = e?.domEvent || e;
+    const touch = de?.changedTouches?.[0]
+      || de?.touches?.[0]
+      || de?.originalEvent?.changedTouches?.[0]
+      || de?.originalEvent?.touches?.[0]
+      || null;
+
+    const clientX = typeof de?.clientX === "number" ? de.clientX : touch?.clientX;
+    const clientY = typeof de?.clientY === "number" ? de.clientY : touch?.clientY;
+    if (typeof clientX === "number" && typeof clientY === "number") {
+      return { clientX, clientY, isTouch: !!touch };
+    }
+  } catch(e) {}
+  return null;
+}
+
+function __showPhotoMemoMenuAtClientXY(clientX, clientY, opts = {}) {
+  const menu = __ensurePhotoMemoMenu();
+  const mapEl = document.getElementById("map");
+  if (!menu || !mapEl) return;
+
+  const rect = mapEl.getBoundingClientRect();
+  menu.style.display = "inline-flex";
+  menu.style.visibility = "hidden";
+  menu.style.transform = "translate(0, 0)";
+
+  const menuWidth = menu.offsetWidth || 140;
+  const menuHeight = menu.offsetHeight || 44;
+  const rawX = clientX - rect.left;
+  const rawY = clientY - rect.top;
+  const preferBelow = !!opts.preferBelow;
+  const x = Math.max(8, Math.min(rect.width - menuWidth - 8, rawX - (menuWidth * 0.1)));
+  const y = preferBelow
+    ? Math.max(8, Math.min(rect.height - menuHeight - 8, rawY + 10))
+    : Math.max(8, Math.min(rect.height - menuHeight - 8, rawY - menuHeight - 10));
+
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.style.visibility = "visible";
+  menu.style.display = "inline-flex";
+}
+
+function __showPhotoMemoMenuAtCoord(coord) {
+  try {
+    const menu = __ensurePhotoMemoMenu();
+    const mapEl = document.getElementById("map");
+    if (!menu || !mapEl || !coord || !window.map) return;
+
+    const rect = mapEl.getBoundingClientRect();
+    const proj = window.map.getProjection?.();
+    if (!proj) return;
+
+    let pt = null;
+    if (typeof proj.fromCoordToPoint === "function") {
+      pt = proj.fromCoordToPoint(coord);
+    } else if (typeof proj.fromCoordToOffset === "function") {
+      pt = proj.fromCoordToOffset(coord);
+    }
+    if (!pt) return;
+
+    const clientX = rect.left + pt.x;
+    const clientY = rect.top + pt.y;
+    __showPhotoMemoMenuAtClientXY(clientX, clientY);
+  } catch(e) {}
+}
+
+function __coordFromClientXY(clientX, clientY) {
+  try {
+    const mapEl = document.getElementById("map");
+    if (!mapEl || typeof clientX !== "number" || typeof clientY !== "number") return null;
+
+    const rect = mapEl.getBoundingClientRect();
+    const offsetX = clientX - rect.left;
+    const offsetY = clientY - rect.top;
+
+    // 갤럭시/Android에서 projection 변환 편차를 피하기 위해
+    // 터치 픽셀을 현재 bounds에 직접 매핑해 좌표를 계산한다.
+    const bounds = window.map?.getBounds?.();
+    if (bounds && rect.width > 0 && rect.height > 0) {
+      const sw = bounds.getSW?.();
+      const ne = bounds.getNE?.();
+      if (sw && ne) {
+        const rx = Math.max(0, Math.min(1, offsetX / rect.width));
+        const ry = Math.max(0, Math.min(1, offsetY / rect.height));
+        const lng = sw.lng() + (ne.lng() - sw.lng()) * rx;
+
+        // 위도는 Web Mercator y로 보간해야 화면상의 세로 비율과 맞는다.
+        const clampLat = (v) => Math.max(-85.05112878, Math.min(85.05112878, v));
+        const latToMercY = (lat) => {
+          const r = clampLat(lat) * Math.PI / 180;
+          return Math.log(Math.tan(Math.PI / 4 + r / 2));
+        };
+        const mercYToLat = (my) => (2 * Math.atan(Math.exp(my)) - Math.PI / 2) * 180 / Math.PI;
+
+        const yTop = latToMercY(ne.lat());
+        const yBottom = latToMercY(sw.lat());
+        const y = yTop + (yBottom - yTop) * ry;
+        const lat = mercYToLat(y);
+
+        return new naver.maps.LatLng(lat, lng);
+      }
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function __handlePhotoMemoMapTap(point, opts = {}) {
+  try {
+    if (!window.__photoMemoAddMode) return;
+    if (!point || (point.clientX === 0 && point.clientY === 0)) return;
+
+    // 모바일(iPhone/Android)은 터치 픽셀 기준 좌표를 우선 사용해 일관성 확보
+    const touchCoord = point?.isTouch ? __coordFromClientXY(point.clientX, point.clientY) : null;
+    const coord = touchCoord || opts.coord || __coordFromClientXY(point.clientX, point.clientY);
+    if (!coord) return;
+    if (!window.__photoMemoIndexLoaded) await loadPhotoMemoIndexOnce();
+
+    const lat = typeof coord.lat === "function" ? coord.lat() : coord.y;
+    const lng = typeof coord.lng === "function" ? coord.lng() : coord.x;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+    window.__photoMemoPendingCoord = { lat, lng };
+    try { showToast("📷 위치 선택됨: 촬영/파일 선택하세요", 1200); } catch(_) {}
+    window.__photoMemoMenuJustOpenedAt = Date.now();
+    __showPhotoMemoMenuAtClientXY(point.clientX, point.clientY, { preferBelow: !!point.isTouch });
+    setPhotoMemoAddMode(false, { clearPending: false, hideMenu: false });
+  } catch(_) {}
+}
+
+function setPhotoMemoAddMode(on, opts = {}) {
+  const clearPending = (opts && Object.prototype.hasOwnProperty.call(opts, "clearPending"))
+    ? !!opts.clearPending
+    : true;
+  const hideMenu = (opts && Object.prototype.hasOwnProperty.call(opts, "hideMenu"))
+    ? !!opts.hideMenu
+    : true;
+  window.__photoMemoAddMode = !!on;
+  const btn = document.getElementById("mapPhotoBtn");
+  if (btn) btn.classList.toggle("active", window.__photoMemoAddMode);
+  if (!window.__photoMemoAddMode) {
+    if (clearPending) window.__photoMemoPendingCoord = null;
+    if (hideMenu) __hidePhotoMemoMenu();
+  }
+}
+
+function setupPhotoMemoAddMode(map) {
+  if (!map) return;
+  setupPhotoMemoInputHandlerOnce();
+  const mapEl = document.getElementById("map");
+
+  // 기존 리스너 제거
+  try {
+    if (map.__photoMemoListeners && Array.isArray(map.__photoMemoListeners)) {
+      map.__photoMemoListeners.forEach(l => { try { naver.maps.Event.removeListener(l); } catch(e) {} });
+    }
+  } catch(e) {}
+  map.__photoMemoListeners = [];
+
+  // idle: bounds 기반 렌더
+  try {
+    map.__photoMemoListeners.push(
+      naver.maps.Event.addListener(map, "idle", () => updatePhotoMemoMarkersByBounds())
+    );
+  } catch(e) {}
+
+  // 지도 클릭: "위치 선택 모드"일 때만 메뉴 표시
+  try {
+    map.__photoMemoListeners.push(
+      naver.maps.Event.addListener(map, "click", async (e) => {
+        try {
+          // DOM fallback 예약이 있으면 취소하고, 지도 SDK 좌표를 우선 사용
+          try {
+            if (mapEl && mapEl.__photoMemoFallbackTimer) {
+              clearTimeout(mapEl.__photoMemoFallbackTimer);
+              mapEl.__photoMemoFallbackTimer = null;
+            }
+          } catch(_) {}
+
+          // ✅ document click handler가 메뉴를 즉시 닫는 것 방지
+          try { e?.domEvent?.stopPropagation?.(); } catch(_) {}
+
+          const point = __extractClientPointFromMapEvent(e);
+          await __handlePhotoMemoMapTap(point, { coord: e?.coord });
+        } catch(_) {}
+      })
+    );
+  } catch(e) {}
+
+  // Android/Galaxy fallback: 지도 DOM의 touch/pointer를 직접 받아 메뉴 표시
+  try {
+    if (mapEl) {
+      const prevTouch = mapEl.__photoMemoTouchEndHandler;
+      const prevPointer = mapEl.__photoMemoPointerUpHandler;
+      if (prevTouch) mapEl.removeEventListener("touchend", prevTouch, true);
+      if (prevPointer) mapEl.removeEventListener("pointerup", prevPointer, true);
+
+      mapEl.__photoMemoTouchEndHandler = async (ev) => {
+        try {
+          if (!window.__photoMemoAddMode) return;
+          try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
+          const target = ev.target;
+          const menu = document.getElementById("photoMemoActionMenu");
+          const btn = document.getElementById("mapPhotoBtn");
+          if (menu?.contains?.(target) || btn?.contains?.(target)) return;
+
+          const now = Date.now();
+          if (window.__photoMemoMapDomTapAt && now - window.__photoMemoMapDomTapAt < 250) return;
+          window.__photoMemoMapDomTapAt = now;
+
+          const point = __extractClientPointFromMapEvent(ev);
+          if (mapEl.__photoMemoFallbackTimer) clearTimeout(mapEl.__photoMemoFallbackTimer);
+          mapEl.__photoMemoFallbackTimer = setTimeout(async () => {
+            try {
+              if (!window.__photoMemoAddMode) return;
+              await __handlePhotoMemoMapTap(point || null);
+            } catch(_) {}
+          }, 90);
+        } catch(_) {}
+      };
+
+      mapEl.__photoMemoPointerUpHandler = async (ev) => {
+        try {
+          if (!window.__photoMemoAddMode) return;
+          if (ev.pointerType !== "touch") return;
+          try { ev.preventDefault(); ev.stopPropagation(); } catch(_) {}
+          const target = ev.target;
+          const menu = document.getElementById("photoMemoActionMenu");
+          const btn = document.getElementById("mapPhotoBtn");
+          if (menu?.contains?.(target) || btn?.contains?.(target)) return;
+
+          const now = Date.now();
+          if (window.__photoMemoMapDomTapAt && now - window.__photoMemoMapDomTapAt < 250) return;
+          window.__photoMemoMapDomTapAt = now;
+
+          const point = __extractClientPointFromMapEvent(ev);
+          if (mapEl.__photoMemoFallbackTimer) clearTimeout(mapEl.__photoMemoFallbackTimer);
+          mapEl.__photoMemoFallbackTimer = setTimeout(async () => {
+            try {
+              if (!window.__photoMemoAddMode) return;
+              await __handlePhotoMemoMapTap(point || null);
+            } catch(_) {}
+          }, 90);
+        } catch(_) {}
+      };
+
+      mapEl.addEventListener("touchend", mapEl.__photoMemoTouchEndHandler, true);
+      mapEl.addEventListener("pointerup", mapEl.__photoMemoPointerUpHandler, true);
+    }
+  } catch(e) {}
+
+  // 메뉴 바깥 클릭 시 닫기
+  if (!window.__photoMemoMenuOutsideBound) {
+    window.__photoMemoMenuOutsideBound = true;
+    document.addEventListener("click", (ev) => {
+      const menu = document.getElementById("photoMemoActionMenu");
+      const btn = document.getElementById("mapPhotoBtn");
+      const mapEl = document.getElementById("map");
+      if (!menu) return;
+      if (menu.contains(ev.target) || btn?.contains?.(ev.target)) return;
+      if (window.__photoMemoMenuJustOpenedAt && Date.now() - window.__photoMemoMenuJustOpenedAt < 500) return;
+      // ✅ 사진 메모 추가 모드 중 지도 내부 클릭은 naver maps click handler가 처리하므로 여기서 닫지 않음
+      if (window.__photoMemoAddMode && mapEl?.contains?.(ev.target)) return;
+      __hidePhotoMemoMenu();
+    });
+  }
+}
+
 
 
 // ✅ hongbu.settings 저장
 function setHongbuSetting(key, value) {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbu", 5);
+    const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
     request.onsuccess = (event) => {
       const db = event.target.result;
       const tx = db.transaction(["settings"], "readwrite");
@@ -5578,7 +6864,7 @@ function setHongbuSetting(key, value) {
 // ✅ hongbu.settings 읽기
 function getHongbuSetting(key) {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbu", 5);
+    const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
     request.onsuccess = (event) => {
       const db = event.target.result;
       const tx = db.transaction(["settings"], "readonly");
@@ -5604,7 +6890,7 @@ function getHongbuSetting(key) {
 // ✅ hongbu.settings 삭제
 function deleteHongbuSetting(key) {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("hongbu", 5);
+    const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
     request.onsuccess = (event) => {
       const db = event.target.result;
       const tx = db.transaction(["settings"], "readwrite");
@@ -5670,6 +6956,8 @@ function applyUIState(state) {
       const type = (el.getAttribute("type") || "text").toLowerCase();
       if (type === "checkbox") {
         el.checked = !!val;
+        // 포토메모 체크박스: JS 상태도 동기화 (이벤트는 나중에 refreshByUIState가 처리)
+        if (el.id === "togglePhotoMemo") window.__photoMemoVisible = !!val;
       } else if (type === "radio") {
         // name 기준으로 복원
         const group = document.querySelectorAll(`input[type="radio"][name="${CSS.escape(el.name)}"]`);
@@ -5734,12 +7022,18 @@ function refreshByUIState() {
   try { updateStarbucksMarkers?.(); } catch (e) {}
   try { scheduleEmdRedraw?.(); } catch (e) {}
   try { scheduleAdmRedraw?.(); } catch (e) {}
+  // 포토메모: 체크 ON이면 인덱스 로드 후 표시
+  try {
+    if (window.__photoMemoVisible) {
+      loadPhotoMemoIndexOnce().then(() => updatePhotoMemoMarkersByBounds()).catch(() => {});
+    }
+  } catch(e) {}
 }
 
 
 // ✅ IndexedDB 저장 함수
 function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
-    const request = indexedDB.open("hongbu", 5);
+    const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -5768,7 +7062,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
 // ✅ IndexedDB에서 데이터 가져오기
 function getFromIndexedDB(id, type) {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open("hongbu", 5);
+        const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
 
         request.onerror = (event) => {
             reject("❌ IndexedDB 열기 오류: " + event.target.errorCode);
@@ -6363,8 +7657,8 @@ function handleMouseUp() {
 }
 function handleKeyDown(event) {
     const activeElement = document.activeElement;
-console.log("activeMarker :")
-console.log(activeMarker)
+//console.log("activeMarker :")
+//console.log(activeMarker)
 
 	// ✅ case 2: 지도 마커 이동용 WASD
 
@@ -6806,7 +8100,7 @@ resetButton.textContent = ' 초기화 ';
 resetButton.style.marginRight = '10px';
 resetButton.onclick = () => {
     // ✅ IndexedDB에서 해당 데이터 삭제
-    const request = indexedDB.open("hongbu", 5);
+    const request = indexedDB.open("hongbu", HONGBU_DB_VERSION);
     request.onsuccess = function(event) {
         const db = event.target.result;
         const transaction = db.transaction(["apartments"], "readwrite");
@@ -7149,7 +8443,7 @@ function importFromSiseVer2JSON(file) {
 // 🔍 Ver2 시세 표시용 함수
 
 function showSiseVer2DataToggle(apartmentId) {
-    const dbRequest = indexedDB.open("hongbu", 5);
+    const dbRequest = indexedDB.open("hongbu", HONGBU_DB_VERSION);
 
     dbRequest.onsuccess = function(event) {
         const db = event.target.result;
@@ -7244,7 +8538,7 @@ let deletedImages = []; // 삭제된 이미지 목록
     const memo = (document.getElementById("noteText").value || "").trim();
     const images = (aptMemoImageList && aptMemoImageList[id]) ? aptMemoImageList[id] : [];
 
-    const request = indexedDB.open("hongbuMemo", 4);
+    const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
     request.onerror = function (event) {
       console.error("❌ DB 열기 실패:", event.target.error);
@@ -7392,6 +8686,7 @@ const img = new Image();
 		modalCanvas.width = img.width;
 		modalCanvas.height = img.height;
 		ctx.drawImage(img, 0, 0);
+    window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
 		modal.style.display = "flex";
 		window.imageModalShowYn = true;
 	  };
@@ -7434,7 +8729,7 @@ window.lastOpenedBase64 = img.dataset.original || img.src;
 
 async function loadNote(id) {
 await initMemoIndexedDB()
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
   request.onsuccess = function (event) {
     const db = event.target.result;
     const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -7506,6 +8801,7 @@ preview.innerHTML = "";
     modalCanvas.width = fullImage.width;
     modalCanvas.height = fullImage.height;
     modalCtx.drawImage(fullImage, 0, 0);
+    window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
     modal.style.display = "flex";
     window.imageModalShowYn = true;
   };
@@ -7577,7 +8873,8 @@ document.getElementById("imageModal").addEventListener("click", (e) => {
   const canvas = document.getElementById("modalCanvas");
   const copyBtn = document.getElementById("copyImageButton");
   const downBtn = document.getElementById("downloadImageButton");
-  [canvas, copyBtn, downBtn].forEach(el=>{
+  const delBtn = document.getElementById("deletePhotoMemoButton");
+  [canvas, copyBtn, downBtn, delBtn].forEach(el=>{
     if(!el) return;
     el.addEventListener("click", (ev)=> ev.stopPropagation());
   });
@@ -7587,11 +8884,13 @@ function showImageModal(src) {
   const modalCanvas = document.getElementById("modalCanvas");
   const ctx = modalCanvas && modalCanvas.getContext && modalCanvas.getContext("2d");
   if (!modal || !modalCanvas || !ctx) return;
+  __setPhotoMemoModalContext(null);
   const img = new Image();
   img.onload = () => {
     modalCanvas.width = img.width;
     modalCanvas.height = img.height;
     ctx.drawImage(img, 0, 0);
+    window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
     modal.style.display = "flex";
     window.imageModalShowYn = true;
     window.lastOpenedBase64 = src;
@@ -7600,7 +8899,7 @@ function showImageModal(src) {
 }
 
 async function backupMemoDB() {
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -7666,7 +8965,7 @@ async function backupMemoDB() {
 
 // ✅ 메모 백업
 async function backupMemoDB_OLD() {
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -7752,10 +9051,29 @@ function restoreMemoDB() {
     try {
       hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
       hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
+
+      const noteRecords = [];
+      const photoRecords = [];
+
+      function dataUrlToBlob(dataUrl) {
+        try {
+          if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
+          const parts = dataUrl.split(",");
+          if (parts.length < 2) return null;
+          const header = parts[0];
+          const body = parts[1];
+          const mime = (header.match(/data:([^;]+)/)?.[1]) || "application/octet-stream";
+          const byteString = atob(body);
+          const ab = new ArrayBuffer(byteString.length);
+          const ia = new Uint8Array(ab);
+          for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+          return new Blob([ab], { type: mime });
+        } catch (e) {
+          return null;
+        }
+      }
       
       // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
-      let records = [];
-      
       for (const file of files) {
         hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
         
@@ -7769,8 +9087,16 @@ function restoreMemoDB() {
         
         try {
           const parsed = JSON.parse(text);
-          if (Array.isArray(parsed)) records.push(...parsed);
-          else records.push(parsed);
+          if (Array.isArray(parsed)) {
+            noteRecords.push(...parsed);
+          } else if (parsed && typeof parsed === "object") {
+            if (Array.isArray(parsed.apartmentNotes) || Array.isArray(parsed.photoMemos)) {
+              if (Array.isArray(parsed.apartmentNotes)) noteRecords.push(...parsed.apartmentNotes);
+              if (Array.isArray(parsed.photoMemos)) photoRecords.push(...parsed.photoMemos);
+            } else {
+              noteRecords.push(parsed);
+            }
+          }
           hongbuDebugLog("INFO", `✅ ${file.name} 파싱 완료`);
         } catch (parseErr) {
           hongbuDebugLog("WARN", `파일 파싱 실패 (${file.name})`, parseErr.message);
@@ -7778,8 +9104,8 @@ function restoreMemoDB() {
         }
       }
 
-      // 2) 레코드 정규화 (keyPath=id라서 id 필수)
-      const normalized = records
+      // 2) 메모 레코드 정규화 (keyPath=id라서 id 필수)
+      const normalizedNotes = noteRecords
         .filter((r) => r && typeof r === "object")
         .map((r) => {
           if (r.id === undefined || r.id === null) return null;
@@ -7791,24 +9117,63 @@ function restoreMemoDB() {
         })
         .filter(Boolean);
 
-      hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalized.length}개`);
+      // 3) 포토메모 정규화
+      // 현재 백업 포맷에서 Blob은 JSON 직렬화 시 손실될 수 있으므로,
+      // 실제 Blob 또는 data URL로 표현된 경우에만 복원 대상으로 인정한다.
+      let skippedPhotoCount = 0;
+      const normalizedPhotos = photoRecords
+        .filter((r) => r && typeof r === "object")
+        .map((r) => {
+          if (r.id === undefined || r.id === null) return null;
 
-      if (!normalized.length) {
-        hongbuDebugLog("WARN", "❌ 복원할 유효한 메모 데이터가 없습니다.");
+          const lat = Number(r.lat);
+          const lng = Number(r.lng);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+          const imageBlob = (r.imageBlob instanceof Blob)
+            ? r.imageBlob
+            : dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
+          const thumbBlob = (r.thumbBlob instanceof Blob)
+            ? r.thumbBlob
+            : dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
+
+          if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
+            skippedPhotoCount++;
+            return null;
+          }
+
+          return {
+            id: String(r.id),
+            lat,
+            lng,
+            createdAt: Number(r.createdAt) || Date.now(),
+            note: r.note ? String(r.note) : "",
+            imageBlob: (imageBlob instanceof Blob) ? imageBlob : thumbBlob,
+            thumbBlob: (thumbBlob instanceof Blob) ? thumbBlob : imageBlob,
+          };
+        })
+        .filter(Boolean);
+
+      hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalizedNotes.length}개`);
+      hongbuDebugLog("INFO", `📷 정규화된 포토메모: ${normalizedPhotos.length}개 (스킵 ${skippedPhotoCount}개)`);
+
+      if (!normalizedNotes.length && !normalizedPhotos.length) {
+        hongbuDebugLog("WARN", "❌ 복원할 유효한 메모/포토메모 데이터가 없습니다.");
         hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
         return;
       }
 
-      // 3) IndexedDB put - 배치 처리로 메모리 부담 줄임
-      hongbuDebugLog("INFO", "🗃️ IndexedDB에 저장 중... (배치 처리)");
+      // 4) apartmentNotes put - 배치 처리로 메모리 부담 줄임
+      hongbuDebugLog("INFO", "🗃️ apartmentNotes 저장 중... (배치 처리)");
       const BATCH_SIZE = 100; // 100개씩 처리
-      let totalOk = 0, totalFail = 0;
+      let totalNoteOk = 0, totalNoteFail = 0;
+      let totalPhotoOk = 0, totalPhotoFail = 0;
 
-      for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
-        const batch = normalized.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < normalizedNotes.length; i += BATCH_SIZE) {
+        const batch = normalizedNotes.slice(i, i + BATCH_SIZE);
         
         await new Promise((resolvePromise, rejectPromise) => {
-          const request = indexedDB.open("hongbuMemo", 4);
+          const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
           request.onsuccess = function (e) {
             const db = e.target.result;
@@ -7827,9 +9192,9 @@ function restoreMemoDB() {
             });
 
             tx.oncomplete = () => {
-              totalOk += batchOk;
-              totalFail += batchFail;
-              hongbuDebugLog("INFO", `배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalized.length / BATCH_SIZE)} 완료`);
+              totalNoteOk += batchOk;
+              totalNoteFail += batchFail;
+              hongbuDebugLog("INFO", `메모 배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalizedNotes.length / BATCH_SIZE)} 완료`);
               db.close();
               resolvePromise();
             };
@@ -7851,8 +9216,62 @@ function restoreMemoDB() {
         await new Promise(r => setTimeout(r, 50));
       }
 
-      hongbuDebugLog("INFO", `✅ 복원 완료: 성공 ${totalOk} / 실패 ${totalFail}`);
-      hongbuDebugToast(`✅ 복원 완료! ${totalOk}개 메모 저장됨`, 5000);
+      // 5) photoMemos 복원
+      if (normalizedPhotos.length > 0) {
+        hongbuDebugLog("INFO", "🗃️ photoMemos 저장 중... (배치 처리)");
+        for (let i = 0; i < normalizedPhotos.length; i += BATCH_SIZE) {
+          const batch = normalizedPhotos.slice(i, i + BATCH_SIZE);
+
+          await new Promise((resolvePromise, rejectPromise) => {
+            const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+
+            request.onsuccess = function (e) {
+              const db = e.target.result;
+              const tx = db.transaction(["photoMemos"], "readwrite");
+              const store = tx.objectStore("photoMemos");
+
+              let batchOk = 0, batchFail = 0;
+
+              batch.forEach((item) => {
+                const putReq = store.put(item);
+                putReq.onsuccess = () => batchOk++;
+                putReq.onerror = (err) => {
+                  batchFail++;
+                  hongbuDebugLog("WARN", `photo put 실패: ${item.id}`, err?.target?.error?.message);
+                };
+              });
+
+              tx.oncomplete = () => {
+                totalPhotoOk += batchOk;
+                totalPhotoFail += batchFail;
+                hongbuDebugLog("INFO", `포토 배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalizedPhotos.length / BATCH_SIZE)} 완료`);
+                db.close();
+                resolvePromise();
+              };
+
+              tx.onerror = (err) => {
+                hongbuDebugLog("ERR", "❌ 포토 트랜잭션 오류", err?.target?.error?.message);
+                db.close();
+                rejectPromise(err);
+              };
+            };
+
+            request.onerror = function (err) {
+              hongbuDebugLog("ERR", "❌ DB 열기 실패(photo)", err?.target?.error?.message);
+              rejectPromise(err);
+            };
+          });
+
+          await new Promise(r => setTimeout(r, 50));
+        }
+      }
+
+      hongbuDebugLog("INFO", `✅ 메모 복원 완료: 성공 ${totalNoteOk} / 실패 ${totalNoteFail}`);
+      hongbuDebugLog("INFO", `✅ 포토 복원 완료: 성공 ${totalPhotoOk} / 실패 ${totalPhotoFail} / 스킵 ${skippedPhotoCount}`);
+      if (skippedPhotoCount > 0) {
+        hongbuDebugLog("WARN", "일부 포토메모는 이미지 데이터가 없어 복원에서 제외됨");
+      }
+      hongbuDebugToast(`✅ 복원 완료! 메모 ${totalNoteOk}개, 포토 ${totalPhotoOk}개`, 5000);
       
       hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
       
@@ -7860,6 +9279,10 @@ function restoreMemoDB() {
       setTimeout(() => {
         hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
         refreshApartmentMarkers();
+        try {
+          window.__photoMemoIndexLoaded = false;
+          loadPhotoMemoIndexOnce().then(() => { if (window.__photoMemoVisible) updatePhotoMemoMarkersByBounds(); }).catch(console.warn);
+        } catch (e) {}
         hongbuDebugLog("INFO", "🔄 마커 새로고침 완료");
       }, 2000);
 
@@ -7892,7 +9315,7 @@ function restoreMemoDB_OLD() {
                     return;
                 }
 
-                const request = indexedDB.open("hongbuMemo", 4);
+                const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
                 request.onsuccess = function (event) {
                     const db = event.target.result;
                     const transaction = db.transaction(["apartmentNotes"], "readwrite");
@@ -7926,14 +9349,122 @@ document.getElementById("copyImageButton").onclick = async () => {
 };
 let lastOpenedBase64;
 
-document.getElementById("downloadImageButton").addEventListener("click", () => {
-  if (!window.lastOpenedBase64) {
+document.getElementById("deletePhotoMemoButton")?.addEventListener("click", async () => {
+  const photoMemoId = window.__openedPhotoMemoId;
+  if (!photoMemoId) return;
+  if (!confirm("이 포토메모를 삭제할까요?")) return;
+
+  try {
+    await __photoMemoDelete(photoMemoId);
+    window.__photoMemoIndex = (window.__photoMemoIndex || []).filter(x => String(x.id) !== String(photoMemoId));
+    __removePhotoMemoMarker(photoMemoId);
+    closeImageModal();
+  } catch (e) {
+    console.error("포토메모 삭제 실패:", e);
+    alert("포토메모 삭제 실패");
+  }
+});
+
+document.getElementById("savePhotoMemoNoteButton")?.addEventListener("click", async (ev) => {
+  try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch(_) {}
+  const record = window.__openedPhotoMemoRecord;
+  const input = document.getElementById("photoMemoEditInput");
+  if (!record || !input) return;
+
+  const nextNote = String(input.value || "").trim();
+  try {
+    const sourceImageDataUrl = (typeof record.imageDataUrl === "string" && record.imageDataUrl.startsWith("data:"))
+      ? record.imageDataUrl
+      : "";
+    const sourceImageBlob = sourceImageDataUrl
+      ? __dataUrlToBlob(sourceImageDataUrl)
+      : ((record.imageBlob instanceof Blob)
+          ? record.imageBlob
+          : ((record.thumbBlob instanceof Blob)
+              ? record.thumbBlob
+              : ((typeof record.thumbDataUrl === "string" && record.thumbDataUrl.startsWith("data:"))
+                  ? __dataUrlToBlob(record.thumbDataUrl)
+                  : null)));
+    const normalizedImageBlob = sourceImageBlob instanceof Blob
+      ? sourceImageBlob.slice(
+          0,
+          sourceImageBlob.size,
+          (typeof sourceImageBlob.type === "string" && sourceImageBlob.type.startsWith("image/"))
+            ? sourceImageBlob.type
+            : "image/jpeg"
+        )
+      : null;
+      const normalizedImageDataUrl = normalizedImageBlob instanceof Blob
+        ? await __blobToDataUrl(normalizedImageBlob)
+        : sourceImageDataUrl;
+    const normalizedThumbBlob = normalizedImageBlob
+      ? await __fileToThumbBlob(normalizedImageBlob, 96, 0.82)
+        : ((typeof record.thumbDataUrl === "string" && record.thumbDataUrl.startsWith("data:"))
+            ? __dataUrlToBlob(record.thumbDataUrl)
+            : ((record.thumbBlob instanceof Blob) ? record.thumbBlob : null));
+    const normalizedThumbDataUrl = normalizedThumbBlob instanceof Blob
+      ? await __blobToDataUrl(normalizedThumbBlob)
+      : (typeof record.thumbDataUrl === "string" ? record.thumbDataUrl : "");
+      const { thumbBlob, imageBlob, ...recordWithoutLegacyThumbBlob } = record;
+    const nextRecord = {
+      ...recordWithoutLegacyThumbBlob,
+      note: nextNote,
+        imageDataUrl: normalizedImageDataUrl || sourceImageDataUrl || normalizedThumbDataUrl,
+      thumbDataUrl: normalizedThumbDataUrl,
+    };
+
+    await __photoMemoPut(nextRecord);
+    window.__openedPhotoMemoRecord = nextRecord;
+    __updatePhotoMemoIndexNote(nextRecord.id, nextNote);
+
+    // 저장 직후 지도 이동 복구와 동일한 경로로 현재 화면 썸네일 재로드
+    try { await __reloadVisiblePhotoMemoMarkersLikeMapMove(); } catch(_) {}
+
+    closeImageModal();
+    try { showToast("포토메모를 저장했습니다.", 1400); } catch(_) {}
+  } catch (e) {
+    console.error("포토메모 메모 저장 실패:", e);
+    alert("포토메모 메모 저장 실패");
+  }
+});
+
+document.getElementById("closePhotoMemoModalButton")?.addEventListener("click", (ev) => {
+  try { ev?.preventDefault?.(); ev?.stopPropagation?.(); } catch(_) {}
+  closeImageModal();
+});
+
+document.getElementById("downloadImageButton").addEventListener("click", async () => {
+  let downloadSrc = (typeof window.lastOpenedBase64 === "string") ? window.lastOpenedBase64 : "";
+
+  if (!downloadSrc) {
+    const rec = window.__openedPhotoMemoRecord;
+    if (typeof rec?.imageDataUrl === "string" && rec.imageDataUrl.startsWith("data:")) {
+      downloadSrc = rec.imageDataUrl;
+    } else if (rec?.imageBlob instanceof Blob) {
+      downloadSrc = await __blobToDataUrl(rec.imageBlob);
+    } else if (typeof rec?.thumbDataUrl === "string" && rec.thumbDataUrl.startsWith("data:")) {
+      downloadSrc = rec.thumbDataUrl;
+    }
+  }
+
+  if (!downloadSrc) {
+    try {
+      const canvas = document.getElementById("modalCanvas");
+      if (canvas && canvas.width > 1 && canvas.height > 1 && typeof canvas.toDataURL === "function") {
+        downloadSrc = canvas.toDataURL("image/jpeg", 0.92);
+      }
+    } catch(_) {}
+  }
+
+  if (!downloadSrc) {
     alert("❌ 다운로드할 이미지가 없습니다.");
     return;
   }
 
+  window.lastOpenedBase64 = downloadSrc;
+
   const a = document.createElement("a");
-  a.href = window.lastOpenedBase64;
+  a.href = downloadSrc;
 
   // ✅ 한국 시간 기준으로 파일명 생성
   const now = new Date();
@@ -7949,25 +9480,102 @@ document.getElementById("downloadImageButton").addEventListener("click", () => {
 
 
 function deleteMemoDB() {
-  if (!confirm("정말 모든 메모와 이미지를 삭제하시겠습니까?")) return;
+  if (!confirm("정말 아파트 메모를 일괄 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
   request.onsuccess = function (event) {
     const db = event.target.result;
-    db.close(); // 👉 연결 먼저 닫기
+    if (!db.objectStoreNames.contains("apartmentNotes")) {
+      db.close();
+      alert("⚠️ apartmentNotes 저장소가 없습니다.");
+      return;
+    }
 
-    const deleteRequest = indexedDB.deleteDatabase("hongbuMemo");
+    const tx = db.transaction(["apartmentNotes"], "readwrite");
+    const store = tx.objectStore("apartmentNotes");
+    const clearRequest = store.clear();
 
-    deleteRequest.onsuccess = function () {alert("✅ 메모 DB 삭제 완료");
-      setTimeout(() => location.reload(), 300); // 너무 빨리 reload 되지 않게 약간 지연
+    clearRequest.onsuccess = function () {
+      try { window.__memoPresenceCache && window.__memoPresenceCache.clear(); } catch(e) {}
+      try {
+        if (window.__hongbuMemoKeySet instanceof Set) {
+          window.__hongbuMemoKeySet.clear();
+          window.__hongbuMemoKeySetReady = true;
+        }
+      } catch(e) {}
+      try {
+        if (window.aptMemoImageList) {
+          Object.keys(window.aptMemoImageList).forEach((key) => {
+            const arr = window.aptMemoImageList[key];
+            if (Array.isArray(arr)) arr.forEach((url) => __safeRevokeObjectURL(url));
+            window.aptMemoImageList[key] = [];
+            delete window.aptMemoImageList[key];
+          });
+        }
+      } catch(e) {}
+      try {
+        const noteEl = document.getElementById("noteText");
+        const preview = document.getElementById("imagePreview");
+        if (noteEl) noteEl.value = "";
+        if (preview) {
+          preview.innerHTML = "";
+          preview.style.display = "none";
+        }
+        __currentMemoAptId = null;
+      } catch(e) {}
+      db.close();
+      try { refreshApartmentMarkers(); } catch(e) {}
+      alert("✅ 아파트 메모 일괄 삭제 완료");
     };
 
-    deleteRequest.onerror = function (e) {
-      alert("❌ 삭제 중 오류 발생: " + e.target.error);
+    clearRequest.onerror = function (e) {
+      db.close();
+      alert("❌ 아파트 메모 삭제 중 오류 발생: " + e.target.error);
+    };
+  };
+
+  request.onerror = function (e) {
+    alert("❌ DB 열기 실패: " + e.target.errorCode);
+  };
+}
+
+function deletePhotoMemoDB() {
+  if (!confirm("정말 포토메모를 일괄 삭제하시겠습니까?")) return;
+
+  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+  request.onsuccess = function (event) {
+    const db = event.target.result;
+    if (!db.objectStoreNames.contains("photoMemos")) {
+      db.close();
+      alert("⚠️ photoMemos 저장소가 없습니다.");
+      return;
+    }
+
+    const tx = db.transaction(["photoMemos"], "readwrite");
+    const store = tx.objectStore("photoMemos");
+    const clearRequest = store.clear();
+
+    clearRequest.onsuccess = function () {
+      try {
+        const markerIds = window.__photoMemoMarkers instanceof Map
+          ? Array.from(window.__photoMemoMarkers.keys())
+          : [];
+        markerIds.forEach((id) => {
+          try { __removePhotoMemoMarker(id); } catch(_) {}
+        });
+        window.__photoMemoIndex = [];
+        if (window.__photoMemoLoadingIds instanceof Set) window.__photoMemoLoadingIds.clear();
+        window.__photoMemoPendingCoord = null;
+        __hidePhotoMemoMenu();
+        closeImageModal();
+      } catch(e) {}
+      db.close();
+      alert("✅ 포토메모 일괄 삭제 완료");
     };
 
-    deleteRequest.onblocked = function () {
-      alert("❌ 다른 탭에서 사용 중입니다. 모든 탭을 닫고 다시 시도해주세요.");
+    clearRequest.onerror = function (e) {
+      db.close();
+      alert("❌ 포토메모 삭제 중 오류 발생: " + e.target.error);
     };
   };
 
@@ -7981,7 +9589,7 @@ function deleteMemoDB() {
 function deleteNote(id) {
   if (!confirm("정말 이 메모와 이미지를 삭제하시겠습니까?")) return;
 
-  const request = indexedDB.open("hongbuMemo", 4);
+  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
 
   request.onsuccess = function (event) {
     const db = event.target.result;
@@ -8014,7 +9622,7 @@ async function getMemoFromIndexedDB(id) {
   return new Promise(async (resolve, reject) => {
     await initMemoIndexedDB();
 
-    const request = indexedDB.open("hongbuMemo", 4);
+    const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
     request.onerror = () => reject("DB 열기 실패");
 
     request.onsuccess = (event) => {
@@ -8744,6 +10352,22 @@ document.getElementById("unitFilter")
       });
     }
 
+    /* 2-1) ✅ 사진 메모 모드(카메라) 버튼: 누르고 → 지도 클릭으로 위치 선택 */
+    if (!mapEl.querySelector('#mapPhotoBtn')) {
+      const camBtn = document.createElement('button');
+      camBtn.id = 'mapPhotoBtn';
+      camBtn.className = 'map-photo-btn map-locate-btn';
+      camBtn.title = '사진 메모 추가';
+      camBtn.setAttribute('aria-label', '사진 메모 추가');
+      camBtn.textContent = '📷';
+      mapEl.appendChild(camBtn);
+      camBtn.addEventListener('click', async (ev) => {
+        try { ev?.stopPropagation?.(); } catch(e) {}
+        try { await loadPhotoMemosOnce(); } catch(e) {}
+        setPhotoMemoAddMode(!window.__photoMemoAddMode);
+      });
+    }
+
     /* 3) 위치 추적 중지 버튼 */
     if (!mapEl.querySelector('#mapStopBtn')) {
       const stopBtn = document.createElement('button');
@@ -8902,6 +10526,7 @@ function getLabelLatLngByPolylabel(geometry, bbox){
 
 </body>
 </html>
+
 
 
 
