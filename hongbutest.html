@@ -2353,11 +2353,13 @@ console.log("hideLocationPopup");
 // =========================
 const EMD_GEOJSON_PARTS = ["emd_wgs84_utf8_part01.geojson", "emd_wgs84_utf8_part02.geojson", "emd_wgs84_utf8_part03.geojson", "emd_wgs84_utf8_part04.geojson"];
 const ADM_GEOJSON_PARTS = ["adm_part_001.geojson", "adm_part_002.geojson"];
+const EMD_POPULATION_JSON_URL = "emd_population_stats.json";
 // ✅ 행정동(ADM) 경계 GeoJSON (24MB 분할)
 // ✅ UTF-8 GeoJSON (A2 한글 포함)  // ✅ 파일명/경로 맞춰주세요
 
 let emdGeojson = null;
 let emdPrepared = null;   // { bbox:[minLng,minLat,maxLng,maxLat], geometry, properties }[]
+let emdPopulationMap = null; // { [emdCode8]: { totalPopulation, personsPerHousehold } }
 
 // ==============================
 // ✅ SIG(시군구) 경계 표시 (줌 14 이하)
@@ -2635,14 +2637,16 @@ function _label_calcFitFontSize({
 
 
 
-function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
+function addEmdLabel(latlng, text, bbox, forcedFontSizePx, fitText) {
   if (!text || !bbox || !window.map) return;
+
+  const measureText = fitText || String(text).replace(/<[^>]*>/g, "");
 
   const fs = (typeof forcedFontSizePx === "number")
     ? forcedFontSizePx
     : _label_calcFitFontSize({
         bbox,
-        text,
+        text: measureText,
         map: window.map,
         paddingPx: 8,
         min: 9,
@@ -2658,7 +2662,7 @@ function addEmdLabel(latlng, text, bbox, forcedFontSizePx) {
     clickable: false,
     zIndex: 999999,
     icon: {
-      content: `<div class="emd-label" style="font-size:${fs}px">${text}</div>`,
+      content: `<div class="emd-label" style="font-size:${fs}px; white-space:normal; text-align:center; line-height:1.15;">${text}</div>`,
       anchor: new naver.maps.Point(0, 0)
     }
   });
@@ -2783,6 +2787,37 @@ async function loadEmdBoundaryOnce() {
 
   // Store raw FC for downstream prepare step
   emdGeojsonRaw = merged;
+}
+
+async function loadEmdPopulationOnce() {
+  if (emdPopulationMap) return;
+  try {
+    const res = await fetch(EMD_POPULATION_JSON_URL, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Fetch failed: ${EMD_POPULATION_JSON_URL} ${res.status}`);
+    const data = await res.json();
+    emdPopulationMap = data?.items || {};
+  } catch (e) {
+    console.warn("EMD population JSON load failed:", e);
+    emdPopulationMap = {};
+  }
+}
+
+function getEmdCodeFromProps(props) {
+  const raw = props?.A1 ?? props?.EMD_CD ?? props?.emd_cd ?? props?.code ?? "";
+  return String(raw).replace(/\D/g, "").slice(0, 8);
+}
+
+function formatEmdSublineByCode(emdCode8) {
+  if (!emdCode8 || !emdPopulationMap) return "";
+  const item = emdPopulationMap[emdCode8];
+  if (!item) return "";
+
+  const pop = Number(item.totalPopulation);
+  const pph = Number(item.personsPerHousehold);
+  const popText = Number.isFinite(pop) ? pop.toLocaleString("ko-KR") : "-";
+  const pphText = Number.isFinite(pph) ? pph.toFixed(2).replace(/\.00$/, "") : "-";
+
+  return `인구 ${popText} / 세대당 ${pphText}`;
 }
 
 
@@ -2996,6 +3031,12 @@ function shouldShowEmdBoundary() {
 function redrawEmdByBounds() {
   try { prepareEmdPreparedOnce(); } catch(e) { console.error('redrawEmdByBounds prepare 실패:', e); return; }
 
+  if (!emdPopulationMap) {
+    loadEmdPopulationOnce().then(() => {
+      try { scheduleEmdRedraw(); } catch (e) {}
+    }).catch(() => {});
+  }
+
   if (!window.map) return;
 
   const z = window.map.getZoom();
@@ -3025,7 +3066,11 @@ function redrawEmdByBounds() {
     // 라벨 후보 수집
     if (z >= 15 && labelCandidates.length < labelCap) {
       const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
-      if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
+      if (name) {
+        const emdCode8 = getEmdCodeFromProps(f.properties);
+        const subline = formatEmdSublineByCode(emdCode8);
+        labelCandidates.push({ name, subline, bbox: f.bbox, geometry: f.geometry });
+      }
     }
   }
 
@@ -3054,7 +3099,10 @@ function redrawEmdByBounds() {
 // 3) 모든 라벨을 '최소 폰트'로 통일해서 렌더링 (항상 bbox 안에 들어감)
   for (const c of labelCandidates) {
     const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-    addEmdLabel(latlng, c.name, c.bbox, uniformFit);
+    const html = c.subline
+      ? `${c.name}<br><span style="font-size:0.62em; font-weight:700;">${c.subline}</span>`
+      : c.name;
+    addEmdLabel(latlng, html, c.bbox, uniformFit, c.name);
   }
 }
 
@@ -3277,6 +3325,7 @@ function scheduleEmdRedraw() {
 async function ensureEmdLayerBoundToMap() {
 	// GeoJSON 한번만 로드
 	await loadEmdBoundaryOnce();
+  await loadEmdPopulationOnce();
 
 	// createMap()은 지도를 '재생성'하므로, map 인스턴스가 바뀔 때마다 이벤트를 다시 바인딩해야 함
 	if (emdBoundMap !== window.map) {
