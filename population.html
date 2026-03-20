@@ -1,0 +1,2797 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>인구 지도</title>
+  <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+  <style>
+    :root {
+      --bg: #f3f5f9;
+      --panel: #ffffff;
+      --line: #d8deea;
+      --text: #162033;
+      --muted: #5f6b82;
+      --accent: #2459c6;
+      --shadow: 0 8px 20px rgba(14, 28, 58, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "Noto Sans KR", sans-serif;
+    }
+
+    #app {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 2px 8px rgba(20, 35, 64, 0.06);
+      z-index: 2;
+    }
+
+    .title {
+      font-size: 20px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .filter-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .filter-label {
+      font-size: 12px;
+      color: #304160;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .filter-select {
+      height: 34px;
+      border: 1px solid #c7d3ea;
+      border-radius: 8px;
+      background: #fff;
+      color: #162033;
+      padding: 0 10px;
+      font-size: 13px;
+      min-width: 124px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .filter-select:focus {
+      border-color: #2459c6;
+      box-shadow: 0 0 0 3px rgba(36, 89, 198, 0.15);
+    }
+
+    #sigunguFilterWrapper {
+      position: relative;
+      min-width: 170px;
+    }
+
+    #sigunguFilterDisplay {
+      height: 34px;
+      border: 1px solid #c7d3ea;
+      border-radius: 8px;
+      background: #fff;
+      color: #162033;
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      user-select: none;
+    }
+
+    #sigunguFilterDisplay:hover {
+      border-color: #9fb4e2;
+    }
+
+    #sigunguDisplayText {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 130px;
+    }
+
+    #sigunguToggleBtn {
+      color: #526b9e;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+
+    #sigunguFilterPanel {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      min-width: 220px;
+      max-height: 280px;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #c7d3ea;
+      border-radius: 10px;
+      box-shadow: 0 10px 20px rgba(19, 36, 68, 0.18);
+      padding: 8px;
+      z-index: 30;
+    }
+
+    #sigunguFilterPanel.open {
+      display: block;
+    }
+
+    .sigungu-option {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #243656;
+      padding: 4px 2px;
+      white-space: nowrap;
+    }
+
+    .sigungu-all-option {
+      font-weight: 700;
+      border-bottom: 1px solid #dde5f5;
+      margin-bottom: 4px;
+      padding-bottom: 6px;
+    }
+
+    .mode-btn {
+      border: 1px solid #b8c6e5;
+      background: #eef3ff;
+      color: #1f3f88;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .mode-btn.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      box-shadow: 0 4px 10px rgba(36, 89, 198, 0.3);
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .label-control-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .label-checkbox {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+      accent-color: var(--accent);
+    }
+
+    .label-slider-wrapper {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .label-slider {
+      width: 120px;
+      height: 4px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .slider-value {
+      font-size: 12px;
+      color: var(--text);
+      min-width: 32px;
+      font-weight: 600;
+    }
+
+    .table-btn {
+      border: 1px solid #b8c6e5;
+      background: #eef3ff;
+      color: #1f3f88;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .table-btn:hover {
+      background: #e0e8f5;
+      border-color: #9fb4e2;
+    }
+
+    .chart-btn {
+      border: 1px solid #b8c6e5;
+      background: #eef3ff;
+      color: #1f3f88;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .chart-btn:hover {
+      background: #e0e8f5;
+      border-color: #9fb4e2;
+    }
+
+    .table-modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.3);
+      z-index: 100;
+    }
+
+    .table-modal-overlay.open {
+      display: block;
+    }
+
+    .table-modal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 10px 40px rgba(14, 28, 58, 0.2);
+      z-index: 101;
+      height: 500px;
+      width: 800px;
+      flex-direction: column;
+      resize: both;
+      overflow: hidden;
+      min-height: 300px;
+      min-width: 400px;
+    }
+
+    .table-modal.open {
+      display: flex;
+    }
+
+    .table-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+      flex-shrink: 0;
+    }
+
+    .table-modal-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      flex: 1;
+    }
+
+    .table-download-btn {
+      background: none;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 0 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.2s;
+    }
+
+    .table-download-btn:hover {
+      color: var(--accent);
+    }
+
+    .table-modal-close {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: var(--muted);
+      padding: 0;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .table-modal-close:hover {
+      color: var(--text);
+    }
+
+    .table-modal-content {
+      overflow: auto;
+      flex: 1;
+      padding: 16px 20px;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .data-table thead {
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      border-bottom: 2px solid var(--accent);
+    }
+
+    .data-table th {
+      padding: 10px 12px;
+      text-align: left;
+      font-weight: 700;
+      color: var(--text);
+      word-break: keep-all;
+      min-width: 80px;
+    }
+
+    .data-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      color: var(--text);
+    }
+
+    .data-table tbody tr:hover {
+      background: rgba(36, 89, 198, 0.05);
+    }
+
+    .age-chart-modal {
+      width: min(96vw, 1400px);
+      height: min(86vh, 760px);
+      min-width: 700px;
+      min-height: 420px;
+    }
+
+    .age-chart-content {
+      flex: 1;
+      min-height: 0;
+      padding: 8px 14px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .age-chart-status {
+      font-size: 12px;
+      color: #4f5f7b;
+      min-height: 18px;
+    }
+
+    .age-chart-wrap {
+      position: relative;
+      flex: 1;
+      min-height: 0;
+    }
+
+    #agePopulationChart {
+      width: 100%;
+      height: 100%;
+    }
+
+    .map-wrap {
+      position: relative;
+      min-height: 0;
+    }
+
+    #map {
+      width: 100%;
+      height: 100%;
+    }
+
+    .legend {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      background: rgba(255, 255, 255, 0.96);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      padding: 10px;
+      width: 190px;
+      z-index: 3;
+    }
+
+    .legend-title {
+      font-size: 12px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 4px 0;
+      font-size: 12px;
+      color: #32405f;
+    }
+
+    .legend-swatch {
+      width: 18px;
+      height: 12px;
+      border: 1px solid rgba(0, 0, 0, 0.18);
+      border-radius: 2px;
+      flex: 0 0 auto;
+    }
+
+    .info {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      background: rgba(255, 255, 255, 0.96);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      padding: 10px 12px;
+      width: min(280px, calc(100vw - 24px));
+      z-index: 3;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .info-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .info-line {
+      color: #314265;
+      margin: 2px 0;
+    }
+
+    .loading {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 4;
+      background: rgba(22, 32, 51, 0.86);
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      display: none;
+    }
+
+    @media (max-width: 700px) {
+      .title {
+        font-size: 14px;
+      }
+
+      .mode-btn {
+        padding: 7px 10px;
+        font-size: 12px;
+      }
+
+      .filter-select {
+        min-width: 106px;
+        height: 32px;
+        font-size: 12px;
+      }
+
+      #sigunguFilterWrapper {
+        min-width: 150px;
+      }
+
+      #sigunguFilterDisplay {
+        height: 32px;
+        font-size: 12px;
+      }
+
+      #sigunguFilterPanel {
+        min-width: 190px;
+      }
+
+      .hint {
+        font-size: 11px;
+      }
+
+      .legend {
+        width: 170px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="topbar">
+      <div class="title">[루시퍼홍] 인구 지도</div>
+      <div class="controls">
+        <button id="btnTableView" class="table-btn" type="button">테이블 보기</button>
+        <button id="btnAgeChartView" class="chart-btn" type="button">연령 차트 보기</button>
+        <button id="btnEmd" class="mode-btn active" type="button">법정동</button>
+        <button id="btnAdm" class="mode-btn" type="button">행정동</button>
+        <span class="filter-group">
+          <span class="filter-label">시도</span>
+          <select id="sidoFilter" class="filter-select"></select>
+        </span>
+        <span class="filter-group">
+          <span class="filter-label">시군구</span>
+          <div id="sigunguFilterWrapper">
+            <div id="sigunguFilterDisplay">
+              <span id="sigunguDisplayText">전체</span>
+              <span id="sigunguToggleBtn">▼</span>
+            </div>
+            <div id="sigunguFilterPanel"></div>
+          </div>
+        </span>
+        <span class="label-control-group">
+          <input type="checkbox" id="alwaysShowLabelsCheckbox" class="label-checkbox" checked />
+          <span class="filter-label">동이름 항상 표시</span>
+        </span>
+        <span class="label-control-group">
+          <span class="filter-label">라벨 크기</span>
+          <div class="label-slider-wrapper">
+            <input type="range" id="labelScaleSlider" class="label-slider" min="20" max="300" value="100" />
+            <span class="slider-value"><span id="sliderValueText">100</span>%</span>
+          </div>
+        </span>
+        <div id="status" class="hint">법정동 로딩 준비</div>
+      </div>
+    </div>
+
+    <div class="map-wrap">
+      <div id="map"></div>
+      <div id="loading" class="loading">데이터 로딩 중...</div>
+      <div id="legend" class="legend"></div>
+      <div id="info" class="info">
+        <div class="info-title">지역을 선택하세요</div>
+        <div class="info-line">지도에서 동 경계를 클릭하면 상세 인구 정보를 보여줍니다.</div>
+      </div>
+    </div>
+
+    <div id="tableModalOverlay" class="table-modal-overlay"></div>
+    <div id="tableModal" class="table-modal">
+      <div class="table-modal-header">
+        <div class="table-modal-title">동별 인구 데이터</div>
+        <button id="tableDownloadBtn" class="table-download-btn" type="button" title="엑셀로 다운로드">📥</button>
+        <button id="tableModalClose" class="table-modal-close" type="button">×</button>
+      </div>
+      <div class="table-modal-content">
+        <table class="data-table" id="dataTable">
+          <thead>
+            <tr>
+              <th>시도</th>
+              <th>시군구</th>
+              <th>동이름</th>
+              <th>인구수</th>
+              <th>세대당 인구</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="ageChartModalOverlay" class="table-modal-overlay"></div>
+    <div id="ageChartModal" class="table-modal age-chart-modal">
+      <div class="table-modal-header">
+        <div class="table-modal-title" id="ageChartModalTitle">법정동 연령별 인구 차트</div>
+        <button id="ageChartModalClose" class="table-modal-close" type="button">×</button>
+      </div>
+      <div class="age-chart-content">
+        <div id="ageChartStatus" class="age-chart-status"></div>
+        <div class="age-chart-wrap">
+          <canvas id="agePopulationChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MODE = {
+      EMD: "EMD",
+      ADM: "ADM"
+    };
+
+    const MODE_CONFIG = {
+      EMD: {
+        label: "법정동",
+        geoUrls: [
+          "./emd_wgs84_utf8_part01.geojson",
+          "./emd_wgs84_utf8_part02.geojson",
+          "./emd_wgs84_utf8_part03.geojson",
+          "./emd_wgs84_utf8_part04.geojson"
+        ],
+        populationUrl: "./emd_population_stats.json"
+      },
+      ADM: {
+        label: "행정동",
+        geoUrls: [
+          "./adm_part_001.geojson",
+          "./adm_part_002.geojson"
+        ],
+        populationUrl: "./adm_population_stats.json"
+      }
+    };
+
+    // 저 -> 고 백분위: 채도는 살리고 톤은 정돈한 팔레트
+    const COLOR_SCALE = ["#f7df8f", "#f3c36d", "#e78b4e", "#cf6038", "#a83f28"];
+    const NO_DATA_FILL = "#efe6d8";
+    const PSEUDO_3D = {
+      shadowLatOffset: -0.00042,
+      shadowLngOffset: 0.00052,
+      shadowFill: "#5a301f",
+      shadowOpacity: 0.32,
+      highlightLatOffset: 0.0002,
+      highlightLngOffset: -0.00024,
+      highlightStroke: "#ffffff",
+      highlightOpacity: 0.7
+    };
+    const DEFAULT_SIDO_CODE = "11";
+    const CAPITAL_SIDO_FILTER_CODE = "CAPITAL";
+    const CAPITAL_SIDO_CODES = ["11", "28", "41"];
+    const MAX_AGE_CHART_BARS_DONG = 35;
+    const MAX_AGE_CHART_BARS_SIGUNGU = 80;
+
+    const SIG_GEO_URLS = [
+      "./sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson",
+      "./sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson"
+    ];
+
+    const SIDO_NAME_BY_CODE = {
+      "11": "서울특별시",
+      "26": "부산광역시",
+      "27": "대구광역시",
+      "28": "인천광역시",
+      "29": "광주광역시",
+      "30": "대전광역시",
+      "31": "울산광역시",
+      "36": "세종특별자치시",
+      "41": "경기도",
+      "43": "충청북도",
+      "44": "충청남도",
+      "46": "전라남도",
+      "47": "경상북도",
+      "48": "경상남도",
+      "50": "제주특별자치도",
+      "51": "강원특별자치도",
+      "52": "전북특별자치도"
+    };
+
+    const state = {
+      map: null,
+      mode: MODE.EMD,
+      overlays: [],
+      labels: [],
+      labelScale: 1,
+      userLabelScale: 1.0,
+      alwaysShowLabels: true,
+      hovered: null,
+      selected: null,
+      sggNameByCode: null,
+      sggGeometryByCode: null,
+      regionCatalog: null,
+      filters: {
+        sidoCode: "",
+        sigunguCodes: new Set()
+      },
+      cache: {
+        EMD: null,
+        ADM: null
+      },
+      tableSortColumn: 0,
+      tableSortOrder: "asc",
+      tableColumnNames: ["시도", "시군구", "동이름", "인구수", "세대당 인구"],
+      tableModalInitialized: false,
+      ageChartRowsCache: {},
+      ageChartInstance: null
+    };
+
+    function setLoading(on, message) {
+      const el = document.getElementById("loading");
+      el.textContent = message || "데이터 로딩 중...";
+      el.style.display = on ? "block" : "none";
+    }
+
+    function setStatus(text) {
+      const el = document.getElementById("status");
+      if (el) el.textContent = text;
+    }
+
+    function formatNumber(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toLocaleString("ko-KR") : "-";
+    }
+
+    function syncTableModalHeightToMap() {
+      const modal = document.getElementById("tableModal");
+      const mapEl = document.getElementById("map");
+      if (!modal) return;
+
+      const mapHeight = mapEl ? mapEl.clientHeight : 0;
+      const viewportMax = Math.max(300, window.innerHeight - 80);
+      const target = mapHeight > 0 ? Math.round(mapHeight * 0.8) : Math.round(window.innerHeight * 0.8);
+      const clamped = Math.min(viewportMax, Math.max(300, target));
+
+      modal.style.height = `${clamped}px`;
+    }
+
+    function showTableModal() {
+      const overlay = document.getElementById("tableModalOverlay");
+      const modal = document.getElementById("tableModal");
+      syncTableModalHeightToMap();
+      if (overlay) overlay.classList.add("open");
+      if (modal) modal.classList.add("open");
+      renderTableData();
+      initTableModal();  // 테이블 헤더 클릭 및 리사이징 이벤트 초기화
+    }
+
+    function hideTableModal() {
+      const overlay = document.getElementById("tableModalOverlay");
+      const modal = document.getElementById("tableModal");
+      if (overlay) overlay.classList.remove("open");
+      if (modal) modal.classList.remove("open");
+    }
+
+    function setAgeChartStatus(text) {
+      const el = document.getElementById("ageChartStatus");
+      if (el) el.textContent = text || "";
+    }
+
+    function showAgeChartModal() {
+      const overlay = document.getElementById("ageChartModalOverlay");
+      const modal = document.getElementById("ageChartModal");
+      if (overlay) overlay.classList.add("open");
+      if (modal) modal.classList.add("open");
+      // 현재 모드에 맞게 제목 업데이트
+      const titleEl = document.getElementById("ageChartModalTitle");
+      if (titleEl) titleEl.textContent = state.mode === MODE.ADM ? "행정동 연령별 인구 차트" : "법정동 연령별 인구 차트";
+      void renderAgeChartFromExcel();
+    }
+
+    function hideAgeChartModal() {
+      const overlay = document.getElementById("ageChartModalOverlay");
+      const modal = document.getElementById("ageChartModal");
+      if (overlay) overlay.classList.remove("open");
+      if (modal) modal.classList.remove("open");
+    }
+
+    function toNumberSafe(v) {
+      if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+      const n = Number(String(v == null ? "" : v).replace(/[,%\s]/g, ""));
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function normalizeHeaderName(v) {
+      return String(v == null ? "" : v).replace(/\s+/g, "").replace(/~/g, "-").trim();
+    }
+
+    function resolveAgeBandIndexes(headers) {
+      const out = {
+        band0: [],
+        band10: [],
+        band20: [],
+        band30: [],
+        band50: [],
+        band60: []
+      };
+
+      const startsWithAge = (h, start, end) => h.startsWith(`${start}-${end}`) || h.startsWith(`${start}세${end}세`);
+
+      headers.forEach((raw, idx) => {
+        const h = normalizeHeaderName(raw);
+        if (!h) return;
+        if (startsWithAge(h, 0, 9) || h.includes("9세이하")) out.band0.push(idx);
+        if (startsWithAge(h, 10, 19)) out.band10.push(idx);
+        if (startsWithAge(h, 20, 29)) out.band20.push(idx);
+        if (h.startsWith("30-49") || h.startsWith("30세49세") || startsWithAge(h, 30, 39) || startsWithAge(h, 40, 49)) out.band30.push(idx);
+        if (startsWithAge(h, 50, 59)) out.band50.push(idx);
+        if (
+          h.includes("60세이상")
+          || startsWithAge(h, 60, 69)
+          || startsWithAge(h, 70, 79)
+          || startsWithAge(h, 80, 89)
+          || startsWithAge(h, 90, 99)
+          || h.startsWith("100세이상")
+          || h.startsWith("100-")
+        ) out.band60.push(idx);
+      });
+
+      return out;
+    }
+
+    function pickLabelIndex(headers) {
+      const preferred = ["법정동", "읍면동", "행정동", "동", "지역", "행정기관"];
+      for (const key of preferred) {
+        const idx = headers.findIndex((h) => String(h || "").includes(key));
+        if (idx >= 0) return idx;
+      }
+      return 0;
+    }
+
+    async function loadAgeChartRowsOnce(mode) {
+      const cacheKey = mode || MODE.EMD;
+      if (Array.isArray(state.ageChartRowsCache[cacheKey])) return state.ageChartRowsCache[cacheKey];
+
+      const isAdm = cacheKey === MODE.ADM;
+      const jsonBase = isAdm ? "age_population_adm" : "age_population_emd";
+      const jsonCandidates = [
+        `./${jsonBase}.json`,
+        `./luciferhong/${jsonBase}.json`,
+        `/luciferhong/${jsonBase}.json`
+      ];
+
+      for (const p of jsonCandidates) {
+        try {
+          const jr = await fetch(encodeURI(p));
+          if (!jr.ok) continue;
+          const payload = await jr.json();
+          const rows = Array.isArray(payload) ? payload : payload?.rows;
+          if (Array.isArray(rows) && rows.length > 0) {
+            state.ageChartRowsCache[cacheKey] = rows.map((r) => ({
+              label: String(r.label || "").trim(),
+              fullName: String(r.fullName || r.label || "").trim(),
+              code: normalizeDigits(r.code || ""),
+              values: Array.isArray(r.values) ? r.values.map((v) => toNumberSafe(v)) : [],
+              total: toNumberSafe(r.total)
+            })).filter((r) => r.label && r.values.length === 6 && r.total > 0);
+            if (state.ageChartRowsCache[cacheKey].length > 0) return state.ageChartRowsCache[cacheKey];
+          }
+        } catch (_) {}
+      }
+
+      // ADM 모드는 xlsx 폴백 없음 (JSON 전용)
+      if (isAdm) {
+        throw new Error("행정동 연령 데이터 파일을 찾을 수 없습니다. age_population_adm.json 경로를 확인하세요.");
+      }
+
+      const xlsx = window.XLSX;
+      if (!xlsx || !xlsx.utils) {
+        throw new Error("연령 JSON/엑셀 파일을 불러오지 못했습니다.");
+      }
+
+      const candidates = [
+        "./age_population_emd.xlsx",
+        "./법정동연령별인구.xlsx",
+        "./luciferhong/age_population_emd.xlsx",
+        "./luciferhong/법정동연령별인구.xlsx",
+        "/luciferhong/age_population_emd.xlsx",
+        "/luciferhong/법정동연령별인구.xlsx"
+      ];
+
+      let res = null;
+      for (const p of candidates) {
+        try {
+          const r = await fetch(encodeURI(p));
+          if (r.ok) {
+            res = r;
+            break;
+          }
+        } catch (_) {}
+      }
+
+      if (!res) {
+        throw new Error("연령 데이터 파일을 찾을 수 없습니다. age_population_emd.json 또는 xlsx 경로를 확인하세요.");
+      }
+
+      const buf = await res.arrayBuffer();
+      const wb = xlsx.read(buf, { type: "array" });
+      const firstSheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[firstSheetName];
+      const aoa = xlsx.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      if (!aoa.length) throw new Error("엑셀 데이터가 비어 있습니다.");
+
+      const headers = aoa[0].map((h) => String(h || "").trim());
+      const labelIdx = pickLabelIndex(headers);
+      const bandIdx = resolveAgeBandIndexes(headers);
+
+      const rows = [];
+      for (let i = 1; i < aoa.length; i += 1) {
+        const row = aoa[i];
+        const label = String(row[labelIdx] || "").trim();
+        if (!label) continue;
+
+        const sumByIndexes = (indexes) => indexes.reduce((acc, idx) => acc + toNumberSafe(row[idx]), 0);
+
+        const v0 = sumByIndexes(bandIdx.band0);
+        const v10 = sumByIndexes(bandIdx.band10);
+        const v20 = sumByIndexes(bandIdx.band20);
+        const v30 = sumByIndexes(bandIdx.band30);
+        const v50 = sumByIndexes(bandIdx.band50);
+        const v60 = sumByIndexes(bandIdx.band60);
+
+        const total = v0 + v10 + v20 + v30 + v50 + v60;
+        if (total <= 0) continue;
+
+        rows.push({
+          label,
+          code: normalizeDigits(label),
+          values: [v0, v10, v20, v30, v50, v60],
+          total
+        });
+      }
+
+      state.ageChartRowsCache[cacheKey] = rows;
+      return rows;
+    }
+
+    function buildAgeChartRowsForCurrentSelection(sourceRows) {
+      const cleanedSource = (sourceRows || []).filter((r) => {
+        const raw = String(r?.label || "").trim();
+        const code = normalizeDigits(r?.code || "");
+        // 코드가 유효하면 숫자 라벨이어도 유지한다.
+        if (code.length >= 5) return true;
+        return raw && !/^\d+$/.test(raw);
+      });
+
+      const selectedSigunguCodes = new Set(Array.from(state.filters?.sigunguCodes || []).map((c) => String(c).trim()).filter(Boolean));
+      const activeSidoCodes = getActiveSidoCodes();
+      const allowedSigunguCodes = selectedSigunguCodes.size === 0 ? getAllowedSigunguCodesForCurrentFilter() : null;
+
+      const scoped = cleanedSource.filter((r) => {
+        const rowCode = normalizeDigits(r?.code || r?.label || "");
+        if (!rowCode || rowCode.length < 5) return false;
+        const rowSidoCode = rowCode.slice(0, 2);
+        const rowSigunguCode = rowCode.slice(0, 5);
+
+        if (selectedSigunguCodes.size > 0) return selectedSigunguCodes.has(rowSigunguCode);
+        if (allowedSigunguCodes && allowedSigunguCodes.size > 0 && !allowedSigunguCodes.has(rowSigunguCode)) return false;
+        if (activeSidoCodes && activeSidoCodes.size > 0) return activeSidoCodes.has(rowSidoCode);
+        return true;
+      });
+
+      // 시군구가 전체(미선택)면 시군구 단위로 집계해서 표시
+      if (selectedSigunguCodes.size === 0) {
+        const bySigungu = new Map();
+        for (const r of scoped) {
+          const rowCode = normalizeDigits(r?.code || r?.label || "");
+          if (rowCode.length < 5) continue;
+          const sggCode = rowCode.slice(0, 5);
+          const sggName = (state.sggNameByCode && state.sggNameByCode[sggCode]) || sggCode;
+
+          if (!bySigungu.has(sggCode)) {
+            bySigungu.set(sggCode, {
+              label: sggCode,
+              displayLabel: sggName,
+              values: [0, 0, 0, 0, 0, 0],
+              total: 0
+            });
+          }
+
+          const acc = bySigungu.get(sggCode);
+          const vals = Array.isArray(r?.values) ? r.values : [];
+          for (let i = 0; i < 6; i += 1) acc.values[i] += Number(vals[i] || 0);
+          acc.total += Number(r?.total || 0);
+        }
+
+        let target = Array.from(bySigungu.values());
+        target.sort((a, b) => b.total - a.total);
+        return target;
+      }
+
+      // 같은 동 이름이 여러 코드로 쪼개진 경우(예: 리 단위) 하나로 합산해 중복 표시를 방지
+      const merged = new Map();
+      for (const r of scoped) {
+        const label = String(r?.label || "").trim();
+        // 순수 숫자 라벨은 시군구 집계 레코드(예: 2711000000)이므로 동 단위 표시에서 제외
+        if (!label || /^\d+$/.test(label)) continue;
+
+        if (!merged.has(label)) {
+          merged.set(label, {
+            label,
+            displayLabel: label,
+            values: [0, 0, 0, 0, 0, 0],
+            total: 0
+          });
+        }
+
+        const acc = merged.get(label);
+        const vals = Array.isArray(r?.values) ? r.values : [];
+        for (let i = 0; i < 6; i += 1) acc.values[i] += Number(vals[i] || 0);
+        acc.total += Number(r?.total || 0);
+      }
+
+      let target = Array.from(merged.values());
+      target.sort((a, b) => b.total - a.total);
+      return target;
+    }
+
+    function getCurrentSigunguDisplayName() {
+      const codes = Array.from(state.filters?.sigunguCodes || []);
+      if (!codes.length) return `${getSidoFilterLabel(state.filters?.sidoCode)} 합계`;
+      if (codes.length === 1) {
+        const code = String(codes[0]);
+        return (state.sggNameByCode && state.sggNameByCode[code]) || code;
+      }
+      return "선택 시군구 합계";
+    }
+
+    function prependSigunguAggregateRow(rows) {
+      if (!Array.isArray(rows) || rows.length === 0) return rows;
+
+      const sum = [0, 0, 0, 0, 0, 0];
+      let total = 0;
+      for (const r of rows) {
+        const vals = Array.isArray(r.values) ? r.values : [];
+        for (let i = 0; i < 6; i += 1) {
+          sum[i] += Number(vals[i] || 0);
+        }
+        total += Number(r.total || 0);
+      }
+
+      if (total <= 0) return rows;
+
+      const sigunguRow = {
+        label: "sigungu-total",
+        displayLabel: getCurrentSigunguDisplayName(),
+        values: sum,
+        total
+      };
+
+      return [sigunguRow, ...rows];
+    }
+
+    async function renderAgeChartFromExcel() {
+      try {
+        if (!window.Chart) {
+          throw new Error("차트 라이브러리를 불러오지 못했습니다.");
+        }
+
+        setAgeChartStatus("연령 데이터를 읽는 중...");
+        const currentMode = state.mode;
+        const rows = await loadAgeChartRowsOnce(currentMode);
+        const drawRowsRaw = buildAgeChartRowsForCurrentSelection(rows);
+        const drawRows = prependSigunguAggregateRow(drawRowsRaw);
+        if (!drawRows.length) {
+          setAgeChartStatus("표시할 연령 데이터가 없습니다.");
+          return;
+        }
+
+        const labels = drawRows.map((r) => r.displayLabel || r.label);
+        const percent = (index) => drawRows.map((r) => Math.round((r.values[index] / r.total) * 1000) / 10);
+
+        const datasets = [
+          { label: "0~9세", data: percent(0), backgroundColor: "#4cc9f0", stack: "age" },
+          { label: "10~19세", data: percent(1), backgroundColor: "#ff9f1c", stack: "age" },
+          { label: "20~29세", data: percent(2), backgroundColor: "#2ec4b6", stack: "age" },
+          { label: "30~49세", data: percent(3), backgroundColor: "#5e60ce", stack: "age" },
+          { label: "50~59세", data: percent(4), backgroundColor: "#f15bb5", stack: "age" },
+          { label: "60세 이상", data: percent(5), backgroundColor: "#8ac926", stack: "age" }
+        ];
+
+        const canvas = document.getElementById("agePopulationChart");
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+
+        if (state.ageChartInstance) {
+          state.ageChartInstance.destroy();
+          state.ageChartInstance = null;
+        }
+
+        const plugins = [];
+        if (window.ChartDataLabels) plugins.push(window.ChartDataLabels);
+
+        state.ageChartInstance = new Chart(ctx, {
+          type: "bar",
+          data: { labels, datasets },
+          plugins,
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: false,
+            plugins: {
+              legend: {
+                position: "bottom"
+              },
+              tooltip: {
+                callbacks: {
+                  label: (context) => `${context.dataset.label}: ${context.parsed.y}%`
+                }
+              },
+              datalabels: {
+                color: "#ffffff",
+                clamp: true,
+                formatter: (value) => (value >= 3 ? `${Math.round(value)}%` : ""),
+                font: {
+                  weight: "700",
+                  size: 10
+                },
+                anchor: "center",
+                align: "center"
+              }
+            },
+            scales: {
+              x: {
+                stacked: true,
+                ticks: {
+                  maxRotation: 55,
+                  minRotation: 55,
+                  autoSkip: false
+                },
+                grid: { display: false }
+              },
+              y: {
+                stacked: true,
+                min: 0,
+                max: 100,
+                ticks: {
+                  callback: (value) => `${value}%`
+                }
+              }
+            }
+          }
+        });
+
+        setAgeChartStatus(`총 ${drawRows.length.toLocaleString("ko-KR")}개 지역 표시`);
+      } catch (err) {
+        console.error(err);
+        setAgeChartStatus(String(err?.message || "차트를 불러오지 못했습니다."));
+      }
+    }
+
+    function renderTableData() {
+      const tableBody = document.getElementById("tableBody");
+      if (!tableBody) return;
+      tableBody.innerHTML = "";
+
+      if (!Array.isArray(state.labels) || state.labels.length === 0) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = "<td colspan='5' style='text-align:center; padding:20px; color:#5f6b82;'>데이터가 없습니다</td>";
+        tableBody.appendChild(tr);
+        return;
+      }
+
+      // 데이터 노르말라이제이션
+      const data = state.labels.map(item => ({
+        item,
+        sidoName: item.row?.sidoName || "-",
+        sigunguName: item.row?.sigunguName || "-",
+        name: item.row?.name || "-",
+        population: Number(item.row?.totalPopulation) || 0,
+        pph: Number(item.row?.popItem?.personsPerHousehold) || 0
+      }));
+
+      // 정렬
+      const colIndex = state.tableSortColumn;
+      const isAsc = state.tableSortOrder === "asc";
+      data.sort((a, b) => {
+        let aVal, bVal;
+        switch (colIndex) {
+          case 0: aVal = a.sidoName; bVal = b.sidoName; break;
+          case 1: aVal = a.sigunguName; bVal = b.sigunguName; break;
+          case 2: aVal = a.name; bVal = b.name; break;
+          case 3: aVal = a.population; bVal = b.population; break;
+          case 4: aVal = a.pph; bVal = b.pph; break;
+          default: aVal = 0; bVal = 0;
+        }
+        if (typeof aVal === "string") aVal = aVal.toLowerCase();
+        if (typeof bVal === "string") bVal = bVal.toLowerCase();
+        if (aVal < bVal) return isAsc ? -1 : 1;
+        if (aVal > bVal) return isAsc ? 1 : -1;
+        return 0;
+      });
+
+      // 테이블 렌더링
+      for (const d of data) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = ""
+          + "<td>" + escapeHtml(d.sidoName) + "</td>"
+          + "<td>" + escapeHtml(d.sigunguName) + "</td>"
+          + "<td>" + escapeHtml(d.name) + "</td>"
+          + "<td style='text-align:right;'>" + formatNumber(d.population) + "</td>"
+          + "<td style='text-align:right;'>" + (Number.isFinite(d.pph) ? d.pph.toFixed(2) : "-") + "</td>";
+        tableBody.appendChild(tr);
+      }
+
+      updateTableHeaderStyles();
+    }
+
+    function updateTableHeaderStyles() {
+      const tableHeaders = document.querySelectorAll(".data-table th");
+      tableHeaders.forEach((th, idx) => {
+        const colName = state.tableColumnNames[idx] || th.textContent.replace(/\s[↑↓]$/, "");
+        if (idx === state.tableSortColumn) {
+          const arrow = state.tableSortOrder === "asc" ? " ↑" : " ↓";
+          th.textContent = colName + arrow;
+        } else {
+          th.textContent = colName;
+        }
+      });
+    }
+
+    function initTableModal() {
+      // 이미 초기화되었으면 스킵
+      if (state.tableModalInitialized) return;
+      state.tableModalInitialized = true;
+
+      const tableHeaders = document.querySelectorAll(".data-table th");
+      tableHeaders.forEach((th, idx) => {
+        th.style.cursor = "pointer";
+        th.addEventListener("click", () => {
+          if (state.tableSortColumn === idx) {
+            state.tableSortOrder = state.tableSortOrder === "asc" ? "desc" : "asc";
+          } else {
+            state.tableSortColumn = idx;
+            state.tableSortOrder = "asc";
+          }
+          renderTableData();
+        });
+      });
+      initTableModalResize();
+      updateModalCursor();
+    }
+
+    let tableResizeInitialized = false;
+
+    function initTableModalResize() {
+      if (tableResizeInitialized) return;
+      tableResizeInitialized = true;
+
+      const modal = document.getElementById("tableModal");
+      let isResizing = false;
+      let current = { x: 0, y: 0, width: 0, height: 0 };
+
+      modal.addEventListener("mousedown", (e) => {
+        const rect = modal.getBoundingClientRect();
+        const edge = getResizeEdge(e, rect);
+        if (!edge) return;
+
+        isResizing = true;
+        current.x = e.clientX;
+        current.y = e.clientY;
+        current.width = modal.offsetWidth;
+        current.height = modal.offsetHeight;
+        current.top = parseFloat(modal.style.top) || window.innerHeight / 2;
+        current.left = parseFloat(modal.style.left) || window.innerWidth / 2;
+        current.edge = edge;
+        e.preventDefault();
+      });
+
+      document.addEventListener("mousemove", (e) => {
+        if (!isResizing) return;
+        const deltaX = e.clientX - current.x;
+        const deltaY = e.clientY - current.y;
+        const edge = current.edge;
+
+        let newW = current.width;
+        let newH = current.height;
+        let newL = current.left;
+        let newT = current.top;
+
+        if (edge.right) newW = current.width + deltaX;
+        if (edge.left) { newW = current.width - deltaX; newL = current.left + deltaX; }
+        if (edge.bottom) newH = current.height + deltaY;
+        if (edge.top) { newH = current.height - deltaY; newT = current.top + deltaY; }
+
+        if (newW >= 400) {
+          modal.style.width = newW + "px";
+          if (edge.left) modal.style.left = newL + "px";
+        }
+        if (newH >= 300) {
+          modal.style.height = newH + "px";
+          if (edge.top) modal.style.top = newT + "px";
+        }
+      });
+
+      document.addEventListener("mouseup", () => {
+        isResizing = false;
+      });
+    }
+
+    function getResizeEdge(e, rect) {
+      const edge = { top: false, bottom: false, left: false, right: false };
+      const margin = 10;
+
+      if (e.clientY - rect.top < margin) edge.top = true;
+      if (rect.bottom - e.clientY < margin) edge.bottom = true;
+      if (e.clientX - rect.left < margin) edge.left = true;
+      if (rect.right - e.clientX < margin) edge.right = true;
+
+      return (edge.top || edge.bottom || edge.left || edge.right) ? edge : null;
+    }
+
+    let lastResizeEdge = null;
+
+    function downloadCsvFallback(headers, rows, fileName) {
+      const escapeCsv = (value) => {
+        const s = String(value == null ? "" : value);
+        if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+      };
+
+      const csvLines = [
+        headers.map(escapeCsv).join(","),
+        ...rows.map((row) => row.map(escapeCsv).join(","))
+      ];
+
+      // UTF-8 BOM을 포함하면 엑셀에서 한글이 깨지지 않음
+      const csvText = "\uFEFF" + csvLines.join("\r\n");
+      const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function downloadTableAsExcel() {
+      if (!Array.isArray(state.labels) || state.labels.length === 0) {
+        alert("다운로드할 데이터가 없습니다");
+        return;
+      }
+
+      // 테이블 헤더
+      const headers = state.tableColumnNames;
+
+      // 테이블 데이터 (현재 정렬된 순서대로)
+      const data = state.labels.map(item => ({
+        item,
+        sidoName: item.row?.sidoName || "-",
+        sigunguName: item.row?.sigunguName || "-",
+        name: item.row?.name || "-",
+        population: Number(item.row?.totalPopulation) || 0,
+        pph: Number(item.row?.popItem?.personsPerHousehold) || 0
+      }));
+
+      // 정렬 적용 (현재 테이블과 동일)
+      const colIndex = state.tableSortColumn;
+      const isAsc = state.tableSortOrder === "asc";
+      data.sort((a, b) => {
+        let aVal, bVal;
+        switch (colIndex) {
+          case 0: aVal = a.sidoName; bVal = b.sidoName; break;
+          case 1: aVal = a.sigunguName; bVal = b.sigunguName; break;
+          case 2: aVal = a.name; bVal = b.name; break;
+          case 3: aVal = a.population; bVal = b.population; break;
+          case 4: aVal = a.pph; bVal = b.pph; break;
+          default: aVal = 0; bVal = 0;
+        }
+        if (typeof aVal === "string") aVal = aVal.toLowerCase();
+        if (typeof bVal === "string") bVal = bVal.toLowerCase();
+        if (aVal < bVal) return isAsc ? -1 : 1;
+        if (aVal > bVal) return isAsc ? 1 : -1;
+        return 0;
+      });
+
+      // 데이터 배열 생성
+      const rows = data.map(d => [
+        d.sidoName,
+        d.sigunguName,
+        d.name,
+        d.population,
+        d.pph.toFixed(2)
+      ]);
+
+      const today = new Date().toISOString().slice(0, 10);
+      const xlsx = window.XLSX;
+
+      // CDN 로드 실패 시 CSV로 폴백
+      if (!xlsx || !xlsx.utils) {
+        downloadCsvFallback(headers, rows, `동별인구데이터_${today}.csv`);
+        alert("엑셀 라이브러리를 불러오지 못해 CSV로 다운로드했습니다.");
+        return;
+      }
+
+      // SheetJS 사용하여 Excel 생성
+      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
+      const wb = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(wb, ws, "동별인구데이터");
+
+      // 컬럼 너비 설정
+      ws["!cols"] = [
+        { wch: 15 },  // 시도
+        { wch: 15 },  // 시군구
+        { wch: 15 },  // 동이름
+        { wch: 15 },  // 인구수
+        { wch: 15 }   // 세대당인구
+      ];
+
+      // 다운로드
+      xlsx.writeFile(wb, `동별인구데이터_${today}.xlsx`);
+    }
+
+    function updateModalCursor() {
+      const modal = document.getElementById("tableModal");
+      if (!modal) return;
+
+      modal.addEventListener("mousemove", (e) => {
+        const rect = modal.getBoundingClientRect();
+        const edge = getResizeEdge(e, rect);
+
+        if (!edge) {
+          modal.style.cursor = "default";
+          lastResizeEdge = null;
+          return;
+        }
+
+        if (edge.top && edge.left) modal.style.cursor = "nwse-resize";
+        else if (edge.top && edge.right) modal.style.cursor = "nesw-resize";
+        else if (edge.bottom && edge.left) modal.style.cursor = "nesw-resize";
+        else if (edge.bottom && edge.right) modal.style.cursor = "nwse-resize";
+        else if (edge.top || edge.bottom) modal.style.cursor = "ns-resize";
+        else if (edge.left || edge.right) modal.style.cursor = "ew-resize";
+
+        lastResizeEdge = edge;
+      });
+    }
+
+    function normalizeDigits(value) {
+      return String(value == null ? "" : value).replace(/\D/g, "");
+    }
+
+    function getEmdCode(props) {
+      const candidates = [
+        props?.A1,
+        props?.emd_cd,
+        props?.EMD_CD,
+        props?.code,
+        props?.CODE,
+        props?.dong_cd,
+        props?.DONG_CD
+      ];
+      for (const c of candidates) {
+        const d = normalizeDigits(c);
+        if (d.length === 8) return d;
+      }
+      return "";
+    }
+
+    function getAdmCode(props) {
+      const candidates = [
+        props?.adm_cd2,
+        props?.ADM_CD2,
+        props?.adm_cd,
+        props?.ADM_CD,
+        props?.code,
+        props?.CODE
+      ];
+      for (const c of candidates) {
+        const d = normalizeDigits(c);
+        if (d.length === 10) return d;
+      }
+      return "";
+    }
+
+    function getAreaCode(mode, props) {
+      return mode === MODE.EMD ? getEmdCode(props) : getAdmCode(props);
+    }
+
+    function getAreaName(mode, props, popItem) {
+      if (mode === MODE.EMD) {
+        return props?.A2 || popItem?.name || "(이름 없음)";
+      }
+      const raw = props?.adm_nm || popItem?.name || "";
+      const tokens = String(raw).trim().split(/\s+/).filter(Boolean);
+      return tokens.length ? tokens[tokens.length - 1] : "(이름 없음)";
+    }
+
+    function getSidoCode(mode, props, areaCode) {
+      if (mode === MODE.ADM) {
+        const c = normalizeDigits(props?.adm_cd2 || props?.adm_cd || areaCode);
+        return c.slice(0, 2);
+      }
+      const c = normalizeDigits(areaCode || props?.A1);
+      return c.slice(0, 2);
+    }
+
+    function getSggCode(mode, props, areaCode) {
+      if (mode === MODE.ADM) {
+        const c = normalizeDigits(props?.adm_cd2 || props?.adm_cd || areaCode);
+        return c.slice(0, 5);
+      }
+      const c = normalizeDigits(areaCode || props?.A1 || props?.A4);
+      if (c.length >= 5) return c.slice(0, 5);
+      const p = normalizeDigits(props?.A4);
+      return p.length >= 5 ? p.slice(0, 5) : "";
+    }
+
+    function getSidoName(sidoCode, props) {
+      return props?.sidonm || SIDO_NAME_BY_CODE[sidoCode] || sidoCode || "기타";
+    }
+
+    function getSggName(sggCode, props) {
+      return props?.sggnm || (state.sggNameByCode && state.sggNameByCode[sggCode]) || sggCode || "기타";
+    }
+
+    function geometryToPathSets(geometry) {
+      if (!geometry || !geometry.type || !Array.isArray(geometry.coordinates)) return [];
+      const out = [];
+
+      if (geometry.type === "Polygon") {
+        const outer = geometry.coordinates[0] || [];
+        if (outer.length >= 3) {
+          out.push(outer.map(([lng, lat]) => new naver.maps.LatLng(lat, lng)));
+        }
+      } else if (geometry.type === "MultiPolygon") {
+        for (const polygon of geometry.coordinates) {
+          const outer = polygon && polygon[0] ? polygon[0] : [];
+          if (outer.length >= 3) {
+            out.push(outer.map(([lng, lat]) => new naver.maps.LatLng(lat, lng)));
+          }
+        }
+      }
+
+      return out;
+    }
+
+    function offsetPath(path, dLat, dLng) {
+      if (!Array.isArray(path)) return [];
+      return path.map((p) => new naver.maps.LatLng(p.lat() + dLat, p.lng() + dLng));
+    }
+
+    function fetchJson(url) {
+      return fetch(url).then((res) => {
+        if (!res.ok) throw new Error("요청 실패: " + url);
+        return res.json();
+      });
+    }
+
+    async function loadModeData(mode) {
+      if (state.cache[mode]) return state.cache[mode];
+      const cfg = MODE_CONFIG[mode];
+
+      const [popObj, ...geoObjects] = await Promise.all([
+        fetchJson(cfg.populationUrl),
+        ...cfg.geoUrls.map((u) => fetchJson(u))
+      ]);
+
+      const features = [];
+      for (const g of geoObjects) {
+        if (Array.isArray(g?.features)) features.push(...g.features);
+      }
+
+      const populationItems = popObj?.items && typeof popObj.items === "object" ? popObj.items : {};
+      const loaded = { features, populationItems };
+      state.cache[mode] = loaded;
+      return loaded;
+    }
+
+    async function loadSggNameMapOnce() {
+      if (state.sggNameByCode && state.sggGeometryByCode) return state.sggNameByCode;
+      const out = {};
+      const geoMap = {};
+      try {
+        const sigObjects = await Promise.all(SIG_GEO_URLS.map((u) => fetchJson(u)));
+        for (const g of sigObjects) {
+          const feats = Array.isArray(g?.features) ? g.features : [];
+          for (const f of feats) {
+            const props = f?.properties || {};
+            const code = normalizeDigits(props?.sgg_cd || props?.code || props?.SIG_CD);
+            const name = String(props?.sgg_nm || props?.name || props?.SIG_KOR_NM || "").trim();
+            if (code.length === 5) {
+              if (name) out[code] = name;
+              const paths = geometryToPathSets(f?.geometry);
+              if (paths.length > 0) geoMap[code] = paths;
+            }
+          }
+        }
+      } catch (_) {
+        // no-op: fallback to codes only
+      }
+      state.sggNameByCode = out;
+      state.sggGeometryByCode = geoMap;
+      return out;
+    }
+
+    function drawSigunguBlackOutlinesIfNeeded() {
+      const selected = state.filters.sigunguCodes;
+      if (!selected || selected.size <= 1) return;
+      const geoMap = state.sggGeometryByCode || {};
+
+      for (const code of selected) {
+        const pathSets = geoMap[code] || [];
+        for (const path of pathSets) {
+          if (!Array.isArray(path) || path.length < 3) continue;
+          const outline = new naver.maps.Polygon({
+            map: state.map,
+            paths: path,
+            strokeColor: "#000000",
+            strokeOpacity: 1,
+            strokeWeight: 3.2,
+            fillOpacity: 0,
+            clickable: false,
+            zIndex: 8
+          });
+          state.overlays.push(outline);
+        }
+      }
+    }
+
+    function buildRows(mode, data) {
+      if (data.rows) return data.rows;
+      data.rows = data.features.map((feature) => {
+        const props = feature?.properties || {};
+        const code = getAreaCode(mode, props);
+        const popItem = code ? data.populationItems[code] : null;
+        const totalPopulation = Number(popItem?.totalPopulation);
+        const sidoCode = getSidoCode(mode, props, code);
+        const sigunguCode = getSggCode(mode, props, code);
+        return {
+          feature,
+          code,
+          popItem,
+          totalPopulation,
+          name: getAreaName(mode, props, popItem),
+          sidoCode,
+          sigunguCode,
+          sidoName: getSidoName(sidoCode, props),
+          sigunguName: getSggName(sigunguCode, props)
+        };
+      });
+      return data.rows;
+    }
+
+    async function loadRegionCatalogOnce() {
+      if (state.regionCatalog) return state.regionCatalog;
+      const admData = await loadModeData(MODE.ADM);
+      const admRows = buildRows(MODE.ADM, admData);
+
+      const sidoMap = new Map();
+      const sigunguBySido = new Map();
+      const isCodeLike = (v) => /^\d+$/.test(String(v || "").trim());
+      for (const r of admRows) {
+        if (!r.sidoCode) continue;
+        const nextSidoName = String(r.sidoName || r.sidoCode || "").trim();
+        const prevSidoName = String(sidoMap.get(r.sidoCode) || "").trim();
+        if (!sidoMap.has(r.sidoCode) || (isCodeLike(prevSidoName) && !isCodeLike(nextSidoName))) {
+          sidoMap.set(r.sidoCode, nextSidoName || r.sidoCode);
+        }
+        if (!sigunguBySido.has(r.sidoCode)) sigunguBySido.set(r.sidoCode, new Map());
+        if (r.sigunguCode) {
+          const m = sigunguBySido.get(r.sidoCode);
+          const nextSigunguName = String(r.sigunguName || r.sigunguCode || "").trim();
+          const prevSigunguName = String(m.get(r.sigunguCode) || "").trim();
+          if (!m.has(r.sigunguCode) || (isCodeLike(prevSigunguName) && !isCodeLike(nextSigunguName))) {
+            m.set(r.sigunguCode, nextSigunguName || r.sigunguCode);
+          }
+        }
+      }
+
+      state.regionCatalog = { sidoMap, sigunguBySido };
+      return state.regionCatalog;
+    }
+
+    function fillSelect(el, items, placeholder) {
+      if (!el) return;
+      const opts = [`<option value="">${placeholder || "전체"}</option>`];
+      for (const item of items) {
+        opts.push(`<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`);
+      }
+      el.innerHTML = opts.join("");
+    }
+
+    function getActiveSidoCodes() {
+      const selected = String(state.filters?.sidoCode || "").trim();
+      if (!selected) return null;
+      if (selected === CAPITAL_SIDO_FILTER_CODE) return new Set(CAPITAL_SIDO_CODES);
+      return new Set([selected]);
+    }
+
+    function getSidoFilterLabel(sidoCode) {
+      if (!sidoCode) return "전국";
+      if (sidoCode === CAPITAL_SIDO_FILTER_CODE) return "수도권";
+      return SIDO_NAME_BY_CODE[sidoCode] || sidoCode;
+    }
+
+    function buildSigunguMapFromCatalog(catalog) {
+      const activeSidoCodes = getActiveSidoCodes();
+      if (!activeSidoCodes || activeSidoCodes.size === 0) return new Map();
+
+      const out = new Map();
+      for (const sidoCode of activeSidoCodes) {
+        const m = catalog.sigunguBySido.get(sidoCode) || new Map();
+        for (const [code, name] of m.entries()) out.set(code, name);
+      }
+      return out;
+    }
+
+    function getAllowedSigunguCodesForCurrentFilter() {
+      const catalog = state.regionCatalog;
+      if (!catalog) return null;
+
+      const activeSidoCodes = getActiveSidoCodes();
+      if (!activeSidoCodes || activeSidoCodes.size === 0) return null;
+
+      const out = new Set();
+      for (const sidoCode of activeSidoCodes) {
+        const m = catalog.sigunguBySido.get(sidoCode) || new Map();
+        for (const code of m.keys()) out.add(code);
+      }
+      return out;
+    }
+
+    function updateSigunguDisplayText() {
+      const textEl = document.getElementById("sigunguDisplayText");
+      if (!textEl) return;
+      const selected = state.filters.sigunguCodes;
+      if (!selected || selected.size === 0) {
+        textEl.textContent = "전체";
+      } else {
+        textEl.textContent = `${selected.size}개 선택`;
+      }
+    }
+
+    function setSigunguPanelOpen(open) {
+      const panel = document.getElementById("sigunguFilterPanel");
+      const btn = document.getElementById("sigunguToggleBtn");
+      if (!panel || !btn) return;
+      panel.classList.toggle("open", !!open);
+      btn.textContent = open ? "▲" : "▼";
+    }
+
+    function renderSigunguChecklist(sigunguMap, preselected) {
+      const panel = document.getElementById("sigunguFilterPanel");
+      if (!panel) return;
+
+      const selected = new Set(preselected || []);
+      const list = Array.from(sigunguMap.entries())
+        .sort((a, b) => a[1].localeCompare(b[1], "ko"));
+
+      if (list.length === 0) {
+        panel.innerHTML = '<div class="sigungu-option" style="color:#888">시도를 먼저 선택하세요</div>';
+        state.filters.sigunguCodes = new Set();
+        updateSigunguDisplayText();
+        return;
+      }
+
+      const allChecked = selected.size === 0 || !list.some(([code]) => selected.has(code));
+
+      const allOptionHtml = `
+        <label class="sigungu-option sigungu-all-option">
+          <input type="checkbox" data-sigungu-code="__ALL__" ${allChecked ? "checked" : ""}>
+          <span>전체</span>
+        </label>
+      `;
+
+      const html = list.map(([code, name]) => {
+        const checked = !allChecked && selected.has(code) ? "checked" : "";
+        return `
+          <label class="sigungu-option">
+            <input type="checkbox" data-sigungu-code="${escapeHtml(code)}" ${checked}>
+            <span>${escapeHtml(name)}</span>
+          </label>
+        `;
+      }).join("");
+
+      panel.innerHTML = allOptionHtml + html;
+      state.filters.sigunguCodes = allChecked
+        ? new Set()
+        : new Set([...selected].filter((c) => sigunguMap.has(c)));
+      updateSigunguDisplayText();
+    }
+
+    async function rebuildFilters(rows) {
+      const sidoSelect = document.getElementById("sidoFilter");
+      if (!sidoSelect) return;
+
+      const catalog = await loadRegionCatalogOnce();
+
+      const prevSido = state.filters.sidoCode;
+      const prevSigunguCodes = new Set(state.filters.sigunguCodes || []);
+
+      const sidoMap = catalog.sidoMap;
+
+      const sidoItems = Array.from(sidoMap.entries())
+        .sort((a, b) => a[1].localeCompare(b[1], "ko"))
+        .map(([value, label]) => ({ value, label }));
+      sidoItems.unshift({ value: CAPITAL_SIDO_FILTER_CODE, label: "수도권" });
+
+      fillSelect(sidoSelect, sidoItems, "전체");
+
+      let nextSido = prevSido;
+      if (!nextSido && sidoMap.has(DEFAULT_SIDO_CODE)) nextSido = DEFAULT_SIDO_CODE;
+      const validSidoValues = new Set(sidoItems.map((item) => item.value));
+      if (nextSido && !validSidoValues.has(nextSido)) nextSido = "";
+      sidoSelect.value = nextSido;
+      state.filters.sidoCode = nextSido;
+
+      const sigunguMap = buildSigunguMapFromCatalog(catalog);
+
+      renderSigunguChecklist(sigunguMap, prevSigunguCodes);
+    }
+
+    async function updateSigunguFilter(rows) {
+      const panel = document.getElementById("sigunguFilterPanel");
+      if (!panel) return;
+
+      const catalog = await loadRegionCatalogOnce();
+
+      const sigunguMap = buildSigunguMapFromCatalog(catalog);
+
+      renderSigunguChecklist(sigunguMap, state.filters.sigunguCodes);
+    }
+
+    function getFilteredRows(rows) {
+      const activeSidoCodes = getActiveSidoCodes();
+      return rows.filter((r) => {
+        if (activeSidoCodes && !activeSidoCodes.has(r.sidoCode)) return false;
+        if (state.filters.sigunguCodes && state.filters.sigunguCodes.size > 0 && !state.filters.sigunguCodes.has(r.sigunguCode)) return false;
+        return true;
+      });
+    }
+
+    function calcPercentileBreaks(values, bins) {
+      if (!values.length) return [];
+      const sorted = [...values].sort((a, b) => a - b);
+      const breaks = [];
+      for (let i = 1; i <= bins; i++) {
+        const idx = Math.min(sorted.length - 1, Math.floor((sorted.length * i) / bins) - 1);
+        breaks.push(sorted[Math.max(0, idx)]);
+      }
+      return breaks;
+    }
+
+    function getFillColorByPercentile(value, breaks) {
+      if (!Number.isFinite(value)) return NO_DATA_FILL;
+      for (let i = 0; i < breaks.length; i++) {
+        if (value <= breaks[i]) return COLOR_SCALE[i];
+      }
+      return COLOR_SCALE[COLOR_SCALE.length - 1];
+    }
+
+    function setInfoPanel(data) {
+      const el = document.getElementById("info");
+      if (!el) return;
+
+      if (!data) {
+        el.innerHTML = ""
+          + '<div class="info-title">지역을 선택하세요</div>'
+          + '<div class="info-line">지도에서 동 경계를 클릭하면 상세 인구 정보를 보여줍니다.</div>';
+        return;
+      }
+
+      const pph = data.personsPerHousehold;
+      el.innerHTML = ""
+        + '<div class="info-title">' + escapeHtml(data.name) + '</div>'
+        + '<div class="info-line">코드: ' + escapeHtml(data.code || "-") + '</div>'
+        + '<div class="info-line">총인구수: ' + formatNumber(data.totalPopulation) + '명</div>'
+        + '<div class="info-line">세대당 인구: ' + (Number.isFinite(Number(pph)) ? Number(pph).toFixed(2) : "-") + '</div>';
+    }
+
+    function escapeHtml(str) {
+      return String(str == null ? "" : str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function renderLegend(breaks) {
+      const el = document.getElementById("legend");
+      if (!el) return;
+
+      let html = '<div class="legend-title">백분위 구간 (현재 범위 기준)</div>';
+      if (!breaks.length) {
+        html += '<div class="legend-row">데이터 없음</div>';
+        el.innerHTML = html;
+        return;
+      }
+
+      let prev = 0;
+      const bins = breaks.length;
+      for (let i = 0; i < breaks.length; i++) {
+        const min = i === 0 ? 0 : prev + 1;
+        const max = breaks[i];
+        const color = COLOR_SCALE[i];
+        const p0 = Math.round((i * 100) / bins);
+        const p1 = Math.round(((i + 1) * 100) / bins);
+        html += ''
+          + '<div class="legend-row">'
+          + '  <span class="legend-swatch" style="background:' + color + '"></span>'
+          + '  <span>' + p0 + '%~' + p1 + '% (' + formatNumber(min) + ' - ' + formatNumber(max) + ')</span>'
+          + '</div>';
+        prev = max;
+      }
+      html += ''
+        + '<div class="legend-row">'
+        + '  <span class="legend-swatch" style="background:' + NO_DATA_FILL + '"></span>'
+        + '  <span>데이터 없음</span>'
+        + '</div>';
+      el.innerHTML = html;
+    }
+
+    function clearOverlays() {
+      for (const o of state.overlays) {
+        try { o.setMap(null); } catch (_) {}
+      }
+      for (const item of state.labels) {
+        try { item?.marker?.setMap(null); } catch (_) {}
+      }
+      state.overlays = [];
+      state.labels = [];
+      state.hovered = null;
+      state.selected = null;
+    }
+
+    function toMapOffset(latlng) {
+      try {
+        const proj = state.map?.getProjection?.();
+        if (!proj || !latlng) return null;
+        if (typeof proj.fromCoordToOffset === "function") return proj.fromCoordToOffset(latlng);
+        if (typeof proj.fromCoordToPoint === "function") return proj.fromCoordToPoint(latlng);
+      } catch (_) {}
+      return null;
+    }
+
+    function polygonAreaPx(points) {
+      if (!Array.isArray(points) || points.length < 3) return 0;
+      let acc = 0;
+      for (let i = 0; i < points.length; i++) {
+        const p1 = points[i];
+        const p2 = points[(i + 1) % points.length];
+        acc += p1.x * p2.y - p2.x * p1.y;
+      }
+      return Math.abs(acc / 2);
+    }
+
+    function samplePathForLayout(path, maxPoints = 240) {
+      if (!Array.isArray(path) || path.length <= maxPoints) return Array.isArray(path) ? path : [];
+      const stride = Math.max(1, Math.ceil(path.length / maxPoints));
+      const sampled = [];
+      for (let i = 0; i < path.length; i += stride) sampled.push(path[i]);
+      const last = path[path.length - 1];
+      if (sampled[sampled.length - 1] !== last) sampled.push(last);
+      return sampled;
+    }
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function getAdaptiveGlobalLabelScale() {
+      if (!Array.isArray(state.labels) || state.labels.length === 0) return 1;
+
+      let minW = Infinity;
+      let minH = Infinity;
+      let minArea = Infinity;
+      let any = false;
+
+      for (const item of state.labels) {
+        const path = item?.path;
+        if (!Array.isArray(path) || path.length < 3) continue;
+        const sampledPath = samplePathForLayout(path);
+        const px = sampledPath.map((p) => toMapOffset(p)).filter(Boolean);
+        if (px.length < 3) continue;
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (const p of px) {
+          if (p.x < minX) minX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y > maxY) maxY = p.y;
+        }
+
+        const w = Math.max(1, maxX - minX);
+        const h = Math.max(1, maxY - minY);
+        const area = Math.max(1, polygonAreaPx(px));
+
+        minW = Math.min(minW, w);
+        minH = Math.min(minH, h);
+        minArea = Math.min(minArea, area);
+        any = true;
+      }
+
+      if (!any) return 1;
+
+      // 기준 라벨(3줄) 예상 크기
+      const baseW = 98;
+      const baseH = 62;
+
+      // 가장 작은 동에 맞춰 가능한 최대 배율 계산
+      const byW = (minW * 0.88) / baseW;
+      const byH = (minH * 0.86) / baseH;
+      const byArea = Math.sqrt((minArea * 0.62) / (baseW * baseH));
+      const scale = Math.min(byW, byH, byArea);
+
+      // 지나친 확대/축소 방지
+      return Math.round(clamp(scale, 0.78, 2.25) * 100) / 100;
+    }
+
+    function buildLabelHtml(row, scale) {
+      const pph = row.popItem?.personsPerHousehold;
+      const pphText = Number.isFinite(Number(pph)) ? Number(pph).toFixed(2) : "-";
+      const finalScale = scale * state.userLabelScale;
+      const titlePx = Math.round(13 * finalScale);
+      const linePx = Math.round(11 * finalScale);
+      const padY = Math.round(4 * finalScale);
+      const padX = Math.round(7 * finalScale);
+      const radius = Math.round(8 * finalScale);
+
+      return ""
+        + `<div style="transform:translate(-50%,-50%); padding:${padY}px ${padX}px; border-radius:${radius}px; background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(245,248,255,0.94)); border:1px solid rgba(17,17,17,0.22); box-shadow:0 2px 5px rgba(0,0,0,0.2); text-align:center; line-height:1.22; white-space:nowrap;">`
+        + `  <div style="font-size:${titlePx}px; font-weight:700; color:#0f203e;">${escapeHtml(row.name || "-")}</div>`
+        + `  <div style="font-size:${linePx}px; color:#173b72;">인구 ${formatNumber(row.totalPopulation)}</div>`
+        + `  <div style="font-size:${linePx}px; color:#355885;">세대당 ${pphText}</div>`
+        + "</div>";
+    }
+
+    function updateLabelPlacement() {
+      if (!state.map || !Array.isArray(state.labels) || state.labels.length === 0) return;
+      state.labelScale = getAdaptiveGlobalLabelScale();
+
+      for (const item of state.labels) {
+        const marker = item?.marker;
+        const path = item?.path;
+        const row = item?.row;
+        if (!marker || !Array.isArray(path) || path.length < 3) continue;
+
+        const sampledPath = samplePathForLayout(path);
+        const px = sampledPath.map((p) => toMapOffset(p)).filter(Boolean);
+        if (px.length < 3) {
+          marker.setVisible(false);
+          continue;
+        }
+
+        // 위치: 최초 계산된 값 재사용 (lat/lng은 줌과 무관)
+        if (item.__cachedInterior) {
+          marker.setPosition(item.__cachedInterior);
+        }
+
+        // 스케일 변경 시만 아이콘 갱신
+        const nextScale = state.labelScale || 1;
+        const nextUserScale = state.userLabelScale;
+        if (marker.__labelScale !== nextScale || marker.__userLabelScale !== nextUserScale) {
+          marker.setIcon({
+            content: buildLabelHtml(row, nextScale),
+            anchor: new naver.maps.Point(0, 0)
+          });
+          marker.__labelScale = nextScale;
+          marker.__userLabelScale = nextUserScale;
+        }
+      }
+    }
+
+    function updateLabelVisibility() {
+      if (!Array.isArray(state.labels)) return;
+      for (const item of state.labels) {
+        const marker = item?.marker;
+        if (!marker) continue;
+        marker.setVisible(state.alwaysShowLabels);
+        marker.__isHovered = false;  // 호버 상태 리셋
+      }
+    }
+
+    function resetUserLabelScaleToAuto() {
+      state.userLabelScale = 1;
+      const labelScaleSlider = document.getElementById("labelScaleSlider");
+      const sliderValueText = document.getElementById("sliderValueText");
+      if (labelScaleSlider) labelScaleSlider.value = "100";
+      if (sliderValueText) sliderValueText.textContent = "100";
+    }
+
+    function pointInPolygon(pt, polygon) {
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i].x;
+        const yi = polygon[i].y;
+        const xj = polygon[j].x;
+        const yj = polygon[j].y;
+        const intersect = ((yi > pt.y) !== (yj > pt.y))
+          && (pt.x < ((xj - xi) * (pt.y - yi)) / ((yj - yi) || 1e-12) + xi);
+        if (intersect) inside = !inside;
+      }
+      return inside;
+    }
+
+    function polygonCentroid(points) {
+      let areaAcc = 0;
+      let cx = 0;
+      let cy = 0;
+      for (let i = 0; i < points.length; i++) {
+        const p1 = points[i];
+        const p2 = points[(i + 1) % points.length];
+        const cross = p1.x * p2.y - p2.x * p1.y;
+        areaAcc += cross;
+        cx += (p1.x + p2.x) * cross;
+        cy += (p1.y + p2.y) * cross;
+      }
+      const area = areaAcc / 2;
+      if (Math.abs(area) < 1e-12) return null;
+      return { x: cx / (6 * area), y: cy / (6 * area) };
+    }
+
+    function distancePointToSegment(pt, a, b) {
+      const vx = b.x - a.x;
+      const vy = b.y - a.y;
+      const wx = pt.x - a.x;
+      const wy = pt.y - a.y;
+      const c1 = vx * wx + vy * wy;
+      if (c1 <= 0) return Math.hypot(pt.x - a.x, pt.y - a.y);
+      const c2 = vx * vx + vy * vy;
+      if (c2 <= c1) return Math.hypot(pt.x - b.x, pt.y - b.y);
+      const t = c1 / c2;
+      const px = a.x + t * vx;
+      const py = a.y + t * vy;
+      return Math.hypot(pt.x - px, pt.y - py);
+    }
+
+    function getInteriorPoint(path) {
+      if (!Array.isArray(path) || path.length < 3) return null;
+      const polygon = path.map((p) => ({ x: p.lng(), y: p.lat() }));
+
+      const centroid = polygonCentroid(polygon);
+      if (centroid && pointInPolygon(centroid, polygon)) {
+        return new naver.maps.LatLng(centroid.y, centroid.x);
+      }
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const p of polygon) {
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+      if (pointInPolygon(center, polygon)) {
+        return new naver.maps.LatLng(center.y, center.x);
+      }
+
+      let bestPt = null;
+      let bestScore = -1;
+      const steps = 10;
+      for (let iy = 1; iy < steps; iy++) {
+        const y = minY + ((maxY - minY) * iy) / steps;
+        for (let ix = 1; ix < steps; ix++) {
+          const x = minX + ((maxX - minX) * ix) / steps;
+          const pt = { x, y };
+          if (!pointInPolygon(pt, polygon)) continue;
+
+          let minDist = Infinity;
+          for (let i = 0; i < polygon.length; i++) {
+            const a = polygon[i];
+            const b = polygon[(i + 1) % polygon.length];
+            const d = distancePointToSegment(pt, a, b);
+            if (d < minDist) minDist = d;
+          }
+
+          if (minDist > bestScore) {
+            bestScore = minDist;
+            bestPt = pt;
+          }
+        }
+      }
+
+      if (bestPt) return new naver.maps.LatLng(bestPt.y, bestPt.x);
+      return path[0] || null;
+    }
+
+    function createRowLabelMarker(row, position) {
+      if (!position || !state.map) return null;
+      const scale = state.labelScale || 1;
+      const content = buildLabelHtml(row, scale);
+
+      const marker = new naver.maps.Marker({
+        map: state.map,
+        position,
+        clickable: false,
+        icon: {
+          content,
+          anchor: new naver.maps.Point(0, 0)
+        },
+        zIndex: 50
+      });
+
+      marker.__labelScale = scale;
+      marker.__userLabelScale = state.userLabelScale;
+      marker.__isHovered = false;  // 호버 상태 추적
+      marker.setVisible(state.alwaysShowLabels);
+
+      return marker;
+    }
+
+    function applyHoverStyle(poly, on) {
+      if (!poly) return;
+      poly.setOptions({
+        strokeWeight: on ? 2.9 : 2.2,
+        strokeColor: "#ffffff",
+        fillOpacity: on ? 0.8 : 0.7
+      });
+    }
+
+    function applySelectStyle(poly, on) {
+      if (!poly) return;
+      poly.setOptions({
+        strokeWeight: on ? 3.3 : 2.2,
+        strokeColor: "#ffffff",
+        fillOpacity: on ? 0.85 : 0.7
+      });
+    }
+
+    // 시도 전체 선택 시 시군구 단위 렌더링 (동 단위보다 가벼움)
+    async function drawSigunguLevel(mode, rows, shouldMove, populationItems = {}) {
+      const selectedSidoCode = state.filters.sidoCode;
+      const activeSidoCodes = getActiveSidoCodes();
+      const geoMap = state.sggGeometryByCode || {};
+      const nameMap = state.sggNameByCode || {};
+
+      function getHouseholdsFromRow(row) {
+        const direct = Number(row?.popItem?.totalHouseholds);
+        if (Number.isFinite(direct) && direct > 0) return direct;
+
+        const pop = Number(row?.totalPopulation);
+        const pph = Number(row?.popItem?.personsPerHousehold);
+        if (!Number.isFinite(pop) || !Number.isFinite(pph) || pph <= 0) return 0;
+        return pop / pph;
+      }
+
+      // 동 단위 rows를 시군구 코드로 집계
+      const sggPopMap = new Map(); // sggCode -> { total, households, sidoCode }
+      for (const r of rows) {
+        if (activeSidoCodes && !activeSidoCodes.has(r.sidoCode)) continue;
+        const c = r.sigunguCode;
+        if (!c) continue;
+        const prev = sggPopMap.get(c) || { total: 0, households: 0, sidoCode: r.sidoCode };
+        if (Number.isFinite(r.totalPopulation)) prev.total += r.totalPopulation;
+        prev.households += getHouseholdsFromRow(r);
+        if (!prev.sidoCode && r.sidoCode) prev.sidoCode = r.sidoCode;
+        sggPopMap.set(c, prev);
+      }
+
+      // 시군구 상위코드(예: 1111000000) 레코드가 있으면 우선 사용
+      // 모드와 무관하게 ADM 통계를 기준으로 통일해 시군구 총합 일관성을 유지
+      let directSourceItems = populationItems || {};
+      try {
+        const admData = await loadModeData(MODE.ADM);
+        if (admData && admData.populationItems) directSourceItems = admData.populationItems;
+      } catch (_) {
+        // fallback: 현재 mode populationItems 사용
+      }
+
+      const directSigunguMap = new Map(); // sggCode -> { total, pph }
+      for (const key of Object.keys(directSourceItems || {})) {
+        const d = normalizeDigits(key);
+        if (d.length !== 10 || !d.endsWith("00000")) continue;
+        const sggCode = d.slice(0, 5);
+        if (activeSidoCodes && !activeSidoCodes.has(sggCode.slice(0, 2))) continue;
+
+        const item = directSourceItems[key] || {};
+        const total = Number(item.totalPopulation);
+        const pph = Number(item.personsPerHousehold);
+        if (!Number.isFinite(total) || total <= 0) continue;
+        directSigunguMap.set(sggCode, {
+          total,
+          pph: Number.isFinite(pph) && pph > 0 ? pph : null
+        });
+      }
+
+      for (const [sggCode, direct] of directSigunguMap.entries()) {
+        const prev = sggPopMap.get(sggCode) || { total: 0, households: 0, sidoCode: sggCode.slice(0, 2) };
+        const households = direct.pph ? (direct.total / direct.pph) : prev.households;
+        sggPopMap.set(sggCode, {
+          ...prev,
+          total: direct.total,
+          households,
+          sidoCode: prev.sidoCode || sggCode.slice(0, 2)
+        });
+      }
+
+      if (sggPopMap.size === 0) {
+        setStatus("표시할 시군구 데이터가 없습니다.");
+        return;
+      }
+
+      const allTotals = Array.from(sggPopMap.values()).map((v) => v.total).filter(Number.isFinite);
+      const breaks = calcPercentileBreaks(allTotals, 5);
+      renderLegend(breaks);
+
+      let fitBounds = new naver.maps.LatLngBounds();
+      let hasBounds = false;
+
+      for (const [sggCode, agg] of sggPopMap.entries()) {
+        const pathSets = geoMap[sggCode];
+        if (!pathSets || pathSets.length === 0) continue;
+
+        const name = nameMap[sggCode] || sggCode;
+        const fillColor = getFillColorByPercentile(agg.total, breaks);
+        const personsPerHousehold = agg.households > 0 ? agg.total / agg.households : null;
+
+        const fakeRow = {
+          name,
+          code: sggCode,
+          sigunguCode: sggCode,
+          sidoCode: agg.sidoCode || "",
+          sidoName: SIDO_NAME_BY_CODE[agg.sidoCode || ""] || agg.sidoCode || "-",
+          sigunguName: name,
+          totalPopulation: agg.total,
+          popItem: {
+            totalHouseholds: agg.households,
+            personsPerHousehold
+          },
+          __labelMarker: null
+        };
+
+        const largestPathSgg = pathSets.reduce((best, p) => p.length > best.length ? p : best, pathSets[0]);
+        const center = getInteriorPoint(largestPathSgg);
+        if (center) {
+          const label = createRowLabelMarker(fakeRow, center);
+          if (label) {
+            state.labels.push({ marker: label, path: largestPathSgg, row: fakeRow, __cachedInterior: center });
+            fakeRow.__labelMarker = label;
+          }
+        }
+
+        for (const path of pathSets) {
+          if (!path.length) continue;
+          for (const pt of path) { fitBounds.extend(pt); hasBounds = true; }
+
+          const poly = new naver.maps.Polygon({
+            map: state.map, paths: path,
+            strokeColor: "#ffffff", strokeOpacity: 1, strokeWeight: 2.2,
+            fillColor, fillOpacity: 0.74, clickable: true, zIndex: 3
+          });
+          poly.__row = fakeRow;
+          poly.__baseStrokeColor = "#ffffff";
+
+          naver.maps.Event.addListener(poly, "mouseover", () => {
+            if (state.hovered && state.hovered !== poly && state.hovered !== state.selected) applyHoverStyle(state.hovered, false);
+            state.hovered = poly;
+            if (poly !== state.selected) applyHoverStyle(poly, true);
+            if (fakeRow.__labelMarker && !state.alwaysShowLabels && !fakeRow.__labelMarker.__isHovered) {
+              fakeRow.__labelMarker.__isHovered = true;
+              fakeRow.__labelMarker.setVisible(true);
+            }
+          });
+          naver.maps.Event.addListener(poly, "mouseout", () => {
+            if (poly !== state.selected) applyHoverStyle(poly, false);
+            if (state.hovered === poly) state.hovered = null;
+            if (fakeRow.__labelMarker && !state.alwaysShowLabels && fakeRow.__labelMarker.__isHovered) {
+              fakeRow.__labelMarker.__isHovered = false;
+              fakeRow.__labelMarker.setVisible(false);
+            }
+          });
+          naver.maps.Event.addListener(poly, "click", () => {
+            if (state.selected && state.selected !== poly) applySelectStyle(state.selected, false);
+            state.selected = poly;
+            applySelectStyle(poly, true);
+            setInfoPanel({
+              name: fakeRow.name,
+              code: fakeRow.code,
+              totalPopulation: fakeRow.totalPopulation,
+              personsPerHousehold
+            });
+          });
+
+          state.overlays.push(poly);
+        }
+      }
+
+      if (hasBounds && shouldMove) {
+        state.map.fitBounds(fitBounds, { top: 20, right: 20, bottom: 20, left: 20 });
+      }
+
+      const sidoName = getSidoFilterLabel(selectedSidoCode);
+      setStatus(`시군구 단위 표시: ${sggPopMap.size}개 (${sidoName} 전체)`);
+      setInfoPanel(null);
+      updateLabelPlacement();
+    }
+
+    async function drawMode(mode, opts = {}) {
+      if (!state.map) return;
+      const shouldMove = !!opts.moveMap;
+
+      setLoading(true, MODE_CONFIG[mode].label + " 경계/인구 데이터를 불러오는 중...");
+      setStatus(MODE_CONFIG[mode].label + " 데이터 로딩 중");
+
+      try {
+        await loadSggNameMapOnce();
+        const data = await loadModeData(mode);
+        clearOverlays();
+
+        const rows = buildRows(mode, data);
+        await rebuildFilters(rows);
+
+        // 시도도 선택 안 된 경우(완전 초기 상태)에는 아무것도 그리지 않음
+        if (!state.filters.sidoCode && (!state.filters.sigunguCodes || state.filters.sigunguCodes.size === 0)) {
+          clearOverlays();
+          renderLegend([]);
+          setInfoPanel(null);
+          setStatus("시도를 선택하면 지도를 표시합니다.");
+          return;
+        }
+
+        // 시도 선택 + 시군구 전체 = 시군구 단위로 렌더링 (가볍게)
+        const isAllSigungu = state.filters.sidoCode && (!state.filters.sigunguCodes || state.filters.sigunguCodes.size === 0);
+        if (isAllSigungu) {
+          await drawSigunguLevel(mode, rows, shouldMove, data.populationItems || {});
+          return;
+        }
+
+        const featureRows = getFilteredRows(rows);
+
+        if (!featureRows.length) {
+          clearOverlays();
+          renderLegend([]);
+          setInfoPanel(null);
+          setStatus("표시할 동 데이터가 없습니다.");
+          return;
+        }
+
+        const values = featureRows
+          .map((r) => r.totalPopulation)
+          .filter((v) => Number.isFinite(v));
+
+        const breaks = calcPercentileBreaks(values, 5);
+        renderLegend(breaks);
+
+        let fitBounds = new naver.maps.LatLngBounds();
+        let hasBounds = false;
+
+        for (const row of featureRows) {
+          const pathSets = geometryToPathSets(row.feature?.geometry);
+          if (!pathSets.length) continue;
+
+          const largestPathDong = pathSets.reduce((best, p) => p.length > best.length ? p : best, pathSets[0]);
+          const center = getInteriorPoint(largestPathDong);
+          if (center) {
+            const label = createRowLabelMarker(row, center);
+            if (label) {
+              const labelItem = { marker: label, path: largestPathDong, row, __cachedInterior: center };
+              state.labels.push(labelItem);
+              row.__labelMarker = label;  // row에 마커 저장
+            }
+          }
+
+          const fillColor = getFillColorByPercentile(row.totalPopulation, breaks);
+          for (const path of pathSets) {
+            if (!path.length) continue;
+
+            for (const pt of path) {
+              fitBounds.extend(pt);
+              hasBounds = true;
+            }
+
+            const shadowPath = offsetPath(path, PSEUDO_3D.shadowLatOffset, PSEUDO_3D.shadowLngOffset);
+            const shadowPoly = new naver.maps.Polygon({
+              map: state.map,
+              paths: shadowPath,
+              strokeColor: "#5a301f",
+              strokeOpacity: 0.36,
+              strokeWeight: 1.8,
+              fillColor: PSEUDO_3D.shadowFill,
+              fillOpacity: PSEUDO_3D.shadowOpacity,
+              clickable: false,
+              zIndex: 1
+            });
+            state.overlays.push(shadowPoly);
+
+            const highlightPath = offsetPath(path, PSEUDO_3D.highlightLatOffset, PSEUDO_3D.highlightLngOffset);
+            const highlightPoly = new naver.maps.Polygon({
+              map: state.map,
+              paths: highlightPath,
+              strokeColor: PSEUDO_3D.highlightStroke,
+              strokeOpacity: PSEUDO_3D.highlightOpacity,
+              strokeWeight: 1.2,
+              fillColor: "#ffffff",
+              fillOpacity: 0.05,
+              clickable: false,
+              zIndex: 2
+            });
+            state.overlays.push(highlightPoly);
+
+            const poly = new naver.maps.Polygon({
+              map: state.map,
+              paths: path,
+              strokeColor: "#ffffff",
+              strokeOpacity: 1,
+              strokeWeight: 2.2,
+              fillColor,
+              fillOpacity: 0.74,
+              clickable: true,
+              zIndex: 3
+            });
+
+            poly.__row = row;
+            poly.__baseStrokeColor = "#ffffff";
+
+            naver.maps.Event.addListener(poly, "mouseover", () => {
+              if (state.hovered && state.hovered !== poly && state.hovered !== state.selected) {
+                applyHoverStyle(state.hovered, false);
+              }
+              state.hovered = poly;
+              if (poly !== state.selected) applyHoverStyle(poly, true);
+              // 라벨 마커 표시: alwaysShowLabels가 false이고 아직 hover 상태가 아닐 때만
+              if (row.__labelMarker && !state.alwaysShowLabels && !row.__labelMarker.__isHovered) {
+                row.__labelMarker.__isHovered = true;
+                row.__labelMarker.setVisible(true);
+              }
+            });
+
+            naver.maps.Event.addListener(poly, "mouseout", () => {
+              if (poly !== state.selected) applyHoverStyle(poly, false);
+              if (state.hovered === poly) state.hovered = null;
+              // 라벨 마커 숨기기: alwaysShowLabels가 false이고 현재 hover 상태일 때만
+              if (row.__labelMarker && !state.alwaysShowLabels && row.__labelMarker.__isHovered) {
+                row.__labelMarker.__isHovered = false;
+                row.__labelMarker.setVisible(false);
+              }
+            });
+
+            naver.maps.Event.addListener(poly, "click", () => {
+              if (state.selected && state.selected !== poly) {
+                applySelectStyle(state.selected, false);
+              }
+              state.selected = poly;
+              applySelectStyle(poly, true);
+
+              const selected = poly.__row;
+              setInfoPanel({
+                name: selected.name,
+                code: selected.code,
+                totalPopulation: selected.totalPopulation,
+                personsPerHousehold: selected.popItem?.personsPerHousehold
+              });
+            });
+
+            state.overlays.push(poly);
+          }
+        }
+
+        drawSigunguBlackOutlinesIfNeeded();
+
+        if (hasBounds && shouldMove) {
+          state.map.fitBounds(fitBounds, { top: 20, right: 20, bottom: 20, left: 20 });
+        }
+
+        const scopeText = [
+          getSidoFilterLabel(state.filters.sidoCode),
+          state.filters.sigunguCodes && state.filters.sigunguCodes.size > 0 ? `${state.filters.sigunguCodes.size}개 선택` : "전체"
+        ].join(" / ");
+        setStatus(MODE_CONFIG[mode].label + " 표시: " + state.overlays.length.toLocaleString("ko-KR") + "개 경계 (" + scopeText + ")");
+        setInfoPanel(null);
+        updateLabelPlacement();
+      } catch (err) {
+        console.error(err);
+        setStatus("로딩 실패");
+        setInfoPanel({
+          name: "오류",
+          code: "-",
+          totalPopulation: "-",
+          personsPerHousehold: "-"
+        });
+        alert("데이터 로딩 중 오류가 발생했습니다. 파일 경로를 확인하세요.");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function setModeButtons(mode) {
+      const emdBtn = document.getElementById("btnEmd");
+      const admBtn = document.getElementById("btnAdm");
+      if (emdBtn) emdBtn.classList.toggle("active", mode === MODE.EMD);
+      if (admBtn) admBtn.classList.toggle("active", mode === MODE.ADM);
+    }
+
+    async function switchMode(mode, opts = {}) {
+      const shouldMove = !!opts.moveMap;
+      if (state.mode === mode && state.overlays.length > 0) return;
+      state.mode = mode;
+      setModeButtons(mode);
+      await drawMode(mode, { moveMap: shouldMove });
+    }
+
+    function initMap() {
+      state.map = new naver.maps.Map("map", {
+        center: new naver.maps.LatLng(36.35, 127.9),
+        zoom: 7,
+        minZoom: 6,
+        mapTypeControl: true,
+        zoomControl: true,
+        zoomControlOptions: {
+          position: naver.maps.Position.TOP_RIGHT
+        }
+      });
+
+      const emdBtn = document.getElementById("btnEmd");
+      const admBtn = document.getElementById("btnAdm");
+      const sidoSelect = document.getElementById("sidoFilter");
+      const sigunguWrapper = document.getElementById("sigunguFilterWrapper");
+      const sigunguDisplay = document.getElementById("sigunguFilterDisplay");
+      const sigunguPanel = document.getElementById("sigunguFilterPanel");
+
+      if (emdBtn) {
+        emdBtn.addEventListener("click", () => switchMode(MODE.EMD));
+      }
+      if (admBtn) {
+        admBtn.addEventListener("click", () => switchMode(MODE.ADM));
+      }
+      if (sidoSelect) {
+        sidoSelect.addEventListener("change", async (e) => {
+          state.filters.sidoCode = (e.target?.value || "").trim();
+          state.filters.sigunguCodes = new Set();
+          const data = await loadModeData(state.mode);
+          const rows = buildRows(state.mode, data);
+          await updateSigunguFilter(rows);
+          setSigunguPanelOpen(true);
+          resetUserLabelScaleToAuto();
+          await drawMode(state.mode, { moveMap: !!state.filters.sidoCode });
+        });
+      }
+      if (sigunguDisplay && sigunguPanel) {
+        sigunguDisplay.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setSigunguPanelOpen(!sigunguPanel.classList.contains("open"));
+        });
+      }
+      if (sigunguPanel) {
+        sigunguPanel.addEventListener("click", (e) => {
+          e.stopPropagation();
+        });
+        sigunguPanel.addEventListener("change", async (e) => {
+          const checkbox = e.target;
+          if (!checkbox || checkbox.tagName !== "INPUT") return;
+          const code = String(checkbox.getAttribute("data-sigungu-code") || "").trim();
+          if (!code) return;
+
+          if (code === "__ALL__") {
+            // "전체" 선택 시 모든 개별 선택 해제
+            state.filters.sigunguCodes = new Set();
+            sigunguPanel.querySelectorAll("input[data-sigungu-code]").forEach((cb) => {
+              if (cb.getAttribute("data-sigungu-code") !== "__ALL__") cb.checked = false;
+            });
+            checkbox.checked = true;
+          } else {
+            if (checkbox.checked) state.filters.sigunguCodes.add(code);
+            else state.filters.sigunguCodes.delete(code);
+            // 개별 선택 변경 시 "전체" 체크박스 상태 동기화
+            const allCb = sigunguPanel.querySelector("input[data-sigungu-code='__ALL__']");
+            if (allCb) allCb.checked = state.filters.sigunguCodes.size === 0;
+          }
+
+          // 시군구 변경 시에는 사용자 배율을 자동(100%)으로 되돌려 영역에 맞게 재계산
+          resetUserLabelScaleToAuto();
+          updateSigunguDisplayText();
+          await drawMode(state.mode, { moveMap: state.filters.sigunguCodes.size > 0 });
+        });
+      }
+
+      document.addEventListener("click", (e) => {
+        if (!sigunguWrapper) return;
+        if (!sigunguWrapper.contains(e.target)) setSigunguPanelOpen(false);
+      });
+
+      if (sigunguWrapper) {
+        // 초기 상태
+        setSigunguPanelOpen(false);
+        updateSigunguDisplayText();
+      }
+
+      // 테이블 보기 버튼
+      const tableBtn = document.getElementById("btnTableView");
+      const ageChartBtn = document.getElementById("btnAgeChartView");
+      const tableModalOverlay = document.getElementById("tableModalOverlay");
+      const tableModalClose = document.getElementById("tableModalClose");
+      const tableDownloadBtn = document.getElementById("tableDownloadBtn");
+      const ageChartModalOverlay = document.getElementById("ageChartModalOverlay");
+      const ageChartModalClose = document.getElementById("ageChartModalClose");
+
+      if (tableBtn) {
+        tableBtn.addEventListener("click", () => {
+          showTableModal();
+        });
+      }
+
+      if (ageChartBtn) {
+        ageChartBtn.addEventListener("click", () => {
+          showAgeChartModal();
+        });
+      }
+
+      if (tableDownloadBtn) {
+        tableDownloadBtn.addEventListener("click", () => {
+          downloadTableAsExcel();
+        });
+      }
+
+      if (tableModalClose) {
+        tableModalClose.addEventListener("click", () => {
+          hideTableModal();
+        });
+      }
+
+      if (tableModalOverlay) {
+        tableModalOverlay.addEventListener("click", () => {
+          hideTableModal();
+        });
+      }
+
+      if (ageChartModalClose) {
+        ageChartModalClose.addEventListener("click", () => {
+          hideAgeChartModal();
+        });
+      }
+
+      if (ageChartModalOverlay) {
+        ageChartModalOverlay.addEventListener("click", () => {
+          hideAgeChartModal();
+        });
+      }
+
+      // 동이름 항상 표시 체크박스
+      const alwaysShowCheckbox = document.getElementById("alwaysShowLabelsCheckbox");
+      if (alwaysShowCheckbox) {
+        alwaysShowCheckbox.addEventListener("change", (e) => {
+          state.alwaysShowLabels = e.target.checked;
+          updateLabelVisibility();  // 가시성만 업데이트
+        });
+      }
+
+      // 라벨 크기 슬라이더
+      const labelScaleSlider = document.getElementById("labelScaleSlider");
+      const sliderValueText = document.getElementById("sliderValueText");
+      if (labelScaleSlider) {
+        labelScaleSlider.addEventListener("input", (e) => {
+          const value = Number(e.target.value);
+          state.userLabelScale = value / 100;
+          if (sliderValueText) sliderValueText.textContent = String(value);
+          updateLabelPlacement();
+        });
+      }
+
+      try {
+        let _labelIdleTimer = null;
+        naver.maps.Event.addListener(state.map, "idle", () => {
+          clearTimeout(_labelIdleTimer);
+          _labelIdleTimer = setTimeout(() => updateLabelPlacement(), 80);
+        });
+      } catch (_) {}
+
+      switchMode(MODE.EMD, { moveMap: true });
+    }
+
+    window.addEventListener("load", initMap);
+  </script>
+</body>
+</html>
