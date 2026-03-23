@@ -1,926 +1,6 @@
-﻿<!doctype html>
-<html lang="ko">
-  <head>
-    <meta charset="UTF-8" />
-    <meta id="dynamicViewport" name="viewport" content="width=device-width, initial-scale=0.85, user-scalable=no" />
+/* === BLOCK 1 === */
+(function(){
 
-    <link
-      rel="icon"
-      type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23162033'/%3E%3Ctext x='32' y='39' text-anchor='middle' font-size='24' font-family='Malgun Gothic,Noto Sans KR,sans-serif' font-weight='700' fill='white'%3E%ED%99%8D%EB%B6%80%3C/text%3E%3C/svg%3E"
-    />
-    <title>[루시퍼홍] 홍부가 기가막혀</title>
-    <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
-    <script type="text/javascript" src="MarkerClustering.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-
-    <style>
-      /* #map는 동적 버튼 포지셔닝을 위해 relative */
-      #map {
-        position: relative;
-      }
-
-      /* 지도 우상단 플로팅 버튼 */
-      .map-float-btn {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        width: 40px;
-        height: 40px;
-        border-radius: 50%;
-        background: #fff;
-        border: 2px solid #bbb;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-        font-size: 18px;
-        display: flex; /* 중앙정렬 */
-        align-items: center; /* 중앙정렬 */
-        justify-content: center; /* 중앙정렬 */
-        cursor: pointer;
-        z-index: 10000;
-        transform: translateY(-1px); /* 아이콘 미세 상향 보정 */
-      }
-      /* line-height 설정이 있었다면 제거 */
-
-      /* 전체화면일 때 상단 타이틀/컨트롤 숨김(선택) */
-      body.fullscreen-active > h1,
-      body.fullscreen-active > #controls {
-        display: none !important;
-      }
-      body.fullscreen-active > #routeDrawHelp,
-      body.map-fullscreen > #routeDrawHelp {
-        display: none !important;
-      }
-
-      html,
-      body {
-        margin: 0;
-        padding: 0;
-        overflow-x: hidden;
-      }
-
-      /* 일반 상태: 주소창 포함 높이 변동 대응 */
-      @supports (height: 100svh) {
-        #map {
-          height: calc(100svh - 150px) !important;
-        }
-      }
-
-      /* 전체화면(폴백/네이티브 공통)일 때는 보이는 화면 전부 채우기 */
-      @supports (height: 100dvh) {
-        body.fullscreen-active #map {
-          height: 100dvh !important;
-        }
-      }
-
-      /* 기존 전역 버튼은 숨김 */
-      #locationButton,
-      #stopTrackingButton {
-        display: none !important;
-      }
-
-      /* 지도 내부용 현재위치/중지 버튼 */
-      .map-locate-btn,
-      .map-stoptrack-btn {
-        position: absolute;
-        left: 8px;
-        width: 40px;
-        height: 40px;
-        border-radius: 50%;
-        background: #fff;
-        border: 2px solid #bbb;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-        font-size: 18px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        z-index: 10000;
-      }
-      .map-locate-btn {
-        top: 10px;
-      } /* 현재 위치 (좌상단 아이콘 아래) */
-      .map-stoptrack-btn {
-        top: 98px;
-      } /* 추적 중지 */
-      #mapPhotoBtn {
-        display: flex;
-        width: 54px;
-        height: 54px;
-        padding: 0;
-        line-height: 1;
-        appearance: none;
-        -webkit-appearance: none;
-      }
-      #mapPhotoBtn .map-photo-icon {
-        display: block;
-        line-height: 1;
-        font-size: 28px;
-        transform: translateY(-1px);
-      }
-      .map-photo-btn {
-        top: 66px;
-      } /* ✅ 사진 메모 모드(카메라) */
-      #mapStopBtn {
-        display: none !important;
-      }
-
-      /* ✅ 법정동(EMD) 라벨 */
-      /* ✅ 법정동(EMD) 라벨 - 글자만 */
-      .emd-label {
-        /* 12px * 4 */
-        font-weight: 800;
-        color: #0b1b3a;
-
-        background: transparent; /* 배경 제거 */
-        border: none; /* 테두리 제거 */
-        border-radius: 0; /* 반원/둥근모양 제거 */
-        padding: 0; /* 여백 제거 */
-        box-shadow: none; /* 그림자 제거 */
-
-        white-space: nowrap;
-        pointer-events: none;
-
-        /* 배경 없이도 잘 보이게(선택) */
-        text-shadow:
-          0 0 2px rgba(255, 255, 255, 0.9),
-          0 0 6px rgba(255, 255, 255, 0.7);
-      }
-
-      /* 시군구(SIG) 라벨 - 글자만 */
-      .sig-label {
-        font-weight: 800;
-        color: #111;
-        background: transparent;
-        border: none;
-        border-radius: 0;
-        padding: 0;
-        box-shadow: none;
-        white-space: nowrap;
-        pointer-events: none;
-        text-shadow:
-          0 0 2px rgba(255, 255, 255, 0.9),
-          0 0 6px rgba(255, 255, 255, 0.7);
-      }
-
-      /* ✅ 지도 사진 메모(좌표 기반) 썸네일 마커 */
-      .photo-memo-marker {
-        width: 38px;
-        height: 38px;
-        border-radius: 10px;
-        background: #fff;
-        border: 2px solid rgba(255, 255, 255, 0.95);
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-        overflow: hidden;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        touch-action: manipulation;
-      }
-      .photo-memo-marker img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-      }
-
-      /* ✅ 사진 메모 액션 메뉴(촬영/파일) */
-      .photo-memo-menu {
-        position: absolute;
-        z-index: 10002;
-        background: #fff;
-        border: 1px solid rgba(0, 0, 0, 0.15);
-        border-radius: 10px;
-        box-shadow: 0 8px 18px rgba(0, 0, 0, 0.25);
-        padding: 8px;
-        display: none;
-        gap: 8px;
-      }
-      .photo-memo-menu button {
-        margin: 0;
-        padding: 8px 10px;
-        border: 1px solid rgba(0, 0, 0, 0.15);
-        background: #fff;
-        border-radius: 10px;
-        cursor: pointer;
-        font-size: 14px;
-        white-space: nowrap;
-      }
-      .photo-memo-menu button:hover {
-        background: #f3f6ff;
-      }
-      .map-photo-btn.active {
-        border-color: #2d5da7 !important;
-        box-shadow: 0 2px 8px rgba(45, 93, 167, 0.35) !important;
-        background: #eef4ff !important;
-      }
-
-      /* ✅ 포토메모 메모 입력 모달 */
-      #photoMemoNoteModal {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.55);
-        z-index: 1000010;
-        justify-content: center;
-        align-items: center;
-      }
-      #photoMemoNoteModal.show {
-        display: flex;
-      }
-      #photoMemoNoteModalInner {
-        background: #fff;
-        border-radius: 14px;
-        padding: 16px;
-        width: min(340px, 92vw);
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-      }
-      #photoMemoNotePreview {
-        width: 100%;
-        max-height: 200px;
-        object-fit: contain;
-        border-radius: 8px;
-        background: #f0f0f0;
-      }
-      #photoMemoNoteInput {
-        width: 100%;
-        box-sizing: border-box;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        padding: 8px 10px;
-        font-size: 15px;
-        line-height: 1.5;
-        resize: vertical;
-        min-height: 72px;
-      }
-      .photo-memo-note-btns {
-        display: flex;
-        gap: 8px;
-      }
-      .photo-memo-note-btns button {
-        flex: 1;
-        padding: 10px;
-        border: none;
-        border-radius: 8px;
-        font-size: 15px;
-        cursor: pointer;
-      }
-      #photoMemoNoteSave {
-        background: #2d5da7;
-        color: #fff;
-      }
-      #photoMemoNoteCancel {
-        background: #f0f0f0;
-        color: #333;
-      }
-
-      #map {
-        width: 100%;
-        max-width: 100%;
-        height: calc(100vh - 150px);
-        resize: both;
-        max-height: calc(100svh) !important;
-      }
-      #controls {
-        margin: 10px;
-      }
-      button {
-        margin: 5px;
-        padding: 10px;
-        cursor: pointer;
-      }
-
-      /* 현재 위치 버튼 스타일 */
-      #locationButton {
-        position: absolute;
-        top: 90px; /* 🔹 지도 내부의 상단 */
-        left: 8px; /* 🔹 지도 내부의 왼쪽 */
-        background-color: white;
-        border: 2px solid gray;
-        padding: 10px;
-        border-radius: 50%;
-        cursor: pointer;
-        font-size: 12px;
-        text-align: center;
-        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
-        z-index: 1000; /* 🔹 지도 위에 표시 */
-      }
-
-      /* 위치 추적 종료 버튼 */
-      #stopTrackingButton {
-        position: absolute;
-        top: 125px; /* 🔹 지도 내부의 상단 */
-        left: 60px; /* 🔹 현재 위치 버튼과 간격 유지 */
-        background-color: white;
-        border: 2px solid gray;
-        padding: 10px;
-        border-radius: 50%;
-        cursor: pointer;
-        font-size: 14px;
-        text-align: center;
-        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
-        z-index: 1000; /* 🔹 지도 위에 표시 */
-      }
-
-      /* ===== 필터 숫자 입력(최소세대수/준공년도) 공통 스타일 ===== */
-      .filter-num {
-        width: 60px;
-        height: 24px;
-        font-size: 14px;
-        text-align: center;
-        border: 1px solid #9aa0a6;
-        border-radius: 8px;
-        padding: 3px 6px;
-        box-sizing: border-box;
-      }
-      .filter-num:focus {
-        outline: none;
-        border-color: #2d5da7;
-        box-shadow: 0 0 5px rgba(74, 144, 226, 0.35);
-      }
-
-      /* ✅ 시도 셀렉트 - 시군구 드롭다운과 동일한 디자인 */
-      #sidoFilter {
-        height: 28px;
-        padding: 3px 8px;
-        font-size: 13px;
-        border: 1px solid #cbd3e0;
-        border-radius: 4px;
-        background-color: #fff;
-        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-        box-sizing: border-box;
-        cursor: pointer;
-        outline: none;
-        transition:
-          border-color 0.2s,
-          box-shadow 0.2s;
-      }
-      #sidoFilter:hover {
-        border-color: #4a90e2;
-        box-shadow: 0 2px 6px rgba(74, 144, 226, 0.2);
-      }
-      #sidoFilter:focus {
-        border-color: #2d5da7;
-        box-shadow: 0 0 5px rgba(74, 144, 226, 0.35);
-      }
-
-      /* ✅ 시군구 체크박스 드롭다운 */
-      #sigunguFilterWrapper {
-        display: inline-block;
-        position: relative;
-        vertical-align: middle;
-      }
-      #sigunguFilterDisplay {
-        border: 1px solid #cbd3e0;
-        padding: 3px 8px;
-        display: inline-flex;
-        align-items: center;
-        position: relative;
-        background-color: #fff;
-        border-radius: 4px;
-        min-width: 90px;
-        font-size: 13px;
-        cursor: pointer;
-        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-        padding-right: 22px;
-        height: 28px;
-        box-sizing: border-box;
-        user-select: none;
-      }
-      #sigunguFilterDisplay:hover {
-        border-color: #4a90e2;
-        box-shadow: 0 2px 6px rgba(74, 144, 226, 0.2);
-      }
-      #sigunguToggleBtn {
-        position: absolute;
-        right: 6px;
-        top: 50%;
-        transform: translateY(-50%);
-        cursor: pointer;
-        font-weight: bold;
-        user-select: none;
-        pointer-events: none;
-        font-size: 11px;
-        color: #555;
-      }
-      #sigunguFilter {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
-        min-width: 130px;
-        background-color: #fff;
-        border: none;
-        border-radius: 4px;
-        max-height: 0;
-        transition: max-height 0.3s ease;
-        overflow: hidden;
-        padding: 0;
-        margin-top: 2px;
-        z-index: 10001;
-      }
-      #sigunguFilter.expanded {
-        max-height: 50vh;
-        overflow-y: auto;
-        padding: 4px 8px;
-        border: 1px solid #cbd3e0;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-      }
-
-      /* 기존 #controls 규칙에 아래 3줄만 추가 */
-      #controls {
-        display: flex; /* 이미 flex면 유지 */
-        flex-wrap: wrap; /* 줄바꿈 허용 */
-        row-gap: 6px; /* 줄바꿈 시 세로 간격 */
-        column-gap: 8px; /* 같은 줄 내 항목 간격(선택) */
-      }
-
-      #controls button {
-        flex: 0 0 auto;
-      } /* 🔹 버튼이 눌려서 줄어드는 것 방지 */
-      #controls label {
-        white-space: nowrap;
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        margin-right: 6px;
-      }
-
-      /* ===== 검색 필드는 flex 제외 ===== */
-      #controls label:has(#apartmentSearchInput) {
-        display: inline-block !important;
-        white-space: normal !important;
-        gap: 0 !important;
-      }
-
-      #scaleControls {
-        display: flex; /* ✅ 가로 정렬 */
-        align-items: center; /* ✅ 버튼이 체크박스와 같은 높이로 */
-        margin-left: 5px; /* ✅ 간격 조정 */
-      }
-
-      #scaleControls button {
-        width: 30px;
-        height: 30px;
-        font-size: 16px;
-        font-weight: bold;
-        background-color: white;
-        border: 2px solid gray;
-        border-radius: 5px;
-        cursor: pointer;
-        text-align: center;
-        margin-left: 5px; /* ✅ 버튼 사이 간격 */
-        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
-        display: flex;
-        justify-content: center;
-        align-items: center;
-      }
-
-      #scaleControls button:hover {
-        background-color: #f0f0f0;
-      }
-
-      /* ✅ 마커 단지명 hover 확장 (즉시 나타남, 딜레이 없음) */
-      .apartment-marker-container {
-        display: inline-block;
-      }
-      .apartment-marker-container.expanded .apartment-name-marker {
-        max-width: none !important;
-        white-space: normal !important;
-        overflow: visible !important;
-        text-overflow: clip !important;
-      }
-      .apartment-marker-container.expanded .apartment-details-marker {
-        max-width: none !important;
-        overflow: visible !important;
-        text-overflow: clip !important;
-      }
-      .fullscreen-btn {
-        position: fixed;
-        top: 170px;
-        left: 20px;
-        background-color: white;
-        border: 2px solid gray;
-        padding: 10px;
-        border-radius: 50%;
-        cursor: pointer;
-        font-size: 14px;
-        text-align: center;
-        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
-        z-index: 10000; /* ✅ 최상단 유지 */
-      }
-      #apartmentInfo {
-        position: fixed;
-        top: 50%;
-        left: 50%;
-
-        background: white;
-        border: 1px solid black;
-        padding: 8px;
-        width: auto;
-        font-size: 16px;
-        box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.3);
-        display: none;
-        z-index: 1000001;
-        will-change: transform; /* GPU 렌더링 힌트 */
-        contain: layout paint; /* 레이아웃 변화 제한 */
-        max-width: 90%;
-        max-height: 80vh; /* ✅ 화면 높이의 80%까지 확장 */
-        overflow-y: auto; /* ✅ 내부 스크롤 활성화 */
-        overflow-x: clip; /* 팝업 자체는 가로 넘침 방지, 자식 스크롤은 허용 */
-        -webkit-overflow-scrolling: touch; /* ✅ iOS 부드러운 스크롤 */
-        backface-visibility: hidden; /* 깜박임 방지 */
-        transform: translateZ(0); /* GPU 렌더링 안정화 */
-      }
-
-      #apartmentInfo table {
-        width: auto; /* 🔹 표 크기를 내용에 맞게 자동 조정 */
-        table-layout: auto; /* 🔹 테이블 레이아웃 자동 조정 */
-        border-collapse: collapse;
-      }
-
-      #apartmentInfo th,
-      #apartmentInfo td {
-        border: 1px solid black;
-        padding: 2px 5px; /* 🔹 내부 여백 최소화 */
-        text-align: center;
-        white-space: nowrap; /* 🔹 텍스트 줄바꿈 방지 */
-      }
-
-      #apartmentInfo th {
-        background: #f0f0f0;
-        font-weight: bold;
-      }
-
-      #apartmentInfo .close-button {
-        position: absolute;
-        top: 5px;
-        right: 8px;
-        background: red;
-        color: white;
-        border: none;
-        font-size: 14px;
-        padding: 3px 6px;
-        cursor: pointer;
-        border-radius: 3px;
-      }
-      table {
-        border-collapse: collapse; /* ✅ 테두리 중복 제거 */
-        width: 100%; /* ✅ 테이블 크기 조정 */
-      }
-
-      td,
-      th {
-        border: 1px solid black; /* ✅ 테두리 스타일 확인 */
-        padding: 5px; /* ✅ 내부 여백 조정 */
-        text-align: center;
-        white-space: nowrap; /* ✅ 줄바꿈 방지 */
-        word-break: keep-all;
-      }
-      #imagePreview {
-        width: 100%;
-        height: 72px;
-        display: flex;
-        flex-wrap: nowrap;
-        gap: 8px;
-        overflow-x: auto;
-        overflow-y: hidden;
-        -webkit-overflow-scrolling: touch;
-      }
-
-      #imagePreview > div {
-        flex: 0 0 auto;
-      }
-      #imageModal {
-        display: none;
-        justify-content: center;
-        align-items: center;
-        padding: calc(env(safe-area-inset-top, 0px) + 10px) 10px calc(env(safe-area-inset-bottom, 0px) + 10px);
-        box-sizing: border-box;
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.8);
-        z-index: 1000002;
-        backface-visibility: hidden;
-        will-change: opacity;
-      }
-
-      #imageModalContent {
-        width: min(96vw, 720px);
-        max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 20px);
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-
-      #imageModalTopBar {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      #imageModalTopBar button {
-        background: rgba(255, 255, 255, 0.98);
-        border: none;
-        padding: 8px 12px;
-        border-radius: 8px;
-        cursor: pointer;
-      }
-
-      #deletePhotoMemoButton {
-        background: #dc2626 !important;
-        color: #fff;
-      }
-
-      #imageModalCanvasWrap {
-        flex: 1 1 auto;
-        min-height: 0;
-        overflow: auto;
-        display: flex;
-        justify-content: center;
-        align-items: flex-start;
-        padding: 4px;
-        border-radius: 12px;
-      }
-
-      #modalCanvas {
-        max-width: 100%;
-        max-height: none;
-        border-radius: 8px;
-      }
-
-      #photoMemoEditPanel {
-        width: 100%;
-        background: rgba(255, 255, 255, 0.98);
-        border-radius: 12px;
-        padding: 12px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-        display: none;
-        z-index: 2;
-        box-sizing: border-box;
-      }
-
-      #photoMemoEditInput {
-        width: 100%;
-        min-height: 80px;
-        max-height: 28vh;
-        box-sizing: border-box;
-        resize: vertical;
-        border: 1px solid #cbd5e1;
-        border-radius: 8px;
-        padding: 10px;
-        font-size: 14px;
-        line-height: 1.5;
-        margin-bottom: 8px;
-      }
-
-      #photoMemoEditActions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      #photoMemoEditActions button {
-        border: none;
-        padding: 10px 14px;
-        border-radius: 8px;
-        cursor: pointer;
-      }
-
-      #closePhotoMemoModalButton {
-        background: #e5e7eb;
-        color: #111827;
-      }
-
-      #savePhotoMemoNoteButton {
-        background: #2563eb;
-        color: #fff;
-      }
-
-      #mapWrapper.fullscreen {
-        position: fixed;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 900000; /* 팝업(999999)보다만 낮게 */
-      }
-      #map.fullscreen {
-        position: fixed;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 900000;
-      }
-
-      body.map-fullscreen {
-        overflow: hidden;
-        height: 100%;
-      }
-
-      @media (max-width: 768px) {
-        .only-pc {
-          display: none !important;
-        }
-
-        /* 📱 모바일에서 메모 입력칸 글자 크기 조대 */
-        #noteText {
-          font-size: 15px !important;
-          padding: 12px !important;
-          line-height: 1.6 !important;
-        }
-      }
-
-      /* ===== 메모 입력칸 스크롤바 ===== */
-      #noteText {
-        overflow-y: scroll;
-        -webkit-overflow-scrolling: touch; /* iOS 터치 스크롤 활성화 */
-        touch-action: pan-y; /* Android 터치 이벤트 세로 스크롤 허용 */
-        scrollbar-width: thin;
-        scrollbar-color: #aaa #f0f0f0;
-      }
-      /* Android/데스크톱 Chrome 전용 커스텀 스크롤바 */
-      #noteText::-webkit-scrollbar {
-        width: 6px;
-      }
-      #noteText::-webkit-scrollbar-track {
-        background: #f0f0f0;
-        border-radius: 3px;
-      }
-      #noteText::-webkit-scrollbar-thumb {
-        background: #aaa;
-        border-radius: 3px;
-      }
-      #noteText::-webkit-scrollbar-thumb:hover {
-        background: #888;
-      }
-
-      /* ===== 아파트 검색 자동완성 스타일 ===== */
-      .apartment-result-item {
-        padding: 10px 12px;
-        border-bottom: 1px solid #eee;
-        cursor: pointer;
-        font-size: 13px;
-        background: white;
-        transition: background-color 0.15s ease;
-      }
-
-      .apartment-result-item:hover {
-        background-color: #f5f5f5;
-      }
-
-      .apartment-result-item:active {
-        background-color: #e8f4f8;
-      }
-
-      .apartment-result-item strong {
-        color: #0066cc;
-        font-weight: 600;
-      }
-
-      .apartment-result-info {
-        font-size: 12px;
-        color: #666;
-        margin-top: 3px;
-        display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .apartment-result-info span {
-        background: #f0f0f0;
-        padding: 2px 6px;
-        border-radius: 3px;
-        white-space: nowrap;
-      }
-
-      #hongbuDebugOverlay {
-        position: fixed;
-        left: 10px;
-        right: 10px;
-        bottom: 10px;
-        max-height: 40vh;
-        overflow: auto;
-        background: rgba(0, 0, 0, 0.82);
-        color: #fff;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        font-size: 12px;
-        line-height: 1.35;
-        border: 1px solid rgba(255, 255, 255, 0.25);
-        border-radius: 10px;
-        z-index: 2147483647;
-        display: none;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-      }
-      #hongbuDebugOverlay .dbg-head {
-        position: sticky;
-        top: 0;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        justify-content: space-between;
-        padding: 8px 10px;
-        background: rgba(0, 0, 0, 0.92);
-        border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-      }
-      #hongbuDebugOverlay .dbg-title {
-        font-weight: 800;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-      #hongbuDebugOverlay .dbg-title .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #22c55e;
-        display: inline-block;
-      }
-      #hongbuDebugOverlay .dbg-actions button {
-        background: rgba(255, 255, 255, 0.12);
-        color: #fff;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        border-radius: 8px;
-        padding: 6px 8px;
-        cursor: pointer;
-        font-size: 12px;
-      }
-      #hongbuDebugOverlay .dbg-actions button:hover {
-        background: rgba(255, 255, 255, 0.18);
-      }
-      #hongbuDebugOverlay .dbg-body {
-        padding: 8px 10px 10px;
-      }
-      #hongbuDebugOverlay .dbg-line {
-        padding: 4px 0;
-        border-bottom: 1px dashed rgba(255, 255, 255, 0.12);
-      }
-      #hongbuDebugOverlay .dbg-line:last-child {
-        border-bottom: none;
-      }
-      #hongbuDebugOverlay .lvl-ERR {
-        color: #fecaca;
-      }
-      #hongbuDebugOverlay .lvl-WARN {
-        color: #fde68a;
-      }
-      #hongbuDebugOverlay .lvl-INFO {
-        color: #bfdbfe;
-      }
-      #hongbuDebugOverlay .lvl-STAT {
-        color: #a7f3d0;
-      }
-      #hongbuDebugToast {
-        position: fixed;
-        left: 50%;
-        bottom: 60px;
-        transform: translateX(-50%);
-        background: rgba(0, 0, 0, 0.82);
-        color: #fff;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.22);
-        z-index: 2147483646;
-        display: none;
-        max-width: 92vw;
-        font-size: 13px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-      }
-    </style>
-  </head>
-  <body>
-    <!-- ✅ 포토메모 메모 입력 모달 -->
-    <div id="photoMemoNoteModal">
-      <div id="photoMemoNoteModalInner">
-        <img id="photoMemoNotePreview" src="" alt="preview" />
-        <textarea id="photoMemoNoteInput" placeholder="메모를 입력하세요 (선택사항)"></textarea>
-        <div class="photo-memo-note-btns">
-          <button id="photoMemoNoteSave">💾 저장</button>
-          <button id="photoMemoNoteCancel">취소</button>
-        </div>
-      </div>
-    </div>
-
-    <div id="hongbuDebugToast"></div>
-    <div id="hongbuDebugOverlay" aria-live="polite">
-      <div class="dbg-head">
-        <div class="dbg-title">
-          <span class="dot" id="hongbuDbgDot"></span><span>디버그 로그</span
-          ><span id="hongbuDbgHint" style="opacity: 0.75; font-weight: 600"></span>
-        </div>
-        <div class="dbg-actions">
-          <button id="hongbuDbgShowBtn" title="표시/숨김">표시</button>
-          <button id="hongbuDbgCopyBtn" title="전체 복사">복사</button>
-          <button id="hongbuDbgClearBtn" title="지우기">지우기</button>
-        </div>
-      </div>
-      <div class="dbg-body" id="hongbuDbgBody"></div>
-    </div>
-
-    <script id="hongbu-debug-script">
       (function () {
         const overlay = document.getElementById("hongbuDebugOverlay");
         const body = document.getElementById("hongbuDbgBody");
@@ -1167,218 +247,12 @@
           }
         } catch (_) {}
       })();
-    </script>
+    
+})();
 
-    <h1 style="font-size: 20px; font-weight: bold; text-align: left">[루시퍼홍] 홍부가 기가막혀</h1>
+/* === BLOCK 2 === */
+(function(){
 
-    <div id="controls">
-      <label
-        >시도:
-        <select id="sidoFilter">
-          <option value="">전체</option>
-        </select>
-      </label>
-      <span style="white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; margin-right: 6px"
-        >시군구:
-        <div id="sigunguFilterWrapper">
-          <div id="sigunguFilterDisplay">
-            <span id="sigunguDisplayText">전체</span>
-            <span id="sigunguToggleBtn">▼</span>
-          </div>
-          <div id="sigunguFilter"></div>
-        </div>
-      </span>
-
-      <label style="position: relative; width: 240px; display: inline-block">
-        아파트 검색:
-        <input
-          type="text"
-          id="apartmentSearchInput"
-          placeholder="아파트명 입력..."
-          style="
-            width: 150px;
-            height: 28px;
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            box-sizing: border-box;
-            font-size: 14px;
-          "
-        />
-      </label>
-
-      <label
-        >연도:
-        <input class="filter-num" type="number" id="yearFromFilter" min="1900" max="2100" placeholder="시작" />
-        ~
-        <input class="filter-num" type="number" id="yearToFilter" min="1900" max="2100" placeholder="끝" />
-      </label>
-
-      <label
-        >최소세대수:
-        <input class="filter-num" type="number" id="unitFilter" min="0" value="190" placeholder="최소" />
-      </label>
-      <label><input type="checkbox" id="over85Filter" />대형포함</label>
-      <label><input type="checkbox" id="toggleApartments" checked />아파트</label>
-      <label><input type="checkbox" id="toggleSchools" />초</label>
-      <label><input type="checkbox" id="toggleMiddleSchools" />중</label>
-      <label><input type="checkbox" id="toggleFacilities" />환경</label>
-      <label><input type="checkbox" id="toggleStarbucks" />스벅</label>
-      <label><input type="checkbox" id="toggleMemoIcon" checked />메모 아이콘 표시</label>
-      <label><input type="checkbox" id="toggleEmdBoundary" />법정동경계</label>
-      <label><input type="checkbox" id="toggleAdminBoundary" />행정동경계</label>
-      <label class="only-pc"><input type="checkbox" id="toggleSiseMap" />시세지도</label>
-      <label class="only-pc"><input type="checkbox" id="toggleFindWay" />업무지구 길찾기</label>
-      <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
-
-      <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
-      <label><input type="checkbox" id="togglePhotoMemo" />포토메모</label>
-      <div
-        id="locationPopup"
-        style="
-          display: none;
-          position: fixed;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          background: white;
-          border: 2px solid gray;
-          padding: 20px;
-          z-index: 99999 !important;
-          box-shadow: 2px 2px 8px rgba(0, 0, 0, 0.3);
-          border-radius: 8px;
-          text-align: center;
-        "
-      >
-        <p>📍 현재 위치를 찾는 중입니다...<br />처음에는 수십초 소요될 수 있습니다</p>
-      </div>
-    </div>
-
-    <div id="map"></div>
-    <div id="routeControls">
-      <button id="startPolyline">경로 그리기</button>
-      <button id="undoLastPointButton">직전 취소</button>
-      <button id="completePolyline">경로 그리기 완료</button>
-      <button id="clearMap">경로 초기화</button>
-      <button id="downloadGPX">GPX 다운로드</button>
-      <button id="uploadGPX">GPX 불러오기</button>
-      <button id="continuePolyline">GPX 이어 그리기</button>
-      <input type="file" id="gpxFileInput" style="display: none" accept=".gpx" />
-      <div style="flex-basis: 100%"></div>
-      <button onclick="window.open('https://luciferhong.github.io/luciferhong/population.html', '_blank')">
-        인구지도 링크
-      </button>
-      <button onclick="window.open('https://luciferhong.github.io/luciferhong/siseVer2.html', '_blank')">
-        시세지도Ver2 링크
-      </button>
-      <div style="margin-top: 0px">
-        <button onclick="window.open('memoBackup.html', '_blank')">📦 메모 백업</button>
-        <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
-        <button onclick="deleteMemoDB()">🗑️ 단지메모 일괄 삭제</button>
-        <button onclick="deletePhotoMemoDB()">📸 포토메모 일괄 삭제</button>
-
-        <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
-        <input type="file" id="photoMemoCameraInput" accept="image/*" capture="environment" style="display: none" />
-        <input type="file" id="photoMemoFileInput" accept="image/*" style="display: none" />
-      </div>
-
-      <button onclick="window.open('https://cafe.naver.com/wecando7/11456373', '_blank')">🔗 카페 글 링크</button>
-
-      <button id="siseExportBtn" style="display: none">시세지도 백업</button>
-      <button id="siseImportBtn" style="display: none">시세지도 복원</button>
-      <button id="siseResetBtn" style="display: none">시세지도 초기화</button>
-      <div style="flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0">
-        <button id="siseVer2ImportBtn" style="display: block">시세지도Ver2에서 가져오기</button>
-        <button id="siseVer2ResetBtn" style="display: block">시세지도Ver2데이터 초기화</button>
-      </div>
-
-      <!-- ✅ 인구 데이터 팝업 버튼 -->
-
-      <div
-        id="inguModal"
-        style="
-          display: none;
-          position: fixed;
-          top: 60px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 90%;
-          max-width: 800px;
-          max-height: 80vh;
-          overflow: auto;
-          background: #fff;
-          border: 4px solid #333;
-          padding: 20px;
-          z-index: 99999;
-        "
-      >
-        <div style="display: flex; justify-content: space-between; align-items: center">
-          <div><strong>데이터 기준일자: 2025-07-28</strong></div>
-          <button onclick="document.getElementById('inguModal').style.display = 'none'">닫기</button>
-        </div>
-        <div style="margin-top: 10px">
-          <label
-            >시도:
-            <select id="sidoSelect"></select
-          ></label>
-          <label
-            >시군구:
-            <select id="sigunguSelect"></select
-          ></label>
-        </div>
-        <table border="1" style="width: 100%; margin-top: 10px; border-collapse: collapse" id="inguTable">
-          <thead>
-            <tr id="inguHeaderRow">
-              <th onclick="sortTable('시도')">시도</th>
-              <th onclick="sortTable('시군구')">시군구</th>
-              <th onclick="sortTable('읍면동')">읍면동</th>
-              <th onclick="sortTable('총인구수')">총인구수</th>
-              <th onclick="sortTable('세대수')">세대수</th>
-              <th onclick="sortTable('세대당인구')">세대당 인구</th>
-            </tr>
-          </thead>
-
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-    <div id="locationButton" title="현재 위치">📍</div>
-    <!-- ✅ 현재 위치 버튼 -->
-    <div id="stopTrackingButton" style="display: none" title="위치 추적 중지">🛑</div>
-    <!-- ✅ 위치 추적 중지 버튼 -->
-    <span id="routeDrawHelp" style="font-size: 14px; color: gray">
-      백스페이스 : 직전 취소<br />
-      ESC, 마우스 우클릭, [경로 그리기 완료] 버튼 클릭 : 그리기 종료<br />
-      모바일에서도 경로그리기, 다운로드 가능합니다
-    </span>
-
-    <div id="apartmentInfo" style="border: 1px solid black; padding: 10px; display: none">
-      <p>아파트 정보를 확인하려면 마커를 클릭하세요.</p>
-    </div>
-
-    <div id="imageModal" style="display: none">
-      <div id="imageModalContent">
-        <div id="imageModalTopBar">
-          <button id="deletePhotoMemoButton" style="display: none">🗑️ 삭제</button>
-          <button id="downloadImageButton">⬇️ 다운로드</button>
-          <button id="copyImageButton">📋 복사</button>
-        </div>
-
-        <div id="imageModalCanvasWrap">
-          <canvas id="modalCanvas"></canvas>
-        </div>
-
-        <div id="photoMemoEditPanel">
-          <textarea id="photoMemoEditInput" placeholder="포토메모를 입력하세요"></textarea>
-          <div id="photoMemoEditActions">
-            <button id="closePhotoMemoModalButton" style="display: none">닫기</button>
-            <button id="savePhotoMemoNoteButton" style="display: none">💾 메모 저장</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <script>
       let sigGeojsonRaw = null;
       let emdGeojsonRaw = null;
 
@@ -2266,6 +1140,14 @@
           console.warn("lastGpxPath 복원 실패:", e);
         }
 
+        /*
+		if(window.matchMedia("(max-width: 768px)").matches){
+			setTimeout(() => {
+				clickLocationButton();
+			  }, 1000);  // 1초 지연
+		}
+		*/
+
         // 데이터 로드 (우선순위: 아파트 마커 + 메모 → 2개 완료 후 나머지 병렬)
         // 1) 아파트(마커) 먼저
         await loadApartments();
@@ -2417,6 +1299,10 @@
 
       const mapElement = document.getElementById("map");
 
+      function getMapSize() {
+        return new naver.maps.Size(mapElement.offsetWidth, mapElement.offsetHeight);
+      }
+
       let isTracking = false; // ✅ 위치 추적 여부 (true: 추적 중)
       window.watchId = null; // ✅ watchPosition의 ID (중복 등록 방지)
 
@@ -2549,6 +1435,7 @@
       let map; // ✅ 전역 변수 설정
       let watchId = null; // ✅ 전역 변수로 위치 추적 ID 저장
 
+      let locationCircle = null; // ✅ 반경 500m 원 객체 저장
       let currentLocationMarker = null; // ✅ 현재 위치 마커 저장
 
       let apartmentData = []; // ✅ 전체 아파트 데이터 저장
@@ -2573,6 +1460,7 @@
       // ✅ 행정동(ADM) 경계 GeoJSON (24MB 분할)
       // ✅ UTF-8 GeoJSON (A2 한글 포함)  // ✅ 파일명/경로 맞춰주세요
 
+      let emdGeojson = null;
       let emdPrepared = null; // { bbox:[minLng,minLat,maxLng,maxLat], geometry, properties }[]
       let emdPopulationMap = null; // { [emdCode8]: { totalPopulation, personsPerHousehold } }
 
@@ -2618,6 +1506,11 @@
       }
 
       // bbox 중심을 라벨 위치로 사용 (빠르고 충분히 정확)
+      function getLabelLatLngByBbox(bbox) {
+        const lng = (bbox[0] + bbox[2]) / 2;
+        const lat = (bbox[1] + bbox[3]) / 2;
+        return new naver.maps.LatLng(lat, lng);
+      }
 
       // ✅ 라벨 위치(시각적 중심) 계산: polylabel(도형 내부에서 가장 넓은 지점)
       // - centroid/bbox 중심보다 겹침이 덜하고, 오목/세로로 긴 도형에서도 안정적
@@ -2650,6 +1543,18 @@
         }
         const dist = Math.sqrt(minDistSq);
         return inside ? dist : -dist;
+      }
+
+      function _emd_ringAreaAbs(ring) {
+        let a = 0;
+        for (let i = 0; i < ring.length; i++) {
+          const x1 = ring[i][0],
+            y1 = ring[i][1];
+          const x2 = ring[(i + 1) % ring.length][0],
+            y2 = ring[(i + 1) % ring.length][1];
+          a += x1 * y2 - x2 * y1;
+        }
+        return Math.abs(a * 0.5);
       }
 
       function _emd_polylabel(polygon, precision = 1e-5) {
@@ -2784,6 +1689,10 @@
       }
 
       /* === LABEL AUTO-FIT (bbox → pixel → font-size) === */
+      /* === LABEL AUTO-FIT (bbox → pixel → font-size) ===
+   - 항상 경계(bbox) 안에 텍스트가 들어가도록 font-size를 자동으로 맞춥니다.
+   - bbox는 [minLng, minLat, maxLng, maxLat]
+*/
       function _label_getBboxPixelSize(bbox, map) {
         try {
           const proj = map && map.getProjection && map.getProjection();
@@ -2959,6 +1868,37 @@
         if (emdPrepared) return;
         if (!emdGeojsonRaw) throw new Error("EMD GeoJSON not loaded");
         emdPrepared = _prepareFeatureBBoxes(emdGeojsonRaw);
+      }
+
+      function computeFeatureBbox(geom) {
+        let minLng = Infinity,
+          minLat = Infinity,
+          maxLng = -Infinity,
+          maxLat = -Infinity;
+
+        function scanCoords(coordArray) {
+          // coordArray: [lng,lat]들의 중첩 배열
+          for (const item of coordArray) {
+            if (!item) continue;
+            if (typeof item[0] === "number" && typeof item[1] === "number") {
+              const lng = item[0],
+                lat = item[1];
+              if (lng < minLng) minLng = lng;
+              if (lng > maxLng) maxLng = lng;
+              if (lat < minLat) minLat = lat;
+              if (lat > maxLat) maxLat = lat;
+            } else if (Array.isArray(item)) {
+              scanCoords(item);
+            }
+          }
+        }
+
+        scanCoords(geom.coordinates);
+
+        if (!isFinite(minLng) || !isFinite(minLat) || !isFinite(maxLng) || !isFinite(maxLat)) {
+          return null;
+        }
+        return [minLng, minLat, maxLng, maxLat];
       }
 
       async function loadEmdBoundaryOnce() {
@@ -3303,6 +2243,15 @@
       function isBoundaryCheckboxOn() {
         const cb = document.getElementById("toggleEmdBoundary");
         return !!(cb && cb.checked);
+      }
+
+      function shouldShowSigBoundary() {
+        if (!window.map) return false;
+        const z = window.map.getZoom();
+        // ✅ SIG는 줌 13~14 구간에서 사용
+        if (!(z > 12 && z <= 14)) return false;
+        // ✅ 법정동경계 또는 행정동경계 체크 시 표시
+        return isBoundaryCheckboxOn() || isAdminBoundaryCheckboxOn();
       }
 
       function shouldShowEmdBoundary() {
@@ -4023,6 +2972,38 @@
       window.__memoPresenceCache = window.__memoPresenceCache || new Map();
       window.__memoPresencePending = window.__memoPresencePending || new Map();
       window.__memoDbPromise = window.__memoDbPromise || null;
+      function openHongbuMemoDBOnce() {
+        if (window.__memoDbPromise) return window.__memoDbPromise;
+
+        window.__memoDbPromise = new Promise((resolve, reject) => {
+          const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+
+          // ✅ 추가: 첫 생성/업그레이드시 스토어 보장
+          req.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains("apartmentNotes")) {
+              db.createObjectStore("apartmentNotes", { keyPath: "id" });
+            }
+          };
+
+          req.onsuccess = (e) => {
+            const db = e.target.result;
+
+            // ✅ iOS blocked/업그레이드 대비: 다른 탭에서 버전 변경 시 자동 close
+            db.onversionchange = () => {
+              try {
+                db.close();
+              } catch (e) {}
+            };
+
+            resolve(db);
+          };
+
+          req.onerror = (e) => reject(e.target.error);
+        });
+
+        return window.__memoDbPromise;
+      }
 
       async function memoExistsLazy(id) {
         id = String(id);
@@ -4523,6 +3504,12 @@
           }
         });
 
+        /*
+			const filtered = apartmentData.filter(apartment =>
+				bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng)) &&
+				apartment.units >= minUnits
+			);
+ */
         const newMarkers = [];
 
         // ✅ 시세지도 체크 상태가 바뀐 경우 → 모든 마커 제거
@@ -5199,6 +4186,34 @@
 
         const metaViewport = document.querySelector("meta[name='viewport']");
 
+        function updateViewportScale(scale) {
+          const metaViewport = document.querySelector("meta[name='viewport']");
+          currentScale = Math.max(0.5, Math.min(1.5, scale)); // ✅ 최소 0.5 ~ 최대 1.5 제한
+          metaViewport.setAttribute("content", `width=device-width, initial-scale=${currentScale}, user-scalable=no`);
+
+          //console.log("📌 새로운 Viewport Scale:", currentScale);
+
+          // ✅ 강제로 화면 확대/축소 효과 적용
+          document.documentElement.style.zoom = 1; // **Reflow**
+          document.documentElement.style.zoom = currentScale; // **즉시 반영**
+
+          // ✅ 가로 스크롤 방지 (zoom 변경 후 body, html 크기 조정)
+          document.documentElement.style.overflow = "hidden";
+          document.body.style.overflow = "hidden";
+          document.body.style.width = "100%"; // **📌 강제 조정하여 가로 스크롤 제거**
+
+          // ✅ 지도 크기 강제 업데이트 (idle 이벤트 발생 유도)
+          if (window.map) {
+            setTimeout(() => {
+              let mapElement = document.getElementById("map");
+              let width = mapElement.clientWidth;
+              let height = mapElement.clientHeight;
+              window.map.setSize(new naver.maps.Size(width, height));
+              //console.log("🔄 지도 크기 변경됨:", width, height);
+            }, 200); // ✅ 브라우저 리플로우 후 실행
+          }
+        }
+
         //이동시 선 긋기
         naver.maps.Event.addListener(window.map, "click", function (e) {
           if (activeMarker && activeMarker instanceof naver.maps.Marker) {
@@ -5356,6 +4371,8 @@
       // `#map` 요소의 크기 변화를 감지하여 자동 업데이트
       observer.observe(document.getElementById("map"));
 
+      let isFullscreen = false; // 현재 전체 화면 여부 저장
+      let originalHeight = document.getElementById("map").style.height; // 기존 지도 높이 저장
       function toggleFullscreen() {
         const mapEl = document.getElementById("map");
         if (!mapEl) return;
@@ -5437,7 +4454,7 @@
         // ✅ 메모/이미지 메모리 폭증 방지: 현재 선택된 아파트 1개만 캐시 유지
         __currentMemoAptId = apartmentId;
         __memoKeepOnly(apartmentId);
-        // ✅ 아파트 상세(aptDetail1/2.json)는 느릴 수 있음: 없으면 메모 UI만 먼저 열고, 상세는 로딩 후 갱신
+        // ✅ 아파트 상세(apartments1/2.json)는 느릴 수 있음: 없으면 메모 UI만 먼저 열고, 상세는 로딩 후 갱신
         const hasDetail = !!apartmentDetailData[apartmentId];
         // 상세 로딩이 끝나면, 현재 열려있는 팝업이면 자동 갱신
         if (!hasDetail && window.__aptDetailPromise) {
@@ -5820,6 +4837,30 @@ const originalBase64 = event.target.result;
       );
 
       let middleSchoolMarkers = []; // ✅ 지도에 표시된 중학교 마커 저장
+      /*
+async function loadMiddleSchools() {
+    try {
+        const response = await fetch("middleSchools.json");
+        const middleSchools = await response.json();
+        
+        console.log("✅ 중학교 데이터 로드 완료", middleSchools);
+
+        window.middleSchoolData = middleSchools; // ✅ 전체 중학교 데이터 저장
+
+        // ✅ 초기 마커 업데이트
+        updateMiddleSchoolMarkers(window.map.getBounds());
+
+        // ✅ 지도 이동 시 현재 범위 내 중학교 마커 업데이트
+        naver.maps.Event.addListener(window.map, "idle", function () {
+            const bounds = window.map.getBounds();
+            updateMiddleSchoolMarkers(bounds);
+        });
+
+    } catch (error) {
+        console.error("❌ 중학교 데이터 로드 실패:", error);
+    }
+}
+*/
 
       async function loadMiddleSchools() {
         try {
@@ -6375,6 +5416,35 @@ const originalBase64 = event.target.result;
           const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
           request.onsuccess = (event) => resolve(event.target.result);
           request.onerror = (e) => reject(e.target.error);
+        });
+      }
+
+      async function __photoMemoGetAll() {
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction(["photoMemos"], "readonly");
+            const store = tx.objectStore("photoMemos");
+            const req = store.getAll();
+            req.onsuccess = () => {
+              try {
+                db.close();
+              } catch (e) {}
+              resolve(req.result || []);
+            };
+            req.onerror = () => {
+              try {
+                db.close();
+              } catch (e) {}
+              resolve([]);
+            };
+          } catch (e) {
+            try {
+              db.close();
+            } catch (_) {}
+            resolve([]);
+          }
         });
       }
 
@@ -7297,6 +6367,30 @@ const originalBase64 = event.target.result;
         menu.style.display = "inline-flex";
       }
 
+      function __showPhotoMemoMenuAtCoord(coord) {
+        try {
+          const menu = __ensurePhotoMemoMenu();
+          const mapEl = document.getElementById("map");
+          if (!menu || !mapEl || !coord || !window.map) return;
+
+          const rect = mapEl.getBoundingClientRect();
+          const proj = window.map.getProjection?.();
+          if (!proj) return;
+
+          let pt = null;
+          if (typeof proj.fromCoordToPoint === "function") {
+            pt = proj.fromCoordToPoint(coord);
+          } else if (typeof proj.fromCoordToOffset === "function") {
+            pt = proj.fromCoordToOffset(coord);
+          }
+          if (!pt) return;
+
+          const clientX = rect.left + pt.x;
+          const clientY = rect.top + pt.y;
+          __showPhotoMemoMenuAtClientXY(clientX, clientY);
+        } catch (e) {}
+      }
+
       function __coordFromClientXY(clientX, clientY) {
         try {
           const mapEl = document.getElementById("map");
@@ -7987,6 +7081,45 @@ min-height: 24px;
         return defaultTable.join("\n"); // 줄바꿈 포함하여 저장
       }
 
+      /*
+// ✅ 수정 가능한 테이블을 생성하는 함수
+function createEditableTableHTML(id, textData) {
+    let rows = textData.split('\n').map(row => row.split('\t'));
+    const table = document.createElement("table");
+    table.style.borderCollapse = "collapse";
+    table.style.width = "100%";             // ✅ 자동 너비
+    table.style.tableLayout = "auto";       // ✅ 열마다 유동적 너비
+    table.style.color = "black";
+
+    rows.forEach((row, rowIndex) => {
+        const tr = document.createElement("tr");
+        row.forEach((cell, colIndex) => {
+            const td = document.createElement("td");
+            td.dataset.id = id;
+            td.dataset.row = rowIndex;
+            td.dataset.col = colIndex;
+            td.textContent = cell.trim();
+
+            td.style = `
+				border: 1px solid black;
+				padding: 2px 4px;
+				text-align: center;
+				height: 24px;
+
+				vertical-align: middle;
+				white-space: normal;  // ✅ 줄바꿈 허용 
+				word-break: break-word; // ✅ 텍스트 줄바꿈 
+			`;
+
+
+            tr.appendChild(td);
+        });
+        table.appendChild(tr);
+    });
+
+    return table.outerHTML;
+}
+*/
       function createEditableTableHTML(id, textData) {
         let rows = textData.split("\n").map((row) => row.split("\t"));
         const table = document.createElement("table");
@@ -8227,6 +7360,12 @@ min-height: 24px;
           saveTableToIndexedDB(lastFocusedTd.dataset.id, lastFocusedTd.closest(".tableContainer"));
         }
 
+        /*
+    // ✅ 테이블 너비 조정
+    setTimeout(() => {
+        adjustTableColumnWidths(tableContainer.querySelector("table"));
+    }, 100);
+*/
         //enableArrowKeyNavigation(tableContainer);
         enableMultiCellSelection(tableContainer);
       }
@@ -8900,6 +8039,29 @@ min-height: 24px;
         }
       }
 
+      /*
+function addRowToTable(apartmentId) {
+    // 해당 apartmentId의 테이블을 찾아서 새로운 행 추가
+    const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
+    if (tableContainer) {
+        const table = tableContainer.querySelector("table");
+
+        if (table) {
+            const newRow = table.insertRow();
+            // 각 셀에 기본값 추가 (예: 빈 텍스트)
+            for (let i = 0; i < table.rows[0].cells.length; i++) {
+                const newCell = newRow.insertCell();
+                newCell.textContent = ""; // 기본적으로 빈 텍스트
+                newCell.style.border = "1px solid black";
+                newCell.style.padding = "0px";
+                newCell.style.textAlign = "center";
+				newCell.style.height = "24px";
+            }
+			saveTableToIndexedDB(apartmentId, tableContainer);
+        }
+    }
+}
+*/
       function removeRowFromTable(apartmentId) {
         // 해당 apartmentId의 테이블을 찾아서 선택된 행 제거
         const tableContainer = document.querySelector(`[data-apartment-id='${apartmentId}'] .tableContainer`);
@@ -8913,6 +8075,57 @@ min-height: 24px;
             saveTableToIndexedDB(apartmentId, tableContainer);
           }
         }
+      }
+
+      function parsePriceDataFromTable(tableContainer) {
+        const rows = tableContainer.querySelectorAll("tr");
+        const parsed = [];
+
+        rows.forEach((row) => {
+          const cells = row.querySelectorAll("td");
+          if (cells.length >= 3) {
+            const 평형 = cells[0].textContent.trim();
+            const 매매 = parseFloat(cells[1].textContent.trim());
+            const 전세 = parseFloat(cells[2].textContent.trim());
+
+            if (!isNaN(매매) && !isNaN(전세)) {
+              parsed.push({ 평형, 매매, 전세 });
+            }
+          }
+        });
+
+        return parsed;
+      }
+
+      function renderPriceChart(container, data) {
+        const canvas = document.createElement("canvas");
+        canvas.width = 200;
+        canvas.height = data.length * 25 + 20; // 평형 수에 따라 높이 조정
+        canvas.style.margin = "5px";
+
+        const ctx = canvas.getContext("2d");
+
+        const maxPrice = Math.max(...data.flatMap((d) => [d.매매, d.전세]));
+        const barMaxWidth = 80;
+
+        data.forEach((d, i) => {
+          const y = i * 25 + 20;
+          const label = d.평형;
+          ctx.fillStyle = "#000";
+          ctx.font = "12px sans-serif";
+          ctx.fillText(label, 0, y);
+
+          const saleWidth = (d.매매 / maxPrice) * barMaxWidth;
+          const leaseWidth = (d.전세 / maxPrice) * barMaxWidth;
+
+          ctx.fillStyle = "#ff4d4d"; // 빨간색 매매
+          ctx.fillRect(40, y - 10, saleWidth, 8);
+
+          ctx.fillStyle = "#4d79ff"; // 파란색 전세
+          ctx.fillRect(40, y, leaseWidth, 8);
+        });
+
+        container.appendChild(canvas);
       }
 
       async function exportToJSON() {
@@ -9144,6 +8357,7 @@ min-height: 24px;
       }
 
       /////////////////////////////////////////////////////////////////////////////////////////
+      let deletedImages = []; // 삭제된 이미지 목록
 
       async function saveNote(id) {
         await initMemoIndexedDB();
@@ -9248,6 +8462,94 @@ min-height: 24px;
             alert("❌ 메모 저장 중 오류가 발생했습니다.");
           }
         };
+      }
+
+      function base64ToBlobUrl(base64) {
+        const byteString = atob(base64.split(",")[1]);
+        const mimeString = base64.split(",")[0].split(":")[1].split(";")[0];
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([ab], { type: mimeString });
+        return URL.createObjectURL(blob);
+      }
+
+      function createCanvasThumbnail(blobUrl, base64, idx, onDelete) {
+        const wrapper = document.createElement("div");
+        wrapper.style.position = "relative";
+        wrapper.style.display = "inline-block";
+        wrapper.style.marginRight = "6px";
+        wrapper.style.width = "60px";
+        wrapper.style.height = "60px";
+
+        const canvas = document.createElement("canvas");
+        canvas.width = 60;
+        canvas.height = 60;
+        canvas.style.border = "1px solid #ccc";
+        canvas.style.borderRadius = "4px";
+        canvas.style.cursor = "pointer";
+        canvas.title = `사진 ${idx + 1}`;
+
+        const ctx = canvas.getContext("2d");
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, 60, 60);
+        };
+        img.src = blobUrl;
+
+        canvas.onclick = (e) => {
+          e.stopPropagation();
+
+          const modal = document.getElementById("imageModal");
+          const modalCanvas = document.getElementById("modalCanvas");
+          const ctx = modalCanvas.getContext("2d");
+
+          __clearModalCanvas();
+          const img = new Image();
+          img.onload = () => {
+            // 이미지 크기에 맞게 캔버스 조절
+            modalCanvas.width = img.width;
+            modalCanvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
+            modal.style.display = "flex";
+            window.imageModalShowYn = true;
+          };
+          img.src = blobUrl;
+          window.lastOpenedBase64 = img.dataset.original || img.src;
+        };
+
+        const deleteBtn = document.createElement("div");
+        deleteBtn.textContent = "✕";
+        deleteBtn.style.position = "absolute";
+        deleteBtn.style.top = "2px";
+        deleteBtn.style.right = "2px";
+        deleteBtn.style.background = "rgba(0,0,0,0.6)";
+        deleteBtn.style.color = "white";
+        deleteBtn.style.borderRadius = "50%";
+        deleteBtn.style.width = "16px";
+        deleteBtn.style.height = "16px";
+        deleteBtn.style.display = "flex";
+        deleteBtn.style.alignItems = "center";
+        deleteBtn.style.justifyContent = "center";
+        deleteBtn.style.cursor = "pointer";
+        deleteBtn.style.fontSize = "12px";
+
+        deleteBtn.onclick = (e) => {
+          e.stopPropagation();
+          if (confirm("사진을 삭제합니다")) {
+            // ✅ 썸네일에 blob: URL을 쓰는 경우 해제
+            __safeRevokeObjectURL(blobUrl);
+            onDelete(base64);
+            wrapper.remove();
+          }
+        };
+
+        wrapper.appendChild(canvas);
+        wrapper.appendChild(deleteBtn);
+        return wrapper;
       }
 
       async function loadNote(id) {
@@ -9357,9 +8659,7 @@ min-height: 24px;
               preview.appendChild(wrapper);
             }
             // 로드 완료 후 스크롤 오른쪽 끝으로 이동
-            requestAnimationFrame(() => {
-              preview.scrollLeft = preview.scrollWidth;
-            });
+            requestAnimationFrame(() => { preview.scrollLeft = preview.scrollWidth; });
             db.close(); // ✅ DB 연결 정리
           };
 
@@ -9395,8 +8695,139 @@ min-height: 24px;
           el.addEventListener("click", (ev) => ev.stopPropagation());
         });
       })();
+      function showImageModal(src) {
+        const modal = document.getElementById("imageModal");
+        const modalCanvas = document.getElementById("modalCanvas");
+        const ctx = modalCanvas && modalCanvas.getContext && modalCanvas.getContext("2d");
+        if (!modal || !modalCanvas || !ctx) return;
+        __setPhotoMemoModalContext(null);
+        const img = new Image();
+        img.onload = () => {
+          modalCanvas.width = img.width;
+          modalCanvas.height = img.height;
+          ctx.drawImage(img, 0, 0);
+          window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
+          modal.style.display = "flex";
+          window.imageModalShowYn = true;
+          window.lastOpenedBase64 = src;
+        };
+        img.src = src;
+      }
+
+      async function backupMemoDB() {
+        const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+
+        request.onsuccess = function (event) {
+          const db = event.target.result;
+          const transaction = db.transaction(["apartmentNotes"], "readonly");
+          const store = transaction.objectStore("apartmentNotes");
+
+          const chunkList = [];
+          const chunkSize = 10;
+
+          const now = new Date();
+          const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+          const timestamp = koreaTime.toISOString().replace(/T/, "_").replace(/:/g, "-").replace(/\..+/, "");
+
+          const cursorRequest = store.openCursor();
+          cursorRequest.onsuccess = async function (event) {
+            const cursor = event.target.result;
+            if (cursor) {
+              chunkList.push(cursor.value);
+              cursor.continue();
+            } else {
+              const totalChunks = Math.ceil(chunkList.length / chunkSize);
+
+              for (let i = 0; i < totalChunks; i++) {
+                const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
+                const json = JSON.stringify(chunk, null, 2);
+                const blob = new Blob([json], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+
+                await new Promise((resolve) => {
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `홍부_메모백업_${timestamp}_part${i + 1}.json`;
+                  document.body.appendChild(a); // iOS용 필요
+                  a.click();
+
+                  setTimeout(() => {
+                    URL.revokeObjectURL(url);
+                    a.remove();
+                    resolve();
+                  }, 1000); // 다운로드 완료 대기 시간
+                });
+              }
+
+              db.close();
+              alert("✅ 백업이 완료되었습니다.");
+            }
+          };
+
+          cursorRequest.onerror = function () {
+            alert("❌ 백업 중 오류 발생 (cursor 실패)");
+            db.close();
+          };
+        };
+
+        request.onerror = function () {
+          alert("❌ DB 열기 실패");
+        };
+      }
 
       // ✅ 메모 백업
+      async function backupMemoDB_OLD() {
+        const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+
+        request.onsuccess = function (event) {
+          const db = event.target.result;
+          const transaction = db.transaction(["apartmentNotes"], "readonly");
+          const store = transaction.objectStore("apartmentNotes");
+
+          const chunkList = [];
+          const chunkSize = 10;
+
+          // ✅ 한국 시간 기준 타임스탬프 생성
+          const now = new Date();
+          const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000); // UTC+9 보정
+          const timestamp = koreaTime.toISOString().replace(/T/, "_").replace(/:/g, "-").replace(/\..+/, "");
+
+          store.openCursor().onsuccess = function (event) {
+            const cursor = event.target.result;
+            if (cursor) {
+              const item = cursor.value;
+              chunkList.push(item);
+              cursor.continue();
+            } else {
+              const totalChunks = Math.ceil(chunkList.length / chunkSize);
+              for (let i = 0; i < totalChunks; i++) {
+                const chunk = chunkList.slice(i * chunkSize, (i + 1) * chunkSize);
+                const json = JSON.stringify(chunk, null, 2);
+                const blob = new Blob([json], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `홍부_메모백업_${timestamp}_part${i + 1}.json`;
+                a.click();
+
+                URL.revokeObjectURL(url); // 메모리 해제
+              }
+
+              db.close();
+            }
+          };
+
+          store.openCursor().onerror = function () {
+            alert("❌ 백업 중 오류 발생 (cursor 실패)");
+            db.close();
+          };
+        };
+
+        request.onerror = function () {
+          alert("❌ DB 열기 실패");
+        };
+      }
 
       function refreshApartmentMarkers() {
         if (!window.map) return;
@@ -9428,11 +8859,8 @@ min-height: 24px;
             hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
             hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
 
-            let totalNoteOkEarly = 0,
-              totalNoteFailEarly = 0;
-            let totalPhotoOkEarly = 0,
-              totalPhotoFailEarly = 0,
-              skippedPhotoCountEarly = 0;
+            let totalNoteOkEarly = 0, totalNoteFailEarly = 0;
+            let totalPhotoOkEarly = 0, totalPhotoFailEarly = 0, skippedPhotoCountEarly = 0;
             let hasAnyData = false;
 
             // 단지 메모 배치 즉시 저장
@@ -9455,14 +8883,8 @@ min-height: 24px;
                         hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
                       };
                     });
-                    tx.oncomplete = () => {
-                      db.close();
-                      res();
-                    };
-                    tx.onerror = (err) => {
-                      db.close();
-                      rej(err);
-                    };
+                    tx.oncomplete = () => { db.close(); res(); };
+                    tx.onerror = (err) => { db.close(); rej(err); };
                   };
                   req.onerror = (err) => rej(err);
                 });
@@ -9483,35 +8905,21 @@ min-height: 24px;
 
             // 포토메모 1장 즉시 저장 (배열 누적 없이 바로 IDB에 쓰고 참조 해제)
             async function saveOnePhoto(r) {
-              if (!r || typeof r !== "object" || r.id == null) {
-                skippedPhotoCountEarly++;
-                return;
-              }
-              const lat = Number(r.lat),
-                lng = Number(r.lng);
-              if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-                skippedPhotoCountEarly++;
-                return;
-              }
+              if (!r || typeof r !== "object" || r.id == null) { skippedPhotoCountEarly++; return; }
+              const lat = Number(r.lat), lng = Number(r.lng);
+              if (!Number.isFinite(lat) || !Number.isFinite(lng)) { skippedPhotoCountEarly++; return; }
 
-              const imageBlob =
-                r.imageBlob instanceof Blob
-                  ? r.imageBlob
-                  : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
-              const thumbBlob =
-                r.thumbBlob instanceof Blob
-                  ? r.thumbBlob
-                  : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
+              const imageBlob = r.imageBlob instanceof Blob
+                ? r.imageBlob : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
+              const thumbBlob = r.thumbBlob instanceof Blob
+                ? r.thumbBlob : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
 
               if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
-                skippedPhotoCountEarly++;
-                return;
+                skippedPhotoCountEarly++; return;
               }
 
               const record = {
-                id: String(r.id),
-                lat,
-                lng,
+                id: String(r.id), lat, lng,
                 createdAt: Number(r.createdAt) || Date.now(),
                 note: r.note ? String(r.note) : "",
                 imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
@@ -9529,14 +8937,8 @@ min-height: 24px;
                     totalPhotoFailEarly++;
                     hongbuDebugLog("WARN", `photo put 실패: ${record.id}`, err?.target?.error?.message);
                   };
-                  tx.oncomplete = () => {
-                    db.close();
-                    res();
-                  };
-                  tx.onerror = (err) => {
-                    db.close();
-                    rej(err);
-                  };
+                  tx.oncomplete = () => { db.close(); res(); };
+                  tx.onerror = (err) => { db.close(); rej(err); };
                 };
                 req.onerror = (err) => rej(err);
               });
@@ -9572,11 +8974,7 @@ min-height: 24px;
                 // 구형 포맷: 단지 메모 배열
                 const notes = parsed
                   .filter((r) => r && typeof r === "object" && r.id != null)
-                  .map((r) => ({
-                    id: String(r.id),
-                    memo: r.memo ? String(r.memo) : "",
-                    images: Array.isArray(r.images) ? r.images : [],
-                  }));
+                  .map((r) => ({ id: String(r.id), memo: r.memo ? String(r.memo) : "", images: Array.isArray(r.images) ? r.images : [] }));
                 await saveNotesBatch(notes);
                 if (notes.length) hasAnyData = true;
               } else if (parsed && typeof parsed === "object") {
@@ -9585,11 +8983,7 @@ min-height: 24px;
                     hongbuDebugLog("INFO", `🗃️ 단지 메모 ${parsed.apartmentNotes.length}개 즉시 저장`);
                     const notes = parsed.apartmentNotes
                       .filter((r) => r && typeof r === "object" && r.id != null)
-                      .map((r) => ({
-                        id: String(r.id),
-                        memo: r.memo ? String(r.memo) : "",
-                        images: Array.isArray(r.images) ? r.images : [],
-                      }));
+                      .map((r) => ({ id: String(r.id), memo: r.memo ? String(r.memo) : "", images: Array.isArray(r.images) ? r.images : [] }));
                     await saveNotesBatch(notes);
                     parsed.apartmentNotes = null; // base64 즉시 해제
                     if (notes.length) hasAnyData = true;
@@ -9605,13 +8999,7 @@ min-height: 24px;
                 } else {
                   // 단일 레코드
                   if (parsed.id != null) {
-                    await saveNotesBatch([
-                      {
-                        id: String(parsed.id),
-                        memo: parsed.memo ? String(parsed.memo) : "",
-                        images: Array.isArray(parsed.images) ? parsed.images : [],
-                      },
-                    ]);
+                    await saveNotesBatch([{ id: String(parsed.id), memo: parsed.memo ? String(parsed.memo) : "", images: Array.isArray(parsed.images) ? parsed.images : [] }]);
                     hasAnyData = true;
                   }
                 }
@@ -9632,6 +9020,7 @@ min-height: 24px;
               hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
               return;
             }
+
 
             hongbuDebugLog("INFO", `✅ 메모 복원 완료: 성공 ${totalNoteOk} / 실패 ${totalNoteFail}`);
             hongbuDebugLog(
@@ -9666,6 +9055,39 @@ min-height: 24px;
         };
 
         input.click();
+      }
+
+      function restoreMemoDB_OLD() {
+        document.getElementById("memoRestoreInput").click();
+
+        document.getElementById("memoRestoreInput").onchange = function (e) {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const reader = new FileReader();
+          reader.onload = function (event) {
+            try {
+              const jsonData = JSON.parse(event.target.result);
+              if (!Array.isArray(jsonData)) {
+                alert("유효하지 않은 백업 파일입니다.");
+                return;
+              }
+
+              const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+              request.onsuccess = function (event) {
+                const db = event.target.result;
+                const transaction = db.transaction(["apartmentNotes"], "readwrite");
+                const store = transaction.objectStore("apartmentNotes");
+
+                jsonData.forEach((entry) => store.put(entry));
+                alert("메모 복원이 완료되었습니다.");
+              };
+            } catch (err) {
+              alert("파일 읽기 오류: " + err.message);
+            }
+          };
+          reader.readAsText(file);
+        };
       }
 
       document.getElementById("copyImageButton").onclick = async () => {
@@ -9971,6 +9393,32 @@ min-height: 24px;
         };
       }
 
+      async function getMemoFromIndexedDB(id) {
+        return new Promise(async (resolve, reject) => {
+          await initMemoIndexedDB();
+
+          const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          request.onerror = () => reject("DB 열기 실패");
+
+          request.onsuccess = (event) => {
+            const db = event.target.result;
+            const transaction = db.transaction(["apartmentNotes"], "readonly");
+            const store = transaction.objectStore("apartmentNotes");
+            const getRequest = store.get(String(id));
+
+            getRequest.onsuccess = () => {
+              resolve(getRequest.result);
+              db.close(); // ✅ 반드시 닫기
+            };
+
+            getRequest.onerror = () => {
+              reject("데이터 가져오기 실패");
+              db.close(); // ✅ 실패 시에도 닫기
+            };
+          };
+        });
+      }
+
       async function findWay() {
         // ✅ 중복 실행 방지
         if (window.__findWayInitialized) {
@@ -10174,6 +9622,29 @@ min-height: 24px;
 
       let inguData = [];
       let currentSort = { key: null, asc: true };
+
+      
+
+      function updateSigunguSelect(preferredSigungu) {
+        const selectedSido = document.getElementById("sidoSelect").value;
+        const sigunguSet = new Set(
+          inguData
+            .filter((d) => d.시도 === selectedSido)
+            .map((d) => d.시군구)
+            .filter(Boolean),
+        );
+        const sigunguSelect = document.getElementById("sigunguSelect");
+        sigunguSelect.innerHTML = [...sigunguSet]
+          .map((s) => {
+            const isSel = (preferredSigungu && s === preferredSigungu) || (!preferredSigungu && s === "종로구");
+            return `<option value="${s}" ${isSel ? "selected" : ""}>${s}</option>`;
+          })
+          .join("");
+        // ✅ 저장된 시군구가 옵션에 있으면 선택값을 강제로 맞춤
+        if (preferredSigungu && [...sigunguSelect.options].some((o) => o.value === preferredSigungu)) {
+          sigunguSelect.value = preferredSigungu;
+        }
+      }
 
       function updateTable() {
         const sido = document.getElementById("sidoSelect").value;
@@ -10549,8 +10020,12 @@ min-height: 24px;
         }
       }
       document.getElementById("unitFilter").addEventListener("input", () => updateMarkers(window.map.getBounds()));
-    </script>
-    <script>
+    
+})();
+
+/* === BLOCK 3 === */
+(function(){
+
       // 🔹 네이티브 전체화면은 전혀 쓰지 않고,
       //    pseudoFullscreenActive + toggleFullscreen() 조합만 사용
       let pseudoFullscreenActive = false;
@@ -10842,6 +10317,5 @@ min-height: 24px;
         if (!lnglat) return null;
         return new naver.maps.LatLng(lnglat[1], lnglat[0]);
       }
-    </script>
-  </body>
-</html>
+    
+})();
