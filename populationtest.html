@@ -1792,6 +1792,8 @@
               borderBottom: "thin",
               alignRight: !isLabelCol
             });
+            // 인구수 블록(J열 이후) 수치 열에 천단위 쉼표
+            if (col > GAP_COL && !isLabelCol) cell.numFmt = "#,##0";
           });
         });
 
@@ -1813,9 +1815,15 @@
       }
     }
 
-    function downloadTableAsExcel() {
+    async function downloadTableAsExcel() {
       if (!Array.isArray(state.labels) || state.labels.length === 0) {
         alert("다운로드할 데이터가 없습니다");
+        return;
+      }
+
+      const ExcelJS = window.ExcelJS;
+      if (!ExcelJS) {
+        alert("엑셀 라이브러리를 불러오지 못했습니다.");
         return;
       }
 
@@ -1852,41 +1860,71 @@
         return 0;
       });
 
-      // 데이터 배열 생성
-      const rows = data.map(d => [
-        d.sidoName,
-        d.sigunguName,
-        d.name,
-        d.population,
-        d.pph.toFixed(2)
-      ]);
+      const C_ACCENT  = "FF2459C6";
+      const C_BG_HEAD = "FFF3F5F9";
+      const C_TEXT    = "FF162033";
+      const C_LINE    = "FFD8DEEA";
+      const C_WHITE   = "FFFFFFFF";
 
-      const today = new Date().toISOString().slice(0, 10);
-      const xlsx = window.XLSX;
+      try {
+        const wb = new ExcelJS.Workbook();
+        const ws = wb.addWorksheet("동별인구데이터");
 
-      // CDN 로드 실패 시 CSV로 폴백
-      if (!xlsx || !xlsx.utils) {
-        downloadCsvFallback(headers, rows, `동별인구데이터_${today}.csv`);
-        alert("엑셀 라이브러리를 불러오지 못해 CSV로 다운로드했습니다.");
-        return;
+        ws.columns = [
+          { width: 16 }, // 시도
+          { width: 16 }, // 시군구
+          { width: 18 }, // 동이름
+          { width: 14 }, // 인구수
+          { width: 14 }, // 세대당 인구
+        ];
+
+        function styleCell(cell, { bold = false, bg = null, borderBottom = false, alignRight = false } = {}) {
+          if (bg) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+          cell.font = { bold, color: { argb: C_TEXT }, size: 10, name: "맑은 고딕" };
+          if (borderBottom) cell.border = { bottom: { style: borderBottom === "thick" ? "medium" : "thin", color: { argb: borderBottom === "thick" ? C_ACCENT : C_LINE } } };
+          cell.alignment = { horizontal: alignRight ? "right" : "left", vertical: "middle" };
+        }
+
+        // 헤더 행
+        const hdr = ws.addRow(headers);
+        hdr.height = 22;
+        hdr.eachCell((cell, col) => {
+          styleCell(cell, { bold: true, bg: C_BG_HEAD, borderBottom: "thick", alignRight: col >= 4 });
+        });
+
+        // 데이터 행
+        data.forEach(d => {
+          const dr = ws.addRow([
+            d.sidoName,
+            d.sigunguName,
+            d.name,
+            d.population,
+            parseFloat(d.pph.toFixed(2))
+          ]);
+          dr.height = 18;
+          dr.eachCell((cell, col) => {
+            styleCell(cell, { bg: C_WHITE, borderBottom: "thin", alignRight: col >= 4 });
+          });
+          // 인구수 천단위 쉼표
+          dr.getCell(4).numFmt = "#,##0";
+          dr.getCell(5).numFmt = "0.00";
+        });
+
+        const buf = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const today = new Date().toISOString().slice(0, 10);
+        a.href = url;
+        a.download = `동별인구데이터_${today}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert("엑셀 생성 중 오류가 발생했습니다: " + err.message);
       }
-
-      // SheetJS 사용하여 Excel 생성
-      const ws = xlsx.utils.aoa_to_sheet([headers, ...rows]);
-      const wb = xlsx.utils.book_new();
-      xlsx.utils.book_append_sheet(wb, ws, "동별인구데이터");
-
-      // 컬럼 너비 설정
-      ws["!cols"] = [
-        { wch: 15 },  // 시도
-        { wch: 15 },  // 시군구
-        { wch: 15 },  // 동이름
-        { wch: 15 },  // 인구수
-        { wch: 15 }   // 세대당인구
-      ];
-
-      // 다운로드
-      xlsx.writeFile(wb, `동별인구데이터_${today}.xlsx`);
     }
 
     function updateModalCursor() {
