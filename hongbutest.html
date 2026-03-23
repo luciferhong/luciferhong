@@ -9952,19 +9952,12 @@ function addRowToTable(apartmentId) {
             const noteRecords = [];
             const photoRecords = [];
 
-            function dataUrlToBlob(dataUrl) {
+            // fetch() 기반 변환 - atob 방식 대비 메모리 복사 없음
+            async function dataUrlToBlob(dataUrl) {
               try {
                 if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
-                const parts = dataUrl.split(",");
-                if (parts.length < 2) return null;
-                const header = parts[0];
-                const body = parts[1];
-                const mime = header.match(/data:([^;]+)/)?.[1] || "application/octet-stream";
-                const byteString = atob(body);
-                const ab = new ArrayBuffer(byteString.length);
-                const ia = new Uint8Array(ab);
-                for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-                return new Blob([ab], { type: mime });
+                const res = await fetch(dataUrl);
+                return await res.blob();
               } catch (e) {
                 return null;
               }
@@ -10014,47 +10007,9 @@ function addRowToTable(apartmentId) {
               })
               .filter(Boolean);
 
-            // 3) 포토메모 정규화
-            // 현재 백업 포맷에서 Blob은 JSON 직렬화 시 손실될 수 있으므로,
-            // 실제 Blob 또는 data URL로 표현된 경우에만 복원 대상으로 인정한다.
-            let skippedPhotoCount = 0;
-            const normalizedPhotos = photoRecords
-              .filter((r) => r && typeof r === "object")
-              .map((r) => {
-                if (r.id === undefined || r.id === null) return null;
-
-                const lat = Number(r.lat);
-                const lng = Number(r.lng);
-                if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-
-                const imageBlob =
-                  r.imageBlob instanceof Blob ? r.imageBlob : dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
-                const thumbBlob =
-                  r.thumbBlob instanceof Blob
-                    ? r.thumbBlob
-                    : dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
-
-                if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
-                  skippedPhotoCount++;
-                  return null;
-                }
-
-                return {
-                  id: String(r.id),
-                  lat,
-                  lng,
-                  createdAt: Number(r.createdAt) || Date.now(),
-                  note: r.note ? String(r.note) : "",
-                  imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
-                  thumbBlob: thumbBlob instanceof Blob ? thumbBlob : imageBlob,
-                };
-              })
-              .filter(Boolean);
-
             hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalizedNotes.length}개`);
-            hongbuDebugLog("INFO", `📷 정규화된 포토메모: ${normalizedPhotos.length}개 (스킵 ${skippedPhotoCount}개)`);
 
-            if (!normalizedNotes.length && !normalizedPhotos.length) {
+            if (!normalizedNotes.length && !photoRecords.length) {
               hongbuDebugLog("WARN", "❌ 복원할 유효한 메모/포토메모 데이터가 없습니다.");
               hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
               return;
@@ -10119,57 +10074,61 @@ function addRowToTable(apartmentId) {
               await new Promise((r) => setTimeout(r, 50));
             }
 
-            // 5) photoMemos 복원
-            if (normalizedPhotos.length > 0) {
-              hongbuDebugLog("INFO", "🗃️ photoMemos 저장 중... (배치 처리)");
-              for (let i = 0; i < normalizedPhotos.length; i += BATCH_SIZE) {
-                const batch = normalizedPhotos.slice(i, i + BATCH_SIZE);
+            // 5) photoMemos 복원 - 1장씩 변환 후 즉시 저장 (메모리 최소화)
+            let skippedPhotoCount = 0;
+            if (photoRecords.length > 0) {
+              hongbuDebugLog("INFO", `🗃️ photoMemos 저장 중... (${photoRecords.length}장 순차 처리)`);
+
+              for (const r of photoRecords) {
+                if (!r || typeof r !== "object" || r.id == null) { skippedPhotoCount++; continue; }
+                const lat = Number(r.lat);
+                const lng = Number(r.lng);
+                if (!Number.isFinite(lat) || !Number.isFinite(lng)) { skippedPhotoCount++; continue; }
+
+                // 1장씩 변환 - 변환 후 즉시 참조 해제
+                const imageBlob = r.imageBlob instanceof Blob
+                  ? r.imageBlob
+                  : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
+                const thumbBlob = r.thumbBlob instanceof Blob
+                  ? r.thumbBlob
+                  : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
+
+                if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
+                  skippedPhotoCount++;
+                  continue;
+                }
+
+                const record = {
+                  id: String(r.id),
+                  lat,
+                  lng,
+                  createdAt: Number(r.createdAt) || Date.now(),
+                  note: r.note ? String(r.note) : "",
+                  imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
+                  thumbBlob: thumbBlob instanceof Blob ? thumbBlob : imageBlob,
+                };
 
                 await new Promise((resolvePromise, rejectPromise) => {
                   const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
-
                   request.onsuccess = function (e) {
                     const db = e.target.result;
                     const tx = db.transaction(["photoMemos"], "readwrite");
-                    const store = tx.objectStore("photoMemos");
-
-                    let batchOk = 0,
-                      batchFail = 0;
-
-                    batch.forEach((item) => {
-                      const putReq = store.put(item);
-                      putReq.onsuccess = () => batchOk++;
-                      putReq.onerror = (err) => {
-                        batchFail++;
-                        hongbuDebugLog("WARN", `photo put 실패: ${item.id}`, err?.target?.error?.message);
-                      };
-                    });
-
-                    tx.oncomplete = () => {
-                      totalPhotoOk += batchOk;
-                      totalPhotoFail += batchFail;
-                      hongbuDebugLog(
-                        "INFO",
-                        `포토 배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalizedPhotos.length / BATCH_SIZE)} 완료`,
-                      );
-                      db.close();
-                      resolvePromise();
+                    const putReq = tx.objectStore("photoMemos").put(record);
+                    putReq.onsuccess = () => totalPhotoOk++;
+                    putReq.onerror = (err) => {
+                      totalPhotoFail++;
+                      hongbuDebugLog("WARN", `photo put 실패: ${record.id}`, err?.target?.error?.message);
                     };
-
-                    tx.onerror = (err) => {
-                      hongbuDebugLog("ERR", "❌ 포토 트랜잭션 오류", err?.target?.error?.message);
-                      db.close();
-                      rejectPromise(err);
-                    };
+                    tx.oncomplete = () => { db.close(); resolvePromise(); };
+                    tx.onerror = (err) => { db.close(); rejectPromise(err); };
                   };
-
-                  request.onerror = function (err) {
-                    hongbuDebugLog("ERR", "❌ DB 열기 실패(photo)", err?.target?.error?.message);
-                    rejectPromise(err);
-                  };
+                  request.onerror = (err) => rejectPromise(err);
                 });
 
-                await new Promise((r) => setTimeout(r, 50));
+                // 저장 후 참조 해제 (iOS GC 유도)
+                record.imageBlob = null;
+                record.thumbBlob = null;
+                await new Promise((r) => setTimeout(r, 30));
               }
             }
 
