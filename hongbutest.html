@@ -9949,8 +9949,38 @@ function addRowToTable(apartmentId) {
             hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
             hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
 
-            const noteRecords = [];
-            const photoRecords = [];
+            let totalNoteOkEarly = 0, totalNoteFailEarly = 0;
+            let totalPhotoOkEarly = 0, totalPhotoFailEarly = 0, skippedPhotoCountEarly = 0;
+            let hasAnyData = false;
+
+            // 단지 메모 배치 즉시 저장
+            async function saveNotesBatch(records) {
+              if (!records.length) return;
+              const BATCH_SIZE = 50;
+              for (let i = 0; i < records.length; i += BATCH_SIZE) {
+                const batch = records.slice(i, i + BATCH_SIZE);
+                await new Promise((res, rej) => {
+                  const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                  req.onsuccess = (e) => {
+                    const db = e.target.result;
+                    const tx = db.transaction(["apartmentNotes"], "readwrite");
+                    const store = tx.objectStore("apartmentNotes");
+                    batch.forEach((item) => {
+                      const put = store.put(item);
+                      put.onsuccess = () => totalNoteOkEarly++;
+                      put.onerror = (err) => {
+                        totalNoteFailEarly++;
+                        hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
+                      };
+                    });
+                    tx.oncomplete = () => { db.close(); res(); };
+                    tx.onerror = (err) => { db.close(); rej(err); };
+                  };
+                  req.onerror = (err) => rej(err);
+                });
+                await new Promise((r) => setTimeout(r, 30));
+              }
+            }
 
             // fetch() 기반 변환 - atob 방식 대비 메모리 복사 없음
             async function dataUrlToBlob(dataUrl) {
@@ -9963,174 +9993,124 @@ function addRowToTable(apartmentId) {
               }
             }
 
-            // 1) 파일들 읽어서 전부 flatten (FileReader 사용 - iOS 호환성)
+            // 포토메모 1장 즉시 저장 (배열 누적 없이 바로 IDB에 쓰고 참조 해제)
+            async function saveOnePhoto(r) {
+              if (!r || typeof r !== "object" || r.id == null) { skippedPhotoCountEarly++; return; }
+              const lat = Number(r.lat), lng = Number(r.lng);
+              if (!Number.isFinite(lat) || !Number.isFinite(lng)) { skippedPhotoCountEarly++; return; }
+
+              const imageBlob = r.imageBlob instanceof Blob
+                ? r.imageBlob : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
+              const thumbBlob = r.thumbBlob instanceof Blob
+                ? r.thumbBlob : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
+
+              if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
+                skippedPhotoCountEarly++; return;
+              }
+
+              const record = {
+                id: String(r.id), lat, lng,
+                createdAt: Number(r.createdAt) || Date.now(),
+                note: r.note ? String(r.note) : "",
+                imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
+                thumbBlob: thumbBlob instanceof Blob ? thumbBlob : imageBlob,
+              };
+
+              await new Promise((res, rej) => {
+                const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                req.onsuccess = (e) => {
+                  const db = e.target.result;
+                  const tx = db.transaction(["photoMemos"], "readwrite");
+                  const put = tx.objectStore("photoMemos").put(record);
+                  put.onsuccess = () => totalPhotoOkEarly++;
+                  put.onerror = (err) => {
+                    totalPhotoFailEarly++;
+                    hongbuDebugLog("WARN", `photo put 실패: ${record.id}`, err?.target?.error?.message);
+                  };
+                  tx.oncomplete = () => { db.close(); res(); };
+                  tx.onerror = (err) => { db.close(); rej(err); };
+                };
+                req.onerror = (err) => rej(err);
+              });
+
+              // 저장 후 즉시 참조 해제
+              record.imageBlob = null;
+              record.thumbBlob = null;
+              await new Promise((r) => setTimeout(r, 30));
+            }
+
+            // 1) 파일 읽기 → 메모는 수집, 포토메모는 즉시 처리 (base64 누적 방지)
             for (const file of files) {
               hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
 
-              // ✅ file.text() 대신 FileReader 사용 (iOS Safari 호환성 향상)
               const text = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = (e) => resolve(e.target.result);
-                reader.onerror = (e) => reject(new Error(`파일 읽기 실패: ${file.name}`));
+                reader.onerror = () => reject(new Error(`파일 읽기 실패: ${file.name}`));
                 reader.readAsText(file, "UTF-8");
               });
 
+              let parsed;
               try {
-                const parsed = JSON.parse(text);
-                if (Array.isArray(parsed)) {
-                  noteRecords.push(...parsed);
-                } else if (parsed && typeof parsed === "object") {
-                  if (Array.isArray(parsed.apartmentNotes) || Array.isArray(parsed.photoMemos)) {
-                    if (Array.isArray(parsed.apartmentNotes)) noteRecords.push(...parsed.apartmentNotes);
-                    if (Array.isArray(parsed.photoMemos)) photoRecords.push(...parsed.photoMemos);
-                  } else {
-                    noteRecords.push(parsed);
-                  }
-                }
+                parsed = JSON.parse(text);
                 hongbuDebugLog("INFO", `✅ ${file.name} 파싱 완료`);
               } catch (parseErr) {
                 hongbuDebugLog("WARN", `파일 파싱 실패 (${file.name})`, parseErr.message);
                 continue;
               }
+              // text는 더 이상 불필요 → 스코프 종료 시 GC 대상
+
+              if (Array.isArray(parsed)) {
+                // 구형 포맷: 단지 메모 배열
+                const notes = parsed
+                  .filter((r) => r && typeof r === "object" && r.id != null)
+                  .map((r) => ({ id: String(r.id), memo: r.memo ? String(r.memo) : "", images: Array.isArray(r.images) ? r.images : [] }));
+                await saveNotesBatch(notes);
+                if (notes.length) hasAnyData = true;
+              } else if (parsed && typeof parsed === "object") {
+                if (Array.isArray(parsed.apartmentNotes) || Array.isArray(parsed.photoMemos)) {
+                  if (Array.isArray(parsed.apartmentNotes) && parsed.apartmentNotes.length) {
+                    hongbuDebugLog("INFO", `🗃️ 단지 메모 ${parsed.apartmentNotes.length}개 즉시 저장`);
+                    const notes = parsed.apartmentNotes
+                      .filter((r) => r && typeof r === "object" && r.id != null)
+                      .map((r) => ({ id: String(r.id), memo: r.memo ? String(r.memo) : "", images: Array.isArray(r.images) ? r.images : [] }));
+                    await saveNotesBatch(notes);
+                    parsed.apartmentNotes = null; // base64 즉시 해제
+                    if (notes.length) hasAnyData = true;
+                  }
+                  if (Array.isArray(parsed.photoMemos) && parsed.photoMemos.length) {
+                    hongbuDebugLog("INFO", `📷 포토메모 ${parsed.photoMemos.length}장 순차 저장 시작`);
+                    for (const r of parsed.photoMemos) {
+                      await saveOnePhoto(r);
+                    }
+                    parsed.photoMemos = null; // base64 즉시 해제
+                    if (totalPhotoOkEarly > 0) hasAnyData = true;
+                  }
+                } else {
+                  // 단일 레코드
+                  if (parsed.id != null) {
+                    await saveNotesBatch([{ id: String(parsed.id), memo: parsed.memo ? String(parsed.memo) : "", images: Array.isArray(parsed.images) ? parsed.images : [] }]);
+                    hasAnyData = true;
+                  }
+                }
+              }
             }
 
-            // 2) 메모 레코드 정규화 (keyPath=id라서 id 필수)
-            const normalizedNotes = noteRecords
-              .filter((r) => r && typeof r === "object")
-              .map((r) => {
-                if (r.id === undefined || r.id === null) return null;
-                return {
-                  id: String(r.id),
-                  memo: r.memo ? String(r.memo) : "",
-                  images: Array.isArray(r.images) ? r.images : [],
-                };
-              })
-              .filter(Boolean);
+            // 모든 저장은 파일 읽기 단계에서 완료됨
+            const totalNoteOk = totalNoteOkEarly;
+            const totalNoteFail = totalNoteFailEarly;
+            const totalPhotoOk = totalPhotoOkEarly;
+            const totalPhotoFail = totalPhotoFailEarly;
+            const skippedPhotoCount = skippedPhotoCountEarly;
 
-            hongbuDebugLog("INFO", `📋 정규화된 메모: ${normalizedNotes.length}개`);
+            hongbuDebugLog("INFO", `📋 단지 메모 복원: 성공 ${totalNoteOk} / 실패 ${totalNoteFail}`);
 
-            if (!normalizedNotes.length && !photoRecords.length) {
+            if (!hasAnyData) {
               hongbuDebugLog("WARN", "❌ 복원할 유효한 메모/포토메모 데이터가 없습니다.");
               hongbuDebugToast("❌ 복원할 메모가 없습니다.", 3000);
               return;
             }
 
-            // 4) apartmentNotes put - 배치 처리로 메모리 부담 줄임
-            hongbuDebugLog("INFO", "🗃️ apartmentNotes 저장 중... (배치 처리)");
-            const BATCH_SIZE = 100; // 100개씩 처리
-            let totalNoteOk = 0,
-              totalNoteFail = 0;
-            let totalPhotoOk = 0,
-              totalPhotoFail = 0;
-
-            for (let i = 0; i < normalizedNotes.length; i += BATCH_SIZE) {
-              const batch = normalizedNotes.slice(i, i + BATCH_SIZE);
-
-              await new Promise((resolvePromise, rejectPromise) => {
-                const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
-
-                request.onsuccess = function (e) {
-                  const db = e.target.result;
-                  const tx = db.transaction(["apartmentNotes"], "readwrite");
-                  const store = tx.objectStore("apartmentNotes");
-
-                  let batchOk = 0,
-                    batchFail = 0;
-
-                  batch.forEach((item) => {
-                    const putReq = store.put(item);
-                    putReq.onsuccess = () => batchOk++;
-                    putReq.onerror = (err) => {
-                      batchFail++;
-                      hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
-                    };
-                  });
-
-                  tx.oncomplete = () => {
-                    totalNoteOk += batchOk;
-                    totalNoteFail += batchFail;
-                    hongbuDebugLog(
-                      "INFO",
-                      `메모 배치 ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(normalizedNotes.length / BATCH_SIZE)} 완료`,
-                    );
-                    db.close();
-                    resolvePromise();
-                  };
-
-                  tx.onerror = (err) => {
-                    hongbuDebugLog("ERR", "❌ 배치 트랜잭션 오류", err?.target?.error?.message);
-                    db.close();
-                    rejectPromise(err);
-                  };
-                };
-
-                request.onerror = function (err) {
-                  hongbuDebugLog("ERR", "❌ DB 열기 실패", err?.target?.error?.message);
-                  rejectPromise(err);
-                };
-              });
-
-              // 배치 간 짧은 지연으로 메모리 정리 시간 제공
-              await new Promise((r) => setTimeout(r, 50));
-            }
-
-            // 5) photoMemos 복원 - 1장씩 변환 후 즉시 저장 (메모리 최소화)
-            let skippedPhotoCount = 0;
-            if (photoRecords.length > 0) {
-              hongbuDebugLog("INFO", `🗃️ photoMemos 저장 중... (${photoRecords.length}장 순차 처리)`);
-
-              for (const r of photoRecords) {
-                if (!r || typeof r !== "object" || r.id == null) { skippedPhotoCount++; continue; }
-                const lat = Number(r.lat);
-                const lng = Number(r.lng);
-                if (!Number.isFinite(lat) || !Number.isFinite(lng)) { skippedPhotoCount++; continue; }
-
-                // 1장씩 변환 - 변환 후 즉시 참조 해제
-                const imageBlob = r.imageBlob instanceof Blob
-                  ? r.imageBlob
-                  : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
-                const thumbBlob = r.thumbBlob instanceof Blob
-                  ? r.thumbBlob
-                  : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
-
-                if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
-                  skippedPhotoCount++;
-                  continue;
-                }
-
-                const record = {
-                  id: String(r.id),
-                  lat,
-                  lng,
-                  createdAt: Number(r.createdAt) || Date.now(),
-                  note: r.note ? String(r.note) : "",
-                  imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
-                  thumbBlob: thumbBlob instanceof Blob ? thumbBlob : imageBlob,
-                };
-
-                await new Promise((resolvePromise, rejectPromise) => {
-                  const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
-                  request.onsuccess = function (e) {
-                    const db = e.target.result;
-                    const tx = db.transaction(["photoMemos"], "readwrite");
-                    const putReq = tx.objectStore("photoMemos").put(record);
-                    putReq.onsuccess = () => totalPhotoOk++;
-                    putReq.onerror = (err) => {
-                      totalPhotoFail++;
-                      hongbuDebugLog("WARN", `photo put 실패: ${record.id}`, err?.target?.error?.message);
-                    };
-                    tx.oncomplete = () => { db.close(); resolvePromise(); };
-                    tx.onerror = (err) => { db.close(); rejectPromise(err); };
-                  };
-                  request.onerror = (err) => rejectPromise(err);
-                });
-
-                // 저장 후 참조 해제 (iOS GC 유도)
-                record.imageBlob = null;
-                record.thumbBlob = null;
-                await new Promise((r) => setTimeout(r, 30));
-              }
-            }
 
             hongbuDebugLog("INFO", `✅ 메모 복원 완료: 성공 ${totalNoteOk} / 실패 ${totalNoteFail}`);
             hongbuDebugLog(
