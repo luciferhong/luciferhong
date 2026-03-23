@@ -1025,7 +1025,11 @@
       tableColumnNames: ["시도", "시군구", "동이름", "인구수", "세대당 인구"],
       tableModalInitialized: false,
       ageChartRowsCache: {},
-      ageChartInstance: null
+      ageChartInstance: null,
+      ageTblSort: {
+        pct: { col: -1, order: "asc" },
+        cnt: { col: -1, order: "asc" }
+      }
     };
 
     function setLoading(on, message) {
@@ -1506,24 +1510,74 @@
     function renderAgeTables(drawRows) {
       state.lastAgeChartDrawRows = drawRows;
       const BANDS = ["0~9세", "10~19세", "20~29세", "30~49세", "50~59세", "60세이상"];
-      const headerHtml = `<thead><tr><th>지역</th>${BANDS.map(b => `<th>${b}</th>`).join("")}<th>합계</th></tr></thead>`;
+      const EXTRA_LABEL = "영유아+30~49";
+      const COL_LABELS = ["지역", ...BANDS, EXTRA_LABEL, "합계"];
 
-      function buildRows(valueFn, totalFn) {
-        return drawRows.map(r => {
+      function getSortValue(r, col, isCount) {
+        if (col === 0) return (r.displayLabel || r.label);
+        if (col >= 1 && col <= 6) return isCount ? r.values[col - 1] : (r.total > 0 ? r.values[col - 1] / r.total : 0);
+        if (col === 7) return isCount ? (r.values[0] + r.values[3]) : (r.total > 0 ? (r.values[0] + r.values[3]) / r.total : 0);
+        if (col === 8) return isCount ? r.total : 1;
+        return 0;
+      }
+
+      function sortedRows(sortState, isCount) {
+        const { col, order } = sortState;
+        if (col < 0) return drawRows;
+        const asc = order === "asc";
+        return [...drawRows].sort((a, b) => {
+          const av = getSortValue(a, col, isCount);
+          const bv = getSortValue(b, col, isCount);
+          if (typeof av === "string") return asc ? av.localeCompare(bv, "ko") : bv.localeCompare(av, "ko");
+          return asc ? av - bv : bv - av;
+        });
+      }
+
+      function buildHeaderHtml(sortState) {
+        return `<thead><tr>${COL_LABELS.map((lbl, i) => {
+          const arrow = sortState.col === i ? (sortState.order === "asc" ? " ↑" : " ↓") : "";
+          return `<th data-col="${i}" style="cursor:pointer;user-select:none">${lbl}${arrow}</th>`;
+        }).join("")}</tr></thead>`;
+      }
+
+      function buildRows(rows, valueFn, totalFn, extraFn) {
+        return rows.map(r => {
           const cells = r.values.map((_, i) => `<td>${valueFn(r, i)}</td>`).join("");
-          return `<tr><td title="${r.displayLabel || r.label}">${r.displayLabel || r.label}</td>${cells}<td>${totalFn(r)}</td></tr>`;
+          return `<tr><td title="${r.displayLabel || r.label}">${r.displayLabel || r.label}</td>${cells}<td>${extraFn(r)}</td><td>${totalFn(r)}</td></tr>`;
         }).join("");
       }
 
       const pct = (r, i) => r.total > 0 ? (r.values[i] / r.total * 100).toFixed(1) + "%" : "-";
       const pctTotal = () => "100%";
+      const pctExtra = r => r.total > 0 ? ((r.values[0] + r.values[3]) / r.total * 100).toFixed(1) + "%" : "-";
       const cnt = (r, i) => Math.round(r.values[i]).toLocaleString("ko-KR");
       const cntTotal = r => Math.round(r.total).toLocaleString("ko-KR");
+      const cntExtra = r => Math.round(r.values[0] + r.values[3]).toLocaleString("ko-KR");
 
       const pTbl = document.getElementById("agePercentTable");
       const cTbl = document.getElementById("ageCountTable");
-      if (pTbl) pTbl.innerHTML = headerHtml + `<tbody>${buildRows(pct, pctTotal)}</tbody>`;
-      if (cTbl) cTbl.innerHTML = headerHtml + `<tbody>${buildRows(cnt, cntTotal)}</tbody>`;
+      const pSort = state.ageTblSort.pct;
+      const cSort = state.ageTblSort.cnt;
+
+      if (pTbl) pTbl.innerHTML = buildHeaderHtml(pSort) + `<tbody>${buildRows(sortedRows(pSort, false), pct, pctTotal, pctExtra)}</tbody>`;
+      if (cTbl) cTbl.innerHTML = buildHeaderHtml(cSort) + `<tbody>${buildRows(sortedRows(cSort, true), cnt, cntTotal, cntExtra)}</tbody>`;
+
+      // 헤더 클릭 정렬 이벤트 등록
+      [[pTbl, pSort, false], [cTbl, cSort, true]].forEach(([tbl, sortState, isCount]) => {
+        if (!tbl) return;
+        tbl.querySelectorAll("thead th").forEach(th => {
+          th.addEventListener("click", () => {
+            const col = parseInt(th.dataset.col, 10);
+            if (sortState.col === col) {
+              sortState.order = sortState.order === "asc" ? "desc" : "asc";
+            } else {
+              sortState.col = col;
+              sortState.order = "asc";
+            }
+            renderAgeTables(state.lastAgeChartDrawRows);
+          });
+        });
+      });
     }
 
     function renderTableData() {
@@ -1721,7 +1775,7 @@
         return;
       }
       const BANDS = ["0~9세", "10~19세", "20~29세", "30~49세", "50~59세", "60세이상"];
-      const rows = state.lastAgeChartDrawRows;
+      const EXTRA_LABEL = "영유아+30~49";
       if (!rows || rows.length === 0) {
         alert("다운로드할 데이터가 없습니다.");
         return;
@@ -1734,21 +1788,23 @@
       const C_TEXT    = "FF162033";
       const C_LINE    = "FFD8DEEA";
       const C_WHITE   = "FFFFFFFF";
-      const GAP_COL   = 9; // 1-based: col 9
+      const GAP_COL   = 10; // 1-based: col 10 (A-I: 비율 9개, J: gap)
 
       try {
         const wb = new ExcelJS.Workbook();
         const ws = wb.addWorksheet("연령별인구");
 
-        // 열 너비 (A-H: 비율, I: gap, J-Q: 인구수)
+        // 열 너비 (A-I: 비율, J: gap, K-S: 인구수)
         ws.columns = [
           { width: 22 },                        // A 지역(비율)
           ...BANDS.map(() => ({ width: 10 })),  // B-G
-          { width: 8 },                         // H 합계
-          { width: 3 },                         // I gap
-          { width: 22 },                        // J 지역(인구수)
-          ...BANDS.map(() => ({ width: 12 })),  // K-P
-          { width: 12 },                        // Q 합계
+          { width: 10 },                        // H 영유아+30~49
+          { width: 8 },                         // I 합계
+          { width: 3 },                         // J gap
+          { width: 22 },                        // K 지역(인구수)
+          ...BANDS.map(() => ({ width: 12 })),  // L-Q
+          { width: 12 },                        // R 영유아+30~49
+          { width: 12 },                        // S 합계
         ];
 
         function styleCell(cell, { bold = false, bg = null, borderBottom = false, alignRight = false } = {}) {
@@ -1760,9 +1816,9 @@
 
         // 헤더 행
         const hdr = ws.addRow([
-          "지역(비율)", ...BANDS, "합계",
+          "지역(비율)", ...BANDS, EXTRA_LABEL, "합계",
           "",
-          "지역(인구수)", ...BANDS, "합계"
+          "지역(인구수)", ...BANDS, EXTRA_LABEL, "합계"
         ]);
         hdr.height = 22;
         hdr.eachCell({ includeEmpty: true }, (cell, col) => {
@@ -1774,13 +1830,16 @@
         rows.forEach((r, idx) => {
           const isTotal = idx === 0;
           const label = r.displayLabel || r.label;
+          const extra = r.values[0] + r.values[3];
           const pctVals = r.values.map(v => r.total > 0 ? parseFloat((v / r.total * 100).toFixed(1)) : 0);
+          const pctExtra = r.total > 0 ? parseFloat((extra / r.total * 100).toFixed(1)) : 0;
           const cntVals = r.values.map(v => Math.round(v));
+          const cntExtra = Math.round(extra);
 
           const dr = ws.addRow([
-            label, ...pctVals, 100,
+            label, ...pctVals, pctExtra, 100,
             "",
-            label, ...cntVals, Math.round(r.total)
+            label, ...cntVals, cntExtra, Math.round(r.total)
           ]);
           dr.height = 18;
           dr.eachCell({ includeEmpty: true }, (cell, col) => {
@@ -1792,7 +1851,7 @@
               borderBottom: "thin",
               alignRight: !isLabelCol
             });
-            // 인구수 블록(J열 이후) 수치 열에 천단위 쉼표
+            // 인구수 블록(K열 이후) 수치 열에 천단위 쉼표
             if (col > GAP_COL && !isLabelCol) cell.numFmt = "#,##0";
           });
         });
