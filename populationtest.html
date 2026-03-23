@@ -6,6 +6,7 @@
   <title>인구 지도</title>
   <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
   <style>
@@ -899,6 +900,7 @@
         <div class="age-chart-tabs-bar">
           <button class="age-chart-tab-btn active" id="ageTabChart" data-tab="chart" type="button">차트</button>
           <button class="age-chart-tab-btn" id="ageTabTable" data-tab="table" type="button">테이블</button>
+          <button id="ageTableDownloadBtn" class="table-download-btn" type="button" title="엑셀로 다운로드" style="margin-left:auto;display:none;">&#128229;</button>
         </div>
         <div class="age-chart-body">
           <div class="age-chart-panel" id="ageChartPanel">
@@ -1044,10 +1046,7 @@
     function syncResponsiveMapControls() {
       if (!state.map || typeof state.map.setOptions !== "function") return;
       state.map.setOptions({
-        zoomControl: !isMobileViewport(),
-        zoomControlOptions: {
-          position: naver.maps.Position.TOP_RIGHT
-        }
+        zoomControl: false
       });
     }
 
@@ -1109,10 +1108,12 @@
       const tablePanel = document.getElementById("ageTablePanel");
       const btnChart = document.getElementById("ageTabChart");
       const btnTable = document.getElementById("ageTabTable");
+      const dlBtn = document.getElementById("ageTableDownloadBtn");
       if (!chartPanel || !tablePanel) return;
       const isChart = tab === "chart";
       chartPanel.style.display = isChart ? "" : "none";
       tablePanel.style.display = isChart ? "none" : "";
+      if (dlBtn) dlBtn.style.display = isChart ? "none" : "";
       if (btnChart) btnChart.classList.toggle("active", isChart);
       if (btnTable) btnTable.classList.toggle("active", !isChart);
       // Chart.js resize 트리거
@@ -1370,12 +1371,12 @@
 
     function getCurrentSigunguDisplayName() {
       const codes = Array.from(state.filters?.sigunguCodes || []);
-      if (!codes.length) return `${getSidoFilterLabel(state.filters?.sidoCode)} 합계`;
+      if (!codes.length) return getSidoFilterLabel(state.filters?.sidoCode);
       if (codes.length === 1) {
         const code = String(codes[0]);
         return (state.sggNameByCode && state.sggNameByCode[code]) || code;
       }
-      return "선택 시군구 합계";
+      return "선택 시군구";
     }
 
     function prependSigunguAggregateRow(rows) {
@@ -1503,6 +1504,7 @@
     }
 
     function renderAgeTables(drawRows) {
+      state.lastAgeChartDrawRows = drawRows;
       const BANDS = ["0~9세", "10~19세", "20~29세", "30~49세", "50~59세", "60세이상"];
       const headerHtml = `<thead><tr><th>지역</th>${BANDS.map(b => `<th>${b}</th>`).join("")}<th>합계</th></tr></thead>`;
 
@@ -1710,6 +1712,105 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    }
+
+    async function downloadAgeTableAsExcel() {
+      const ExcelJS = window.ExcelJS;
+      if (!ExcelJS) {
+        alert("엑셀 라이브러리를 불러오지 못했습니다.");
+        return;
+      }
+      const BANDS = ["0~9세", "10~19세", "20~29세", "30~49세", "50~59세", "60세이상"];
+      const rows = state.lastAgeChartDrawRows;
+      if (!rows || rows.length === 0) {
+        alert("다운로드할 데이터가 없습니다.");
+        return;
+      }
+
+      // 화면 CSS 변수값
+      const C_ACCENT  = "FF2459C6";
+      const C_BG_HEAD = "FFF3F5F9";
+      const C_BG_TOT  = "FFEDF1FB";
+      const C_TEXT    = "FF162033";
+      const C_LINE    = "FFD8DEEA";
+      const C_WHITE   = "FFFFFFFF";
+      const GAP_COL   = 9; // 1-based: col 9
+
+      try {
+        const wb = new ExcelJS.Workbook();
+        const ws = wb.addWorksheet("연령별인구");
+
+        // 열 너비 (A-H: 비율, I: gap, J-Q: 인구수)
+        ws.columns = [
+          { width: 22 },                        // A 지역(비율)
+          ...BANDS.map(() => ({ width: 10 })),  // B-G
+          { width: 8 },                         // H 합계
+          { width: 3 },                         // I gap
+          { width: 22 },                        // J 지역(인구수)
+          ...BANDS.map(() => ({ width: 12 })),  // K-P
+          { width: 12 },                        // Q 합계
+        ];
+
+        function styleCell(cell, { bold = false, bg = null, borderBottom = false, alignRight = false } = {}) {
+          if (bg) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: bg } };
+          cell.font = { bold, color: { argb: C_TEXT }, size: 10, name: "맑은 고딕" };
+          if (borderBottom) cell.border = { bottom: { style: borderBottom === "thick" ? "medium" : "thin", color: { argb: borderBottom === "thick" ? C_ACCENT : C_LINE } } };
+          cell.alignment = { horizontal: alignRight ? "right" : "left", vertical: "middle" };
+        }
+
+        // 헤더 행
+        const hdr = ws.addRow([
+          "지역(비율)", ...BANDS, "합계",
+          "",
+          "지역(인구수)", ...BANDS, "합계"
+        ]);
+        hdr.height = 22;
+        hdr.eachCell({ includeEmpty: true }, (cell, col) => {
+          if (col === GAP_COL) return;
+          styleCell(cell, { bold: true, bg: C_BG_HEAD, borderBottom: "thick", alignRight: col !== 1 && col !== GAP_COL + 1 });
+        });
+
+        // 데이터 행
+        rows.forEach((r, idx) => {
+          const isTotal = idx === 0;
+          const label = r.displayLabel || r.label;
+          const pctVals = r.values.map(v => r.total > 0 ? parseFloat((v / r.total * 100).toFixed(1)) : 0);
+          const cntVals = r.values.map(v => Math.round(v));
+
+          const dr = ws.addRow([
+            label, ...pctVals, 100,
+            "",
+            label, ...cntVals, Math.round(r.total)
+          ]);
+          dr.height = 18;
+          dr.eachCell({ includeEmpty: true }, (cell, col) => {
+            if (col === GAP_COL) return;
+            const isLabelCol = col === 1 || col === GAP_COL + 1;
+            styleCell(cell, {
+              bold: isTotal,
+              bg: isTotal ? C_BG_TOT : C_WHITE,
+              borderBottom: "thin",
+              alignRight: !isLabelCol
+            });
+          });
+        });
+
+        const buf = await wb.xlsx.writeBuffer();
+        const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const today = new Date().toISOString().slice(0, 10);
+        const modeName = state.mode === MODE.ADM ? "행정동" : "법정동";
+        a.href = url;
+        a.download = `연령별인구_${modeName}_${today}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.error(err);
+        alert("엑셀 생성 중 오류가 발생했습니다: " + err.message);
+      }
     }
 
     function downloadTableAsExcel() {
@@ -3010,10 +3111,7 @@
         zoom: 7,
         minZoom: 6,
         mapTypeControl: true,
-        zoomControl: !isMobile,
-        zoomControlOptions: {
-          position: naver.maps.Position.TOP_RIGHT
-        }
+        zoomControl: false
       });
 
       const emdBtn = document.getElementById("btnEmd");
@@ -3147,6 +3245,13 @@
           switchAgeChartTab(btn.dataset.tab);
         });
       });
+
+      const ageTableDlBtn = document.getElementById("ageTableDownloadBtn");
+      if (ageTableDlBtn) {
+        ageTableDlBtn.addEventListener("click", () => {
+          downloadAgeTableAsExcel();
+        });
+      }
 
       // 동이름 항상 표시 체크박스
       const alwaysShowCheckbox = document.getElementById("alwaysShowLabelsCheckbox");
