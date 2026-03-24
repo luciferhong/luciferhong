@@ -817,7 +817,9 @@
   }
 
   // ==========================
-  // 백업 (단일 NDJSON 파일)
+  // 백업 (단일 NDJSON · Blob 즉시 변환으로 JS 힙 최소화)
+  // 각 레코드를 문자열 → Blob으로 즉시 변환하여 JS 힙에서 문자열 참조 해제
+  // blobParts는 Blob 참조 배열 → new Blob(blobParts)는 복사 없이 연결
   // ==========================
   async function backupSelectedNotes() {
     showBusy('선택된 메모/포토메모를 수집하는 중…');
@@ -848,11 +850,15 @@
 
     showBusy('백업 파일 생성 중…');
 
-    // Blob 배열로 구성 → new Blob(blobParts)는 내부적으로 연결만 함 (메모리 복사 최소화)
+    // Blob 참조 배열: 문자열을 즉시 Blob으로 변환하여 JS 힙에서 문자열 해제
     const blobParts = [];
 
+    function pushLine(line) {
+      blobParts.push(new Blob([line])); // 문자열 → Blob 즉시 변환, 원본 문자열 GC 가능
+    }
+
     // meta 라인
-    blobParts.push(JSON.stringify({
+    pushLine(JSON.stringify({
       type: 'meta',
       version: 2,
       exportedAt: new Date().toISOString(),
@@ -864,15 +870,15 @@
 
     const db = await openDB();
 
-    // 단지 메모: 50개씩 배치 조회 (텍스트라 작음)
-    const NOTE_BATCH = 50;
-    for (let i = 0; i < noteRefs.length; i += NOTE_BATCH) {
-      const batch = noteRefs.slice(i, i + NOTE_BATCH);
+    // 단지 메모: 1개씩 처리 (images 배열에 base64가 포함될 수 있어 배치 불가)
+    for (let i = 0; i < noteRefs.length; i++) {
+      if (i % 20 === 0) showBusy(`메모 처리 중… (${i + 1} / ${noteRefs.length})`);
+
       const tx = db.transaction([STORE_NOTES], 'readonly');
       const store = tx.objectStore(STORE_NOTES);
+      const key = String(noteRefs[i].id);
 
-      const records = await Promise.all(batch.map(ref => new Promise(res => {
-        const key = String(ref.id);
+      const rec = await new Promise(res => {
         const r1 = store.get(key);
         r1.onsuccess = () => {
           if (r1.result) return res(r1.result);
@@ -884,17 +890,16 @@
           } else res(null);
         };
         r1.onerror = () => res(null);
-      })));
+      });
 
-      for (const rec of records) {
-        if (!rec) continue;
-        blobParts.push(JSON.stringify({ type: 'note', ...rec }) + '\n');
+      if (rec) {
+        pushLine(JSON.stringify({ type: 'note', ...rec }) + '\n');
+        // rec, JSON 문자열 모두 스코프 벗어나 GC 대상
       }
-      showBusy(`메모 처리 중… (${Math.min(i + NOTE_BATCH, noteRefs.length)} / ${noteRefs.length})`);
-      await new Promise(r => setTimeout(r, 10));
+      await new Promise(r => setTimeout(r, 10)); // GC 기회
     }
 
-    // 포토메모: 1장씩 처리 후 즉시 참조 해제 (메모리 누적 방지)
+    // 포토메모: 1장씩 처리 후 즉시 참조 해제
     for (let i = 0; i < photoRefs.length; i++) {
       showBusy(`사진 처리 중… (${i + 1} / ${photoRefs.length})`);
 
@@ -918,16 +923,17 @@
 
       if (raw) {
         const serialized = await serializePhotoForExport(raw);
-        blobParts.push(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
-        // 즉시 참조 해제
+        pushLine(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
+        // base64 문자열 참조 즉시 해제
         serialized.imageDataUrl = null;
         serialized.thumbDataUrl = null;
       }
-      await new Promise(r => setTimeout(r, 30));
+      await new Promise(r => setTimeout(r, 30)); // GC 기회
     }
 
     db.close();
 
+    // 모든 Blob을 복사 없이 연결하여 최종 파일 생성
     const blob = new Blob(blobParts, { type: 'application/x-ndjson' });
     const url = URL.createObjectURL(blob);
     const fileName = `홍부_메모백업_${ts}_메모${noteRefs.length}_포토${photoRefs.length}.ndjson`;
