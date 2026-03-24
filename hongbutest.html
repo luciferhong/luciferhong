@@ -9756,27 +9756,31 @@ min-height: 24px;
         updateMarkers(window.map.getBounds());
       }
 
-      // ✅ 메모 복원 (NDJSON 스트리밍 + 구형 JSON 호환)
+      // ✅ 메모 복원 (정상 동작 버전)
       function restoreMemoDB() {
         const input = document.getElementById("memoRestoreInput");
-        input.accept = ".json,.ndjson";
+        input.accept = ".json";
         input.multiple = true;
 
         input.onchange = async function (event) {
           const files = Array.from(event.target.files || []);
           if (!files.length) return;
 
+          // 같은 파일 다시 선택 가능하게 초기화
           input.value = "";
 
           try {
             hongbuDebugLog("INFO", `📂 메모 복원 시작: ${files.length}개 파일`);
-            hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000);
+            hongbuDebugToast("⏳ 메모 복원 중입니다...", 100000); // 오래 표시
 
-            let totalNoteOk = 0, totalNoteFail = 0;
-            let totalPhotoOk = 0, totalPhotoFail = 0, skippedPhotoCount = 0;
+            let totalNoteOkEarly = 0,
+              totalNoteFailEarly = 0;
+            let totalPhotoOkEarly = 0,
+              totalPhotoFailEarly = 0,
+              skippedPhotoCountEarly = 0;
             let hasAnyData = false;
 
-            // 단지 메모 배치 저장
+            // 단지 메모 배치 즉시 저장
             async function saveNotesBatch(records) {
               if (!records.length) return;
               const BATCH_SIZE = 50;
@@ -9790,14 +9794,20 @@ min-height: 24px;
                     const store = tx.objectStore("apartmentNotes");
                     batch.forEach((item) => {
                       const put = store.put(item);
-                      put.onsuccess = () => totalNoteOk++;
+                      put.onsuccess = () => totalNoteOkEarly++;
                       put.onerror = (err) => {
-                        totalNoteFail++;
+                        totalNoteFailEarly++;
                         hongbuDebugLog("WARN", `put 실패: ${item.id}`, err?.target?.error?.message);
                       };
                     });
-                    tx.oncomplete = () => { db.close(); res(); };
-                    tx.onerror = (err) => { db.close(); rej(err); };
+                    tx.oncomplete = () => {
+                      db.close();
+                      res();
+                    };
+                    tx.onerror = (err) => {
+                      db.close();
+                      rej(err);
+                    };
                   };
                   req.onerror = (err) => rej(err);
                 });
@@ -9805,30 +9815,48 @@ min-height: 24px;
               }
             }
 
-            // fetch() 기반 DataURL→Blob 변환 (atob 대비 메모리 복사 없음)
+            // fetch() 기반 변환 - atob 방식 대비 메모리 복사 없음
             async function dataUrlToBlob(dataUrl) {
               try {
                 if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return null;
                 const res = await fetch(dataUrl);
                 return await res.blob();
-              } catch (e) { return null; }
+              } catch (e) {
+                return null;
+              }
             }
 
-            // 포토메모 1장 저장 후 즉시 참조 해제
+            // 포토메모 1장 즉시 저장 (배열 누적 없이 바로 IDB에 쓰고 참조 해제)
             async function saveOnePhoto(r) {
-              if (!r || typeof r !== "object" || r.id == null) { skippedPhotoCount++; return; }
-              const lat = Number(r.lat), lng = Number(r.lng);
-              if (!Number.isFinite(lat) || !Number.isFinite(lng)) { skippedPhotoCount++; return; }
+              if (!r || typeof r !== "object" || r.id == null) {
+                skippedPhotoCountEarly++;
+                return;
+              }
+              const lat = Number(r.lat),
+                lng = Number(r.lng);
+              if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+                skippedPhotoCountEarly++;
+                return;
+              }
 
-              const imageBlob = r.imageBlob instanceof Blob ? r.imageBlob
-                : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
-              const thumbBlob = r.thumbBlob instanceof Blob ? r.thumbBlob
-                : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
+              const imageBlob =
+                r.imageBlob instanceof Blob
+                  ? r.imageBlob
+                  : await dataUrlToBlob(r.imageDataUrl || r.imageBase64 || r.image);
+              const thumbBlob =
+                r.thumbBlob instanceof Blob
+                  ? r.thumbBlob
+                  : await dataUrlToBlob(r.thumbDataUrl || r.thumbBase64 || r.thumbnail);
 
-              if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) { skippedPhotoCount++; return; }
+              if (!(imageBlob instanceof Blob) && !(thumbBlob instanceof Blob)) {
+                skippedPhotoCountEarly++;
+                return;
+              }
 
               const record = {
-                id: String(r.id), lat, lng,
+                id: String(r.id),
+                lat,
+                lng,
                 createdAt: Number(r.createdAt) || Date.now(),
                 note: r.note ? String(r.note) : "",
                 imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
@@ -9841,103 +9869,52 @@ min-height: 24px;
                   const db = e.target.result;
                   const tx = db.transaction(["photoMemos"], "readwrite");
                   const put = tx.objectStore("photoMemos").put(record);
-                  put.onsuccess = () => totalPhotoOk++;
+                  put.onsuccess = () => totalPhotoOkEarly++;
                   put.onerror = (err) => {
-                    totalPhotoFail++;
+                    totalPhotoFailEarly++;
                     hongbuDebugLog("WARN", `photo put 실패: ${record.id}`, err?.target?.error?.message);
                   };
-                  tx.oncomplete = () => { db.close(); res(); };
-                  tx.onerror = (err) => { db.close(); rej(err); };
+                  tx.oncomplete = () => {
+                    db.close();
+                    res();
+                  };
+                  tx.onerror = (err) => {
+                    db.close();
+                    rej(err);
+                  };
                 };
                 req.onerror = (err) => rej(err);
               });
 
+              // 저장 후 즉시 참조 해제
               record.imageBlob = null;
               record.thumbBlob = null;
               await new Promise((r) => setTimeout(r, 30));
             }
 
-            // NDJSON 스트리밍 복원: File.slice()로 256KB씩 읽어 줄 단위 처리
-            // → 메모리에는 항상 최대 청크 1개 + 레코드 1개 분량만 존재
-            async function restoreFromNDJSON(file) {
-              const CHUNK_SIZE = 256 * 1024; // 256KB
-              let offset = 0;
-              let buffer = "";
-              const pendingNotes = [];
+            // 1) 파일 읽기 → 메모는 수집, 포토메모는 즉시 처리 (base64 누적 방지)
+            for (const file of files) {
+              hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
 
-              function readChunk(blob) {
-                return new Promise((res, rej) => {
-                  const reader = new FileReader();
-                  reader.onload = (e) => res(e.target.result);
-                  reader.onerror = () => rej(new Error("청크 읽기 실패"));
-                  reader.readAsText(blob, "UTF-8");
-                });
-              }
+              const text = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve(e.target.result);
+                reader.onerror = () => reject(new Error(`파일 읽기 실패: ${file.name}`));
+                reader.readAsText(file, "UTF-8");
+              });
 
-              while (offset < file.size) {
-                const chunk = file.slice(offset, offset + CHUNK_SIZE);
-                const text = await readChunk(chunk);
-                buffer += text;
-
-                const lines = buffer.split("\n");
-                buffer = lines.pop(); // 마지막 미완성 줄 보관
-
-                for (const line of lines) {
-                  const trimmed = line.trim();
-                  if (!trimmed) continue;
-                  let record;
-                  try { record = JSON.parse(trimmed); } catch (e) { continue; }
-
-                  if (record.type === "note") {
-                    if (record.id != null) {
-                      pendingNotes.push({
-                        id: String(record.id),
-                        memo: record.memo ? String(record.memo) : "",
-                        images: Array.isArray(record.images) ? record.images : [],
-                      });
-                      hasAnyData = true;
-                      if (pendingNotes.length >= 50) {
-                        await saveNotesBatch(pendingNotes.splice(0));
-                      }
-                    }
-                  } else if (record.type === "photo") {
-                    if (pendingNotes.length > 0) await saveNotesBatch(pendingNotes.splice(0));
-                    await saveOnePhoto(record);
-                    if (totalPhotoOk > 0) hasAnyData = true;
-                  }
-                }
-
-                offset += CHUNK_SIZE;
-                await new Promise((r) => setTimeout(r, 5)); // GC 기회
-              }
-
-              // 마지막 줄 처리
-              if (buffer.trim()) {
-                try {
-                  const record = JSON.parse(buffer.trim());
-                  if (record.type === "note" && record.id != null) {
-                    pendingNotes.push({
-                      id: String(record.id),
-                      memo: record.memo ? String(record.memo) : "",
-                      images: Array.isArray(record.images) ? record.images : [],
-                    });
-                    hasAnyData = true;
-                  } else if (record.type === "photo") {
-                    if (pendingNotes.length > 0) await saveNotesBatch(pendingNotes.splice(0));
-                    await saveOnePhoto(record);
-                  }
-                } catch (e) {}
-              }
-
-              if (pendingNotes.length > 0) await saveNotesBatch(pendingNotes.splice(0));
-            }
-
-            // 구형 JSON 복원 (10개 분할 파일 등 기존 포맷 호환)
-            async function restoreFromLegacyJSON(text) {
               let parsed;
-              try { parsed = JSON.parse(text); } catch (e) { return; }
+              try {
+                parsed = JSON.parse(text);
+                hongbuDebugLog("INFO", `✅ ${file.name} 파싱 완료`);
+              } catch (parseErr) {
+                hongbuDebugLog("WARN", `파일 파싱 실패 (${file.name})`, parseErr.message);
+                continue;
+              }
+              // text는 더 이상 불필요 → 스코프 종료 시 GC 대상
 
               if (Array.isArray(parsed)) {
+                // 구형 포맷: 단지 메모 배열
                 const notes = parsed
                   .filter((r) => r && typeof r === "object" && r.id != null)
                   .map((r) => ({
@@ -9948,69 +9925,50 @@ min-height: 24px;
                 await saveNotesBatch(notes);
                 if (notes.length) hasAnyData = true;
               } else if (parsed && typeof parsed === "object") {
-                if (Array.isArray(parsed.apartmentNotes) && parsed.apartmentNotes.length) {
-                  const notes = parsed.apartmentNotes
-                    .filter((r) => r && typeof r === "object" && r.id != null)
-                    .map((r) => ({
-                      id: String(r.id),
-                      memo: r.memo ? String(r.memo) : "",
-                      images: Array.isArray(r.images) ? r.images : [],
-                    }));
-                  await saveNotesBatch(notes);
-                  parsed.apartmentNotes = null;
-                  if (notes.length) hasAnyData = true;
-                }
-                if (Array.isArray(parsed.photoMemos) && parsed.photoMemos.length) {
-                  for (const r of parsed.photoMemos) await saveOnePhoto(r);
-                  parsed.photoMemos = null;
-                  if (totalPhotoOk > 0) hasAnyData = true;
-                }
-                if (parsed.id != null && !Array.isArray(parsed.apartmentNotes)) {
-                  await saveNotesBatch([{
-                    id: String(parsed.id),
-                    memo: parsed.memo ? String(parsed.memo) : "",
-                    images: Array.isArray(parsed.images) ? parsed.images : [],
-                  }]);
-                  hasAnyData = true;
+                if (Array.isArray(parsed.apartmentNotes) || Array.isArray(parsed.photoMemos)) {
+                  if (Array.isArray(parsed.apartmentNotes) && parsed.apartmentNotes.length) {
+                    hongbuDebugLog("INFO", `🗃️ 단지 메모 ${parsed.apartmentNotes.length}개 즉시 저장`);
+                    const notes = parsed.apartmentNotes
+                      .filter((r) => r && typeof r === "object" && r.id != null)
+                      .map((r) => ({
+                        id: String(r.id),
+                        memo: r.memo ? String(r.memo) : "",
+                        images: Array.isArray(r.images) ? r.images : [],
+                      }));
+                    await saveNotesBatch(notes);
+                    parsed.apartmentNotes = null; // base64 즉시 해제
+                    if (notes.length) hasAnyData = true;
+                  }
+                  if (Array.isArray(parsed.photoMemos) && parsed.photoMemos.length) {
+                    hongbuDebugLog("INFO", `📷 포토메모 ${parsed.photoMemos.length}장 순차 저장 시작`);
+                    for (const r of parsed.photoMemos) {
+                      await saveOnePhoto(r);
+                    }
+                    parsed.photoMemos = null; // base64 즉시 해제
+                    if (totalPhotoOkEarly > 0) hasAnyData = true;
+                  }
+                } else {
+                  // 단일 레코드
+                  if (parsed.id != null) {
+                    await saveNotesBatch([
+                      {
+                        id: String(parsed.id),
+                        memo: parsed.memo ? String(parsed.memo) : "",
+                        images: Array.isArray(parsed.images) ? parsed.images : [],
+                      },
+                    ]);
+                    hasAnyData = true;
+                  }
                 }
               }
             }
 
-            // 파일 포맷 감지: 첫 줄이 {"type":"meta",...} 이면 NDJSON
-            async function detectFormat(file) {
-              const chunk = file.slice(0, Math.min(4096, file.size));
-              const text = await new Promise((res) => {
-                const reader = new FileReader();
-                reader.onload = (e) => res(e.target.result);
-                reader.onerror = () => res("");
-                reader.readAsText(chunk, "UTF-8");
-              });
-              const firstLine = text.split("\n")[0].trim();
-              try {
-                const parsed = JSON.parse(firstLine);
-                if (parsed && parsed.type === "meta") return "ndjson";
-              } catch (e) {}
-              return "json";
-            }
-
-            for (const file of files) {
-              hongbuDebugLog("INFO", `파일 읽는 중: ${file.name}`);
-              const format = await detectFormat(file);
-              hongbuDebugLog("INFO", `포맷 감지: ${format} (${file.name})`);
-
-              if (format === "ndjson") {
-                await restoreFromNDJSON(file);
-              } else {
-                // 구형 JSON - 기존 방식 (분할 파일이라 작음)
-                const text = await new Promise((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onload = (e) => resolve(e.target.result);
-                  reader.onerror = () => reject(new Error(`파일 읽기 실패: ${file.name}`));
-                  reader.readAsText(file, "UTF-8");
-                });
-                await restoreFromLegacyJSON(text);
-              }
-            }
+            // 모든 저장은 파일 읽기 단계에서 완료됨
+            const totalNoteOk = totalNoteOkEarly;
+            const totalNoteFail = totalNoteFailEarly;
+            const totalPhotoOk = totalPhotoOkEarly;
+            const totalPhotoFail = totalPhotoFailEarly;
+            const skippedPhotoCount = skippedPhotoCountEarly;
 
             hongbuDebugLog("INFO", `📋 단지 메모 복원: 성공 ${totalNoteOk} / 실패 ${totalNoteFail}`);
 
@@ -10021,13 +9979,18 @@ min-height: 24px;
             }
 
             hongbuDebugLog("INFO", `✅ 메모 복원 완료: 성공 ${totalNoteOk} / 실패 ${totalNoteFail}`);
-            hongbuDebugLog("INFO", `✅ 포토 복원 완료: 성공 ${totalPhotoOk} / 실패 ${totalPhotoFail} / 스킵 ${skippedPhotoCount}`);
+            hongbuDebugLog(
+              "INFO",
+              `✅ 포토 복원 완료: 성공 ${totalPhotoOk} / 실패 ${totalPhotoFail} / 스킵 ${skippedPhotoCount}`,
+            );
             if (skippedPhotoCount > 0) {
               hongbuDebugLog("WARN", "일부 포토메모는 이미지 데이터가 없어 복원에서 제외됨");
             }
             hongbuDebugToast(`✅ 복원 완료! 메모 ${totalNoteOk}개, 포토 ${totalPhotoOk}개`, 5000);
 
             hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
+
+            // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
             setTimeout(() => {
               hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
               refreshApartmentMarkers();
