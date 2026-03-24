@@ -817,10 +817,107 @@
   }
 
   // ==========================
-  // 백업 (단일 NDJSON · Blob 즉시 변환으로 JS 힙 최소화)
-  // 각 레코드를 문자열 → Blob으로 즉시 변환하여 JS 힙에서 문자열 참조 해제
-  // blobParts는 Blob 참조 배열 → new Blob(blobParts)는 복사 없이 연결
+  // 백업 (단일 NDJSON)
+  // Android: showSaveFilePicker → 디스크 직접 스트리밍 (JS 힙에 레코드 1개만)
+  // iOS 등 폴백: Blob 즉시 변환 방식 (문자열 GC 가능)
   // ==========================
+
+  // DB에서 레코드 1개 조회 (notes / photos 공용)
+  async function _fetchOneRecord(db, storeName, refId) {
+    const tx = db.transaction([storeName], 'readonly');
+    const store = tx.objectStore(storeName);
+    const key = String(refId);
+    return new Promise(res => {
+      const r1 = store.get(key);
+      r1.onsuccess = () => {
+        if (r1.result) return res(r1.result);
+        const n = Number(key);
+        if (Number.isFinite(n) && String(n) === key) {
+          const r2 = store.get(n);
+          r2.onsuccess = () => res(r2.result || null);
+          r2.onerror = () => res(null);
+        } else res(null);
+      };
+      r1.onerror = () => res(null);
+    });
+  }
+
+  // Android Chrome: showSaveFilePicker로 디스크에 직접 스트리밍
+  // JS 힙에는 항상 레코드 1개만 존재
+  async function _backupStreaming(db, noteRefs, photoRefs, fileName, metaLine) {
+    const fileHandle = await window.showSaveFilePicker({
+      suggestedName: fileName,
+      types: [{ description: 'NDJSON 백업', accept: { 'application/x-ndjson': ['.ndjson'] } }],
+    });
+    const writable = await fileHandle.createWritable();
+
+    await writable.write(metaLine);
+
+    for (let i = 0; i < noteRefs.length; i++) {
+      if (i % 20 === 0) showBusy(`메모 처리 중… (${i + 1} / ${noteRefs.length})`);
+      const rec = await _fetchOneRecord(db, STORE_NOTES, noteRefs[i].id);
+      if (rec) {
+        await writable.write(JSON.stringify({ type: 'note', ...rec }) + '\n');
+        // rec 스코프 벗어나 즉시 GC 가능
+      }
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    for (let i = 0; i < photoRefs.length; i++) {
+      showBusy(`사진 처리 중… (${i + 1} / ${photoRefs.length})`);
+      const raw = await _fetchOneRecord(db, STORE_PHOTOS, photoRefs[i].id);
+      if (raw) {
+        const serialized = await serializePhotoForExport(raw);
+        await writable.write(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
+        serialized.imageDataUrl = null;
+        serialized.thumbDataUrl = null;
+      }
+      await new Promise(r => setTimeout(r, 30));
+    }
+
+    await writable.close();
+  }
+
+  // iOS 등 폴백: Blob 즉시 변환 (문자열 → Blob 변환 후 문자열 GC 가능)
+  // blobParts는 Blob 참조만 보관, new Blob(blobParts)는 복사 없이 연결
+  async function _backupBlob(db, noteRefs, photoRefs, fileName, metaLine) {
+    const blobParts = [];
+
+    function pushLine(line) {
+      blobParts.push(new Blob([line]));
+    }
+
+    pushLine(metaLine);
+
+    for (let i = 0; i < noteRefs.length; i++) {
+      if (i % 20 === 0) showBusy(`메모 처리 중… (${i + 1} / ${noteRefs.length})`);
+      const rec = await _fetchOneRecord(db, STORE_NOTES, noteRefs[i].id);
+      if (rec) pushLine(JSON.stringify({ type: 'note', ...rec }) + '\n');
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    for (let i = 0; i < photoRefs.length; i++) {
+      showBusy(`사진 처리 중… (${i + 1} / ${photoRefs.length})`);
+      const raw = await _fetchOneRecord(db, STORE_PHOTOS, photoRefs[i].id);
+      if (raw) {
+        const serialized = await serializePhotoForExport(raw);
+        pushLine(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
+        serialized.imageDataUrl = null;
+        serialized.thumbDataUrl = null;
+      }
+      await new Promise(r => setTimeout(r, 30));
+    }
+
+    const blob = new Blob(blobParts, { type: 'application/x-ndjson' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
+  }
+
   async function backupSelectedNotes() {
     showBusy('선택된 메모/포토메모를 수집하는 중…');
     els.downloads.innerHTML = '';
@@ -847,103 +944,28 @@
     const now = new Date();
     const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
     const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
+    const fileName = `홍부_메모백업_${ts}_메모${noteRefs.length}_포토${photoRefs.length}.ndjson`;
+    const metaLine = JSON.stringify({
+      type: 'meta', version: 2,
+      exportedAt: new Date().toISOString(),
+      totalNotes: noteRefs.length, totalPhotos: photoRefs.length,
+      selectedSido: sSel || null, selectedSigungu: gSel || null,
+    }) + '\n';
 
     showBusy('백업 파일 생성 중…');
-
-    // Blob 참조 배열: 문자열을 즉시 Blob으로 변환하여 JS 힙에서 문자열 해제
-    const blobParts = [];
-
-    function pushLine(line) {
-      blobParts.push(new Blob([line])); // 문자열 → Blob 즉시 변환, 원본 문자열 GC 가능
-    }
-
-    // meta 라인
-    pushLine(JSON.stringify({
-      type: 'meta',
-      version: 2,
-      exportedAt: new Date().toISOString(),
-      totalNotes: noteRefs.length,
-      totalPhotos: photoRefs.length,
-      selectedSido: sSel || null,
-      selectedSigungu: gSel || null,
-    }) + '\n');
-
     const db = await openDB();
 
-    // 단지 메모: 1개씩 처리 (images 배열에 base64가 포함될 수 있어 배치 불가)
-    for (let i = 0; i < noteRefs.length; i++) {
-      if (i % 20 === 0) showBusy(`메모 처리 중… (${i + 1} / ${noteRefs.length})`);
-
-      const tx = db.transaction([STORE_NOTES], 'readonly');
-      const store = tx.objectStore(STORE_NOTES);
-      const key = String(noteRefs[i].id);
-
-      const rec = await new Promise(res => {
-        const r1 = store.get(key);
-        r1.onsuccess = () => {
-          if (r1.result) return res(r1.result);
-          const n = Number(key);
-          if (Number.isFinite(n) && String(n) === key) {
-            const r2 = store.get(n);
-            r2.onsuccess = () => res(r2.result || null);
-            r2.onerror = () => res(null);
-          } else res(null);
-        };
-        r1.onerror = () => res(null);
-      });
-
-      if (rec) {
-        pushLine(JSON.stringify({ type: 'note', ...rec }) + '\n');
-        // rec, JSON 문자열 모두 스코프 벗어나 GC 대상
+    try {
+      if (typeof window.showSaveFilePicker === 'function') {
+        // Android Chrome: 디스크 직접 스트리밍 (메모리 무관)
+        await _backupStreaming(db, noteRefs, photoRefs, fileName, metaLine);
+      } else {
+        // iOS 등: Blob 즉시 변환 방식
+        await _backupBlob(db, noteRefs, photoRefs, fileName, metaLine);
       }
-      await new Promise(r => setTimeout(r, 10)); // GC 기회
+    } finally {
+      db.close();
     }
-
-    // 포토메모: 1장씩 처리 후 즉시 참조 해제
-    for (let i = 0; i < photoRefs.length; i++) {
-      showBusy(`사진 처리 중… (${i + 1} / ${photoRefs.length})`);
-
-      const tx = db.transaction([STORE_PHOTOS], 'readonly');
-      const store = tx.objectStore(STORE_PHOTOS);
-      const key = String(photoRefs[i].id);
-
-      const raw = await new Promise(res => {
-        const r1 = store.get(key);
-        r1.onsuccess = () => {
-          if (r1.result) return res(r1.result);
-          const n = Number(key);
-          if (Number.isFinite(n) && String(n) === key) {
-            const r2 = store.get(n);
-            r2.onsuccess = () => res(r2.result || null);
-            r2.onerror = () => res(null);
-          } else res(null);
-        };
-        r1.onerror = () => res(null);
-      });
-
-      if (raw) {
-        const serialized = await serializePhotoForExport(raw);
-        pushLine(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
-        // base64 문자열 참조 즉시 해제
-        serialized.imageDataUrl = null;
-        serialized.thumbDataUrl = null;
-      }
-      await new Promise(r => setTimeout(r, 30)); // GC 기회
-    }
-
-    db.close();
-
-    // 모든 Blob을 복사 없이 연결하여 최종 파일 생성
-    const blob = new Blob(blobParts, { type: 'application/x-ndjson' });
-    const url = URL.createObjectURL(blob);
-    const fileName = `홍부_메모백업_${ts}_메모${noteRefs.length}_포토${photoRefs.length}.ndjson`;
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
 
     els.downloads.innerHTML = `<div style="padding:12px; color:#333; font-size:14px">✅ 백업 완료: <b>${fileName}</b><br><span style="color:#999; font-size:12px">메모 ${noteRefs.length}건 · 포토 ${photoRefs.length}건</span></div>`;
     hideBusy();
