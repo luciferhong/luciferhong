@@ -40,6 +40,7 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/streamsaver@2.0.6/StreamSaver.js"></script>
 </head>
 <body>
   <h1>📦 홍부 메모 백업</h1>
@@ -842,24 +843,20 @@
     });
   }
 
-  // Android Chrome: showSaveFilePicker로 디스크에 직접 스트리밍
-  // JS 힙에는 항상 레코드 1개만 존재
+  // Android Chrome + 데스크톱: StreamSaver.js → 서비스 워커 경유 디스크 직접 스트리밍
+  // JS 힙에는 항상 레코드 1개만 존재 (데이터 양 무관)
   async function _backupStreaming(db, noteRefs, photoRefs, fileName, metaLine) {
-    const fileHandle = await window.showSaveFilePicker({
-      suggestedName: fileName,
-      types: [{ description: 'NDJSON 백업', accept: { 'application/x-ndjson': ['.ndjson'] } }],
-    });
-    const writable = await fileHandle.createWritable();
+    streamSaver.mitm = 'mitm.html';
+    const fileStream = streamSaver.createWriteStream(fileName);
+    const writer = fileStream.getWriter();
+    const encoder = new TextEncoder();
 
-    await writable.write(metaLine);
+    await writer.write(encoder.encode(metaLine));
 
     for (let i = 0; i < noteRefs.length; i++) {
       if (i % 20 === 0) showBusy(`메모 처리 중… (${i + 1} / ${noteRefs.length})`);
       const rec = await _fetchOneRecord(db, STORE_NOTES, noteRefs[i].id);
-      if (rec) {
-        await writable.write(JSON.stringify({ type: 'note', ...rec }) + '\n');
-        // rec 스코프 벗어나 즉시 GC 가능
-      }
+      if (rec) await writer.write(encoder.encode(JSON.stringify({ type: 'note', ...rec }) + '\n'));
       await new Promise(r => setTimeout(r, 10));
     }
 
@@ -868,14 +865,14 @@
       const raw = await _fetchOneRecord(db, STORE_PHOTOS, photoRefs[i].id);
       if (raw) {
         const serialized = await serializePhotoForExport(raw);
-        await writable.write(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
+        await writer.write(encoder.encode(JSON.stringify({ type: 'photo', ...serialized }) + '\n'));
         serialized.imageDataUrl = null;
         serialized.thumbDataUrl = null;
       }
       await new Promise(r => setTimeout(r, 30));
     }
 
-    await writable.close();
+    writer.close();
   }
 
   // iOS 등 폴백: Blob 즉시 변환 (문자열 → Blob 변환 후 문자열 GC 가능)
@@ -956,11 +953,11 @@
     const db = await openDB();
 
     try {
-      if (typeof window.showSaveFilePicker === 'function') {
-        // Android Chrome: 디스크 직접 스트리밍 (메모리 무관)
+      if (typeof streamSaver !== 'undefined' && 'serviceWorker' in navigator) {
+        // Android Chrome + 데스크톱: StreamSaver 스트리밍 (메모리 무관)
         await _backupStreaming(db, noteRefs, photoRefs, fileName, metaLine);
       } else {
-        // iOS 등: Blob 즉시 변환 방식
+        // iOS 등 SW 미지원: Blob 즉시 변환 방식
         await _backupBlob(db, noteRefs, photoRefs, fileName, metaLine);
       }
     } finally {
