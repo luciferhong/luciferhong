@@ -1936,6 +1936,7 @@ console.log("bounds_changed");
     }
 
 
+	await loadApartmentsDetail();
 	await loadApartments();
 	
 	//필터값 변경 이벤트
@@ -2576,7 +2577,31 @@ function renderSiseMapMarker(apartment) {
     markerElement.appendChild(nameElement);
     markerElement.appendChild(detailsElement);
 
-
+    // L/S 배지
+    (function() {
+        const types = (apartmentDetailData[String(apartment.id)] || {}).타입정보 || [];
+        if (types.length === 0) return;
+        const areas = types.map(t => Number(t["전용면적"]) || 0).filter(a => a > 0);
+        if (areas.length === 0) return;
+        const minArea = Math.min(...areas);
+        const maxArea = Math.max(...areas);
+        let badgeText = null, badgeBg = null;
+        if (minArea > 85) { badgeText = "L"; badgeBg = "#1a56db"; }
+        else if (maxArea <= 49) { badgeText = "S"; badgeBg = "#e3a008"; }
+        if (!badgeText) return;
+        markerElement.style.position = "relative";
+        const badge = document.createElement("span");
+        badge.textContent = badgeText;
+        badge.style = `
+            position:absolute; top:-5px; right:-5px;
+            background:${badgeBg}; color:white;
+            font-size:9px; font-weight:bold;
+            width:13px; height:13px; border-radius:50%;
+            display:flex; align-items:center; justify-content:center;
+            line-height:1; pointer-events:none; z-index:10;
+        `;
+        markerElement.appendChild(badge);
+    })();
 
 const chartContainer = document.createElement("div");
 chartContainer.className = "priceChartContainer";
@@ -3498,30 +3523,24 @@ console.log(createEditableTableHTML(apartmentId, tableData));
 			store.delete(`${apartmentId}-시세1`);
 
 			transaction.oncomplete = () => {
-				console.log("✅ 초기화 완료 (IndexedDB 삭제됨)");
+				// priceCache에서도 삭제
+				delete priceCache[String(apartmentId)];
 
 				const apartment = apartmentData.find(a => a.id === apartmentId);
 				if (apartment) {
-					// ✅ 마커가 지도에 있으면 제거
-					if (apartment.marker && typeof apartment.marker.setMap === "function") {
-						apartment.marker.setMap(null);
-					
+					// 기존 마커 제거
+					const oldMarker = apartmentMarkers[apartmentId];
+					if (oldMarker instanceof naver.maps.Marker) {
+						naver.maps.Event.clearInstanceListeners(oldMarker);
+						oldMarker.setMap(null);
 					}
-					//delete apartmentMarkers[apartmentId]; // 👈 마커 관리 객체
-					// ✅ 기존 차트도 제거
-					const existing = document.querySelector(`[data-apartment-id='${apartmentId}']`);
-					if (existing) {
-						const chart = existing.closest('div[style*="position: absolute"]');
-						if (chart && chart.parentNode) {
-							chart.parentNode.removeChild(chart);
-						}
-					}
+					delete apartmentMarkers[apartmentId];
 
-					// ✅ 새로 마커 렌더링
-					renderSiseMapMarker(apartment);
+					// 새로 렌더링
+					const newMarker = renderSiseMapMarker(apartment);
+					apartmentMarkers[apartmentId] = newMarker;
 				}
 
-				// ✅ 모달 닫기
 				closePopup();
 				document.body.removeChild(modal);
 			};
@@ -5069,6 +5088,20 @@ function bindYearColorSettingsToModal() {
       textColorHex.value = "#FFFFFF";
     }
   });
+}
+
+let apartmentDetailData = {};
+
+async function loadApartmentsDetail() {
+    try {
+        const [res1, res2] = await Promise.all([
+            fetch("aptDetail1.json").then(r => r.json()),
+            fetch("aptDetail2.json").then(r => r.json())
+        ]);
+        apartmentDetailData = Object.assign({}, res1, res2);
+    } catch (e) {
+        console.error("❌ aptDetail 로드 실패:", e);
+    }
 }
 
 let priceCache = {}; // apartmentId → parsed price rows
