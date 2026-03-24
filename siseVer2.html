@@ -1430,7 +1430,7 @@ function removeAllLines() {
 }
 
 	// ✅ 3. 지도 이동할 때마다 범위 내 아파트만 마커로 표시
-	function updateMarkers(bounds, all = false) {
+	async function updateMarkers(bounds, all = false) {
 //console.log(all+"|"+hideNoPrice)
 		if (!all && hideNoPrice) {
 			// 지도 이동 시 일회성 적용 후 리셋
@@ -1474,6 +1474,10 @@ function removeAllLines() {
 			}
 			return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK;
 		});
+
+		// ✅ 바운더리 내 미캐시 ID만 IndexedDB에서 배치 로드
+		const missingIds = filtered.map(a => String(a.id)).filter(id => !(id in priceCache));
+		if (missingIds.length > 0) await loadPriceCacheForIds(missingIds);
 
 		// ✅ priceCache 기반 필터 (마커 생성 전 동기 처리)
 		const hasPF = _hasPriceFilter();
@@ -1770,7 +1774,6 @@ infoBox.textContent =
 // ✅ 페이지 로드 시 실행
 document.addEventListener("DOMContentLoaded", async () => {
 		await initIndexedDB();
-		await loadPriceCache();
 
 	window.map = new naver.maps.Map("map", {
 		center: new naver.maps.LatLng(37.5665, 126.9780),
@@ -3697,10 +3700,9 @@ function importFromJSON(file) {
 				alert('✅ 시세 데이터를 성공적으로 가져왔습니다.');
 
 				if (window.map) {
-					loadPriceCache().then(() => {
-						prevSiseMapState = "초기화";
-						updateMarkers(window.map.getBounds());
-					});
+					priceCache = {};
+					prevSiseMapState = "초기화";
+					updateMarkers(window.map.getBounds());
 				}
 			};
 
@@ -3743,10 +3745,9 @@ function importFromJSONToHongSise(file) {
           alert("✅ hongSise DB 데이터 가져오기 완료");
 
           if (window.map) {
-            loadPriceCache().then(() => {
-              prevSiseMapState = "초기화";
-              updateMarkers(window.map.getBounds());
-            });
+            priceCache = {};
+            prevSiseMapState = "초기화";
+            updateMarkers(window.map.getBounds());
           }
         }
       };
@@ -5037,7 +5038,8 @@ async function loadApartmentsDetail() {
 
 let priceCache = {}; // apartmentId → parsed price rows
 
-async function loadPriceCache() {
+async function loadPriceCacheForIds(ids) {
+  if (!ids || ids.length === 0) return;
   return new Promise(resolve => {
     const req = indexedDB.open("hongSise", 4);
     req.onerror = () => resolve();
@@ -5046,20 +5048,23 @@ async function loadPriceCache() {
       if (!db.objectStoreNames.contains("apartments")) { resolve(); return; }
       const tx = db.transaction(["apartments"], "readonly");
       const store = tx.objectStore("apartments");
-      const getAllReq = store.getAll();
-      getAllReq.onsuccess = () => {
-        priceCache = {};
-        getAllReq.result.forEach(item => {
-          if (!item.idType || !item.idType.endsWith("-시세1")) return;
-          const id = item.idType.replace(/-시세1$/, "");
-          const tableData = item.text || generateDefaultTable();
-          const dummyDiv = document.createElement("div");
-          dummyDiv.innerHTML = createEditableTableHTML(id, tableData);
-          priceCache[id] = parsePriceDataFromTable(dummyDiv);
-        });
-        resolve();
-      };
-      getAllReq.onerror = () => resolve();
+      let pending = ids.length;
+      ids.forEach(id => {
+        const getReq = store.get(`${id}-시세1`);
+        getReq.onsuccess = () => {
+          const item = getReq.result;
+          if (item) {
+            const tableData = item.text || generateDefaultTable();
+            const dummyDiv = document.createElement("div");
+            dummyDiv.innerHTML = createEditableTableHTML(id, tableData);
+            priceCache[id] = parsePriceDataFromTable(dummyDiv);
+          } else {
+            priceCache[id] = []; // 데이터 없음으로 마킹 (재쿼리 방지)
+          }
+          if (--pending === 0) resolve();
+        };
+        getReq.onerror = () => { if (--pending === 0) resolve(); };
+      });
     };
   });
 }
