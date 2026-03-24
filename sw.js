@@ -1,65 +1,36 @@
 'use strict'
 
-// StreamSaver.js v2.0.6 호환 서비스 워커
-// StreamSaver 라이브러리가 { id, filename } 형식으로 메시지를 보내면
-// scope + '__getSW/' + id 경로를 fetch 인터셉트 URL로 사용
-
-let supportsTransferable = false
-try {
-  const { readable } = new TransformStream()
-  const mc = new MessageChannel()
-  mc.port1.postMessage(readable, [readable])
-  supportsTransferable = true
-} catch (e) {
-  supportsTransferable = false
-}
-
-const map = new Map()
+// 직접 구현한 스트리밍 다운로드 서비스 워커
+// 외부 라이브러리 없이 memoBackup3.html과 직접 통신
 
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()))
 
+const pending = new Map() // url → { port, filename }
+
 self.addEventListener('message', evt => {
-  if (evt.data === 'ping') {
-    evt.ports[0].postMessage('pong')
-    return
-  }
-
-  const data = evt.data
-  const downloadUrl = self.registration.scope + '__getSW/' + data.id
+  const { id, filename } = evt.data
   const port = evt.ports[0]
-
-  map.set(downloadUrl, [port, data])
-  port.postMessage({ download: downloadUrl })
+  const url = self.registration.scope + '__dl__/' + id
+  pending.set(url, { port, filename })
+  port.postMessage({ url })
 })
 
 self.addEventListener('fetch', evt => {
-  const url = evt.request.url
-  if (!map.has(url)) return
-  evt.respondWith(respond(url))
-})
+  const entry = pending.get(evt.request.url)
+  if (!entry) return
 
-async function respond(url) {
-  const [port, data] = map.get(url)
-  map.delete(url)
-
-  const { filename, size, headers: additionalHeaders = {} } = data
-
-  const headers = new Headers({
-    'Content-Type': 'application/octet-stream; charset=utf-8',
-    'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(filename),
-    ...additionalHeaders,
-  })
-
-  if (Number.isFinite(size)) headers.set('Content-Length', size)
+  pending.delete(evt.request.url)
+  const { port, filename } = entry
 
   const { readable, writable } = new TransformStream()
 
-  if (supportsTransferable) {
-    port.postMessage({ writablePort: writable }, [writable])
-  } else {
-    port.postMessage({ writablePort: writable })
-  }
+  evt.respondWith(new Response(readable, {
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(filename),
+    },
+  }))
 
-  return new Response(readable, { headers })
-}
+  port.postMessage({ writable }, [writable])
+})
