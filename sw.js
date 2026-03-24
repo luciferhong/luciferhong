@@ -1,12 +1,23 @@
 'use strict'
 
-// StreamSaver.js 서비스 워커
-// 페이지에서 레코드를 순차 전송 → 브라우저가 디스크에 직접 스트리밍 저장
+// StreamSaver.js v2.0.6 호환 서비스 워커
+// StreamSaver 라이브러리가 { id, filename } 형식으로 메시지를 보내면
+// scope + '__getSW/' + id 경로를 fetch 인터셉트 URL로 사용
+
+let supportsTransferable = false
+try {
+  const { readable } = new TransformStream()
+  const mc = new MessageChannel()
+  mc.port1.postMessage(readable, [readable])
+  supportsTransferable = true
+} catch (e) {
+  supportsTransferable = false
+}
+
+const map = new Map()
 
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()))
-
-const map = new Map()
 
 self.addEventListener('message', evt => {
   if (evt.data === 'ping') {
@@ -15,26 +26,40 @@ self.addEventListener('message', evt => {
   }
 
   const data = evt.data
+  const downloadUrl = self.registration.scope + '__getSW/' + data.id
   const port = evt.ports[0]
-  map.set(data.url, [port, data])
-  port.postMessage({ download: data.url })
+
+  map.set(downloadUrl, [port, data])
+  port.postMessage({ download: downloadUrl })
 })
 
 self.addEventListener('fetch', evt => {
   const url = evt.request.url
   if (!map.has(url)) return
+  evt.respondWith(respond(url))
+})
 
+async function respond(url) {
   const [port, data] = map.get(url)
   map.delete(url)
 
+  const { filename, size, headers: additionalHeaders = {} } = data
+
   const headers = new Headers({
     'Content-Type': 'application/octet-stream; charset=utf-8',
-    'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(data.filename || 'download'),
+    'Content-Disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(filename),
+    ...additionalHeaders,
   })
 
-  if (data.size) headers.set('Content-Length', String(data.size))
+  if (Number.isFinite(size)) headers.set('Content-Length', size)
 
   const { readable, writable } = new TransformStream()
-  evt.respondWith(new Response(readable, { headers }))
-  port.postMessage({ writablePort: writable }, [writable])
-})
+
+  if (supportsTransferable) {
+    port.postMessage({ writablePort: writable }, [writable])
+  } else {
+    port.postMessage({ writablePort: writable })
+  }
+
+  return new Response(readable, { headers })
+}
