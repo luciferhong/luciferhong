@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <title>홍부 메모 백업 (모바일 최적화 · 단일 NDJSON)</title>
+  <title>홍부 메모 백업 (모바일 최적화 · 10개 분할 · 지연생성 · 로딩팝업)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root { --bg:#f7f7f9; --card:#fff; --text:#222; --muted:#666; --brand:#4A90E2; --brand2:#357ABD; }
@@ -62,7 +62,7 @@
   <div class="card" style="margin-top:14px">
     <div class="row">
       <button id="backupBtn">⬇️ 선택 메모 백업</button>
-      <span class="muted">메모와 포토를 하나의 파일로 백업합니다.</span>
+      <span class="muted">카카오톡 전송을 위해 10개씩 분할·다운로드(지연 생성) 합니다.</span>
     </div>
     <div class="divider"></div>
     <div id="downloadContainer" class="downloads"></div>
@@ -817,129 +817,135 @@
   }
 
   // ==========================
-  // 백업 (단일 NDJSON 파일)
+  // 백업 (10개 분할 · 지연 생성)
   // ==========================
   async function backupSelectedNotes() {
     showBusy('선택된 메모/포토메모를 수집하는 중…');
+
     els.downloads.innerHTML = '';
 
+    // ✅ DB 전체 순회 대신 캐시에서 ID만 추림(초고속)
     const sSel = (els.sido.value || '').trim();
     const gSel = (els.sigungu.value || '').trim();
-    const noteRefs = [], photoRefs = [];
-
+    const selectedRefsSnapshot = [];
+    let selectedNoteCount = 0;
+    let selectedPhotoCount = 0;
     for (const [key, r] of regionCache.itemRegion.entries()) {
       if (sSel && String(r.sidoCode || '').trim() !== sSel) continue;
       if (gSel && String(r.sigunguCode || '').trim() !== gSel) continue;
       const meta = regionCache.itemMeta.get(key);
       if (!meta) continue;
-      if (meta.kind === 'photo') photoRefs.push(meta);
-      else noteRefs.push(meta);
+      selectedRefsSnapshot.push(meta);
+      if (meta.kind === 'note') selectedNoteCount++;
+      if (meta.kind === 'photo') selectedPhotoCount++;
     }
 
-    if (noteRefs.length + photoRefs.length === 0) {
+    if (selectedRefsSnapshot.length === 0) {
       hideBusy();
       alert('선택한 지역에 해당하는 메모/포토메모가 없습니다.');
       return;
     }
 
+    const chunkSize = 10; // PART당 메모 개수
+    const totalParts = Math.ceil(selectedRefsSnapshot.length / chunkSize);
+
     const now = new Date();
     const koreaTime = new Date(now.getTime() + 9 * 60 * 60 * 1000);
     const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
 
-    showBusy('백업 파일 생성 중…');
+    const head = document.createElement('div');
+    head.innerHTML = `<h3>📁 총 ${totalParts}개의 백업 파일 · 메모 ${selectedNoteCount}건 · 포토 ${selectedPhotoCount}건</h3>`;
+    els.downloads.appendChild(head);
 
-    // Blob 배열로 구성 → new Blob(blobParts)는 내부적으로 연결만 함 (메모리 복사 최소화)
-    const blobParts = [];
+    for (let p = 1, i = 0; i < selectedRefsSnapshot.length; p++, i += chunkSize) {
+      const startIdx = i;
+      const endIdx = Math.min(i + chunkSize, selectedRefsSnapshot.length);
+      const plannedCount = endIdx - startIdx;
 
-    // meta 라인
-    blobParts.push(JSON.stringify({
-      type: 'meta',
-      version: 2,
-      exportedAt: new Date().toISOString(),
-      totalNotes: noteRefs.length,
-      totalPhotos: photoRefs.length,
-      selectedSido: sSel || null,
-      selectedSigungu: gSel || null,
-    }) + '\n');
+      const btn = document.createElement('button');
+      btn.className = 'secondary';
+      btn.textContent = `⬇️ PART ${p} 다운로드 (${plannedCount}개)`;
 
-    const db = await openDB();
+      const partNo = p, sliceStart = startIdx, sliceEnd = endIdx;
 
-    // 단지 메모: 50개씩 배치 조회 (텍스트라 작음)
-    const NOTE_BATCH = 50;
-    for (let i = 0; i < noteRefs.length; i += NOTE_BATCH) {
-      const batch = noteRefs.slice(i, i + NOTE_BATCH);
-      const tx = db.transaction([STORE_NOTES], 'readonly');
-      const store = tx.objectStore(STORE_NOTES);
+      btn.onclick = async () => {
+        showBusy(`PART ${partNo} 생성 중…`);
+        const db = await openDB();
+        const txStores = [STORE_NOTES];
+        if (db.objectStoreNames.contains(STORE_PHOTOS)) txStores.push(STORE_PHOTOS);
+        const tx = db.transaction(txStores, 'readonly');
+        const noteStore = tx.objectStore(STORE_NOTES);
+        const photoStore = db.objectStoreNames.contains(STORE_PHOTOS) ? tx.objectStore(STORE_PHOTOS) : null;
 
-      const records = await Promise.all(batch.map(ref => new Promise(res => {
-        const key = String(ref.id);
-        const r1 = store.get(key);
-        r1.onsuccess = () => {
-          if (r1.result) return res(r1.result);
-          const n = Number(key);
-          if (Number.isFinite(n) && String(n) === key) {
-            const r2 = store.get(n);
-            r2.onsuccess = () => res(r2.result || null);
-            r2.onerror = () => res(null);
-          } else res(null);
+        const sliceRefs = selectedRefsSnapshot.slice(sliceStart, sliceEnd);
+        const outNotes = [];
+        const rawPhotos = [];
+        await Promise.all(sliceRefs.map(ref => new Promise(res => {
+          const targetStore = (ref.kind === 'photo') ? photoStore : noteStore;
+          if (!targetStore) return res();
+          const handleResult = (v) => {
+            if (v) {
+              if (ref.kind === 'photo') rawPhotos.push(v);
+              else outNotes.push(v);
+            }
+            res();
+          };
+
+          try {
+            const key = String(ref.id);
+            const r1 = targetStore.get(key);
+            r1.onsuccess = () => {
+              if (r1.result) {
+                handleResult(r1.result);
+                return;
+              }
+              const n = Number(key);
+              if (Number.isFinite(n) && String(n) === key) {
+                const r2 = targetStore.get(n);
+                r2.onsuccess = () => handleResult(r2.result || null);
+                r2.onerror = () => handleResult(null);
+              } else {
+                handleResult(null);
+              }
+            };
+            r1.onerror = () => handleResult(null);
+          } catch(_) {
+            handleResult(null);
+          }
+        })));
+        db.close();
+
+        // Blob → data URL 변환 (JSON 직렬화를 위해)
+        const outPhotos = await Promise.all(rawPhotos.map(serializePhotoForExport));
+
+        const payload = {
+          meta: {
+            exportedAt: new Date().toISOString(),
+            part: partNo,
+            totalParts,
+            selectedSido: sSel || null,
+            selectedSigungu: gSel || null,
+          },
+          apartmentNotes: outNotes,
+          photoMemos: outPhotos,
         };
-        r1.onerror = () => res(null);
-      })));
 
-      for (const rec of records) {
-        if (!rec) continue;
-        blobParts.push(JSON.stringify({ type: 'note', ...rec }) + '\n');
-      }
-      showBusy(`메모 처리 중… (${Math.min(i + NOTE_BATCH, noteRefs.length)} / ${noteRefs.length})`);
-      await new Promise(r => setTimeout(r, 10));
+        const json = JSON.stringify(payload);
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `홍부_메모백업_${ts}_part${partNo}_메모${outNotes.length}_포토${outPhotos.length}.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
+        hideBusy();
+      };
+
+      els.downloads.appendChild(btn);
     }
 
-    // 포토메모: 1장씩 처리 후 즉시 참조 해제 (메모리 누적 방지)
-    for (let i = 0; i < photoRefs.length; i++) {
-      showBusy(`사진 처리 중… (${i + 1} / ${photoRefs.length})`);
-
-      const tx = db.transaction([STORE_PHOTOS], 'readonly');
-      const store = tx.objectStore(STORE_PHOTOS);
-      const key = String(photoRefs[i].id);
-
-      const raw = await new Promise(res => {
-        const r1 = store.get(key);
-        r1.onsuccess = () => {
-          if (r1.result) return res(r1.result);
-          const n = Number(key);
-          if (Number.isFinite(n) && String(n) === key) {
-            const r2 = store.get(n);
-            r2.onsuccess = () => res(r2.result || null);
-            r2.onerror = () => res(null);
-          } else res(null);
-        };
-        r1.onerror = () => res(null);
-      });
-
-      if (raw) {
-        const serialized = await serializePhotoForExport(raw);
-        blobParts.push(JSON.stringify({ type: 'photo', ...serialized }) + '\n');
-        // 즉시 참조 해제
-        serialized.imageDataUrl = null;
-        serialized.thumbDataUrl = null;
-      }
-      await new Promise(r => setTimeout(r, 30));
-    }
-
-    db.close();
-
-    const blob = new Blob(blobParts, { type: 'application/x-ndjson' });
-    const url = URL.createObjectURL(blob);
-    const fileName = `홍부_메모백업_${ts}_메모${noteRefs.length}_포토${photoRefs.length}.ndjson`;
-
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
-
-    els.downloads.innerHTML = `<div style="padding:12px; color:#333; font-size:14px">✅ 백업 완료: <b>${fileName}</b><br><span style="color:#999; font-size:12px">메모 ${noteRefs.length}건 · 포토 ${photoRefs.length}건</span></div>`;
     hideBusy();
   }
 
