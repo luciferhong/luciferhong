@@ -43,6 +43,74 @@ const targetSigunguCodes = new Set([
     '4719000000', // 경상북도 구미시
 ]);
 
+// ========== 수도권 시군구 코드 (여기서 제거하세요) ==========
+const sudogwonSigunguCodes = new Set([
+    // 서울시
+    '1111000000', // 서울시   종로구
+    '1114000000', // 서울시   중구
+    '1117000000', // 서울시   용산구
+    '1120000000', // 서울시   성동구
+    '1121500000', // 서울시   광진구
+    '1123000000', // 서울시   동대문구
+    '1126000000', // 서울시   중랑구
+    '1129000000', // 서울시   성북구
+    '1130500000', // 서울시   강북구
+    '1132000000', // 서울시   도봉구
+    '1135000000', // 서울시   노원구
+    '1138000000', // 서울시   은평구
+    '1141000000', // 서울시   서대문구
+    '1144000000', // 서울시   마포구
+    '1147000000', // 서울시   양천구
+    '1150000000', // 서울시   강서구
+    '1153000000', // 서울시   구로구
+    '1154500000', // 서울시   금천구
+    '1156000000', // 서울시   영등포구
+    '1159000000', // 서울시   동작구
+    '1162000000', // 서울시   관악구
+    '1165000000', // 서울시   서초구
+    '1168000000', // 서울시   강남구
+    '1171000000', // 서울시   송파구
+    '1174000000', // 서울시   강동구
+    // 경기도
+    '4111100000', // 경기도   수원시 장안구
+    '4111300000', // 경기도   수원시 권선구
+    '4111500000', // 경기도   수원시 팔달구
+    '4111700000', // 경기도   수원시 영통구
+    '4113100000', // 경기도   성남시 수정구
+    '4113300000', // 경기도   성남시 중원구
+    '4113500000', // 경기도   성남시 분당구
+    '4115000000', // 경기도   의정부시
+    '4117100000', // 경기도   안양시 만안구
+    '4117300000', // 경기도   안양시 동안구
+    '4119200000', // 경기도   부천시 원미구
+    '4119400000', // 경기도   부천시 소사구
+    '4119600000', // 경기도   부천시 오정구
+    '4121000000', // 경기도   광명시
+    '4122000000', // 경기도   평택시
+    '4127100000', // 경기도   안산시 상록구
+    '4127300000', // 경기도   안산시 단원구
+    '4128100000', // 경기도   고양시 덕양구
+    '4128500000', // 경기도   고양시 일산동구
+    '4128700000', // 경기도   고양시 일산서구
+    '4129000000', // 경기도   과천시
+    '4131000000', // 경기도   구리시
+    '4136000000', // 경기도   남양주시
+    '4137000000', // 경기도   오산시
+    '4139000000', // 경기도   시흥시
+    '4141000000', // 경기도   군포시
+    '4143000000', // 경기도   의왕시
+    '4145000000', // 경기도   하남시
+    '4146100000', // 경기도   용인시 처인구
+    '4146300000', // 경기도   용인시 기흥구
+    '4146500000', // 경기도   용인시 수지구
+    '4148000000', // 경기도   파주시
+    '4157000000', // 경기도   김포시
+    '4159100000', // 경기도   화성시 만세구
+    '4159300000', // 경기도   화성시 효행구
+    '4159500000', // 경기도   화성시 병점구
+    '4159700000', // 경기도   화성시 동탄구
+]);
+
 // ========== 지역 데이터 (네부단지추출.js에서 가져옴) ==========
 // console_price_fetcher.js만 단독 실행할 때도 '시도/시군구/읍면동' 선택이 가능하도록,
 // 네부단지추출.js의 EMBEDDED_REGION_TSV_GZIP_BASE64를 내장합니다.
@@ -5551,7 +5619,8 @@ async function fetchComplexDetails(complexId) {
             name: data.complex.complexName,
             useApproveYmd: data.complex.useApproveYmd,
             totalHouseholdCount: data.complex.totalHouseholdCount,
-            cortarNo: data.complex.cortarNo
+            cortarNo: data.complex.cortarNo,
+            realEstateTypeName: data.complex.realEstateTypeName || ''
         };
     }
     return null;
@@ -6430,6 +6499,10 @@ async function showPricePopup() {
     btnBeforeMadang.className = "apt-btn";
     btnBeforeMadang.textContent = "🏘️ 앞마당 다운로드";
 
+    const btnSudogwon = document.createElement("button");
+    btnSudogwon.className = "apt-btn";
+    btnSudogwon.textContent = "🌆 수도권 다운로드";
+
     const btnExcel = document.createElement("button");
     btnExcel.className = "apt-btn";
     btnExcel.textContent = "📊 엑셀저장";
@@ -6439,7 +6512,7 @@ async function showPricePopup() {
     btnClose.className = "apt-btn";
     btnClose.textContent = "닫기";
 
-    ft.append(btnBeforeMadang, btnStart, btnExcel, btnClose);
+    ft.append(btnSudogwon, btnBeforeMadang, btnStart, btnExcel, btnClose);
     document.body.appendChild(overlay);
 
     // Helper functions
@@ -6747,19 +6820,12 @@ refreshComplexList();
         await refreshComplexList();
     });
 
-    // 앞마당 다운로드 버튼
-    btnBeforeMadang.addEventListener("click", async () => {
-        // 앞마당 대상 지역 sigunguCode (시군구) 목록 → 파일 최상단 targetSigunguCodes 참조
-
-    /*
-        const targetSigunguCodes = new Set([
-            '1123000000'
-        ]);
- */
-       btnBeforeMadang.disabled = true;
+    // 공통 다운로드 함수
+    const runRegionDownload = async (downloadSigunguCodes, targetBtn) => {
+        targetBtn.disabled = true;
         collectedData.length = 0;
-        setInfo(`앞마당 대상 지역 조회 중...`);
-        log(`\n📍 앞마당 대상 지역 조회 시작 (${targetSigunguCodes.size}개 시군구)`);
+        setInfo(`대상 지역 조회 중...`);
+        log(`\n📍 대상 지역 조회 시작 (${downloadSigunguCodes.size}개 시군구)`);
         log(`📊 현재 로드된 지역 데이터: ${entries.length}개`);
 
         let processedCount = 0;
@@ -6789,7 +6855,7 @@ refreshComplexList();
             // 1단계: 대상 sigunguCode에 해당하는 모든 cortarNo 찾기
             const targetCortarNos = new Set();
             for (const entrada of entries) {
-                if (targetSigunguCodes.has(entrada.sigunguCode)) {
+                if (downloadSigunguCodes.has(entrada.sigunguCode)) {
                     targetCortarNos.add(entrada.cortarNo);
                     if (!matchedRegions.some(r => r.cortarNo === entrada.cortarNo)) {
                         matchedRegions.push({
@@ -7017,15 +7083,27 @@ refreshComplexList();
 
                     // 각 단지별 가격 조회 (병렬 처리)
                     const processComplexGroup = async (complexGroup, groupIndex) => {
-                        const results = [];
-                        for (const complex of complexGroup) {
+                        const allResults = await Promise.all(complexGroup.map(async (complex, idx) => {
+                            // 동시 요청 분산: 단지마다 50ms씩 stagger
+                            if (idx > 0) await new Promise(r => setTimeout(r, idx * 50));
+
+                            const MAX_RETRY = 3;
+                            for (let attempt = 1; attempt <= MAX_RETRY; attempt++) {
+                            const results = [];
                             try {
                                 const complexId = complex.complexNo;
 
                                 // fetchComplexDetails만 호출
                                 const complexDetails = await fetchComplexDetails(complexId);
 
-                                if (!complexDetails) continue;
+                                if (!complexDetails) {
+                                    if (attempt < MAX_RETRY) {
+                                        log(`  ↩ 단지 상세 없음, 재시도 ${attempt}/${MAX_RETRY} (${complex.complexNo})`);
+                                        await new Promise(r => setTimeout(r, 300 * attempt));
+                                        continue;
+                                    }
+                                    return results;
+                                }
 
                                 // ⭐️ 각 단지별로 평면도 맵을 개별 조회
                                 const complexPyeongMap = await getPyeongStructureMapForDong(
@@ -7062,7 +7140,6 @@ refreshComplexList();
 
                                     isMoreData = data.isMoreData;
                                     page++;
-                                    await new Promise(resolve => setTimeout(resolve, 50));
                                 }
 
                                 // 디버그: 전체 매물 리스트 로그 (처음 3개 항목만, 앞마당용)
@@ -7188,7 +7265,9 @@ refreshComplexList();
                                         시도: sidoName,
                                         시군구: sigunguName,
                                         읍면동: dongName,
+                                        아파트코드: complexId,
                                         단지명: complexDetails.name,
+                                        아파트유형: complexDetails.realEstateTypeName,
                                         입주시기: `${complexDetails.useApproveYmd.slice(0, 4)}.${complexDetails.useApproveYmd.slice(4, 6)}`,
                                         전체세대수: complexDetails.totalHouseholdCount,
                                         면적: areaValue,
@@ -7206,11 +7285,19 @@ refreshComplexList();
                                         전세저층여부: (data.rent.minNormal !== null) ? '' : (data.rent.minAll !== null ? (data.rent.minAllIsLow ? '(저)' : '') : '')
                                     });
                                 });
+                                return results; // 성공 시 for 루프 탈출
                             } catch (error) {
-                                log(`  ⚠ 단지 조회 오류: ${error.message}`);
+                                if (attempt < MAX_RETRY) {
+                                    log(`  ↩ 단지 조회 오류, 재시도 ${attempt}/${MAX_RETRY}: ${error.message}`);
+                                    await new Promise(r => setTimeout(r, 300 * attempt));
+                                } else {
+                                    log(`  ⚠ 단지 조회 최종 실패: ${error.message}`);
+                                }
                             }
-                        }
-                        return results;
+                            } // for retry loop
+                            return []; // 모든 재시도 소진
+                        }));
+                        return allResults.flat();
                     };
 
                     // 4개씩 묶어서 병렬 처리
@@ -7230,9 +7317,9 @@ refreshComplexList();
                 return dongResults;
             };
 
-            // 2단계: 동을 3개씩 묶어서 병렬 처리 (네이버 rate limit 고려)
+            // 2단계: 동을 4개씩 묶어서 병렬 처리 (네이버 rate limit 고려)
             const cortarNoArray = Array.from(targetCortarNos);
-            const dongsPerGroup = 3;
+            const dongsPerGroup = 4;
 
             for (let i = 0; i < cortarNoArray.length; i += dongsPerGroup) {
                 const dongGroup = cortarNoArray.slice(i, i + dongsPerGroup);
@@ -7256,7 +7343,7 @@ refreshComplexList();
 
                 // 동 그룹 간 대기 (rate limit 고려)
                 if (i + dongsPerGroup < cortarNoArray.length) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    await new Promise(resolve => setTimeout(resolve, 50));
                 }
             }
 
@@ -7276,9 +7363,15 @@ refreshComplexList();
             setInfo(`❌ 오류: ${error.message}`);
             log(`❌ ${error.message}`);
         } finally {
-            btnBeforeMadang.disabled = false;
+            targetBtn.disabled = false;
         }
-    });
+    };
+
+    // 앞마당 다운로드 버튼
+    btnBeforeMadang.addEventListener("click", () => runRegionDownload(targetSigunguCodes, btnBeforeMadang));
+
+    // 수도권 다운로드 버튼
+    btnSudogwon.addEventListener("click", () => runRegionDownload(sudogwonSigunguCodes, btnSudogwon));
 
     // 조회 버튼
     btnStart.addEventListener("click", async () => {
@@ -7507,7 +7600,9 @@ refreshComplexList();
                         시도: actualSido,
                         시군구: actualSigungu,
                         읍면동: actualDong,
+                        아파트코드: complexId,
                         단지명: complexDetails.name,
+                        아파트유형: complexDetails.realEstateTypeName,
                         입주시기: `${complexDetails.useApproveYmd.slice(0, 4)}.${complexDetails.useApproveYmd.slice(4, 6)}`,
                         전체세대수: complexDetails.totalHouseholdCount,
                         면적: areaValue,
@@ -7542,7 +7637,7 @@ refreshComplexList();
 
                 // 헤더
                 const headerRow = table.insertRow();
-                ['시도', '시군구', '읍면동', '단지명', '입주시기', '전체세대수', '면적', '평형세대수', '구조', '방', '화장실', '매매가', '전세가', '매매물건수', '전세물건수', '매매층', '전세층', '매매저층여부', '전세저층여부'].forEach(text => {
+                ['시도', '시군구', '읍면동', '아파트코드', '단지명', '아파트유형', '입주시기', '전체세대수', '면적', '평형세대수', '구조', '방', '화장실', '매매가', '전세가', '매매물건수', '전세물건수', '매매층', '전세층', '매매저층여부', '전세저층여부'].forEach(text => {
                     const th = document.createElement('th');
                     th.innerText = text;
                     headerRow.appendChild(th);
@@ -7551,7 +7646,7 @@ refreshComplexList();
                 // 데이터
                 collectedData.forEach(item => {
                     const row = table.insertRow();
-                    [item.시도, item.시군구, item.읍면동, item.단지명, item.입주시기, item.전체세대수, item.면적, item.평형세대수, item.구조, item.방, item.화장실, item.매매가, item.전세가, item.매매물건수, item.전세물건수, item.매매층, item.전세층, item.매매저층여부, item.전세저층여부].forEach(text => {
+                    [item.시도, item.시군구, item.읍면동, item.아파트코드, item.단지명, item.아파트유형, item.입주시기, item.전체세대수, item.면적, item.평형세대수, item.구조, item.방, item.화장실, item.매매가, item.전세가, item.매매물건수, item.전세물건수, item.매매층, item.전세층, item.매매저층여부, item.전세저층여부].forEach(text => {
                         const td = document.createElement('td');
                         td.innerText = text;
                         row.appendChild(td);
@@ -7604,7 +7699,7 @@ async function saveComplexDataToExcel(complexData) {
         const XLSX = await loadSheetJS();
 
         // 헤더 정의
-        const headers = ['시도', '시군구', '읍면동', '단지명', '입주시기', '전체세대수', '면적', '평형세대수', '구조', '방', '화장실', '매매가', '전세가', '매매물건수', '전세물건수', '매매층', '전세층', '매매저층여부', '전세저층여부'];
+        const headers = ['시도', '시군구', '읍면동', '아파트코드', '단지명', '아파트유형', '입주시기', '전체세대수', '면적', '평형세대수', '구조', '방', '화장실', '매매가', '전세가', '매매물건수', '전세물건수', '매매층', '전세층', '매매저층여부', '전세저층여부'];
 
         // 2D 배열로 변환 (헤더 + 데이터)
         const data2D = [headers];
@@ -7620,7 +7715,9 @@ async function saveComplexDataToExcel(complexData) {
             { wch: 10 },  // 시도
             { wch: 12 },  // 시군구
             { wch: 12 },  // 읍면동
+            { wch: 14 },  // 아파트코드
             { wch: 15 },  // 단지명
+            { wch: 12 },  // 아파트유형
             { wch: 12 },  // 입주시기
             { wch: 12 },  // 전체세대수
             { wch: 10 },  // 면적
