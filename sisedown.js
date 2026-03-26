@@ -104,10 +104,6 @@ const sudogwonSigunguCodes = new Set([
     '4146300000', // 경기도   용인시 기흥구
     '4146500000', // 경기도   용인시 수지구
     '4148000000', // 경기도   파주시
-    '4157000000', // 경기도   김포시
-    '4159100000', // 경기도   화성시 만세구
-    '4159300000', // 경기도   화성시 효행구
-    '4159500000', // 경기도   화성시 병점구
     '4159700000', // 경기도   화성시 동탄구
 ]);
 
@@ -6821,7 +6817,7 @@ refreshComplexList();
     });
 
     // 공통 다운로드 함수
-    const runRegionDownload = async (downloadSigunguCodes, targetBtn) => {
+    const runRegionDownload = async (downloadSigunguCodes, targetBtn, filePrefix = '앞마당다운로드') => {
         targetBtn.disabled = true;
         collectedData.length = 0;
         setInfo(`대상 지역 조회 중...`);
@@ -7352,7 +7348,7 @@ refreshComplexList();
                 setInfo(`✓ 조회 완료: 총 ${collectedData.length}개 항목`);
                 log(`\n✓ 조회 완료: ${matchedRegions.length}개 지역, ${collectedData.length}개 항목`);
                 log(`엑셀 파일 다운로드 중...`);
-                await saveComplexDataToExcel(collectedData);
+                await saveComplexDataToExcel(collectedData, filePrefix);
                 log('✓ 엑셀 파일 다운로드 완료');
             } else {
                 setInfo(`조회 결과가 없습니다. (매칭된 읍면동: ${targetCortarNos.size}개)`);
@@ -7371,7 +7367,7 @@ refreshComplexList();
     btnBeforeMadang.addEventListener("click", () => runRegionDownload(targetSigunguCodes, btnBeforeMadang));
 
     // 수도권 다운로드 버튼
-    btnSudogwon.addEventListener("click", () => runRegionDownload(sudogwonSigunguCodes, btnSudogwon));
+    btnSudogwon.addEventListener("click", () => runRegionDownload(sudogwonSigunguCodes, btnSudogwon, '수도권다운로드'));
 
     // 조회 버튼
     btnStart.addEventListener("click", async () => {
@@ -7693,7 +7689,7 @@ refreshComplexList();
  * 지역별 단지 정보를 엑셀로 저장
  * @param {array} complexData - 단지 정보 배열
  */
-async function saveComplexDataToExcel(complexData) {
+async function saveComplexDataToExcel(complexData, filePrefix = '앞마당다운로드') {
     try {
         console.log('\n엑셀 라이브러리 로드 중...');
         const XLSX = await loadSheetJS();
@@ -7741,7 +7737,7 @@ async function saveComplexDataToExcel(complexData) {
         const now = new Date();
         const pad = (n) => String(n).padStart(2, '0');
         const dateStr = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-        const fileName = `앞마당다운로드_${dateStr}.xlsx`;
+        const fileName = `${filePrefix}_${dateStr}.xlsx`;
         XLSX.writeFile(wb, fileName);
 
         console.log(`✓ 엑셀 파일 다운로드 완료: ${fileName}\n`);
