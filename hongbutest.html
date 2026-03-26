@@ -3331,14 +3331,7 @@
         if (emdPrepared) return;
 
         const parts = EMD_GEOJSON_PARTS;
-        const results = await Promise.all(
-          parts.map((p) =>
-            fetch(p).then((r) => {
-              if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
-              return r.json();
-            }),
-          ),
-        );
+        const results = await Promise.all(parts.map((p) => fetchWithETagCache(p)));
 
         // Merge FeatureCollections
         const merged = { type: "FeatureCollection", features: [] };
@@ -3355,9 +3348,7 @@
       async function loadEmdPopulationOnce() {
         if (emdPopulationMap) return;
         try {
-          const res = await fetch(EMD_POPULATION_JSON_URL, { cache: "no-store" });
-          if (!res.ok) throw new Error(`Fetch failed: ${EMD_POPULATION_JSON_URL} ${res.status}`);
-          const data = await res.json();
+          const data = await fetchWithETagCache(EMD_POPULATION_JSON_URL);
           emdPopulationMap = data?.items || {};
         } catch (e) {
           console.warn("EMD population JSON load failed:", e);
@@ -3390,14 +3381,7 @@
         if (admLoaded) return;
 
         const parts = ADM_GEOJSON_PARTS;
-        const results = await Promise.all(
-          parts.map((p) =>
-            fetch(p).then((r) => {
-              if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
-              return r.json();
-            }),
-          ),
-        );
+        const results = await Promise.all(parts.map((p) => fetchWithETagCache(p)));
 
         const merged = { type: "FeatureCollection", features: [] };
         for (const fc of results) {
@@ -3413,9 +3397,7 @@
       async function loadAdmPopulationOnce() {
         if (admPopulationMap) return;
         try {
-          const res = await fetch(ADM_POPULATION_JSON_URL, { cache: "no-store" });
-          if (!res.ok) throw new Error(`Fetch failed: ${ADM_POPULATION_JSON_URL} ${res.status}`);
-          const data = await res.json();
+          const data = await fetchWithETagCache(ADM_POPULATION_JSON_URL);
           admPopulationMap = data?.items || {};
         } catch (e) {
           console.warn("ADM population JSON load failed:", e);
@@ -3826,14 +3808,7 @@
         if (sigPrepared) return;
 
         const parts = SIG_GEOJSON_PARTS;
-        const results = await Promise.all(
-          parts.map((p) =>
-            fetch(p).then((r) => {
-              if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
-              return r.json();
-            }),
-          ),
-        );
+        const results = await Promise.all(parts.map((p) => fetchWithETagCache(p)));
 
         // Merge FeatureCollections
         const merged = { type: "FeatureCollection", features: [] };
@@ -4046,8 +4021,7 @@
         try {
           //const response = await fetch("https://your-github-username.github.io/data/apt.json"); // ✅ JSON 파일 사용
           //const response = await fetch("apt.json");
-          const response = await fetch(`apt.json?t=${Date.now()}`, { cache: "no-store" });
-          const data = await response.json();
+          const data = await fetchWithETagCache("apt.json");
 
           apartmentData = data.map((apt, index) => ({
             id: apt.id,
@@ -4383,7 +4357,7 @@
       // - 마커가 생성/갱신될 때 해당 id의 메모 존재 여부만 IndexedDB에서 확인(getKey/get)
       // - 결과는 캐시(Map)하여 반복 조회 방지
       // ================================
-      const HONGBU_DB_VERSION = 5;
+      const HONGBU_DB_VERSION = 6;
       const HONGBU_MEMO_DB_VERSION = 5;
 
       window.__memoPresenceCache = window.__memoPresenceCache || new Map();
@@ -5198,9 +5172,7 @@
 
           // ✅ 파일 하나를 "배열 or 래퍼({schools:[]})" 모두 지원해서 배열로 통일
           async function fetchAsArray(url) {
-            const res = await fetch(url, { cache: "no-store" });
-            if (!res.ok) throw new Error(`학교 파일 로드 실패: ${url} (HTTP ${res.status})`);
-            const data = await res.json().catch(() => null);
+            const data = await fetchWithETagCache(url).catch(() => null);
 
             if (Array.isArray(data)) return data;
             if (Array.isArray(data?.schools)) return data.schools;
@@ -5736,20 +5708,10 @@
       // JSON 데이터 로드
       async function loadApartmentsDetail() {
         try {
-          // 매 호출마다 다른 쿼리스트링으로 캐시 우회
-          const ts = Date.now();
-
-          // 두 JSON을 캐시 없이 병렬 로드
-          const [res1, res2] = await Promise.all([
-            fetch(`aptDetail1.json?t=${ts}`, { cache: "no-store" }),
-            fetch(`aptDetail2.json?t=${ts}`, { cache: "no-store" }),
+          const [json1, json2] = await Promise.all([
+            fetchWithETagCache("aptDetail1.json"),
+            fetchWithETagCache("aptDetail2.json"),
           ]);
-
-          if (!res1.ok || !res2.ok) {
-            throw new Error(`fetch failed: ${res1.status}/${res2.status}`);
-          }
-
-          const [json1, json2] = await Promise.all([res1.json(), res2.json()]);
 
           // 병합
           apartmentDetailData = Object.assign({}, json1, json2);
@@ -6176,8 +6138,7 @@ const originalBase64 = event.target.result;
 
       async function loadMiddleSchools() {
         try {
-          const response = await fetch("middleSchools.json");
-          let middleSchools = await response.json();
+          let middleSchools = await fetchWithETagCache("middleSchools.json");
           // ✅ 중복 제거: 학교 ID를 기준으로 첫 번째 값만 유지
           const uniqueSchools = [];
           const seenIds = new Set();
@@ -6274,8 +6235,7 @@ const originalBase64 = event.target.result;
 
       async function loadFacilities() {
         try {
-          const response = await fetch("facility.json");
-          const facilities = await response.json();
+          const facilities = await fetchWithETagCache("facility.json");
 
           //console.log("✅ 시설 데이터 로드 완료", facilities);
           window.facilityData = facilities; // ✅ 전체 시설 데이터 저장
@@ -6372,8 +6332,7 @@ const originalBase64 = event.target.result;
 
       async function loadStarbucks() {
         try {
-          const response = await fetch("starbucks.json");
-          const starbucks = await response.json();
+          const starbucks = await fetchWithETagCache("starbucks.json");
 
           //console.log("✅ 스타벅스 데이터 로드 완료", starbucks);
           window.starbucksData = starbucks; // ✅ 전체 스타벅스 데이터 저장
@@ -6571,6 +6530,10 @@ const originalBase64 = event.target.result;
               db.createObjectStore("settings"); // keyPath 없이 key-value 형태로 사용
               console.log("✅ IndexedDB 업그레이드 완료: settings store 생성됨");
             }
+            if (!db.objectStoreNames.contains("fileCache")) {
+              db.createObjectStore("fileCache", { keyPath: "url" });
+              console.log("✅ IndexedDB 업그레이드 완료: fileCache store 생성됨");
+            }
             // 🔼🔼🔼
           };
 
@@ -6585,6 +6548,56 @@ const originalBase64 = event.target.result;
           };
         });
       }
+      // ✅ ETag/Last-Modified 기반 조건부 GET + IndexedDB 캐시
+      // GitHub Pages는 ETag를 기본 제공하므로 파일이 바뀌지 않으면 304 응답(헤더만, ~200B)
+      let _fileCacheDbPromise = null;
+      function getFileCacheDb() {
+        if (!_fileCacheDbPromise) _fileCacheDbPromise = initIndexedDB();
+        return _fileCacheDbPromise;
+      }
+
+      async function fetchWithETagCache(url) {
+        const db = await getFileCacheDb();
+
+        const cached = await new Promise((resolve) => {
+          const tx = db.transaction("fileCache", "readonly");
+          const req = tx.objectStore("fileCache").get(url);
+          req.onsuccess = () => resolve(req.result ?? null);
+          req.onerror = () => resolve(null);
+        });
+
+        const headers = {};
+        if (cached?.etag) headers["If-None-Match"] = cached.etag;
+        else if (cached?.lastModified) headers["If-Modified-Since"] = cached.lastModified;
+
+        const res = await fetch(url, { headers });
+
+        if (res.status === 304 && cached?.data !== undefined) {
+          console.log(`📦 [캐시] ${url}`);
+          return cached.data; // 변경 없음 → 캐시 반환
+        }
+
+        if (!res.ok) throw new Error(`Fetch failed: ${url} ${res.status}`);
+
+        const data = await res.json();
+        console.log(`🌐 [다운로드] ${url}`);
+
+        const entry = {
+          url,
+          data,
+          etag: res.headers.get("ETag"),
+          lastModified: res.headers.get("Last-Modified"),
+        };
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction("fileCache", "readwrite");
+          tx.objectStore("fileCache").put(entry);
+          tx.oncomplete = resolve;
+          tx.onerror = reject;
+        });
+
+        return data;
+      }
+
       function initMemoIndexedDB() {
         return new Promise((resolve, reject) => {
           const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
