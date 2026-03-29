@@ -1646,13 +1646,8 @@ async function loadSchools() {
       return [];
     }
 
-    // ✅ 4개 파일 병합 (순차 로드)
-    const merged = [];
-    for (const f of PARTS) {
-      const arr = await fetchAsArray(f);
-      //console.log(`✅ loaded ${f}: ${arr.length}`);
-      merged.push(...arr);
-    }
+    // 4개 파일 병렬 로드
+    const merged = (await Promise.all(PARTS.map(f => fetchAsArray(f)))).flat();
 
     // ✅ 중복 제거 (schoolCode/markerId 우선)
     const uniqMap = new Map();
@@ -1870,54 +1865,26 @@ console.log("bounds_changed");
 		console.log("✅ 네이버 지도 초기화 완료.");
 
 
-    await loadSchools();
-    await loadMiddleSchools();
-    await loadFacilities();
-    await loadStarbucks();
+	setupRightClickEvent();
 
-
-
-	try {
-		await initColorSettingsDB(); // DB 연결
- //console.log("초기화");
-		const settings = await loadColorSettingsFromDB(); // DB에서 불러오기
-//console.log("로드");
-		if (settings) {
-		  priceColorSettings = settings; // 메모리에 저장
-		  console.log("🎨 초기 색상 설정 불러옴:", priceColorSettings);
-		} else {
-		  console.log("ℹ️ 저장된 색상 설정 없음, 기본값 사용");
-		}
-	  } catch (e) {
-		console.error("❌ 색상 설정 초기화 실패", e);
-	  }
-
-
-	try {
-	  //await initColorSettingsDB(); // DB 연결
-	  window.yearColorSettings = await loadYearColorSettingsFromDB();
-	  
-	} catch (e) {
-	  console.error("❌ 연식 색상 설정 초기화 실패", e);
-	}
-
-
-
-	if (window.map) {
-        setupRightClickEvent();
-    } else {
-        // ✅ 지도 로드 후 이벤트를 추가하는 방식
-        const checkMapLoaded = setInterval(() => {
-            if (window.map) {
-                clearInterval(checkMapLoaded);
-                setupRightClickEvent();
-            }
-        }, 100); // 🔹 100ms 간격으로 지도 로드 확인
-    }
-
-
-	await Promise.all([loadApartments(), loadApartmentsDetail()]);
+	// 색상 설정 + 아파트 데이터 병렬 로드
+	await Promise.all([
+		initColorSettingsDB().then(async () => {
+			try {
+				const settings = await loadColorSettingsFromDB();
+				if (settings) priceColorSettings = settings;
+			} catch (e) { console.error("❌ 색상 설정 초기화 실패", e); }
+			try {
+				window.yearColorSettings = await loadYearColorSettingsFromDB();
+			} catch (e) { console.error("❌ 연식 색상 설정 초기화 실패", e); }
+		}),
+		loadApartments(),
+		loadApartmentsDetail(),
+	]);
 	updateMarkers(window.map.getBounds());
+
+	// 나머지 레이어는 백그라운드 병렬 로드
+	Promise.all([loadSchools(), loadMiddleSchools(), loadFacilities(), loadStarbucks()]);
 	
 	//필터값 변경 이벤트
 	document.getElementById("filterPyeongFrom").addEventListener("input", () => {
