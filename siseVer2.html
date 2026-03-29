@@ -1001,9 +1001,6 @@ buttonContainer {
 
 			// ✅ 시도/시군구 필터 옵션 생성
 			initRegionFilters();
-
-			//console.log("✅ 아파트 데이터 fetch 완료");
-			updateMarkers(window.map.getBounds())
 		} catch (error) {
 			console.error("❌ 아파트 데이터 불러오기 실패:", error);
 		}
@@ -1654,7 +1651,7 @@ async function loadSchools() {
     const merged = [];
     for (const f of PARTS) {
       const arr = await fetchAsArray(f);
-      console.log(`✅ loaded ${f}: ${arr.length}`);
+      //console.log(`✅ loaded ${f}: ${arr.length}`);
       merged.push(...arr);
     }
 
@@ -1667,7 +1664,7 @@ async function loadSchools() {
     }
     const schools = Array.from(uniqMap.values());
 
-    console.log(`🎯 schools merged: ${merged.length} → unique: ${schools.length}`);
+    //console.log(`🎯 schools merged: ${merged.length} → unique: ${schools.length}`);
 
     // ✅ 전체 학교 데이터 저장 (반드시 배열)
     window.schoolData = schools;
@@ -1920,8 +1917,8 @@ console.log("bounds_changed");
     }
 
 
-	await loadApartmentsDetail();
-	await loadApartments();
+	await Promise.all([loadApartments(), loadApartmentsDetail()]);
+	updateMarkers(window.map.getBounds());
 	
 	//필터값 변경 이벤트
 	document.getElementById("filterPyeongFrom").addEventListener("input", () => {
@@ -3982,26 +3979,22 @@ function parsePriceDataFromTable(tableContainer) {
             let numStr = inBracket[1].replace(/[^\d.]/g, '');
             let num = parseFloat(numStr);
             if (!isNaN(num)) {
-                console.log(`  → 괄호 내 숫자 추출: "${text}" = ${num}`);
                 return num;
             }
         }
-        
+
         // 2단계: 괄호 제거 후 숫자 추출 (예: "10.5(예상)" → 10.5)
         let cleaned = text.replace(/\([^)]*\)/g, '').trim();
         if (cleaned === '') {
-            console.log(`  → 괄호만 있음: "${text}" = NaN`);
             return NaN;
         }
-        
+
         let numStr = cleaned.replace(/[^\d.]/g, '');
         let num = parseFloat(numStr);
         if (!isNaN(num)) {
-            console.log(`  → 괄호 제거 후 숫자 추출: "${text}" = ${num}`);
             return num;
         }
-        
-        console.log(`  → 숫자 추출 실패: "${text}" = NaN`);
+
         return NaN;
     }
 
@@ -4015,8 +4008,6 @@ function parsePriceDataFromTable(tableContainer) {
             const 전세 = extractPrice(전세Text);
 			const 기타 = cells[3]?.textContent.trim() || "";
 
-            console.log(`🔍 파싱 행 ${rowIndex}:`, { 평형, 매매Text, 매매, 전세Text, 전세, 기타 });
-
             if (!isNaN(매매)) {
                 // ✅ 원본 텍스트도 함께 저장 (차트에서 표시용)
                 parsed.push({ 평형, 매매, 매매Display: 매매Text, 전세, 전세Display: 전세Text, 기타 });
@@ -4024,7 +4015,6 @@ function parsePriceDataFromTable(tableContainer) {
         }
     });
 
-    console.log(`✅ 파싱 완료 (총 ${parsed.length}행):`, parsed);
     return parsed;
 }
 
@@ -5272,193 +5262,6 @@ function getSettingFromHongSiseDB(key) {
 }
 
 
-/* ============ DEBUG INSTRUMENTATION: Hong WASD/Focus/IME ============ */
-(function () {
-  const DEBUG = true;
-  const tag = '[DBG]';
-  const dlog = (...args) => DEBUG && console.log(tag, ...args);
-
-  // 안전한 엘리먼트 설명
-  function describeEl(el) {
-    if (!el) return null;
-    return {
-      tag: el.tagName,
-      id: el.id || null,
-      class: el.className || null,
-      name: el.name || null,
-      contentEditable: !!el.isContentEditable
-    };
-  }
-
-  // 키 이벤트 요약
-  function keyInfo(e) {
-    return {
-      key: e.key,
-      code: e.code,
-      isComposing: e.isComposing,
-      repeat: e.repeat,
-      defaultPrevented: e.defaultPrevented,
-      target: describeEl(e.target),
-      activeElt: describeEl(document.activeElement),
-      hasActiveMarker: !!window.activeMarker,
-      activeMarkerId: window.activeMarker?.apartmentId ?? null
-    };
-  }
-
-  // 창 포커스/가시성/IME 상태 모니터링
-  window.addEventListener('focus', () => dlog('window focus'));
-  window.addEventListener('blur', () => dlog('window blur'));
-  document.addEventListener('visibilitychange', () => dlog('visibility', document.visibilityState));
-
-  window.addEventListener('compositionstart', (e) => dlog('compositionstart'));
-  window.addEventListener('compositionend',   (e) => dlog('compositionend'));
-
-  // 포커스 이동 흐름 추적 (어디가 키를 먹는지 보기)
-  document.addEventListener('focusin',  (e) => dlog('focusin',  describeEl(e.target)));
-  document.addEventListener('focusout', (e) => dlog('focusout', describeEl(e.target)));
-
-  // 지도 정보/줌/토글 상태 간이 체크
-  function snapshotUI(prefix='UI') {
-    try {
-      const zoom = window.map?.getZoom?.();
-      const showApt = document.getElementById('toggleApartments')?.checked;
-      const siseOn  = document.getElementById('toggleSiseMap')?.checked;
-      dlog(prefix, { zoom, showApartments: showApt, siseMap: siseOn, activeMarker: !!window.activeMarker, activeMarkerId: window.activeMarker?.apartmentId ?? null });
-    } catch (e) { /* noop */ }
-  }
-
-  // ===== 1) global key logger (capture 단계) =====
-  function globalKeydownLogger(e) {
-    dlog('keydown (capture)', keyInfo(e));
-  }
-  function globalKeyupLogger(e) {
-    dlog('keyup (capture)', keyInfo(e));
-  }
-  window.addEventListener('keydown', globalKeydownLogger, { capture: true });
-  window.addEventListener('keyup',   globalKeyupLogger,   { capture: true });
-  dlog('Global key loggers registered (capture=true)');
-
-  // ===== 2) handleKeyDown 래핑(있으면), 없으면 임시 핸들러 =====
-  if (typeof window.handleKeyDown === 'function') {
-    const _orig = window.handleKeyDown;
-    window.handleKeyDown = function (e) {
-      dlog('handleKeyDown: ENTER', keyInfo(e));
-      try {
-        return _orig.call(this, e);
-      } finally {
-        dlog('handleKeyDown: EXIT');
-      }
-    };
-    dlog('handleKeyDown wrapped ✅');
-  } else {
-    // 혹시 정의 전 등록되어 먹통이면 임시로라도 로깅
-    window.handleKeyDown = function (e) {
-      dlog('handleKeyDown (shim): missing original, swallowed', keyInfo(e));
-    };
-    dlog('handleKeyDown shim installed ⚠️');
-  }
-
-  // 중복/순서 꼬임 방지로 capture=true로 재등록
-  try {
-    window.removeEventListener('keydown', window.handleKeyDown, { capture: true });
-  } catch (e) {}
-  window.addEventListener('keydown', window.handleKeyDown, { capture: true });
-  dlog('handleKeyDown (re)registered with capture=true');
-
-  // ===== 3) 우클릭 선택 로깅(마커 선택 흐름) =====
-  // addMarkerRightClickEvent가 이미 마커에 리스너를 붙이는데, 여기에 로깅 추가 훅을 덧댑니다.
-  if (typeof window.addMarkerRightClickEvent === 'function') {
-    const _add = window.addMarkerRightClickEvent;
-    window.addMarkerRightClickEvent = function (marker, markerElement) {
-      // 원래 기능 실행
-      _add(marker, markerElement);
-
-      // 별도의 로거를 같은 마커에 추가 (중복 대비해도 문제 없음)
-      try {
-        naver.maps.Event.addListener(marker, 'rightclick', (e) => {
-          dlog('RIGHTCLICK on marker', {
-            id: marker?.apartmentId ?? null,
-            hasElement: !!markerElement,
-            targetInsideTable: !!e?.domEvent?.target?.closest?.('.tableContainer')
-          });
-          // activeMarker 세팅이 비동기로 이뤄지면 다음 틱에서 확인
-          setTimeout(() => {
-            dlog('After rightclick: activeMarker?', {
-              has: !!window.activeMarker,
-              id: window.activeMarker?.apartmentId ?? null
-            });
-            snapshotUI('UI after rightclick');
-          }, 0);
-        });
-      } catch (err) {
-        dlog('rightclick logger attach error', err);
-      }
-    };
-    dlog('addMarkerRightClickEvent wrapped ✅');
-  } else {
-    dlog('addMarkerRightClickEvent not found (no wrap) ⚠️');
-  }
-
-  // ===== 4) updateMarkers 성능+결과치 스냅샷 =====
-  if (typeof window.updateMarkers === 'function') {
-    const _upd = window.updateMarkers;
-    window.updateMarkers = function (bounds, all = false) {
-      const t0 = performance.now();
-      let beforeCount = 0;
-      try {
-        beforeCount = Object.keys(window.apartmentMarkers || {}).length;
-      } catch (e) {}
-
-      snapshotUI('updateMarkers: ENTER');
-      const res = _upd.call(this, bounds, all);
-
-      const ms = (performance.now() - t0).toFixed(1);
-      let afterCount = 0;
-      try {
-        afterCount = Object.keys(window.apartmentMarkers || {}).length;
-      } catch (e) {}
-      dlog('updateMarkers: EXIT', { all, ms, beforeCount, afterCount });
-      return res;
-    };
-    dlog('updateMarkers wrapped ✅');
-  } else {
-    dlog('updateMarkers not found (no wrap) ⚠️');
-  }
-
-  // ===== 5) 지도 이벤트(초간단) =====
-  try {
-    if (window.map && typeof naver !== 'undefined') {
-      naver.maps.Event.addListener(window.map, 'idle', () => {
-        dlog('map idle', { zoom: window.map.getZoom() });
-      });
-    } else {
-      // 지도 준비 전일 수 있으니 약간의 폴링 후 연결
-      const iv = setInterval(() => {
-        if (window.map && typeof naver !== 'undefined') {
-          clearInterval(iv);
-          naver.maps.Event.addListener(window.map, 'idle', () => {
-            dlog('map idle', { zoom: window.map.getZoom() });
-          });
-          dlog('Map idle logger attached ✅');
-        }
-      }, 200);
-    }
-  } catch (e) {
-    dlog('map idle logger attach error', e);
-  }
-
-  // ===== 6) 오버레이가 키 먹는지 확인 (#apartmentInfo 등) =====
-  const infoEl = document.getElementById('apartmentInfo');
-  if (infoEl) {
-    ['keydown','keyup','mousedown','click','contextmenu'].forEach((type) => {
-      infoEl.addEventListener(type, (e) => {
-        dlog(`#apartmentInfo ${type}`, { target: describeEl(e.target) });
-      }, true); // capture에서 먼저 로깅
-    });
-  }
-
-  dlog('🔎 Debug instrumentation ready.');
-})();
 
 
 
