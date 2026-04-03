@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>전출입 현황 뷰어 - 홍부가 기가막혀</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Malgun Gothic', '맑은 고딕', sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    min-height: 100vh;
+  }
+  header {
+    background: #1a3a5c;
+    color: #fff;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header .sub { font-size: 12px; opacity: .7; margin-left: auto; }
+
+  /* 로딩 오버레이 */
+  #loading {
+    position: fixed; inset: 0;
+    background: rgba(255,255,255,.93);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    gap: 14px;
+  }
+  .spinner {
+    width: 44px; height: 44px;
+    border: 4px solid #dde;
+    border-top-color: #1a3a5c;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading .msg { font-size: 15px; color: #555; }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+
+  .card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 18px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+    margin-bottom: 14px;
+  }
+  .card-title { font-size: 12px; color: #888; font-weight: 700; margin-bottom: 12px; letter-spacing: .04em; }
+
+  .filter-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .filter-group { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 140px; }
+  .filter-group label { font-size: 12px; color: #555; font-weight: 600; }
+  .filter-group select {
+    padding: 8px 10px;
+    border: 1px solid #ccd;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    background: #fff;
+    color: #222;
+    cursor: pointer;
+    outline: none;
+    transition: border-color .2s;
+  }
+  .filter-group select:focus { border-color: #1a3a5c; }
+  .filter-group select:disabled { background: #f5f5f5; color: #aaa; cursor: default; }
+
+  .period-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .period-row select {
+    padding: 8px 12px;
+    border: 2px solid #1a3a5c;
+    border-radius: 6px;
+    font-size: 15px;
+    font-family: inherit;
+    font-weight: 700;
+    color: #1a3a5c;
+    background: #f0f5ff;
+    cursor: pointer;
+    outline: none;
+  }
+  .period-row .tilde { font-size: 18px; color: #888; padding: 0 2px; }
+  .period-total { font-size: 12px; color: #888; margin-left: 6px; white-space: nowrap; }
+  .period-total strong { color: #1a3a5c; }
+
+  .selected-area {
+    background: #eef3fb;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #1a3a5c;
+    margin-bottom: 14px;
+    display: none;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .selected-area.visible { display: flex; }
+  .level-badge {
+    font-size: 11px;
+    font-weight: 400;
+    background: #c9dbf5;
+    color: #1a3a5c;
+    border-radius: 10px;
+    padding: 2px 8px;
+  }
+  .emd-notice {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: #e07800;
+    background: #fff5e0;
+    border-radius: 6px;
+    padding: 3px 8px;
+    display: none;
+  }
+  .emd-notice.visible { display: inline-block; }
+
+  /* emd 로딩 인디케이터 */
+  .emd-loading {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #888;
+    padding: 8px 16px;
+    background: #f8f9fc;
+    border-radius: 6px;
+    margin-bottom: 10px;
+  }
+  .emd-loading.visible { display: flex; }
+  .mini-spinner {
+    width: 16px; height: 16px;
+    border: 2px solid #dde;
+    border-top-color: #1a3a5c;
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+    flex-shrink: 0;
+  }
+
+  .tabs { display: flex; gap: 4px; margin-bottom: 0; align-items: flex-end; }
+  .exclude-checks-wrap {
+    margin-left: auto;
+    margin-bottom: 2px;
+    display: none;
+    align-items: center;
+    gap: 14px;
+  }
+  .exclude-checks-wrap.visible { display: flex; }
+  .exclude-self-wrap {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #555;
+    cursor: pointer;
+    user-select: none;
+  }
+  .exclude-self-wrap.visible { display: flex; }
+  .exclude-self-wrap input[type=checkbox] { cursor: pointer; accent-color: #b71c1c; }
+  #filter-text {
+    padding: 5px 10px;
+    border: 1px solid #ccd;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: inherit;
+    color: #333;
+    outline: none;
+    width: 150px;
+    transition: border-color .2s;
+  }
+  #filter-text:focus { border-color: #1a3a5c; }
+  #filter-text::placeholder { color: #bbb; }
+  .tab-btn {
+    padding: 10px 24px;
+    border: none;
+    border-radius: 8px 8px 0 0;
+    background: #dde3ed;
+    color: #555;
+    font-size: 14px;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .tab-btn.active { background: #fff; color: #1a3a5c; }
+  .tab-btn .badge {
+    display: inline-block;
+    background: #e0e5f0;
+    color: #555;
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 11px;
+    margin-left: 6px;
+  }
+  .tab-btn.active .badge { background: #1a3a5c; color: #fff; }
+
+  .grid-card {
+    background: #fff;
+    border-radius: 0 10px 10px 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+    overflow: hidden;
+  }
+  .grid-info {
+    padding: 10px 16px;
+    font-size: 12px;
+    color: #888;
+    border-bottom: 1px solid #eee;
+  }
+  .grid-info strong { color: #1a3a5c; font-size: 13px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    background: #f7f8fc;
+    padding: 9px 12px;
+    text-align: left;
+    font-size: 11px;
+    color: #777;
+    font-weight: 700;
+    border-bottom: 2px solid #eee;
+    white-space: nowrap;
+  }
+  thead th.r { text-align: right; }
+  tbody tr { border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background .12s; }
+  tbody tr:hover { background: #f4f8ff; }
+  tbody tr.self { background: #fffbe6; }
+  tbody td { padding: 8px 12px; vertical-align: middle; }
+  .td-rank { width: 34px; text-align: center; font-size: 12px; color: #bbb; font-weight: 700; }
+  .td-rank.top { color: #1a3a5c; }
+  .td-region { font-weight: 500; }
+  .sido-chip {
+    display: inline-block;
+    font-size: 10px;
+    background: #eef3fb;
+    color: #1a3a5c;
+    border-radius: 4px;
+    padding: 1px 5px;
+    margin-right: 5px;
+    font-weight: 700;
+  }
+  .td-num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; color: #222; }
+  .td-pct { text-align: right; color: #888; font-size: 12px; width: 58px; }
+  .td-bar { width: 140px; padding: 8px 12px 8px 4px; }
+  .bar-wrap { height: 12px; background: #eff0f4; border-radius: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; transition: width .35s ease; }
+  .bar-in  { background: linear-gradient(90deg, #1565c0, #42a5f5); }
+  .bar-out { background: linear-gradient(90deg, #b71c1c, #ef5350); }
+  .bar-sum { background: linear-gradient(90deg, #4a148c, #ab47bc); }
+
+  .more-wrap { text-align: center; padding: 14px; border-top: 1px solid #eee; }
+  .more-btn {
+    padding: 8px 30px;
+    border: 1px solid #ccd;
+    border-radius: 20px;
+    background: #fff;
+    font-size: 13px;
+    color: #555;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .more-btn:hover { background: #f5f5f5; }
+
+  .empty-state { padding: 60px 20px; text-align: center; color: #bbb; font-size: 15px; }
+  .empty-state .icon { font-size: 36px; margin-bottom: 10px; }
+
+  @media (max-width: 640px) {
+    .filter-row { flex-direction: column; }
+    .td-bar { display: none; }
+    .tab-btn { padding: 9px 14px; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div class="msg" id="loading-msg">데이터 로딩 중...</div>
+</div>
+
+<header>
+  <h1>전출입 현황 뷰어</h1>
+  <div class="sub">시군구/읍면동 단위 · 2015~2025년</div>
+</header>
+
+<div class="container">
+
+  <!-- 조회 기간 -->
+  <div class="card">
+    <div class="card-title">조회 기간 <span style="font-weight:400;color:#aaa;font-size:11px">· 읍면동 레벨은 전체 기간 합산</span></div>
+    <div class="period-row">
+      <select id="sel-from" onchange="onPeriodChange()"></select>
+      <span class="tilde">~</span>
+      <select id="sel-to" onchange="onPeriodChange()"></select>
+      <span class="period-total" id="period-total"></span>
+    </div>
+  </div>
+
+  <!-- 지역 필터 -->
+  <div class="card">
+    <div class="card-title">지역 선택</div>
+    <div class="filter-row">
+      <div class="filter-group">
+        <label>시도</label>
+        <select id="sel-sido" onchange="onSidoChange()">
+          <option value="">-- 시도 선택 --</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>시군구</label>
+        <select id="sel-sgg" onchange="onSggChange()" disabled>
+          <option value="">-- 시군구 선택 --</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>읍면동</label>
+        <select id="sel-emd" onchange="onEmdChange()" disabled>
+          <option value="">전체 (시군구 집계)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- emd 로딩 인디케이터 -->
+  <div class="emd-loading" id="emd-loading">
+    <div class="mini-spinner"></div>
+    읍면동 데이터 로딩 중...
+  </div>
+
+  <!-- 선택 지역 -->
+  <div class="selected-area" id="selected-area">
+    <span id="selected-label"></span>
+    <span class="level-badge" id="selected-level"></span>
+    <span class="emd-notice" id="emd-notice">읍면동 레벨 · 전체 기간(2015~2025) 합산</span>
+  </div>
+
+  <!-- 탭 + 그리드 -->
+  <div class="tabs">
+    <button class="tab-btn active" id="tab-in" onclick="switchTab('in')">
+      전입 현황 <span class="badge" id="badge-in">0</span>
+    </button>
+    <button class="tab-btn" id="tab-out" onclick="switchTab('out')">
+      전출 현황 <span class="badge" id="badge-out">0</span>
+    </button>
+    <button class="tab-btn" id="tab-sum" onclick="switchTab('sum')">
+      전입+전출 <span class="badge" id="badge-sum">0</span>
+    </button>
+    <div class="exclude-checks-wrap" id="exclude-checks-wrap">
+      <input type="text" id="filter-text" placeholder="지역명 검색..." oninput="onFilterChange()">
+      <label class="exclude-self-wrap" id="exclude-sgg-wrap">
+        <input type="checkbox" id="chk-exclude-sgg" onchange="onExcludeChange()">
+        현재 시군구 제외
+      </label>
+      <label class="exclude-self-wrap" id="exclude-emd-wrap">
+        <input type="checkbox" id="chk-exclude-emd" onchange="onExcludeChange()">
+        현재 읍면동 제외
+      </label>
+      <label class="exclude-self-wrap" id="group-by-sgg-wrap">
+        <input type="checkbox" id="chk-group-by-sgg" onchange="onGroupBySggChange()">
+        시군구로 보기
+      </label>
+    </div>
+  </div>
+  <div class="grid-card">
+    <div class="grid-info" id="grid-info">지역을 선택하면 전출입 현황이 표시됩니다.</div>
+    <div id="grid-body">
+      <div class="empty-state">
+        <div class="icon">📍</div>
+        위 필터에서 지역을 선택하세요.
+      </div>
+    </div>
+    <div class="more-wrap" id="more-wrap" style="display:none">
+      <button class="more-btn" id="more-btn" onclick="showMore()">더보기</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+let DATA = null;
+let EMD_CACHE     = {};  // {sgg5: {in_emd10: {out_emd10: count}}}  전입 기준
+let EMD_OUT_CACHE = {};  // {sgg5: {out_emd10: {in_emd10: count}}}  전출 기준
+let currentTab = 'in';
+let currentSido = '';
+let currentSgg  = '';    // 3자리
+let currentEmd  = '';    // 5자리
+let displayRows = [];
+let showCount = 50;
+let pendingEmdLoad = null;  // 현재 로드 중인 sgg5
+let excludeSgg = false;
+let excludeEmd = false;
+let groupBySgg = false;
+let filterText = '';
+
+// sgg5 → 데이터 있는 연도 범위 문자열 캐시
+const _sggYearCache = {};
+function getSggYearLabel(sgg5) {
+  if (_sggYearCache[sgg5] !== undefined) return _sggYearCache[sgg5];
+  const years = Object.keys(DATA.years).sort().filter(y => DATA.years[y]?.sgg?.[sgg5]).map(Number);
+  let label = '';
+  if (years.length) {
+    const ranges = [];
+    let start = years[0], end = years[0];
+    for (let i = 1; i < years.length; i++) {
+      if (years[i] === end + 1) {
+        end = years[i];
+      } else {
+        ranges.push(start === end ? `${start}` : `${start}~${end}`);
+        start = end = years[i];
+      }
+    }
+    ranges.push(start === end ? `${start}` : `${start}~${end}`);
+    label = ` (${ranges.join(', ')})`;
+  }
+  _sggYearCache[sgg5] = label;
+  return label;
+}
+
+// ── 초기 로드 ────────────────────────────────────────────────
+async function init() {
+  setMsg('데이터 로딩 중...');
+  const res = await fetch('migration_data.json');
+  if (!res.ok) throw new Error('migration_data.json 로드 실패');
+  setMsg('JSON 파싱 중...');
+  DATA = await res.json();
+  buildPeriodSelects();
+  buildSidoOptions();
+  onPeriodChange();
+  document.getElementById('loading').style.display = 'none';
+}
+function setMsg(m) { document.getElementById('loading-msg').textContent = m; }
+
+// ── 기간 선택 ─────────────────────────────────────────────────
+function buildPeriodSelects() {
+  const years = Object.keys(DATA.years).sort();
+  ['sel-from','sel-to'].forEach((id, idx) => {
+    const sel = document.getElementById(id);
+    years.forEach(y => {
+      const opt = document.createElement('option');
+      opt.value = y; opt.textContent = y + '년';
+      sel.appendChild(opt);
+    });
+    sel.value = idx === 0 ? years[0] : years[years.length - 1];
+  });
+}
+
+function getSelectedYears() {
+  const from = document.getElementById('sel-from').value;
+  const to   = document.getElementById('sel-to').value;
+  return Object.keys(DATA.years).sort().filter(y => y >= from && y <= to);
+}
+
+function onPeriodChange() {
+  const from = document.getElementById('sel-from').value;
+  const to   = document.getElementById('sel-to').value;
+  if (from > to) document.getElementById('sel-to').value = from;
+
+  const yrs = getSelectedYears();
+  const total = yrs.reduce((s, y) => {
+    const sido = DATA.years[y]?.sido || {};
+    return s + Object.values(sido).reduce((a, v) =>
+      a + Object.values(v).reduce((b, n) => b + n, 0), 0);
+  }, 0);
+  document.getElementById('period-total').innerHTML =
+    `<strong>${yrs.length}</strong>개년도 · 총 <strong>${total.toLocaleString()}</strong>가구`;
+
+  if (currentSido) renderGrid();
+}
+
+// ── emd lazy load ─────────────────────────────────────────────
+async function loadEmd(sgg5) {
+  if (EMD_CACHE[sgg5] !== undefined) return;  // 이미 캐시됨
+
+  const el = document.getElementById('emd-loading');
+  el.classList.add('visible');
+  pendingEmdLoad = sgg5;
+
+  try {
+    const res = await fetch(`emd/${sgg5}.json`);
+    EMD_CACHE[sgg5] = res.ok ? await res.json() : {};
+  } catch(e) {
+    EMD_CACHE[sgg5] = {};
+  }
+
+  el.classList.remove('visible');
+
+  // 로드 완료 후 현재 선택이 이 시군구이면 그리드 갱신
+  if (pendingEmdLoad === sgg5 && currentSgg) {
+    renderGrid();
+  }
+}
+
+async function loadEmdOut(sgg5) {
+  if (EMD_OUT_CACHE[sgg5] !== undefined) return;
+
+  const el = document.getElementById('emd-loading');
+  el.classList.add('visible');
+
+  try {
+    const res = await fetch(`emd_out/${sgg5}.json`);
+    EMD_OUT_CACHE[sgg5] = res.ok ? await res.json() : {};
+  } catch(e) {
+    EMD_OUT_CACHE[sgg5] = {};
+  }
+
+  el.classList.remove('visible');
+
+  if (currentSgg && currentEmd && currentSido + currentSgg === sgg5) {
+    renderGrid();
+  }
+}
+
+// ── 집계 ─────────────────────────────────────────────────────
+function mergedFlows(level) {
+  const yrs = getSelectedYears();
+  const merged = {};
+  for (const y of yrs) {
+    const flows = DATA.years[y]?.[level] || {};
+    for (const [k, vmap] of Object.entries(flows)) {
+      if (!merged[k]) merged[k] = {};
+      for (const [dest, cnt] of Object.entries(vmap)) {
+        merged[k][dest] = (merged[k][dest] || 0) + cnt;
+      }
+    }
+  }
+  return merged;
+}
+
+// ── 필터 UI ──────────────────────────────────────────────────
+function buildSidoOptions() {
+  const sel = document.getElementById('sel-sido');
+  const h = DATA.hierarchy;
+  Object.entries(h).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([code, info]) => {
+    const opt = document.createElement('option');
+    opt.value = code; opt.textContent = info.name;
+    sel.appendChild(opt);
+  });
+}
+
+function onSidoChange() {
+  currentSido = document.getElementById('sel-sido').value;
+  currentSgg = ''; currentEmd = '';
+  const selSgg = document.getElementById('sel-sgg');
+  const selEmd = document.getElementById('sel-emd');
+  selSgg.innerHTML = '<option value="">-- 시군구 선택 --</option>';
+  selEmd.innerHTML = '<option value="">전체 (시군구 집계)</option>';
+  selSgg.disabled = !currentSido;
+  selEmd.disabled = true;
+  if (currentSido) {
+    Object.entries(DATA.hierarchy[currentSido]?.sgg || {})
+      .sort((a,b)=>a[0].localeCompare(b[0]))
+      .forEach(([code, info]) => {
+        const opt = document.createElement('option');
+        opt.value = code;
+        opt.textContent = info.name + getSggYearLabel(currentSido + code);
+        selSgg.appendChild(opt);
+      });
+    renderGrid();
+  } else {
+    clearGrid();
+  }
+}
+
+function onSggChange() {
+  currentSgg = document.getElementById('sel-sgg').value;
+  currentEmd = '';
+  const selEmd = document.getElementById('sel-emd');
+  selEmd.innerHTML = '<option value="">전체 (시군구 집계)</option>';
+  selEmd.disabled = !currentSgg;
+
+  if (currentSgg) {
+    Object.entries(DATA.hierarchy[currentSido]?.sgg[currentSgg]?.emd || {})
+      .sort((a,b)=>a[1].localeCompare(b[1]))
+      .forEach(([code10, name]) => {
+        const opt = document.createElement('option');
+        opt.value = code10; opt.textContent = name;
+        selEmd.appendChild(opt);
+      });
+    // emd 파일 미리 로드 (백그라운드)
+    const sgg5 = currentSido + currentSgg;
+    if (EMD_CACHE[sgg5]     === undefined) loadEmd(sgg5);
+    if (EMD_OUT_CACHE[sgg5] === undefined) loadEmdOut(sgg5);
+  }
+  renderGrid();
+}
+
+function onEmdChange() {
+  currentEmd = document.getElementById('sel-emd').value;
+  if (currentEmd && currentSgg) {
+    const sgg5 = currentSido + currentSgg;
+    const needIn  = EMD_CACHE[sgg5]     === undefined;
+    const needOut = EMD_OUT_CACHE[sgg5] === undefined;
+    if (needIn)  { loadEmd(sgg5);    }
+    if (needOut) { loadEmdOut(sgg5); }
+    if (needIn || needOut) return;  // 로드 후 renderGrid 자동 호출됨
+  }
+  renderGrid();
+}
+
+// ── 탭 ───────────────────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById('tab-in').classList.toggle('active', tab==='in');
+  document.getElementById('tab-out').classList.toggle('active', tab==='out');
+  document.getElementById('tab-sum').classList.toggle('active', tab==='sum');
+  if (currentSido) renderGrid();
+}
+
+// ── 지역명 ───────────────────────────────────────────────────
+function nameFromEmd10(code10) {
+  const sido = code10.substring(0, 2);
+  const h = DATA.hierarchy;
+  // hierarchy .emd 키가 10자리 원본 코드이므로 해당 sido의 SGG들에서 검색
+  for (const [sgg, info] of Object.entries(h[sido]?.sgg || {})) {
+    if (info.emd[code10] !== undefined) {
+      return {
+        sidoName: h[sido]?.name || sido,
+        sggName:  info.name || '',
+        emdName:  info.emd[code10],
+        sido, sgg, emd: code10
+      };
+    }
+  }
+  // fallback
+  const sgg = code10.substring(2, 5);
+  return {
+    sidoName: h[sido]?.name || sido,
+    sggName:  h[sido]?.sgg[sgg]?.name || '',
+    emdName:  code10.substring(5),
+    sido, sgg, emd: code10
+  };
+}
+function nameFromSgg5(code5) {
+  const sido = code5.substring(0,2);
+  const sgg  = code5.substring(2,5);
+  const h = DATA.hierarchy;
+  return { sidoName: h[sido]?.name || sido, sggName: h[sido]?.sgg[sgg]?.name || '', sido, sgg };
+}
+function nameFromSido2(code2) {
+  return { sidoName: DATA.hierarchy[code2]?.name || code2, sido: code2 };
+}
+
+// ── 렌더 ─────────────────────────────────────────────────────
+function renderGrid() {
+  if (!currentSido) { clearGrid(); return; }
+
+  const useEmd = !!(currentEmd && currentSgg);
+  const useSgg = !!currentSgg;
+
+  let inFlows = {}, outFlows = {}, level;
+
+  if (useEmd) {
+    const sgg5    = currentSido + currentSgg;
+    const emd10   = currentEmd;  // 10자리 원본 코드
+    const emdIn   = EMD_CACHE[sgg5];
+    const emdOut  = EMD_OUT_CACHE[sgg5];
+
+    // 필요한 캐시가 없으면 로드 요청 후 대기
+    if (!emdIn)  { loadEmd(sgg5);    }
+    if (!emdOut) { loadEmdOut(sgg5); }
+    if (!emdIn || !emdOut) return;
+
+    level    = 'emd';
+    inFlows  = emdIn[emd10]  || {};
+    outFlows = emdOut[emd10] || {};
+
+    // 시군구로 보기: emd10 키를 sgg5로 집계
+    if (groupBySgg) {
+      const agg = (flows) => {
+        const r = {};
+        for (const [k, v] of Object.entries(flows)) {
+          const sgg5 = DATA.sgg_alias?.[k.substring(0,5)] || k.substring(0,5);
+          r[sgg5] = (r[sgg5] || 0) + v;
+        }
+        return r;
+      };
+      inFlows  = agg(inFlows);
+      outFlows = agg(outFlows);
+      level = 'sgg';
+    }
+  } else if (useSgg) {
+    level = 'sgg';
+    const flows = mergedFlows('sgg');
+    const key = currentSido + currentSgg;
+    inFlows  = flows[key] || {};
+    outFlows = (() => {
+      const r = {};
+      for (const [k, v] of Object.entries(flows)) if (v[key]) r[k] = v[key];
+      return r;
+    })();
+  } else {
+    level = 'sido';
+    const flows = mergedFlows('sido');
+    inFlows  = flows[currentSido] || {};
+    outFlows = (() => {
+      const r = {};
+      for (const [k, v] of Object.entries(flows)) if (v[currentSido]) r[k] = v[currentSido];
+      return r;
+    })();
+  }
+
+  const inTotal  = Object.values(inFlows).reduce((s,v)=>s+v,0);
+  const outTotal = Object.values(outFlows).reduce((s,v)=>s+v,0);
+  document.getElementById('badge-in').textContent  = inTotal.toLocaleString();
+  document.getElementById('badge-out').textContent = outTotal.toLocaleString();
+  document.getElementById('badge-sum').textContent = (inTotal + outTotal).toLocaleString();
+
+  updateSelectedLabel(level);
+
+  const selfKey = useEmd ? currentEmd
+                : useSgg ? currentSido + currentSgg
+                : currentSido;
+
+  const getRegionName = (code) => {
+    if (level === 'emd') { const n = nameFromEmd10(code); return n.sidoName + ' ' + n.sggName + ' ' + n.emdName; }
+    if (level === 'sgg') { const n = nameFromSgg5(code); return n.sidoName + ' ' + n.sggName; }
+    return nameFromSido2(code).sidoName;
+  };
+
+  let raw;
+  if (currentTab === 'sum') {
+    const allKeys = new Set([...Object.keys(inFlows), ...Object.keys(outFlows)]);
+    raw = {};
+    for (const k of allKeys) raw[k] = (inFlows[k] || 0) + (outFlows[k] || 0);
+  } else {
+    raw = currentTab === 'in' ? inFlows : outFlows;
+  }
+  displayRows = Object.entries(raw)
+    .map(([code,cnt])=>({code, cnt, name: getRegionName(code)}))
+    .filter(r => {
+      if (filterText && !r.name.includes(filterText)) return false;
+      if (excludeSgg) {
+        if (level === 'emd') {
+          const origSgg5 = r.code.substring(0, 5);
+          const canSgg5  = DATA.sgg_alias?.[origSgg5] || origSgg5;
+          if (canSgg5 === currentSido + currentSgg) return false;
+        } else if (level === 'sgg' && r.code === currentSido + currentSgg) return false;
+        else if (level === 'sido' && r.code === currentSido) return false;
+      }
+      if (excludeEmd && level === 'emd' && r.code === selfKey) return false;
+      return true;
+    })
+    .sort((a,b)=>b.cnt-a.cnt);
+  const total = displayRows.reduce((s,r)=>s+r.cnt,0);
+
+  const tabLabel = currentTab === 'in' ? '전입' : currentTab === 'out' ? '전출' : '전입+전출';
+  document.getElementById('grid-info').innerHTML =
+    `<strong>${total.toLocaleString()}</strong>가구 ${tabLabel} &nbsp;·&nbsp; ` +
+    `지역 <strong>${displayRows.length}</strong>곳 &nbsp;` +
+    `<span style="color:#bbb">· 행 클릭 시 해당 지역으로 이동</span>`;
+
+  showCount = 50;
+  renderRows(level, total, currentTab);
+}
+
+function renderRows(level, total, tab) {
+  const slice  = displayRows.slice(0, showCount);
+  const maxCnt = displayRows[0]?.cnt || 1;
+
+  const selfKey = level === 'emd'  ? currentEmd
+                : level === 'sgg'  ? currentSido + currentSgg
+                : currentSido;
+
+  const rows = slice.map((r, i) => {
+    const rank = i + 1;
+    const pct  = total > 0 ? (r.cnt / total * 100).toFixed(1) : '0.0';
+    const barW = Math.round(r.cnt / maxCnt * 100);
+    const isSelf = r.code === selfKey;
+    const barClass = tab === 'in' ? 'bar-in' : tab === 'out' ? 'bar-out' : 'bar-sum';
+
+    let nameHtml = '';
+    if (level === 'emd') {
+      const n = nameFromEmd10(r.code);
+      const sidoShort = n.sidoName.length > 2 ? n.sidoName.substring(0,2) : n.sidoName;
+      nameHtml = `<span class="sido-chip">${sidoShort}</span>${n.sggName} ${n.emdName}`;
+    } else if (level === 'sgg') {
+      const n = nameFromSgg5(r.code);
+      const sidoShort = n.sidoName.length > 2 ? n.sidoName.substring(0,2) : n.sidoName;
+      nameHtml = `<span class="sido-chip">${sidoShort}</span>${n.sggName}`;
+    } else {
+      nameHtml = nameFromSido2(r.code).sidoName;
+    }
+
+    return `<tr class="${isSelf?'self':''}" onclick="jumpTo('${r.code}','${level}')">
+      <td class="td-rank ${rank<=3?'top':''}">${rank}</td>
+      <td class="td-region">${nameHtml}${isSelf?' <span style="color:#b8900a;font-size:10px">(선택중)</span>':''}</td>
+      <td class="td-num">${r.cnt.toLocaleString()}</td>
+      <td class="td-pct">${pct}%</td>
+      <td class="td-bar"><div class="bar-wrap"><div class="bar-fill ${barClass}" style="width:${barW}%"></div></div></td>
+    </tr>`;
+  }).join('');
+
+  // 기타 행: 표시 범위 밖의 나머지 합계
+  let etcRow = '';
+  if (rows && displayRows.length > showCount) {
+    const etcCnt = displayRows.slice(showCount).reduce((s,r)=>s+r.cnt,0);
+    const shownPctSum = slice.reduce((s,r)=> s + (total > 0 ? r.cnt / total * 100 : 0), 0);
+    const etcPct = Math.max(0, 100 - shownPctSum).toFixed(1);
+    const barClass = tab === 'in' ? 'bar-in' : tab === 'out' ? 'bar-out' : 'bar-sum';
+    const barW = Math.round(etcCnt / maxCnt * 100);
+    etcRow = `<tr style="color:#aaa;font-style:italic">
+      <td class="td-rank"></td>
+      <td class="td-region">기타 ${(displayRows.length - showCount).toLocaleString()}곳</td>
+      <td class="td-num" style="color:#aaa">${etcCnt.toLocaleString()}</td>
+      <td class="td-pct">${etcPct}%</td>
+      <td class="td-bar"><div class="bar-wrap"><div class="bar-fill ${barClass}" style="width:${barW}%;opacity:.4"></div></div></td>
+    </tr>`;
+  }
+
+  document.getElementById('grid-body').innerHTML = rows
+    ? `<table>
+        <thead><tr>
+          <th>순위</th><th>지역명</th>
+          <th class="r">세대수</th><th class="r">비율</th><th></th>
+        </tr></thead>
+        <tbody>${rows}${etcRow}</tbody>
+       </table>`
+    : '<div class="empty-state"><div class="icon">📭</div>데이터가 없습니다.</div>';
+
+  const mw = document.getElementById('more-wrap');
+  if (displayRows.length > showCount) {
+    mw.style.display = '';
+    document.getElementById('more-btn').textContent = `더보기 (${showCount} / ${displayRows.length})`;
+  } else {
+    mw.style.display = 'none';
+  }
+}
+
+function showMore() {
+  showCount += 50;
+  const level = currentEmd && currentSgg ? 'emd' : currentSgg ? 'sgg' : 'sido';
+  const total = displayRows.reduce((s,r)=>s+r.cnt,0);
+  renderRows(level, total, currentTab);
+}
+
+function updateSelectedLabel(level) {
+  const el  = document.getElementById('selected-area');
+  const lbl = document.getElementById('selected-label');
+  const lvl = document.getElementById('selected-level');
+  const ntc = document.getElementById('emd-notice');
+  const h = DATA.hierarchy;
+
+  const sidoName = h[currentSido]?.name || '';
+  const sggName  = currentSgg ? (h[currentSido]?.sgg[currentSgg]?.name || '') : '';
+  const emdName  = (currentEmd && currentSgg)
+    ? (h[currentSido]?.sgg[currentSgg]?.emd[currentEmd] || '') : '';
+
+  let text = sidoName;
+  if (sggName) text += ' ' + sggName;
+  if (emdName) text += ' ' + emdName;
+
+  lbl.textContent = text;
+  lvl.textContent = level === 'emd' ? '읍면동 레벨' : level === 'sgg' ? '시군구 레벨' : '시도 레벨';
+  ntc.classList.toggle('visible', level === 'emd');
+  el.classList.add('visible');
+  document.getElementById('exclude-checks-wrap').classList.add('visible');
+  document.getElementById('exclude-sgg-wrap').classList.toggle('visible', level === 'sgg' || level === 'emd' || !!(currentEmd && currentSgg));
+  document.getElementById('exclude-emd-wrap').classList.toggle('visible', level === 'emd');
+  document.getElementById('group-by-sgg-wrap').classList.toggle('visible', !!(currentEmd && currentSgg));
+}
+
+function onExcludeChange() {
+  excludeSgg = document.getElementById('chk-exclude-sgg').checked;
+  excludeEmd = document.getElementById('chk-exclude-emd').checked;
+  if (currentSido) renderGrid();
+}
+
+function onGroupBySggChange() {
+  groupBySgg = document.getElementById('chk-group-by-sgg').checked;
+  // 시군구로 보기 시 현재 읍면동 제외는 의미 없으므로 해제
+  if (groupBySgg) {
+    document.getElementById('chk-exclude-emd').checked = false;
+    excludeEmd = false;
+  }
+  if (currentSido) renderGrid();
+}
+
+function onFilterChange() {
+  filterText = document.getElementById('filter-text').value.trim();
+  if (currentSido) renderGrid();
+}
+
+// ── 지역 이동 (행 클릭) ───────────────────────────────────────
+function jumpTo(code, level) {
+  const selSido = document.getElementById('sel-sido');
+  const selSgg  = document.getElementById('sel-sgg');
+  const selEmd  = document.getElementById('sel-emd');
+
+  function fillSgg(sido) {
+    selSgg.innerHTML = '<option value="">-- 시군구 선택 --</option>';
+    Object.entries(DATA.hierarchy[sido]?.sgg || {})
+      .sort((a,b)=>a[0].localeCompare(b[0]))
+      .forEach(([c,info]) => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = info.name + getSggYearLabel(sido + c);
+        selSgg.appendChild(opt);
+      });
+    selSgg.disabled = false;
+  }
+  function fillEmd(sido, sgg) {
+    selEmd.innerHTML = '<option value="">전체 (시군구 집계)</option>';
+    Object.entries(DATA.hierarchy[sido]?.sgg[sgg]?.emd || {})
+      .sort((a,b)=>a[1].localeCompare(b[1]))
+      .forEach(([c, name]) => {
+        const opt = document.createElement('option');
+        opt.value = c; opt.textContent = name; selEmd.appendChild(opt);
+      });
+    selEmd.disabled = false;
+  }
+
+  if (level === 'sido') {
+    currentSido = code; currentSgg = ''; currentEmd = '';
+    selSido.value = code;
+    fillSgg(code);
+    selEmd.innerHTML = '<option value="">전체 (시군구 집계)</option>';
+    selEmd.disabled = true;
+  } else if (level === 'sgg') {
+    const sido = code.substring(0,2);
+    const sgg  = code.substring(2,5);
+    currentSido = sido; currentSgg = sgg; currentEmd = '';
+    selSido.value = sido;
+    fillSgg(sido); selSgg.value = sgg;
+    fillEmd(sido, sgg); selEmd.value = '';
+    if (EMD_CACHE[code]     === undefined) loadEmd(code);
+    if (EMD_OUT_CACHE[code] === undefined) loadEmdOut(code);
+  } else if (level === 'emd') {
+    const n = nameFromEmd10(code);  // canonical sido/sgg 탐색
+    currentSido = n.sido; currentSgg = n.sgg; currentEmd = code;  // 10자리 코드
+    selSido.value = n.sido;
+    fillSgg(n.sido); selSgg.value = n.sgg;
+    fillEmd(n.sido, n.sgg); selEmd.value = code;
+    const sgg5 = n.sido + n.sgg;
+    const needIn  = EMD_CACHE[sgg5]     === undefined;
+    const needOut = EMD_OUT_CACHE[sgg5] === undefined;
+    if (needIn)  loadEmd(sgg5);
+    if (needOut) loadEmdOut(sgg5);
+    if (needIn || needOut) return;
+  }
+  renderGrid();
+}
+
+function clearGrid() {
+  document.getElementById('selected-area').classList.remove('visible');
+  document.getElementById('exclude-checks-wrap').classList.remove('visible');
+  document.getElementById('exclude-sgg-wrap').classList.remove('visible');
+  document.getElementById('exclude-emd-wrap').classList.remove('visible');
+  document.getElementById('chk-exclude-sgg').checked = false;
+  document.getElementById('chk-exclude-emd').checked = false;
+  document.getElementById('chk-group-by-sgg').checked = false;
+  document.getElementById('filter-text').value = '';
+  excludeSgg = false;
+  excludeEmd = false;
+  groupBySgg = false;
+  filterText = '';
+  document.getElementById('grid-body').innerHTML =
+    '<div class="empty-state"><div class="icon">📍</div>위 필터에서 지역을 선택하세요.</div>';
+  document.getElementById('grid-info').textContent = '지역을 선택하면 전출입 현황이 표시됩니다.';
+  document.getElementById('badge-in').textContent = '0';
+  document.getElementById('badge-out').textContent = '0';
+  document.getElementById('badge-sum').textContent = '0';
+  document.getElementById('more-wrap').style.display = 'none';
+}
+
+init().catch(err => {
+  document.getElementById('loading-msg').textContent = '오류: ' + err.message;
+  console.error(err);
+});
+</script>
+</body>
+</html>
