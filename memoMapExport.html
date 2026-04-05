@@ -64,6 +64,25 @@
       transition: width 0.2s;
       width: 0%;
     }
+    .date-filter {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .date-filter label { font-size: 13px; color: #555; white-space: nowrap; }
+    .date-filter input[type="date"] {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 13px;
+      color: #333;
+      flex: 1;
+      min-width: 120px;
+    }
+    .date-filter span { font-size: 13px; color: #999; }
+    #memoCount { font-size: 13px; color: #888; margin-bottom: 16px; min-height: 18px; }
     .done { color: #0a7c3e; font-weight: 600; }
     .error { color: #c0392b; font-weight: 600; }
   </style>
@@ -80,6 +99,13 @@
       <li>GitHub Pages에서 <code>memoMap.html</code> 접근</li>
     </ol>
   </p>
+  <div class="date-filter">
+    <label>생성일</label>
+    <input type="date" id="dateFrom" />
+    <span>~</span>
+    <input type="date" id="dateTo" />
+  </div>
+  <div id="memoCount"></div>
   <button id="exportBtn">내보내기 시작</button>
   <div class="progress-bar" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
   <div id="status"></div>
@@ -90,6 +116,29 @@ const DB_NAME = "hongbuMemo";
 const DB_VERSION = 5;
 const STORE = "photoMemos";
 const NAVER_KEY = "9t8y33hyq8";
+
+let allMemos = [];
+
+function getFilteredMemos() {
+  const fromVal = document.getElementById("dateFrom").value;
+  const toVal = document.getElementById("dateTo").value;
+  const fromTs = fromVal ? new Date(fromVal).getTime() : 0;
+  const toTs = toVal ? new Date(toVal + "T23:59:59").getTime() : Infinity;
+  return allMemos.filter(m => {
+    const t = m.createdAt || 0;
+    return t >= fromTs && t <= toTs;
+  });
+}
+
+function updateMemoCount() {
+  const filtered = getFilteredMemos();
+  const total = allMemos.length;
+  const el = document.getElementById("memoCount");
+  if (total === 0) { el.textContent = ""; return; }
+  el.textContent = filtered.length === total
+    ? `전체 ${total}개`
+    : `${filtered.length}개 / 전체 ${total}개`;
+}
 
 function setStatus(msg, cls) {
   const el = document.getElementById("status");
@@ -326,21 +375,51 @@ document.addEventListener("keydown", function(e) {
 </html>`;
 }
 
+// 페이지 로드 시 DB에서 메모 목록 미리 읽기
+(async function preload() {
+  try {
+    const db = await openDb();
+    allMemos = await getAllPhotoMemos(db);
+    db.close();
+    updateMemoCount();
+    // 가장 오래된/최신 날짜로 기본값 설정
+    if (allMemos.length > 0) {
+      const times = allMemos.map(m => m.createdAt || 0).filter(t => t > 0);
+      if (times.length > 0) {
+        const minDate = new Date(Math.min(...times)).toISOString().slice(0, 10);
+        const maxDate = new Date(Math.max(...times)).toISOString().slice(0, 10);
+        document.getElementById("dateFrom").value = minDate;
+        document.getElementById("dateTo").value = maxDate;
+      }
+    }
+  } catch (e) {
+    // 오류는 내보내기 시 표시
+  }
+})();
+
+document.getElementById("dateFrom").addEventListener("change", updateMemoCount);
+document.getElementById("dateTo").addEventListener("change", updateMemoCount);
+
 document.getElementById("exportBtn").addEventListener("click", async function() {
   const btn = document.getElementById("exportBtn");
   btn.disabled = true;
   setProgress(0, 1);
 
   try {
-    setStatus("IndexedDB 열기 중...");
-    const db = await openDb();
+    // allMemos가 비어있으면 다시 읽기 (preload 실패 대비)
+    if (allMemos.length === 0) {
+      setStatus("IndexedDB 열기 중...");
+      const db = await openDb();
+      setStatus("포토메모 읽는 중...");
+      allMemos = await getAllPhotoMemos(db);
+      db.close();
+      updateMemoCount();
+    }
 
-    setStatus("포토메모 읽는 중...");
-    const memos = await getAllPhotoMemos(db);
-    db.close();
+    const memos = getFilteredMemos();
 
     if (memos.length === 0) {
-      setStatus("저장된 포토메모가 없습니다.", "error");
+      setStatus("선택한 기간에 포토메모가 없습니다.", "error");
       btn.disabled = false;
       return;
     }
