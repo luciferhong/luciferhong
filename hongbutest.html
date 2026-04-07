@@ -2581,9 +2581,7 @@
         // 🔄 idle 이벤트 중복 등록 방지
         if (!window.__mapIdleListenerReady) {
           naver.maps.Event.addListener(window.map, "idle", () => {
-            // ✅ 아파트 마커는 항상
             updateMarkers(window.map.getBounds());
-            // ✅ 나머지는 로드 완료 + 토글 ON일 때만
             if (window.__schoolsReady) updateSchoolMarkers();
             if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
             if (window.__starbucksReady) updateStarbucksMarkers();
@@ -5209,6 +5207,10 @@
           // ✅ 전체 학교 데이터 저장
           window.schoolData = schools;
 
+          // ✅ 마커 캐시/풀 초기화 (시군구 선택 시 풀 빌드, 미선택 시 캐시 사용)
+          window.__schoolMarkerPool = null;
+          if (!window.__schoolMarkerCache) window.__schoolMarkerCache = new Map();
+
           // ✅ 배정범위(폴리곤) 빠른 조회용 Map: id -> schoolVertexLists
           window.schoolZoneMap = new Map(
             schools.map((s) => [
@@ -5220,10 +5222,7 @@
           // ✅ 초기 마커 업데이트
           updateSchoolMarkers(window.map.getBounds());
 
-          // ✅ 지도 이동 시 현재 범위 내 학교 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            updateSchoolMarkers(window.map.getBounds());
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
 
           // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거
           naver.maps.Event.addListener(window.map, "click", function () {
@@ -5236,136 +5235,92 @@
         }
       }
 
-      async function updateSchoolMarkers() {
-        const showSchools = document.getElementById("toggleSchools").checked;
-
-        // ✅ 기존 학교 마커 제거
-        schoolMarkers.forEach((marker) => marker.setMap(null));
-        schoolMarkers = [];
-
-        if (!showSchools) {
-          clearActiveSchoolDetailButton();
-          return; // 초등학교 표시 체크 해제 시 종료
-        }
-        if (window.map.getZoom() < 14) {
-          clearActiveSchoolDetailButton();
-          return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-        }
-        if (!window.schoolData) return;
-        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
-        let bounds = window.map.getBounds();
-        let filteredSchools = window.schoolData.filter((school) =>
-          bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude)) &&
-          isPointInSelectedSigungu(school.latitude, school.longitude),
-        );
-
-        filteredSchools.forEach((school) => {
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = "eliSchool.png";
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 4px;
-        padding: 2px 5px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-          const rawPerClass = school.studentCountPerClassroom;
-          const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
-
-          const total = school.totalStudentCount ?? "";
-
-          const suffix =
-            perClass !== "" || total !== ""
-              ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})`
-              : "";
-
-          infoBox.textContent = `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
-
-          const infoWrap = document.createElement("div");
-          infoWrap.style = "position: relative; display: inline-block;";
-
-          const detailBtn = document.createElement("button");
-          detailBtn.textContent = "상세정보";
-          detailBtn.style = `
-      position: absolute;
-      left: 100%;
-      top: 0;
-      height: 100%;
-      box-sizing: border-box;
-      display: flex;
-      align-items: center;
-      margin: 0;
-      appearance: none;
-      border: 1px solid #4a90e2;
-      background: #eef5ff;
-      color: #1757a8;
-      border-radius: 6px;
-      padding: 0 8px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      z-index: 1;
-    `;
-          detailBtn.style.display = "none";
-
-          infoWrap.appendChild(infoBox);
-          infoWrap.appendChild(detailBtn);
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoWrap);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(school.latitude, school.longitude),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
-          addMarkerRightClickEvent(marker, markerElement);
-
-          detailBtn.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openSchoolDetailPopup(school, marker);
-          });
-
-          // ✅ 좌클릭: 배정범위(폴리곤) 토글
-          naver.maps.Event.addListener(marker, "click", () => {
-            const schoolId = _getSchoolZoneId(school);
-            const wasSameSchool = activeSchoolZoneId === schoolId;
-
-            toggleSchoolZoneBySchool(school);
-
-            if (wasSameSchool) {
-              clearActiveSchoolDetailButton();
-              closeActiveSchoolInfoWindow();
-            } else {
-              setActiveSchoolDetailButton(detailBtn, schoolId);
-            }
-          });
-
-          if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) {
-            setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
-          }
-
-          schoolMarkers.push(marker);
+      function _buildSchoolMarkerEntry(school) {
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = "eliSchool.png";
+        markerIcon.style = "width: 32px; height: 32px;";
+        const infoBox = document.createElement("div");
+        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        const rawPerClass = school.studentCountPerClassroom;
+        const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
+        const total = school.totalStudentCount ?? "";
+        const suffix = perClass !== "" || total !== "" ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})` : "";
+        infoBox.textContent = `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
+        const infoWrap = document.createElement("div");
+        infoWrap.style = "position: relative; display: inline-block;";
+        const detailBtn = document.createElement("button");
+        detailBtn.textContent = "상세정보";
+        detailBtn.style = "position:absolute;left:100%;top:0;height:100%;box-sizing:border-box;display:none;align-items:center;margin:0;appearance:none;border:1px solid #4a90e2;background:#eef5ff;color:#1757a8;border-radius:6px;padding:0 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;z-index:1;";
+        infoWrap.appendChild(infoBox);
+        infoWrap.appendChild(detailBtn);
+        markerElement.appendChild(markerIcon);
+        markerElement.appendChild(infoWrap);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(school.latitude, school.longitude),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openSchoolDetailPopup(school, marker); });
+        naver.maps.Event.addListener(marker, "click", () => {
+          const schoolId = _getSchoolZoneId(school);
+          const wasSameSchool = activeSchoolZoneId === schoolId;
+          toggleSchoolZoneBySchool(school);
+          if (wasSameSchool) { clearActiveSchoolDetailButton(); closeActiveSchoolInfoWindow(); }
+          else { setActiveSchoolDetailButton(detailBtn, schoolId); }
+        });
+        return { marker, lat: school.latitude, lng: school.longitude, school, detailBtn };
       }
+
+      async function rebuildSchoolPool() {
+        if (window.__schoolMarkerCache) window.__schoolMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__schoolMarkerPool) { window.__schoolMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__schoolMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.schoolData) return;
+        await loadSigBoundaryOnce();
+        window.__schoolMarkerPool = window.schoolData
+          .filter((s) => isPointInSelectedSigungu(s.latitude, s.longitude))
+          .map((s) => _buildSchoolMarkerEntry(s));
+      }
+
+      async function updateSchoolMarkers() {
+        if (!window.schoolData) return;
+        const showSchools = document.getElementById("toggleSchools").checked;
+        if (!showSchools || window.map.getZoom() < 14) {
+          clearActiveSchoolDetailButton();
+          window.__schoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__schoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__schoolMarkerPool) { await rebuildSchoolPool(); }
+          window.__schoolMarkerPool.forEach(({ marker, lat, lng, school, detailBtn }) => {
+            const visible = bounds.hasLatLng(new naver.maps.LatLng(lat, lng));
+            marker.setMap(visible ? window.map : null);
+            if (visible && activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school))
+              setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
+          });
+        } else {
+          if (!window.__schoolMarkerCache) window.__schoolMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const school of window.schoolData) {
+            if (!bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude))) continue;
+            const key = _getSchoolZoneId(school);
+            visibleKeys.add(key);
+            if (!window.__schoolMarkerCache.has(key)) window.__schoolMarkerCache.set(key, _buildSchoolMarkerEntry(school));
+            toShow.push(window.__schoolMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker, school, detailBtn }) => {
+            marker.setMap(window.map);
+            if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
+          });
+          window.__schoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
+      }
+
 
       // ================================
       // ✅ 지도 마지막 위치 저장/복원 안정화
@@ -6166,78 +6121,78 @@ const originalBase64 = event.target.result;
           //console.log(`✅ loaded middleSchools.json: ${uniqueSchools.length}`);
           window.middleSchoolData = uniqueSchools; // ✅ 중복 제거된 데이터 저장
 
+          // ✅ 마커 캐시/풀 초기화
+          window.__middleSchoolMarkerPool = null;
+          if (!window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache = new Map();
+
           // ✅ 마커 업데이트
           updateMiddleSchoolMarkers();
 
-          // ✅ 지도 이동 시 현재 범위 내 중학교 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            updateMiddleSchoolMarkers();
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
         } catch (error) {
           console.error("❌ 중학교 데이터 로드 실패:", error);
         }
       }
 
-      async function updateMiddleSchoolMarkers() {
-        const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
-
-        // ✅ 기존 중학교 마커 제거
-        middleSchoolMarkers.forEach((marker) => marker.setMap(null));
-        middleSchoolMarkers = [];
-
-        if (!showMiddleSchools) return; // 중학교 표시 체크 해제 시 종료
-
-        if (window.map.getZoom() < 14) {
-          return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-        }
-
-        if (!window.middleSchoolData) return;
-        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
-        let bounds = window.map.getBounds();
-        let filteredSchools = window.middleSchoolData.filter((school) =>
-          bounds.hasLatLng(new naver.maps.LatLng(school["위도"], school["경도"])) &&
-          isPointInSelectedSigungu(school["위도"], school["경도"]),
-        );
-        filteredSchools.forEach((school) => {
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = "midSchool.png";
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 4px;
-        padding: 2px 5px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-          infoBox.textContent = `${school["학교명"]} (${String(school["학업성취도"]).replaceAll("%", "")} / ${String(school["특목고"]).replaceAll("%", "")})`;
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoBox);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(school["위도"], school["경도"]),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
-          addMarkerRightClickEvent(marker, markerElement);
-
-          middleSchoolMarkers.push(marker);
+      function _buildMiddleSchoolMarkerEntry(school) {
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = "midSchool.png";
+        markerIcon.style = "width: 32px; height: 32px;";
+        const infoBox = document.createElement("div");
+        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        infoBox.textContent = `${school["학교명"]} (${String(school["학업성취도"]).replaceAll("%", "")} / ${String(school["특목고"]).replaceAll("%", "")})`;
+        markerElement.appendChild(markerIcon);
+        markerElement.appendChild(infoBox);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(school["위도"], school["경도"]),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        return { marker, lat: school["위도"], lng: school["경도"] };
+      }
+
+      async function rebuildMiddleSchoolPool() {
+        if (window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__middleSchoolMarkerPool) { window.__middleSchoolMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__middleSchoolMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.middleSchoolData) return;
+        await loadSigBoundaryOnce();
+        window.__middleSchoolMarkerPool = window.middleSchoolData
+          .filter((s) => isPointInSelectedSigungu(s["위도"], s["경도"]))
+          .map((s) => _buildMiddleSchoolMarkerEntry(s));
+      }
+
+      async function updateMiddleSchoolMarkers() {
+        if (!window.middleSchoolData) return;
+        const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
+        if (!showMiddleSchools || window.map.getZoom() < 14) {
+          window.__middleSchoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__middleSchoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__middleSchoolMarkerPool) { await rebuildMiddleSchoolPool(); }
+          window.__middleSchoolMarkerPool.forEach(({ marker, lat, lng }) => {
+            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          });
+        } else {
+          if (!window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const school of window.middleSchoolData) {
+            const lat = school["위도"], lng = school["경도"];
+            if (!bounds.hasLatLng(new naver.maps.LatLng(lat, lng))) continue;
+            const key = String(school["학교 ID"] ?? school["학교명"] ?? "");
+            visibleKeys.add(key);
+            if (!window.__middleSchoolMarkerCache.has(key)) window.__middleSchoolMarkerCache.set(key, _buildMiddleSchoolMarkerEntry(school));
+            toShow.push(window.__middleSchoolMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker }) => marker.setMap(window.map));
+          window.__middleSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
       }
 
       // ✅ 중학교 체크박스 변경 시 마커 업데이트
@@ -6283,91 +6238,80 @@ const originalBase64 = event.target.result;
           //console.log("✅ 시설 데이터 로드 완료", facilities);
           window.facilityData = facilities; // ✅ 전체 시설 데이터 저장
 
+          // ✅ 마커 캐시/풀 초기화
+          window.__facilityMarkerPool = null;
+          if (!window.__facilityMarkerCache) window.__facilityMarkerCache = new Map();
+
           // ✅ 초기 마커 업데이트
           updateFacilityMarkers(window.map.getBounds());
 
-          // ✅ 지도 이동 시 현재 범위 내 시설 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            const bounds = window.map.getBounds();
-            updateFacilityMarkers(bounds);
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
         } catch (error) {
           console.error("❌ 시설 데이터 로드 실패:", error);
         }
       }
 
-      async function updateFacilityMarkers() {
-        const showFacilities = document.getElementById("toggleFacilities").checked;
-
-        // ✅ 기존 시설 마커 제거
-        facilityMarkers.forEach((marker) => marker.setMap(null));
-        facilityMarkers = [];
-
-        if (!showFacilities) return; // 체크 해제 시 종료
-        if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-
-        if (!window.facilityData) return;
-        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
-
-        let bounds = window.map.getBounds();
-        let filteredFacilities = window.facilityData.filter((facility) =>
-          bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng)) &&
-          isPointInSelectedSigungu(facility.lat, facility.lng),
-        );
-
-        filteredFacilities.forEach((facility) => {
-          let iconSrc = "default.png"; // 기본 아이콘 (예외처리)
-          if (facility.category === 10) {
-            iconSrc = facility.description.includes("백화점") ? "depart.png" : "mart.png";
-          } else if (facility.category === 9) {
-            iconSrc = "hospital.png";
-          }
-
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = iconSrc;
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 6px;
-        padding: 5px 10px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        max-width: 140px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-
-          if (facility.category === 10) {
-            infoBox.textContent = `${facility.description} (${facility.name})`;
-          } else if (facility.category === 9) {
-            infoBox.textContent = `${facility.name}`;
-          }
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoBox);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(facility.lat, facility.lng),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
-          addMarkerRightClickEvent(marker, markerElement);
-
-          facilityMarkers.push(marker);
+      function _buildFacilityMarkerEntry(facility) {
+        const iconSrc = facility.category === 10
+          ? (facility.description.includes("백화점") ? "depart.png" : "mart.png")
+          : facility.category === 9 ? "hospital.png" : "default.png";
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = iconSrc;
+        markerIcon.style = "width: 32px; height: 32px;";
+        const infoBox = document.createElement("div");
+        infoBox.style = "background:white;border:1px solid gray;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        infoBox.textContent = facility.category === 10 ? `${facility.description} (${facility.name})` : facility.name;
+        markerElement.appendChild(markerIcon);
+        markerElement.appendChild(infoBox);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(facility.lat, facility.lng),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        return { marker, lat: facility.lat, lng: facility.lng };
+      }
+
+      async function rebuildFacilityPool() {
+        if (window.__facilityMarkerCache) window.__facilityMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__facilityMarkerPool) { window.__facilityMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__facilityMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.facilityData) return;
+        await loadSigBoundaryOnce();
+        window.__facilityMarkerPool = window.facilityData
+          .filter((f) => isPointInSelectedSigungu(f.lat, f.lng))
+          .map((f) => _buildFacilityMarkerEntry(f));
+      }
+
+      async function updateFacilityMarkers() {
+        if (!window.facilityData) return;
+        const showFacilities = document.getElementById("toggleFacilities").checked;
+        if (!showFacilities || window.map.getZoom() < 14) {
+          window.__facilityMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__facilityMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__facilityMarkerPool) { await rebuildFacilityPool(); }
+          window.__facilityMarkerPool.forEach(({ marker, lat, lng }) => {
+            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          });
+        } else {
+          if (!window.__facilityMarkerCache) window.__facilityMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const facility of window.facilityData) {
+            if (!bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng))) continue;
+            const key = `${facility.name}|${facility.lat}|${facility.lng}`;
+            visibleKeys.add(key);
+            if (!window.__facilityMarkerCache.has(key)) window.__facilityMarkerCache.set(key, _buildFacilityMarkerEntry(facility));
+            toShow.push(window.__facilityMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker }) => marker.setMap(window.map));
+          window.__facilityMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
       }
 
       // ✅ 시설 체크박스 변경 시 마커 업데이트
@@ -6384,61 +6328,75 @@ const originalBase64 = event.target.result;
           //console.log("✅ 스타벅스 데이터 로드 완료", starbucks);
           window.starbucksData = starbucks; // ✅ 전체 스타벅스 데이터 저장
 
+          // ✅ 마커 캐시/풀 초기화
+          window.__starbucksMarkerPool = null;
+          if (!window.__starbucksMarkerCache) window.__starbucksMarkerCache = new Map();
+
           // ✅ 초기 마커 업데이트
           updateStarbucksMarkers(window.map.getBounds());
 
-          // ✅ 지도 이동 시 현재 범위 내 스타벅스 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            const bounds = window.map.getBounds();
-            updateStarbucksMarkers(bounds);
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
         } catch (error) {
           console.error("❌ 스타벅스 데이터 로드 실패:", error);
         }
       }
 
-      async function updateStarbucksMarkers() {
-        const showStarbucks = document.getElementById("toggleStarbucks").checked;
-
-        // ✅ 기존 스타벅스 마커 제거
-        starbucksMarkers.forEach((marker) => marker.setMap(null));
-        starbucksMarkers = [];
-
-        if (!showStarbucks) return; // 체크 해제 시 종료
-        if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-        if (!window.starbucksData) return;
-        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
-
-        let bounds = window.map.getBounds();
-        let filteredStarbucks = window.starbucksData.filter((store) =>
-          bounds.hasLatLng(new naver.maps.LatLng(store.lat, store.lot)) &&
-          isPointInSelectedSigungu(parseFloat(store.lat), parseFloat(store.lot)),
-        );
-
-        filteredStarbucks.forEach((store) => {
-          let iconSrc = store.s_name.includes("R") ? "starbucksReserve.png" : "starbucks.png";
-
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = iconSrc;
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          markerElement.appendChild(markerIcon);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(store.lat, store.lot),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달
-          addMarkerRightClickEvent(marker, markerElement);
-
-          starbucksMarkers.push(marker);
+      function _buildStarbucksMarkerEntry(store) {
+        const iconSrc = store.s_name.includes("R") ? "starbucksReserve.png" : "starbucks.png";
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = iconSrc;
+        markerIcon.style = "width: 32px; height: 32px;";
+        markerElement.appendChild(markerIcon);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(store.lat, store.lot),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        return { marker, lat: parseFloat(store.lat), lng: parseFloat(store.lot) };
+      }
+
+      async function rebuildStarbucksPool() {
+        if (window.__starbucksMarkerCache) window.__starbucksMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__starbucksMarkerPool) { window.__starbucksMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__starbucksMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.starbucksData) return;
+        await loadSigBoundaryOnce();
+        window.__starbucksMarkerPool = window.starbucksData
+          .filter((s) => isPointInSelectedSigungu(parseFloat(s.lat), parseFloat(s.lot)))
+          .map((s) => _buildStarbucksMarkerEntry(s));
+      }
+
+      async function updateStarbucksMarkers() {
+        if (!window.starbucksData) return;
+        const showStarbucks = document.getElementById("toggleStarbucks").checked;
+        if (!showStarbucks || window.map.getZoom() < 14) {
+          window.__starbucksMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__starbucksMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__starbucksMarkerPool) { await rebuildStarbucksPool(); }
+          window.__starbucksMarkerPool.forEach(({ marker, lat, lng }) => {
+            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          });
+        } else {
+          if (!window.__starbucksMarkerCache) window.__starbucksMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const store of window.starbucksData) {
+            const lat = parseFloat(store.lat), lng = parseFloat(store.lot);
+            if (!bounds.hasLatLng(new naver.maps.LatLng(lat, lng))) continue;
+            const key = `${store.s_name}|${store.lat}|${store.lot}`;
+            visibleKeys.add(key);
+            if (!window.__starbucksMarkerCache.has(key)) window.__starbucksMarkerCache.set(key, _buildStarbucksMarkerEntry(store));
+            toShow.push(window.__starbucksMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker }) => marker.setMap(window.map));
+          window.__starbucksMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
       }
 
       // ✅ 스타벅스 체크박스 변경 시 마커 업데이트
@@ -10797,7 +10755,7 @@ min-height: 24px;
       }
 
       // ▼ 필터 변경 이벤트
-      function applyRegionFilterUpdate() {
+      async function applyRegionFilterUpdate() {
         // 시도/시군구 필터가 바뀌면: 기존 마커(캐시)를 즉시 제거하고, 현재 bounds로 다시 그림
         if (window.apartmentMarkers) {
           Object.values(window.apartmentMarkers).forEach((m) => {
@@ -10822,6 +10780,13 @@ min-height: 24px;
         if (window.map && window.map.getBounds) {
           updateMarkers(window.map.getBounds());
         }
+        // 시군구 변경 → 풀 재빌드 후 마커 갱신
+        await Promise.all([
+          rebuildSchoolPool(),
+          rebuildMiddleSchoolPool(),
+          rebuildFacilityPool(),
+          rebuildStarbucksPool(),
+        ]);
         if (document.getElementById("toggleSchools")?.checked) updateSchoolMarkers();
         if (document.getElementById("toggleMiddleSchools")?.checked) updateMiddleSchoolMarkers();
         if (document.getElementById("toggleFacilities")?.checked) updateFacilityMarkers();
