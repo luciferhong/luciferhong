@@ -3098,7 +3098,7 @@
           }
         }
 
-        return [best.x, best.y];
+        return [best.x, best.y, best.d];
       }
       function _emd_clamp(v, a, b) {
         return Math.max(a, Math.min(b, v));
@@ -3112,7 +3112,7 @@
       }
 
       // ✅ 여기만 교체하면 됨
-      function getLabelLatLngByPolylabel(geometry, bbox) {
+      function getLabelDataByPolylabel(geometry, bbox) {
         const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
 
         // 1) 가장 큰 폴리곤 선택
@@ -3135,18 +3135,33 @@
         }
 
         // 2) polylabel (안전한 내부점)
-        const pl = _emd_polylabel(bestPoly, 1e-5); // [lng, lat]
+        const pl = _emd_polylabel(bestPoly, 1e-5); // [lng, lat, d]
 
         // 3) centroid (사람이 느끼는 중앙 성향)
         const ct = _emd_ringCentroidLngLat(bestPoly[0]) || pl;
 
         // 4) 도형이 길쭉할수록 centroid 쪽으로 더 당김
         const ar = _emd_aspectFromBbox(bbox); // 종횡비
-        const t = _emd_clamp((ar - 1) / 3, 0.2, 0.8); // 🔥 자동 보정 핵심
+        const t = _emd_clamp((ar - 1) / 3, 0.2, 0.8);
 
         const blended = _emd_lerp(pl, ct, t);
 
-        return new naver.maps.LatLng(blended[1], blended[0]);
+        // 5) 블렌드 위치에서 실제 경계까지의 거리(내접원 반경) 계산
+        const distAtBlended = _emd_pointToPolygonDist(blended[0], blended[1], bestPoly);
+        const d = Math.max(distAtBlended, 0);
+
+        // 6) 내접원을 bbox로 변환 (폰트 크기 산출에 사용)
+        const polylabelBbox = [blended[0] - d, blended[1] - d, blended[0] + d, blended[1] + d];
+
+        return {
+          latlng: new naver.maps.LatLng(blended[1], blended[0]),
+          polylabelBbox,
+        };
+      }
+
+      // 하위 호환용 래퍼
+      function getLabelLatLngByPolylabel(geometry, bbox) {
+        return getLabelDataByPolylabel(geometry, bbox).latlng;
       }
 
       /* === LABEL AUTO-FIT (bbox → pixel → font-size) === */
@@ -3242,7 +3257,7 @@
           clickable: false,
           zIndex: 999999,
           icon: {
-            content: `<div class="emd-label" style="font-size:${fs}px; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15;">${text}</div>`,
+            content: `<div class="emd-label" style="font-size:${fs}px; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15; transform:translate(-50%,-50%);">${text}</div>`,
             anchor: new naver.maps.Point(0, 0),
           },
         });
@@ -3474,7 +3489,7 @@
           clickable: false,
           zIndex: 999998, // 법정동 라벨보다 약간 아래
           icon: {
-            content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15;">${text}</div>`,
+            content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15; transform:translate(-50%,-50%);">${text}</div>`,
             anchor: new naver.maps.Point(0, 0),
           },
         });
@@ -3482,7 +3497,7 @@
         admLabels.push(marker);
       }
 
-      function drawAdmGeometry(geom) {
+      function drawAdmGeometry(geom, isSelected) {
         const type = geom.type;
         const coords = geom.coordinates;
         const polygons = type === "MultiPolygon" ? coords : [coords];
@@ -3494,10 +3509,10 @@
           const polygon = new naver.maps.Polygon({
             map: window.map,
             paths: path,
-            strokeColor: "#1e40af",
-            strokeOpacity: 0.85,
-            strokeWeight: 2,
-            fillColor: "#1e40af",
+            strokeColor: isSelected ? "#FF69B4" : "#1e40af",
+            strokeOpacity: isSelected ? 1 : 0.85,
+            strokeWeight: isSelected ? 3 : 2,
+            fillColor: isSelected ? "#FF69B4" : "#1e40af",
             fillOpacity: 0.01,
           });
           admPolygons.push(polygon);
@@ -3550,10 +3565,16 @@
 
         const labelCap = 200;
         const labelCandidates = [];
+        const _selectedCodes5Adm = selectedSigunguSet.size > 0
+          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
+          : null;
 
         for (const f of admPrepared) {
           if (!bboxIntersects(bounds, f.bbox)) continue;
-          drawAdmGeometry(f.geometry);
+          const _admCode5 = getAdmCodeFromProps(f.properties).substring(0, 5);
+          if (_selectedCodes5Adm && !_selectedCodes5Adm.has(_admCode5)) continue;
+          const isSelected = !!(_selectedCodes5Adm && _selectedCodes5Adm.has(_admCode5));
+          drawAdmGeometry(f.geometry, isSelected);
 
           // ✅ 행정동 라벨
           const fullName =
@@ -3566,33 +3587,25 @@
           }
         }
 
-        let minFit = Infinity;
+        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
+
         for (const c of labelCandidates) {
+          const { latlng: center, polylabelBbox } = getLabelDataByPolylabel(c.geometry, c.bbox);
           const fs = _label_calcFitFontSize({
-            bbox: c.bbox,
+            bbox: polylabelBbox,
             text: c.name,
             map: window.map,
-            paddingPx: 8,
+            paddingPx: 4,
             min: 9,
-            max: 20,
+            max: maxLabelSize,
             hideIfTooSmall: true,
           });
-          if (fs > 0 && fs < minFit) minFit = fs;
-        }
-
-        if (!isFinite(minFit) || minFit <= 0) return;
-
-        let uniformFit = minFit;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-        uniformFit = Math.min(uniformFit, maxLabelSize);
-
-        for (const c of labelCandidates) {
-          const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-          const sublinePx = Math.max(8, Math.round(uniformFit * 0.8));
+          if (fs <= 0) continue;
+          const sublinePx = Math.max(8, Math.round(fs * 0.8));
           const html = c.subline
             ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
             : c.name;
-          addAdmLabel(center, html, c.bbox, uniformFit, c.name);
+          addAdmLabel(center, html, polylabelBbox, fs, c.name);
         }
       }
 
@@ -3621,7 +3634,7 @@
         scheduleAdmRedraw();
       }
 
-      function drawEmdGeometry(geom) {
+      function drawEmdGeometry(geom, isSelected) {
         // Polygon, MultiPolygon 지원 (외곽 ring만 사용)
         const type = geom.type;
         const coords = geom.coordinates;
@@ -3637,11 +3650,11 @@
           const polygon = new naver.maps.Polygon({
             map: window.map,
             paths: path,
-            strokeColor: "#000000", // ✅ 검은색
-            strokeOpacity: 0.9,
-            strokeWeight: 2,
-            fillColor: "#000000", // (선택) 채움도 검정
-            fillOpacity: 0.01, // (선택) 아주 연하게
+            strokeColor: isSelected ? "#FF69B4" : "#000000",
+            strokeOpacity: isSelected ? 1 : 0.9,
+            strokeWeight: isSelected ? 3 : 2,
+            fillColor: isSelected ? "#FF69B4" : "#000000",
+            fillOpacity: 0.01,
           });
 
           emdPolygons.push(polygon);
@@ -3696,12 +3709,18 @@
         // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
         const labelCap = 200; // 화면 내 라벨 최대치 (성능 보호)
         const labelCandidates = [];
+        const _selectedCodes5Emd = selectedSigunguSet.size > 0
+          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
+          : null;
 
         for (const f of emdPrepared) {
           if (!bboxIntersects(bounds, f.bbox)) continue;
 
           // 경계 그리기
-          drawEmdGeometry(f.geometry);
+          const _emdCode5 = getEmdCodeFromProps(f.properties).substring(0, 5);
+          if (_selectedCodes5Emd && !_selectedCodes5Emd.has(_emdCode5)) continue;
+          const isSelected = !!(_selectedCodes5Emd && _selectedCodes5Emd.has(_emdCode5));
+          drawEmdGeometry(f.geometry, isSelected);
 
           // 라벨 후보 수집
           if (z >= 15 && labelCandidates.length < labelCap) {
@@ -3714,35 +3733,25 @@
           }
         }
 
-        // 2) 후보들 중 'fit 가능한' 최소 폰트 크기 산출 (← 사용자가 원하는 "가장 작은 텍스트 크기")
-        let minFit = Infinity;
+        // 2) 폴리곤별 내접원 기반으로 폰트 크기 개별 산출
+        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
         for (const c of labelCandidates) {
+          const { latlng, polylabelBbox } = getLabelDataByPolylabel(c.geometry, c.bbox);
           const fs = _label_calcFitFontSize({
-            bbox: c.bbox,
+            bbox: polylabelBbox,
             text: c.name,
             map: window.map,
-            paddingPx: 8,
+            paddingPx: 4,
             min: 9,
-            max: 20,
+            max: maxLabelSize,
             hideIfTooSmall: true,
           });
-          if (fs > 0 && fs < minFit) minFit = fs;
-        }
-
-        if (!isFinite(minFit) || minFit <= 0) return;
-
-        // ✅ 라벨 통일 폰트 크기 제한 (PC 최대 20px, 모바일 최대 18px)
-        let uniformFit = minFit;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-        uniformFit = Math.min(uniformFit, maxLabelSize);
-        // 3) 모든 라벨을 '최소 폰트'로 통일해서 렌더링 (항상 bbox 안에 들어감)
-        for (const c of labelCandidates) {
-          const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-          const sublinePx = Math.max(8, Math.round(uniformFit * 0.8));
+          if (fs <= 0) continue;
+          const sublinePx = Math.max(8, Math.round(fs * 0.8));
           const html = c.subline
             ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
             : c.name;
-          addEmdLabel(latlng, html, c.bbox, uniformFit, c.name);
+          addEmdLabel(latlng, html, polylabelBbox, fs, c.name);
         }
       }
 
@@ -3796,7 +3805,7 @@
           clickable: false,
           zIndex: 999998,
           icon: {
-            content: `<div class="sig-label" style="font-size:${fs}px; color:${color};">${text}</div>`,
+            content: `<div class="sig-label" style="font-size:${fs}px; color:${color}; transform:translate(-50%,-50%);">${text}</div>`,
             anchor: new naver.maps.Point(0, 0),
           },
         });
@@ -3822,7 +3831,7 @@
         sigGeojsonRaw = merged;
       }
 
-      function drawSigGeometry(geometry) {
+      function drawSigGeometry(geometry, isSelected) {
         const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
 
         polys.forEach((poly) => {
@@ -3834,10 +3843,10 @@
           const polygon = new naver.maps.Polygon({
             map: window.map,
             paths: path,
-            strokeColor: isAdminStyle ? "#1e40af" : "#000000",
-            strokeOpacity: isAdminStyle ? 0.85 : 1,
-            strokeWeight: isAdminStyle ? 3 : 3,
-            fillColor: isAdminStyle ? "#1e40af" : "#000000",
+            strokeColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
+            strokeOpacity: isSelected ? 1 : (isAdminStyle ? 0.85 : 1),
+            strokeWeight: 3,
+            fillColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
             fillOpacity: isAdminStyle ? 0.01 : 0,
           });
           sigPolygons.push(polygon);
@@ -3864,10 +3873,17 @@
         const labelCap = 60; // 성능 보호
         const labelCandidates = [];
 
+        const _selectedCodes5Sig = selectedSigunguSet.size > 0
+          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
+          : null;
+
         for (const f of sigPrepared) {
           if (!bboxIntersects(bounds, f.bbox)) continue;
 
-          drawSigGeometry(f.geometry);
+          const _sigCode5 = String(f.properties?.sgg_cd ?? "");
+          if (_selectedCodes5Sig && !_selectedCodes5Sig.has(_sigCode5)) continue;
+          const isSelected = !!(_selectedCodes5Sig && _selectedCodes5Sig.has(_sigCode5));
+          drawSigGeometry(f.geometry, isSelected);
 
           if (labelCandidates.length < labelCap) {
             const name =
@@ -3876,31 +3892,21 @@
           }
         }
 
-        // 2) 후보들 중 최소 fit 폰트 크기 산출
-        let minFit = Infinity;
+        // 2) 폴리곤별 내접원 기반으로 폰트 크기 개별 산출
+        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
         for (const c of labelCandidates) {
+          const { latlng: center, polylabelBbox } = getLabelDataByPolylabel(c.geometry, c.bbox);
           const fs = _label_calcFitFontSize({
-            bbox: c.bbox,
+            bbox: polylabelBbox,
             text: c.name,
             map: window.map,
-            paddingPx: 10,
+            paddingPx: 4,
             min: 10,
-            max: 20,
+            max: maxLabelSize,
             hideIfTooSmall: true,
           });
-          if (fs > 0 && fs < minFit) minFit = fs;
-        }
-
-        if (!isFinite(minFit) || minFit <= 0) return;
-
-        // ✅ 라벨 통일 폰트 크기 제한 (PC 최대 20px, 모바일 최대 18px)
-        let uniformFit = minFit;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-        uniformFit = Math.min(uniformFit, maxLabelSize);
-        // 3) 모든 SIG 라벨을 '최소 폰트'로 통일
-        for (const c of labelCandidates) {
-          const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-          addSigLabel(center, c.name, c.bbox, uniformFit);
+          if (fs <= 0) continue;
+          addSigLabel(center, c.name, polylabelBbox, fs);
         }
       }
 
@@ -5230,7 +5236,7 @@
         }
       }
 
-      function updateSchoolMarkers() {
+      async function updateSchoolMarkers() {
         const showSchools = document.getElementById("toggleSchools").checked;
 
         // ✅ 기존 학교 마커 제거
@@ -5245,9 +5251,12 @@
           clearActiveSchoolDetailButton();
           return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
         }
+        if (!window.schoolData) return;
+        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
         let bounds = window.map.getBounds();
         let filteredSchools = window.schoolData.filter((school) =>
-          bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude)),
+          bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude)) &&
+          isPointInSelectedSigungu(school.latitude, school.longitude),
         );
 
         filteredSchools.forEach((school) => {
@@ -5585,8 +5594,8 @@
         updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
       });
 
-      document.getElementById("toggleSchools").addEventListener("change", () => {
-        updateSchoolMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleSchools").addEventListener("change", async () => {
+        await updateSchoolMarkers(); // ✅ 즉시 업데이트
       });
 
       // ✅ 법정동경계 토글
@@ -6169,7 +6178,7 @@ const originalBase64 = event.target.result;
         }
       }
 
-      function updateMiddleSchoolMarkers() {
+      async function updateMiddleSchoolMarkers() {
         const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
 
         // ✅ 기존 중학교 마커 제거
@@ -6182,9 +6191,12 @@ const originalBase64 = event.target.result;
           return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
         }
 
+        if (!window.middleSchoolData) return;
+        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
         let bounds = window.map.getBounds();
         let filteredSchools = window.middleSchoolData.filter((school) =>
-          bounds.hasLatLng(new naver.maps.LatLng(school["위도"], school["경도"])),
+          bounds.hasLatLng(new naver.maps.LatLng(school["위도"], school["경도"])) &&
+          isPointInSelectedSigungu(school["위도"], school["경도"]),
         );
         filteredSchools.forEach((school) => {
           // ✅ 마커 컨테이너를 markerElement로 활용
@@ -6229,9 +6241,38 @@ const originalBase64 = event.target.result;
       }
 
       // ✅ 중학교 체크박스 변경 시 마커 업데이트
-      document.getElementById("toggleMiddleSchools").addEventListener("change", () => {
-        updateMiddleSchoolMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleMiddleSchools").addEventListener("change", async () => {
+        await updateMiddleSchoolMarkers(); // ✅ 즉시 업데이트
       });
+
+      // ── 시군구 폴리곤 내부 판별 유틸 ──────────────────────────────
+      function pointInRing(lat, lng, ring) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const xi = ring[i][0], yi = ring[i][1];
+          const xj = ring[j][0], yj = ring[j][1];
+          if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)
+            inside = !inside;
+        }
+        return inside;
+      }
+      function pointInMultiPolygon(lat, lng, geometry) {
+        const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
+        for (const poly of polys) {
+          if (pointInRing(lat, lng, poly[0])) return true;
+        }
+        return false;
+      }
+      function isPointInSelectedSigungu(lat, lng) {
+        if (selectedSigunguSet.size === 0) return true;
+        if (!sigGeojsonRaw || !sigGeojsonRaw.features) return true;
+        const selectedCodes5 = new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)));
+        const matchingFeatures = sigGeojsonRaw.features.filter((f) =>
+          selectedCodes5.has(String(f.properties.sgg_cd))
+        );
+        return matchingFeatures.some((f) => pointInMultiPolygon(lat, lng, f.geometry));
+      }
+      // ─────────────────────────────────────────────────────────────
 
       let facilityMarkers = []; // ✅ 지도에 표시된 시설 마커 저장
 
@@ -6255,7 +6296,7 @@ const originalBase64 = event.target.result;
         }
       }
 
-      function updateFacilityMarkers() {
+      async function updateFacilityMarkers() {
         const showFacilities = document.getElementById("toggleFacilities").checked;
 
         // ✅ 기존 시설 마커 제거
@@ -6265,9 +6306,13 @@ const originalBase64 = event.target.result;
         if (!showFacilities) return; // 체크 해제 시 종료
         if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
 
+        if (!window.facilityData) return;
+        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
+
         let bounds = window.map.getBounds();
         let filteredFacilities = window.facilityData.filter((facility) =>
-          bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng)),
+          bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng)) &&
+          isPointInSelectedSigungu(facility.lat, facility.lng),
         );
 
         filteredFacilities.forEach((facility) => {
@@ -6326,8 +6371,8 @@ const originalBase64 = event.target.result;
       }
 
       // ✅ 시설 체크박스 변경 시 마커 업데이트
-      document.getElementById("toggleFacilities").addEventListener("change", () => {
-        updateFacilityMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleFacilities").addEventListener("change", async () => {
+        await updateFacilityMarkers(); // ✅ 즉시 업데이트
       });
 
       let starbucksMarkers = []; // ✅ 지도에 표시된 스타벅스 마커 저장
@@ -6352,7 +6397,7 @@ const originalBase64 = event.target.result;
         }
       }
 
-      function updateStarbucksMarkers() {
+      async function updateStarbucksMarkers() {
         const showStarbucks = document.getElementById("toggleStarbucks").checked;
 
         // ✅ 기존 스타벅스 마커 제거
@@ -6361,10 +6406,13 @@ const originalBase64 = event.target.result;
 
         if (!showStarbucks) return; // 체크 해제 시 종료
         if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
+        if (!window.starbucksData) return;
+        if (selectedSigunguSet.size > 0) await loadSigBoundaryOnce();
 
         let bounds = window.map.getBounds();
         let filteredStarbucks = window.starbucksData.filter((store) =>
-          bounds.hasLatLng(new naver.maps.LatLng(store.lat, store.lot)),
+          bounds.hasLatLng(new naver.maps.LatLng(store.lat, store.lot)) &&
+          isPointInSelectedSigungu(parseFloat(store.lat), parseFloat(store.lot)),
         );
 
         filteredStarbucks.forEach((store) => {
@@ -6394,8 +6442,8 @@ const originalBase64 = event.target.result;
       }
 
       // ✅ 스타벅스 체크박스 변경 시 마커 업데이트
-      document.getElementById("toggleStarbucks").addEventListener("change", () => {
-        updateStarbucksMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleStarbucks").addEventListener("change", async () => {
+        await updateStarbucksMarkers(); // ✅ 즉시 업데이트
       });
 
       ////////////////////////// 이동 이벤트 //////////////////////////
@@ -10774,6 +10822,10 @@ min-height: 24px;
         if (window.map && window.map.getBounds) {
           updateMarkers(window.map.getBounds());
         }
+        if (document.getElementById("toggleSchools")?.checked) updateSchoolMarkers();
+        if (document.getElementById("toggleMiddleSchools")?.checked) updateMiddleSchoolMarkers();
+        if (document.getElementById("toggleFacilities")?.checked) updateFacilityMarkers();
+        if (document.getElementById("toggleStarbucks")?.checked) updateStarbucksMarkers();
       }
 
       // ▼ 필터 변경 이벤트 (1회만 호출할 것)
