@@ -3252,7 +3252,7 @@
 
         const marker = new naver.maps.Marker({
           position: latlng,
-          map: window.map,
+          map: null,
           clickable: false,
           zIndex: 999999,
           icon: {
@@ -3484,7 +3484,7 @@
 
         const marker = new naver.maps.Marker({
           position: latlng,
-          map: window.map,
+          map: null,
           clickable: false,
           zIndex: 999998, // 법정동 라벨보다 약간 아래
           icon: {
@@ -3506,7 +3506,7 @@
           const ring = poly[0];
           const path = ring.map((c) => new naver.maps.LatLng(c[1], c[0]));
           const polygon = new naver.maps.Polygon({
-            map: window.map,
+            map: null,
             paths: path,
             strokeColor: isSelected ? "#FF69B4" : "#1e40af",
             strokeOpacity: isSelected ? 1 : 0.85,
@@ -3614,12 +3614,16 @@
             : c.name;
           addAdmLabel(center, html, polylabelBbox, fs, c.name);
         }
-        // 새 폴리곤/라벨이 모두 추가된 후 기존 것을 rAF에서 제거 (깜박임 방지)
+        // atomic swap: rAF 한 번에 이전 제거 + 새 것 표시 → 같은 페인트 사이클에서 교체 (깜박임 방지)
         const _snapPrevAdmPolygons = _prevAdmPolygons;
         const _snapPrevAdmLabels = _prevAdmLabels;
+        const _snapNewAdmPolygons = admPolygons.slice();
+        const _snapNewAdmLabels = admLabels.slice();
         requestAnimationFrame(() => {
           _snapPrevAdmPolygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
           _snapPrevAdmLabels.forEach((m) => { try { m.setMap && m.setMap(null); } catch (e) {} });
+          _snapNewAdmPolygons.forEach((p) => { try { p.setMap(window.map); } catch (e) {} });
+          _snapNewAdmLabels.forEach((m) => { try { m.setMap && m.setMap(window.map); } catch (e) {} });
         });
       }
 
@@ -3662,7 +3666,7 @@
           const path = ring.map((c) => new naver.maps.LatLng(c[1], c[0]));
 
           const polygon = new naver.maps.Polygon({
-            map: window.map,
+            map: null,
             paths: path,
             strokeColor: isSelected ? "#FF69B4" : "#000000",
             strokeOpacity: isSelected ? 1 : 0.9,
@@ -3775,12 +3779,16 @@
             : c.name;
           addEmdLabel(latlng, html, polylabelBbox, fs, c.name);
         }
-        // 새 폴리곤/라벨이 모두 추가된 후 기존 것을 rAF에서 제거 (깜박임 방지)
+        // atomic swap: rAF 한 번에 이전 제거 + 새 것 표시 → 같은 페인트 사이클에서 교체 (깜박임 방지)
         const _snapPrevEmdPolygons = _prevEmdPolygons;
         const _snapPrevEmdLabels = _prevEmdLabels;
+        const _snapNewEmdPolygons = emdPolygons.slice();
+        const _snapNewEmdLabels = emdLabels.slice();
         requestAnimationFrame(() => {
           _snapPrevEmdPolygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
           _snapPrevEmdLabels.forEach((m) => { try { m.setMap && m.setMap(null); } catch (e) {} });
+          _snapNewEmdPolygons.forEach((p) => { try { p.setMap(window.map); } catch (e) {} });
+          _snapNewEmdLabels.forEach((m) => { try { m.setMap && m.setMap(window.map); } catch (e) {} });
         });
       }
 
@@ -3830,7 +3838,7 @@
 
         const marker = new naver.maps.Marker({
           position: latlng,
-          map: window.map,
+          map: null,
           clickable: false,
           zIndex: 999998,
           icon: {
@@ -3870,7 +3878,7 @@
           const isAdminStyle = sigStyleMode === "admin";
 
           const polygon = new naver.maps.Polygon({
-            map: window.map,
+            map: null,
             paths: path,
             strokeColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
             strokeOpacity: isSelected ? 1 : (isAdminStyle ? 0.85 : 1),
@@ -3945,12 +3953,16 @@
           if (fs <= 0) continue;
           addSigLabel(center, c.name, polylabelBbox, fs);
         }
-        // 새 폴리곤/라벨이 모두 추가된 후 기존 것을 rAF에서 제거 (깜박임 방지)
+        // atomic swap: rAF 한 번에 이전 제거 + 새 것 표시 → 같은 페인트 사이클에서 교체 (깜박임 방지)
         const _snapPrevSigPolygons = _prevSigPolygons;
         const _snapPrevSigLabels = _prevSigLabels;
+        const _snapNewSigPolygons = sigPolygons.slice();
+        const _snapNewSigLabels = sigLabels.slice();
         requestAnimationFrame(() => {
           _snapPrevSigPolygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
           _snapPrevSigLabels.forEach((m) => { try { m.setMap && m.setMap(null); } catch (e) {} });
+          _snapNewSigPolygons.forEach((p) => { try { p.setMap(window.map); } catch (e) {} });
+          _snapNewSigLabels.forEach((m) => { try { m.setMap && m.setMap(window.map); } catch (e) {} });
         });
       }
 
@@ -7329,10 +7341,11 @@ const originalBase64 = event.target.result;
         if (!bounds) return;
 
         const inView = new Set();
+        const _inSgg = _makeSigunguChecker();
         for (const entry of window.__photoMemoIndex) {
           try {
             if (typeof entry.lat !== "number" || typeof entry.lng !== "number") continue;
-            if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng))) {
+            if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng)) && _inSgg(entry.lat, entry.lng)) {
               const id = String(entry.id);
               inView.add(id);
               // 마커 없고 아직 로딩 중이 아닐 때만 DB에서 full record 불러와 마커 생성
@@ -10863,6 +10876,11 @@ min-height: 24px;
         if (document.getElementById("toggleMiddleSchools")?.checked) updateMiddleSchoolMarkers();
         if (document.getElementById("toggleFacilities")?.checked) updateFacilityMarkers();
         if (document.getElementById("toggleStarbucks")?.checked) updateStarbucksMarkers();
+        // 포토메모: 시군구 필터 변경 시 기존 마커 전체 제거 후 새 필터로 재로드
+        if (window.__photoMemoVisible) {
+          window.__photoMemoMarkers.forEach((_, id) => __removePhotoMemoMarker(id));
+          updatePhotoMemoMarkersByBounds();
+        }
       }
 
       // ▼ 필터 변경 이벤트 (1회만 호출할 것)
