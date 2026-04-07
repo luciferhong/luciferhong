@@ -910,12 +910,9 @@
         height: 100%;
         z-index: 900000; /* 팝업(999999)보다만 낮게 */
       }
-      #map.fullscreen {
-        position: fixed;
-        inset: 0;
+      #mapWrapper.fullscreen #map {
         width: 100%;
         height: 100%;
-        z-index: 900000;
       }
 
       body.map-fullscreen {
@@ -1581,7 +1578,9 @@
       </div>
     </div>
 
+    <div id="mapWrapper" style="position:relative;overflow:hidden;">
     <div id="map"></div>
+    </div>
     <div id="routeControls">
       <button id="startPolyline">경로 그리기</button>
       <button id="undoLastPointButton">직전 취소</button>
@@ -2460,6 +2459,7 @@
             naver.maps.Event.clearListeners(window.map, "idle");
             naver.maps.Event.clearListeners(window.map, "zoom_changed");
             naver.maps.Event.clearListeners(window.map, "rightclick");
+            window.__mapIdleListenerReady = false; // 새 map 인스턴스에 idle 리스너 재등록 필요
           }
         } catch (e) {}
 
@@ -2581,14 +2581,27 @@
         // 🔄 idle 이벤트 중복 등록 방지
         if (!window.__mapIdleListenerReady) {
           naver.maps.Event.addListener(window.map, "idle", () => {
-            // ✅ 아파트 마커는 항상
             updateMarkers(window.map.getBounds());
-            // ✅ 나머지는 로드 완료 + 토글 ON일 때만
             if (window.__schoolsReady) updateSchoolMarkers();
             if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
             if (window.__starbucksReady) updateStarbucksMarkers();
             if (window.__facilitiesReady) updateFacilityMarkers();
-
+            // 경계선 canvas 갱신
+            try {
+              if (_boundaryZoomClearing) {
+                // 줌 중 idle 발생 — 즉시 표시하지 않고 debounce로 줌 완전 종료 후 표시
+                if (_boundaryShowTimer) clearTimeout(_boundaryShowTimer);
+                _boundaryShowTimer = setTimeout(() => {
+                  _boundaryZoomClearing = false;
+                  try { drawBoundaryCanvas(); } catch (e) {}
+                  if (_boundaryCanvas) _boundaryCanvas.style.display = '';
+                }, 80);
+              } else {
+                // 일반 드래그/패닝 — 즉시 갱신
+                try { drawBoundaryCanvas(); } catch (e) {}
+                if (_boundaryCanvas) _boundaryCanvas.style.display = '';
+              }
+            } catch (e) {}
             // 💾 메모 캐시 추가 정리 (매 idle마다 한 번 더 점검)
             try {
               const bounds = window.map.getBounds();
@@ -2613,6 +2626,35 @@
               }
             } catch (e) {}
           });
+
+          // 드래그 중 canvas를 타일과 함께 transform으로 이동 (깜박임 방지)
+          naver.maps.Event.addListener(window.map, "drag", () => {
+            try {
+              const c = _boundaryCanvas;
+              const a = window._boundaryCanvasAnchor;
+              if (!c || !a) return;
+              const bounds = window.map.getBounds();
+              if (!bounds) return;
+              const sw1 = bounds.getSW();
+              const _mY = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+              const dx = -((sw1.lng() - a.swLng) / a.lngRange) * a.w;
+              const dy = ((_mY(sw1.lat()) - a.mercSW) / a.mercRange) * a.h;
+              c.style.transform = `translate(${dx}px, ${dy}px)`;
+            } catch (e) {}
+          });
+
+          // 줌 변경 중 경계 숨기기 (idle에서 재그림)
+          naver.maps.Event.addListener(window.map, "zoom_changed", () => {
+            try { _startBoundaryZoomClear(); } catch (e) {}
+          });
+
+          // wheel/터치 핀치 시작 즉시 canvas 숨김 (document 캐처 페이즈 — Naver Maps보다 먼저 실행)
+          document.addEventListener("wheel", () => {
+            try { _startBoundaryZoomClear(); } catch (e) {}
+          }, { passive: true, capture: true });
+          document.addEventListener("touchstart", (ev) => {
+            if (ev.touches.length >= 2) try { _startBoundaryZoomClear(); } catch (e) {}
+          }, { passive: true, capture: true });
           window.__mapIdleListenerReady = true;
         }
         if (window.mapHandler) {
@@ -2723,6 +2765,11 @@
         });
 
         setupRightClickEvent(); // 길찾기용 우클릭 이벤트
+
+        // 지도 크기 변경 시 canvas 크기/위치 보정
+        naver.maps.Event.addListener(window.map, "resize", () => {
+          try { drawBoundaryCanvas(); } catch (e) {}
+        });
 
         //모바일이면 현재 위치로 이동
       }
@@ -2951,36 +2998,34 @@
       ];
 
       let sigPrepared = null;
-      let sigPolygons = [];
+      // key -> { polygons: Polygon[], label: Marker|null, isSelected: bool }
+      let sigFeatureMap = new Map();
+      let lastSigZoom = -1;
+      let lastSigSelKey = "";
 
       let sigStyleMode = "default"; // "default" | "admin"
 
-      let sigLabels = [];
+      // key -> { polygons: Polygon[], label: Marker|null, isSelected: bool }
+      let emdFeatureMap = new Map();
+      let lastEmdZoom = -1;
+      let lastEmdSelKey = "";
 
-      let emdPolygons = []; // 현재 지도에 그려진 polygon 객체들
-
-      let emdLabels = [];
       // ==============================
       // ✅ ADM(행정동) helpers/vars
       // ==============================
       let admGeojsonRaw = null;
       let admPrepared = null;
-      let admPolygons = [];
+      // key -> { polygons: Polygon[], label: Marker|null, isSelected: bool }
+      let admFeatureMap = new Map();
+      let lastAdmZoom = -1;
+      let lastAdmSelKey = "";
       let admPopulationMap = null; // { [admCode10]: { totalPopulation, personsPerHousehold } }
-
-      let admLabels = [];
       let admRedrawTimer = null;
       let admBoundMap = null;
       let admLoaded = false;
       // 현재 지도에 표시된 라벨(커스텀 오버레이/마커)
       function clearEmdLabels() {
-        if (!emdLabels || emdLabels.length === 0) return;
-        emdLabels.forEach((o) => {
-          try {
-            o.setMap && o.setMap(null);
-          } catch (e) {}
-        });
-        emdLabels = [];
+        // clearEmdPolygons()에서 함께 처리
       }
 
       // bbox 중심을 라벨 위치로 사용 (빠르고 충분히 정확)
@@ -3098,7 +3143,7 @@
           }
         }
 
-        return [best.x, best.y];
+        return [best.x, best.y, best.d];
       }
       function _emd_clamp(v, a, b) {
         return Math.max(a, Math.min(b, v));
@@ -3112,7 +3157,7 @@
       }
 
       // ✅ 여기만 교체하면 됨
-      function getLabelLatLngByPolylabel(geometry, bbox) {
+      function getLabelDataByPolylabel(geometry, bbox) {
         const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
 
         // 1) 가장 큰 폴리곤 선택
@@ -3135,18 +3180,33 @@
         }
 
         // 2) polylabel (안전한 내부점)
-        const pl = _emd_polylabel(bestPoly, 1e-5); // [lng, lat]
+        const pl = _emd_polylabel(bestPoly, 1e-5); // [lng, lat, d]
 
         // 3) centroid (사람이 느끼는 중앙 성향)
         const ct = _emd_ringCentroidLngLat(bestPoly[0]) || pl;
 
         // 4) 도형이 길쭉할수록 centroid 쪽으로 더 당김
         const ar = _emd_aspectFromBbox(bbox); // 종횡비
-        const t = _emd_clamp((ar - 1) / 3, 0.2, 0.8); // 🔥 자동 보정 핵심
+        const t = _emd_clamp((ar - 1) / 3, 0.2, 0.8);
 
         const blended = _emd_lerp(pl, ct, t);
 
-        return new naver.maps.LatLng(blended[1], blended[0]);
+        // 5) 블렌드 위치에서 실제 경계까지의 거리(내접원 반경) 계산
+        const distAtBlended = _emd_pointToPolygonDist(blended[0], blended[1], bestPoly);
+        const d = Math.max(distAtBlended, 0);
+
+        // 6) 내접원을 bbox로 변환 (폰트 크기 산출에 사용)
+        const polylabelBbox = [blended[0] - d, blended[1] - d, blended[0] + d, blended[1] + d];
+
+        return {
+          latlng: new naver.maps.LatLng(blended[1], blended[0]),
+          polylabelBbox,
+        };
+      }
+
+      // 하위 호환용 래퍼
+      function getLabelLatLngByPolylabel(geometry, bbox) {
+        return getLabelDataByPolylabel(geometry, bbox).latlng;
       }
 
       /* === LABEL AUTO-FIT (bbox → pixel → font-size) === */
@@ -3238,41 +3298,266 @@
 
         const marker = new naver.maps.Marker({
           position: latlng,
-          map: window.map,
+          map: null,
           clickable: false,
           zIndex: 999999,
           icon: {
-            content: `<div class="emd-label" style="font-size:${fs}px; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15;">${text}</div>`,
+            content: `<div class="emd-label" style="font-size:${fs}px; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15; transform:translate(-50%,-50%);">${text}</div>`,
             anchor: new naver.maps.Point(0, 0),
           },
         });
 
-        emdLabels.push(marker);
+        // (addEmdLabel - 더 이상 직접 호출되지 않음)
       }
 
       let emdRedrawTimer = null;
       let emdBoundMap = null; // 마지막으로 바인딩된 map 인스턴스
 
-      function clearEmdPolygons() {
-        // ✅ 경계 폴리곤 제거
-        if (emdPolygons && emdPolygons.length) {
-          emdPolygons.forEach((p) => {
-            try {
-              p.setMap(null);
-            } catch (e) {}
-          });
-          emdPolygons = [];
+      // ─── Canvas 경계선 레이어 ───────────────────────────────────────
+      let _boundaryCanvas = null;
+
+      function _ensureBoundaryCanvas() {
+        if (_boundaryCanvas && _boundaryCanvas.isConnected) return _boundaryCanvas;
+        // #map 외부(형제)에 배치 — Naver Maps 내부 줌 transform이 canvas에 영향을 주지 않음
+        const wrapper = document.getElementById("mapWrapper");
+        if (!wrapper) return null;
+        if (_boundaryCanvas) { try { _boundaryCanvas.remove(); } catch (e) {} }
+        const c = document.createElement("canvas");
+        c.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;z-index:200;";
+        if (_boundaryZoomClearing) c.style.display = 'none';
+        wrapper.appendChild(c);
+        _boundaryCanvas = c;
+        return c;
+      }
+
+      function clearBoundaryCanvas() {
+        const c = _boundaryCanvas;
+        if (!c) return;
+        const ctx = c.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+      }
+
+      // 줌 애니메이션 중 canvas를 숨기는 처리 (clear + visibility 동시 적용)
+      let _boundaryZoomClearing = false;
+      let _boundaryShowTimer = null;
+      function _startBoundaryZoomClear() {
+        _boundaryZoomClearing = true;
+        // 예약된 show 타이머 취소 — 연속 wheel tick 사이 idle에서 표시되는 것 방지
+        if (_boundaryShowTimer) { clearTimeout(_boundaryShowTimer); _boundaryShowTimer = null; }
+        // canvas를 즉시 DOM에서 숨김 (display:none — 렌더 트리에서 완전 제거)
+        if (_boundaryCanvas) _boundaryCanvas.style.display = 'none';
+        try { clearBoundaryCanvas(); } catch (e) {}
+      }
+
+      function _drawFeatureOnCanvas(ctx, toXY, geometry, isSelected, defaultColor, lineWidth) {
+        const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
+        ctx.strokeStyle = isSelected ? "#FF69B4" : defaultColor;
+        ctx.lineWidth = isSelected ? lineWidth + 1 : lineWidth;
+        for (const poly of polys) {
+          const ring = poly[0];
+          if (!ring || ring.length < 3) continue;
+          ctx.beginPath();
+          const [x0, y0] = toXY(ring[0][1], ring[0][0]);
+          ctx.moveTo(x0, y0);
+          for (let i = 1; i < ring.length; i++) {
+            const [x, y] = toXY(ring[i][1], ring[i][0]);
+            ctx.lineTo(x, y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+      }
+
+      function _drawTextOnCanvas(ctx, mainText, subText, x, y, fontSize, color) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const ff = "'Apple SD Gothic Neo','Noto Sans KR','맑은 고딕',sans-serif";
+        const drawLine = (text, cx, cy, sz) => {
+          ctx.font = `bold ${sz}px ${ff}`;
+          ctx.lineWidth = Math.max(2, sz * 0.28);
+          ctx.strokeStyle = "rgba(255,255,255,0.92)";
+          ctx.strokeText(text, cx, cy);
+          ctx.fillStyle = color;
+          ctx.fillText(text, cx, cy);
+        };
+        if (subText) {
+          const lineH = Math.round(fontSize * 1.3);
+          drawLine(mainText, x, y - lineH * 0.5, fontSize);
+          drawLine(subText, x, y + lineH * 0.5, Math.max(8, Math.round(fontSize * 0.78)));
+        } else {
+          drawLine(mainText, x, y, fontSize);
+        }
+        ctx.restore();
+      }
+
+      function drawBoundaryCanvas() {
+        if (!window.map) return;
+        if (_boundaryZoomClearing) return; // 줌 애니메이션 중에는 그리지 않음
+        const boundaryOn = isBoundaryCheckboxOn();
+        const adminOn = isAdminBoundaryCheckboxOn();
+        const z = window.map.getZoom();
+
+        if (z <= 12 || (!boundaryOn && !adminOn)) {
+          clearBoundaryCanvas();
+          return;
         }
 
-        // ✅ 지역명 라벨 제거 (← 네가 물어본 코드)
-        if (emdLabels && emdLabels.length) {
-          emdLabels.forEach((m) => {
-            try {
-              m.setMap(null);
-            } catch (e) {}
-          });
-          emdLabels = [];
+        const canvas = _ensureBoundaryCanvas();
+        if (!canvas) return;
+
+        const mapEl = document.getElementById("map");
+        const w = mapEl.offsetWidth;
+        const h = mapEl.offsetHeight;
+        const dpr = window.devicePixelRatio || 1;
+        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+          canvas.width = Math.round(w * dpr);
+          canvas.height = Math.round(h * dpr);
+          canvas.style.width = w + 'px';
+          canvas.style.height = h + 'px';
         }
+        const ctx = canvas.getContext("2d");
+        canvas.style.transform = ''; // 드래그 중 적용된 transform 초기화
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // DPR 스케일 적용
+        ctx.clearRect(0, 0, w, h);
+
+        const bounds = window.map.getBounds();
+        if (!bounds) return;
+        const sw = bounds.getSW();
+        const ne = bounds.getNE();
+        const lngRange = ne.lng() - sw.lng();
+        // 웹 메르카토르 y 변환
+        const _mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+        const mercSW = _mercY(sw.lat());
+        const mercNE = _mercY(ne.lat());
+        const mercRange = mercNE - mercSW;
+        const toXY = (lat, lng) => [
+          ((lng - sw.lng()) / lngRange) * w,
+          ((mercNE - _mercY(lat)) / mercRange) * h,
+        ];
+
+        const _selCodes5 = selectedSigunguSet.size > 0
+          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
+          : null;
+
+        // ── SIG (줌 13~14) ──────────────────────────────────────────
+        if (z > 12 && z <= 14) {
+          if (!sigPrepared) return;
+          const isAdminStyle = adminOn && !boundaryOn;
+          const lineColor = isAdminStyle ? "#1e40af" : "#000000";
+
+          // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
+          ctx.globalAlpha = 0.9;
+          for (const f of sigPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = String(f.properties?.sgg_cd ?? "");
+            if (_selCodes5 && _selCodes5.has(code5)) continue; // 선택은 스킵
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, lineColor, 2.5);
+          }
+          for (const f of sigPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = String(f.properties?.sgg_cd ?? "");
+            if (!(_selCodes5 && _selCodes5.has(code5))) continue; // 비선택은 스킵
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, lineColor, 2.5);
+          }
+          ctx.globalAlpha = 1;
+
+          for (const f of sigPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const name = f.properties?.sgg_nm || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
+            if (!name) continue;
+            const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
+            const [lx, ly] = toXY(latlng.lat(), latlng.lng());
+            if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
+            const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 8, max: 18, hideIfTooSmall: true });
+            if (fs <= 0) continue;
+            _drawTextOnCanvas(ctx, name, "", lx, ly, fs, isAdminStyle ? "#1e40af" : "#000000");
+          }
+          // 드래그 추적용 기준점 저장 (SIG 블록에서 return하므로 여기서도 저장)
+          window._boundaryCanvasAnchor = { swLng: sw.lng(), swLat: sw.lat(), mercSW, lngRange, mercRange, w, h };
+          return;
+        }
+
+        // ── EMD (줌 15+, 법정동 ON) ──────────────────────────────────
+        if (boundaryOn && z >= 15) {
+          if (!emdPrepared || !emdPopulationMap) return;
+
+          // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
+          ctx.globalAlpha = 0.9;
+          for (const f of emdPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = getEmdCodeFromProps(f.properties).substring(0, 5);
+            if (_selCodes5 && _selCodes5.has(code5)) continue;
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, "#000000", 1.5);
+          }
+          for (const f of emdPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = getEmdCodeFromProps(f.properties).substring(0, 5);
+            if (!(_selCodes5 && _selCodes5.has(code5))) continue;
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, "#000000", 1.5);
+          }
+          ctx.globalAlpha = 1;
+
+          for (const f of emdPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code8 = getEmdCodeFromProps(f.properties);
+            const name = (f.properties?.A2 || f.properties?.name || f.properties?.EMD_NM) || "";
+            if (!name) continue;
+            const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
+            const [lx, ly] = toXY(latlng.lat(), latlng.lng());
+            if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
+            const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 8, max: 18, hideIfTooSmall: true });
+            if (fs <= 0) continue;
+            const subline = formatEmdSublineByCode(code8);
+            _drawTextOnCanvas(ctx, name, subline, lx, ly, fs, "#000000");
+          }
+        }
+
+        // ── ADM (줌 15+, 행정동 ON) ──────────────────────────────────
+        if (adminOn && z >= 15) {
+          if (!admPrepared || !admPopulationMap) return;
+
+          // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
+          ctx.globalAlpha = 0.9;
+          for (const f of admPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = getAdmCodeFromProps(f.properties).substring(0, 5);
+            if (_selCodes5 && _selCodes5.has(code5)) continue;
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, "#1e40af", 1.5);
+          }
+          for (const f of admPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = getAdmCodeFromProps(f.properties).substring(0, 5);
+            if (!(_selCodes5 && _selCodes5.has(code5))) continue;
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, "#1e40af", 1.5);
+          }
+          ctx.globalAlpha = 1;
+
+          for (const f of admPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code10 = getAdmCodeFromProps(f.properties);
+            const fullName = (f.properties?.adm_nm || f.properties?.NAME || f.properties?.A2 || f.properties?.name) || "";
+            const name = String(fullName).trim().split(/\s+/).pop() || "";
+            if (!name) continue;
+            const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
+            const [lx, ly] = toXY(latlng.lat(), latlng.lng());
+            if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
+            const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 8, max: 18, hideIfTooSmall: true });
+            if (fs <= 0) continue;
+            const subline = formatAdmSublineByCode(code10);
+            _drawTextOnCanvas(ctx, name, subline, lx, ly, fs, "#1e40af");
+          }
+        }
+        // 드래그 추적용 기준점 저장
+        window._boundaryCanvasAnchor = { swLng: sw.lng(), swLat: sw.lat(), mercSW, lngRange, mercRange, w, h };
+      }
+      // ─── Canvas 경계선 레이어 끝 ─────────────────────────────────────
+
+      function clearEmdPolygons() {
+        emdFeatureMap.clear();
+        lastEmdZoom = -1;
+        lastEmdSelKey = "";
+        clearBoundaryCanvas();
       }
 
       function bboxIntersects(bounds, bbox) {
@@ -3429,25 +3714,14 @@
       }
 
       function clearAdmPolygons() {
-        if (admPolygons && admPolygons.length) {
-          admPolygons.forEach((p) => {
-            try {
-              p.setMap(null);
-            } catch (e) {}
-          });
-          admPolygons = [];
-        }
+        admFeatureMap.clear();
+        lastAdmZoom = -1;
+        lastAdmSelKey = "";
+        clearBoundaryCanvas();
       }
 
       function clearAdmLabels() {
-        if (admLabels && admLabels.length) {
-          admLabels.forEach((o) => {
-            try {
-              o.setMap && o.setMap(null);
-            } catch (e) {}
-          });
-          admLabels = [];
-        }
+        // clearAdmPolygons()에서 함께 처리
       }
 
       function addAdmLabel(latlng, text, bbox, forcedFontSizePx, fitText) {
@@ -3470,19 +3744,19 @@
 
         const marker = new naver.maps.Marker({
           position: latlng,
-          map: window.map,
+          map: null,
           clickable: false,
           zIndex: 999998, // 법정동 라벨보다 약간 아래
           icon: {
-            content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15;">${text}</div>`,
+            content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15; transform:translate(-50%,-50%);">${text}</div>`,
             anchor: new naver.maps.Point(0, 0),
           },
         });
 
-        admLabels.push(marker);
+        // (addAdmLabel - 더 이상 직접 호출되지 않음)
       }
 
-      function drawAdmGeometry(geom) {
+      function drawAdmGeometry(geom, isSelected) {
         const type = geom.type;
         const coords = geom.coordinates;
         const polygons = type === "MultiPolygon" ? coords : [coords];
@@ -3492,15 +3766,15 @@
           const ring = poly[0];
           const path = ring.map((c) => new naver.maps.LatLng(c[1], c[0]));
           const polygon = new naver.maps.Polygon({
-            map: window.map,
+            map: null,
             paths: path,
-            strokeColor: "#1e40af",
-            strokeOpacity: 0.85,
-            strokeWeight: 2,
-            fillColor: "#1e40af",
+            strokeColor: isSelected ? "#FF69B4" : "#1e40af",
+            strokeOpacity: isSelected ? 1 : 0.85,
+            strokeWeight: isSelected ? 3 : 2,
+            fillColor: isSelected ? "#FF69B4" : "#1e40af",
             fillOpacity: 0.01,
           });
-          admPolygons.push(polygon);
+          // (drawAdmGeometry - 더 이상 직접 호출되지 않음)
         });
       }
 
@@ -3517,83 +3791,14 @@
       }
 
       function redrawAdmByBounds() {
-        try {
-          prepareAdmPreparedOnce();
-        } catch (e) {
-          console.error("ADM prepare 실패:", e);
-          return;
-        }
-
+        // Canvas 방식으로 전환 — drawBoundaryCanvas()에서 통합 처리
         if (!admPopulationMap) {
           loadAdmPopulationOnce()
-            .then(() => {
-              try {
-                scheduleAdmRedraw();
-              } catch (e) {}
-            })
+            .then(() => { try { scheduleAdmRedraw(); } catch (e) {} })
             .catch(() => {});
-        }
-
-        if (!window.map) return;
-
-        if (!shouldShowAdminBoundary()) {
-          clearAdmPolygons();
-          clearAdmLabels();
           return;
         }
-
-        const bounds = window.map.getBounds();
-        if (!bounds) return;
-
-        clearAdmPolygons();
-        clearAdmLabels();
-
-        const labelCap = 200;
-        const labelCandidates = [];
-
-        for (const f of admPrepared) {
-          if (!bboxIntersects(bounds, f.bbox)) continue;
-          drawAdmGeometry(f.geometry);
-
-          // ✅ 행정동 라벨
-          const fullName =
-            (f.properties && (f.properties.adm_nm || f.properties.NAME || f.properties.A2 || f.properties.name)) || "";
-          const name = String(fullName).trim().split(/\s+/).pop() || "";
-          if (name && labelCandidates.length < labelCap) {
-            const admCode10 = getAdmCodeFromProps(f.properties);
-            const subline = formatAdmSublineByCode(admCode10);
-            labelCandidates.push({ name, subline, bbox: f.bbox, geometry: f.geometry });
-          }
-        }
-
-        let minFit = Infinity;
-        for (const c of labelCandidates) {
-          const fs = _label_calcFitFontSize({
-            bbox: c.bbox,
-            text: c.name,
-            map: window.map,
-            paddingPx: 8,
-            min: 9,
-            max: 20,
-            hideIfTooSmall: true,
-          });
-          if (fs > 0 && fs < minFit) minFit = fs;
-        }
-
-        if (!isFinite(minFit) || minFit <= 0) return;
-
-        let uniformFit = minFit;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-        uniformFit = Math.min(uniformFit, maxLabelSize);
-
-        for (const c of labelCandidates) {
-          const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-          const sublinePx = Math.max(8, Math.round(uniformFit * 0.8));
-          const html = c.subline
-            ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
-            : c.name;
-          addAdmLabel(center, html, c.bbox, uniformFit, c.name);
-        }
+        drawBoundaryCanvas();
       }
 
       function scheduleAdmRedraw() {
@@ -3621,7 +3826,7 @@
         scheduleAdmRedraw();
       }
 
-      function drawEmdGeometry(geom) {
+      function drawEmdGeometry(geom, isSelected) {
         // Polygon, MultiPolygon 지원 (외곽 ring만 사용)
         const type = geom.type;
         const coords = geom.coordinates;
@@ -3635,16 +3840,16 @@
           const path = ring.map((c) => new naver.maps.LatLng(c[1], c[0]));
 
           const polygon = new naver.maps.Polygon({
-            map: window.map,
+            map: null,
             paths: path,
-            strokeColor: "#000000", // ✅ 검은색
-            strokeOpacity: 0.9,
-            strokeWeight: 2,
-            fillColor: "#000000", // (선택) 채움도 검정
-            fillOpacity: 0.01, // (선택) 아주 연하게
+            strokeColor: isSelected ? "#FF69B4" : "#000000",
+            strokeOpacity: isSelected ? 1 : 0.9,
+            strokeWeight: isSelected ? 3 : 2,
+            fillColor: isSelected ? "#FF69B4" : "#000000",
+            fillOpacity: 0.01,
           });
 
-          emdPolygons.push(polygon);
+          // (drawEmdGeometry - 더 이상 직접 호출되지 않음)
         });
       }
 
@@ -3660,114 +3865,27 @@
       }
 
       function redrawEmdByBounds() {
-        try {
-          prepareEmdPreparedOnce();
-        } catch (e) {
-          console.error("redrawEmdByBounds prepare 실패:", e);
-          return;
-        }
-
+        // Canvas 방식으로 전환 — drawBoundaryCanvas()에서 통합 처리
         if (!emdPopulationMap) {
           loadEmdPopulationOnce()
-            .then(() => {
-              try {
-                scheduleEmdRedraw();
-              } catch (e) {}
-            })
+            .then(() => { try { scheduleEmdRedraw(); } catch (e) {} })
             .catch(() => {});
-        }
-
-        if (!window.map) return;
-
-        const z = window.map.getZoom();
-        // ✅ 법정동경계 체크 + 줌 15 이상일 때만 표시
-        if (!shouldShowEmdBoundary()) {
-          clearEmdPolygons();
-          clearEmdLabels();
           return;
         }
-
-        const bounds = window.map.getBounds();
-        if (!bounds) return;
-
-        clearEmdPolygons();
-        clearEmdLabels();
-
-        // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
-        const labelCap = 200; // 화면 내 라벨 최대치 (성능 보호)
-        const labelCandidates = [];
-
-        for (const f of emdPrepared) {
-          if (!bboxIntersects(bounds, f.bbox)) continue;
-
-          // 경계 그리기
-          drawEmdGeometry(f.geometry);
-
-          // 라벨 후보 수집
-          if (z >= 15 && labelCandidates.length < labelCap) {
-            const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
-            if (name) {
-              const emdCode8 = getEmdCodeFromProps(f.properties);
-              const subline = formatEmdSublineByCode(emdCode8);
-              labelCandidates.push({ name, subline, bbox: f.bbox, geometry: f.geometry });
-            }
-          }
-        }
-
-        // 2) 후보들 중 'fit 가능한' 최소 폰트 크기 산출 (← 사용자가 원하는 "가장 작은 텍스트 크기")
-        let minFit = Infinity;
-        for (const c of labelCandidates) {
-          const fs = _label_calcFitFontSize({
-            bbox: c.bbox,
-            text: c.name,
-            map: window.map,
-            paddingPx: 8,
-            min: 9,
-            max: 20,
-            hideIfTooSmall: true,
-          });
-          if (fs > 0 && fs < minFit) minFit = fs;
-        }
-
-        if (!isFinite(minFit) || minFit <= 0) return;
-
-        // ✅ 라벨 통일 폰트 크기 제한 (PC 최대 20px, 모바일 최대 18px)
-        let uniformFit = minFit;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-        uniformFit = Math.min(uniformFit, maxLabelSize);
-        // 3) 모든 라벨을 '최소 폰트'로 통일해서 렌더링 (항상 bbox 안에 들어감)
-        for (const c of labelCandidates) {
-          const latlng = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-          const sublinePx = Math.max(8, Math.round(uniformFit * 0.8));
-          const html = c.subline
-            ? `${c.name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${c.subline}</span>`
-            : c.name;
-          addEmdLabel(latlng, html, c.bbox, uniformFit, c.name);
-        }
+        drawBoundaryCanvas();
       }
 
       // ✅ SIG helpers
       // ==============================
       function clearSigPolygons() {
-        if (sigPolygons && sigPolygons.length) {
-          sigPolygons.forEach((p) => {
-            try {
-              p.setMap(null);
-            } catch (e) {}
-          });
-          sigPolygons = [];
-        }
+        sigFeatureMap.clear();
+        lastSigZoom = -1;
+        lastSigSelKey = "";
+        clearBoundaryCanvas();
       }
 
       function clearSigLabels() {
-        if (sigLabels && sigLabels.length) {
-          sigLabels.forEach((m) => {
-            try {
-              m.setMap(null);
-            } catch (e) {}
-          });
-          sigLabels = [];
-        }
+        // clearSigPolygons()에서 함께 처리
       }
 
       function addSigLabel(latlng, text, bbox, forcedFontSizePx) {
@@ -3792,16 +3910,16 @@
 
         const marker = new naver.maps.Marker({
           position: latlng,
-          map: window.map,
+          map: null,
           clickable: false,
           zIndex: 999998,
           icon: {
-            content: `<div class="sig-label" style="font-size:${fs}px; color:${color};">${text}</div>`,
+            content: `<div class="sig-label" style="font-size:${fs}px; color:${color}; transform:translate(-50%,-50%);">${text}</div>`,
             anchor: new naver.maps.Point(0, 0),
           },
         });
 
-        sigLabels.push(marker);
+        // (addSigLabel - 더 이상 직접 호출되지 않음)
       }
 
       async function loadSigBoundaryOnce() {
@@ -3822,7 +3940,7 @@
         sigGeojsonRaw = merged;
       }
 
-      function drawSigGeometry(geometry) {
+      function drawSigGeometry(geometry, isSelected) {
         const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
 
         polys.forEach((poly) => {
@@ -3832,159 +3950,67 @@
           const isAdminStyle = sigStyleMode === "admin";
 
           const polygon = new naver.maps.Polygon({
-            map: window.map,
+            map: null,
             paths: path,
-            strokeColor: isAdminStyle ? "#1e40af" : "#000000",
-            strokeOpacity: isAdminStyle ? 0.85 : 1,
-            strokeWeight: isAdminStyle ? 3 : 3,
-            fillColor: isAdminStyle ? "#1e40af" : "#000000",
+            strokeColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
+            strokeOpacity: isSelected ? 1 : (isAdminStyle ? 0.85 : 1),
+            strokeWeight: 3,
+            fillColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
             fillOpacity: isAdminStyle ? 0.01 : 0,
           });
-          sigPolygons.push(polygon);
+          // (drawSigGeometry - 더 이상 직접 호출되지 않음)
         });
       }
 
       function redrawSigByBounds() {
-        try {
-          prepareSigPreparedOnce();
-        } catch (e) {
-          console.error("redrawSigByBounds prepare 실패:", e);
-          return;
-        }
-
-        if (!window.map || !sigPrepared) return;
-
-        const bounds = window.map.getBounds();
-        if (!bounds) return;
-
-        clearSigPolygons();
-        clearSigLabels();
-
-        // 1) 화면에 걸치는 폴리곤만 그리기 + 라벨 후보 수집
-        const labelCap = 60; // 성능 보호
-        const labelCandidates = [];
-
-        for (const f of sigPrepared) {
-          if (!bboxIntersects(bounds, f.bbox)) continue;
-
-          drawSigGeometry(f.geometry);
-
-          if (labelCandidates.length < labelCap) {
-            const name =
-              f.properties?.sgg_nm || f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
-            if (name) labelCandidates.push({ name, bbox: f.bbox, geometry: f.geometry });
-          }
-        }
-
-        // 2) 후보들 중 최소 fit 폰트 크기 산출
-        let minFit = Infinity;
-        for (const c of labelCandidates) {
-          const fs = _label_calcFitFontSize({
-            bbox: c.bbox,
-            text: c.name,
-            map: window.map,
-            paddingPx: 10,
-            min: 10,
-            max: 20,
-            hideIfTooSmall: true,
-          });
-          if (fs > 0 && fs < minFit) minFit = fs;
-        }
-
-        if (!isFinite(minFit) || minFit <= 0) return;
-
-        // ✅ 라벨 통일 폰트 크기 제한 (PC 최대 20px, 모바일 최대 18px)
-        let uniformFit = minFit;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-        uniformFit = Math.min(uniformFit, maxLabelSize);
-        // 3) 모든 SIG 라벨을 '최소 폰트'로 통일
-        for (const c of labelCandidates) {
-          const center = getLabelLatLngByPolylabel(c.geometry, c.bbox);
-          addSigLabel(center, c.name, c.bbox, uniformFit);
-        }
+        // Canvas 방식으로 전환 — drawBoundaryCanvas()에서 통합 처리
+        drawBoundaryCanvas();
       }
 
       function redrawBoundaryByZoom() {
         if (!window.map) return;
-
+        // 줌 애니메이션 중(RAF clear 루프 실행 중)에는 그리지 않음
+        if (_boundaryZoomClearing) return;
         const z = window.map.getZoom();
         const boundaryOn = isBoundaryCheckboxOn();
         const adminOn = isAdminBoundaryCheckboxOn();
 
-        // =========================
-        // ✅ 줌 13~14: SIG 데이터 사용
-        // - 법정동경계 ON 이거나 행정동경계 ON 이면 SIG를 표시
-        // - 행정동경계 ON이면 SIG를 행정동 스타일(파란색)로 표시
-        // =========================
-        if (z > 12 && z <= 14) {
-          // EMD/ADM는 이 구간에서 숨김
-          clearEmdPolygons();
-          clearEmdLabels();
-          clearAdmPolygons();
-          clearAdmLabels();
-
-          if (boundaryOn || adminOn) {
-            sigStyleMode = adminOn ? "admin" : "default";
-            loadSigBoundaryOnce().then(() => {
-              try {
-                redrawSigByBounds();
-              } catch (e) {
-                console.error("SIG redraw 실패:", e);
-              }
-            });
-          } else {
-            sigStyleMode = "default";
-            clearSigPolygons();
-            clearSigLabels();
-          }
+        if (z <= 12 || (!boundaryOn && !adminOn)) {
+          clearBoundaryCanvas();
           return;
         }
 
-        // =========================
-        // ✅ 줌 15 이상: 동(법정/행정)
-        // =========================
-        sigStyleMode = "default";
-        clearSigPolygons();
-        clearSigLabels();
-
-        if (!boundaryOn) {
-          clearEmdPolygons();
-          clearEmdLabels();
-        } else {
-          // EMD: zoom >= 15
-          loadEmdBoundaryOnce().then(() => {
-            try {
-              redrawEmdByBounds();
-            } catch (e) {
-              console.error("EMD redraw 실패:", e);
-            }
-          });
+        // 필요한 데이터 로드 후 canvas 렌더링
+        const loaders = [];
+        if (z > 12 && z <= 14 && (boundaryOn || adminOn)) {
+          sigStyleMode = adminOn && !boundaryOn ? "admin" : "default";
+          loaders.push(
+            loadSigBoundaryOnce()
+              .then(() => { try { prepareSigPreparedOnce(); } catch (e) {} })
+          );
+        }
+        if (z >= 15 && boundaryOn) {
+          loaders.push(
+            loadEmdBoundaryOnce()
+              .then(() => { try { prepareEmdPreparedOnce(); } catch (e) {} })
+              .then(() => loadEmdPopulationOnce())
+          );
+        }
+        if (z >= 15 && adminOn) {
+          loaders.push(
+            loadAdmBoundaryOnce()
+              .then(() => { try { prepareAdmPreparedOnce(); } catch (e) {} })
+              .then(() => loadAdmPopulationOnce())
+          );
         }
 
-        if (adminOn && z >= 15) {
-          loadAdmBoundaryOnce().then(() => {
-            try {
-              redrawAdmByBounds();
-            } catch (e) {
-              console.error("ADM redraw 실패:", e);
-            }
-          });
-        } else {
-          clearAdmPolygons();
-          clearAdmLabels();
+        if (loaders.length === 0) {
+          drawBoundaryCanvas();
+          return;
         }
-
-        // =========================
-        // ✅ 줌 12 이하: 전부 숨김
-        // =========================
-        if (z <= 12) {
-          clearSigPolygons();
-          clearSigLabels();
-          clearEmdPolygons();
-          clearEmdLabels();
-          clearAdmPolygons();
-          clearAdmLabels();
-        }
+        Promise.all(loaders)
+          .then(() => drawBoundaryCanvas())
+          .catch((e) => console.error("Boundary 데이터 로드 실패:", e));
       }
 
       function scheduleEmdRedraw() {
@@ -5203,6 +5229,10 @@
           // ✅ 전체 학교 데이터 저장
           window.schoolData = schools;
 
+          // ✅ 마커 캐시/풀 초기화 (시군구 선택 시 풀 빌드, 미선택 시 캐시 사용)
+          window.__schoolMarkerPool = null;
+          if (!window.__schoolMarkerCache) window.__schoolMarkerCache = new Map();
+
           // ✅ 배정범위(폴리곤) 빠른 조회용 Map: id -> schoolVertexLists
           window.schoolZoneMap = new Map(
             schools.map((s) => [
@@ -5214,10 +5244,7 @@
           // ✅ 초기 마커 업데이트
           updateSchoolMarkers(window.map.getBounds());
 
-          // ✅ 지도 이동 시 현재 범위 내 학교 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            updateSchoolMarkers(window.map.getBounds());
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
 
           // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거
           naver.maps.Event.addListener(window.map, "click", function () {
@@ -5230,133 +5257,93 @@
         }
       }
 
-      function updateSchoolMarkers() {
-        const showSchools = document.getElementById("toggleSchools").checked;
-
-        // ✅ 기존 학교 마커 제거
-        schoolMarkers.forEach((marker) => marker.setMap(null));
-        schoolMarkers = [];
-
-        if (!showSchools) {
-          clearActiveSchoolDetailButton();
-          return; // 초등학교 표시 체크 해제 시 종료
-        }
-        if (window.map.getZoom() < 14) {
-          clearActiveSchoolDetailButton();
-          return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-        }
-        let bounds = window.map.getBounds();
-        let filteredSchools = window.schoolData.filter((school) =>
-          bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude)),
-        );
-
-        filteredSchools.forEach((school) => {
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = "eliSchool.png";
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 4px;
-        padding: 2px 5px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-          const rawPerClass = school.studentCountPerClassroom;
-          const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
-
-          const total = school.totalStudentCount ?? "";
-
-          const suffix =
-            perClass !== "" || total !== ""
-              ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})`
-              : "";
-
-          infoBox.textContent = `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
-
-          const infoWrap = document.createElement("div");
-          infoWrap.style = "position: relative; display: inline-block;";
-
-          const detailBtn = document.createElement("button");
-          detailBtn.textContent = "상세정보";
-          detailBtn.style = `
-      position: absolute;
-      left: 100%;
-      top: 0;
-      height: 100%;
-      box-sizing: border-box;
-      display: flex;
-      align-items: center;
-      margin: 0;
-      appearance: none;
-      border: 1px solid #4a90e2;
-      background: #eef5ff;
-      color: #1757a8;
-      border-radius: 6px;
-      padding: 0 8px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      z-index: 1;
-    `;
-          detailBtn.style.display = "none";
-
-          infoWrap.appendChild(infoBox);
-          infoWrap.appendChild(detailBtn);
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoWrap);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(school.latitude, school.longitude),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
-          addMarkerRightClickEvent(marker, markerElement);
-
-          detailBtn.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openSchoolDetailPopup(school, marker);
-          });
-
-          // ✅ 좌클릭: 배정범위(폴리곤) 토글
-          naver.maps.Event.addListener(marker, "click", () => {
-            const schoolId = _getSchoolZoneId(school);
-            const wasSameSchool = activeSchoolZoneId === schoolId;
-
-            toggleSchoolZoneBySchool(school);
-
-            if (wasSameSchool) {
-              clearActiveSchoolDetailButton();
-              closeActiveSchoolInfoWindow();
-            } else {
-              setActiveSchoolDetailButton(detailBtn, schoolId);
-            }
-          });
-
-          if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) {
-            setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
-          }
-
-          schoolMarkers.push(marker);
+      function _buildSchoolMarkerEntry(school) {
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = "eliSchool.png";
+        markerIcon.style = "width: 32px; height: 32px;";
+        const infoBox = document.createElement("div");
+        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        const rawPerClass = school.studentCountPerClassroom;
+        const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
+        const total = school.totalStudentCount ?? "";
+        const suffix = perClass !== "" || total !== "" ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})` : "";
+        infoBox.textContent = `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
+        const infoWrap = document.createElement("div");
+        infoWrap.style = "position: relative; display: inline-block;";
+        const detailBtn = document.createElement("button");
+        detailBtn.textContent = "상세정보";
+        detailBtn.style = "position:absolute;left:100%;top:0;height:100%;box-sizing:border-box;display:none;align-items:center;margin:0;appearance:none;border:1px solid #4a90e2;background:#eef5ff;color:#1757a8;border-radius:6px;padding:0 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;z-index:1;";
+        infoWrap.appendChild(infoBox);
+        infoWrap.appendChild(detailBtn);
+        markerElement.appendChild(markerIcon);
+        markerElement.appendChild(infoWrap);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(school.latitude, school.longitude),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openSchoolDetailPopup(school, marker); });
+        naver.maps.Event.addListener(marker, "click", () => {
+          const schoolId = _getSchoolZoneId(school);
+          const wasSameSchool = activeSchoolZoneId === schoolId;
+          toggleSchoolZoneBySchool(school);
+          if (wasSameSchool) { clearActiveSchoolDetailButton(); closeActiveSchoolInfoWindow(); }
+          else { setActiveSchoolDetailButton(detailBtn, schoolId); }
+        });
+        return { marker, lat: school.latitude, lng: school.longitude, school, detailBtn };
       }
+
+      async function rebuildSchoolPool() {
+        if (window.__schoolMarkerCache) window.__schoolMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__schoolMarkerPool) { window.__schoolMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__schoolMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.schoolData) return;
+        await loadSigBoundaryOnce();
+        const _inSgg = _makeSigunguChecker();
+        window.__schoolMarkerPool = window.schoolData
+          .filter((s) => _inSgg(s.latitude, s.longitude))
+          .map((s) => _buildSchoolMarkerEntry(s));
+      }
+
+      async function updateSchoolMarkers() {
+        if (!window.schoolData) return;
+        const showSchools = document.getElementById("toggleSchools").checked;
+        if (!showSchools || window.map.getZoom() < 14) {
+          clearActiveSchoolDetailButton();
+          window.__schoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__schoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__schoolMarkerPool) { await rebuildSchoolPool(); }
+          window.__schoolMarkerPool.forEach(({ marker, lat, lng, school, detailBtn }) => {
+            const visible = bounds.hasLatLng(new naver.maps.LatLng(lat, lng));
+            marker.setMap(visible ? window.map : null);
+            if (visible && activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school))
+              setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
+          });
+        } else {
+          if (!window.__schoolMarkerCache) window.__schoolMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const school of window.schoolData) {
+            if (!bounds.hasLatLng(new naver.maps.LatLng(school.latitude, school.longitude))) continue;
+            const key = _getSchoolZoneId(school);
+            visibleKeys.add(key);
+            if (!window.__schoolMarkerCache.has(key)) window.__schoolMarkerCache.set(key, _buildSchoolMarkerEntry(school));
+            toShow.push(window.__schoolMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker, school, detailBtn }) => {
+            marker.setMap(window.map);
+            if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
+          });
+          window.__schoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
+      }
+
 
       // ================================
       // ✅ 지도 마지막 위치 저장/복원 안정화
@@ -5498,43 +5485,7 @@
           }
         }
 
-        // ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
-        //new MapHandler(window.map);
-
-        // ✅ 아파트 데이터 불러오기
-
-        // ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-        // ✅ 지도 위치(센터/줌) 저장은 createMap() 내부에서 현재 map 인스턴스에 바인딩됨 (setupMapPositionAutoSave)
-
-        //console.log("✅ 네이버 지도 초기화 완료.");
-
-        // ✅ 0) 메모 DB + 메모 존재 키셋을 가장 먼저 준비 (아파트 마커/메모 아이콘이 최우선)
-        await initMemoIndexedDB();
-        await loadMemoKeySetOnce();
-        // ✅ 0-1) 포토메모 인덱스(경량)는 체크박스 ON 시 로드 — 초기화 시 자동 로드 안 함
-
-        // ✅ 1) 아파트(마커) 먼저 로드
-        await loadApartments();
-
-        // ✅ 2) 나머지는 병렬 로드 (환경/스벅/상세/길찾기 등)
-        Promise.allSettled([loadApartmentsDetail(), loadFacilities(), loadStarbucks(), findWay()])
-          .then((results) => {
-            const ok = results.filter((r) => r.status === "fulfilled").length;
-            const fail = results.filter((r) => r.status === "rejected").length;
-            //console.log(`✅ 백그라운드 로딩 완료: ok=${ok}, fail=${fail}`);
-          })
-          .catch(console.warn);
-        if (window.map) {
-          setupRightClickEvent();
-        } else {
-          // ✅ 지도 로드 후 이벤트를 추가하는 방식
-          const checkMapLoaded = setInterval(() => {
-            if (window.map) {
-              clearInterval(checkMapLoaded);
-              setupRightClickEvent();
-            }
-          }, 100); // 🔹 100ms 간격으로 지도 로드 확인
-        }
+        // ✅ 데이터 로드/이벤트 등록은 createMap() 내부에서 처리됨 (중복 호출 방지)
 
         const metaViewport = document.querySelector("meta[name='viewport']");
 
@@ -5585,8 +5536,8 @@
         updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
       });
 
-      document.getElementById("toggleSchools").addEventListener("change", () => {
-        updateSchoolMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleSchools").addEventListener("change", async () => {
+        await updateSchoolMarkers(); // ✅ 즉시 업데이트
       });
 
       // ✅ 법정동경계 토글
@@ -5697,10 +5648,12 @@
 
       function toggleFullscreen() {
         const mapEl = document.getElementById("map");
+        const wrapperEl = document.getElementById("mapWrapper");
         if (!mapEl) return;
 
         const willFull = !mapEl.classList.contains("fullscreen");
         mapEl.classList.toggle("fullscreen", willFull);
+        if (wrapperEl) wrapperEl.classList.toggle("fullscreen", willFull);
         document.body.classList.toggle("map-fullscreen", willFull);
       }
 
@@ -6157,81 +6110,121 @@ const originalBase64 = event.target.result;
           //console.log(`✅ loaded middleSchools.json: ${uniqueSchools.length}`);
           window.middleSchoolData = uniqueSchools; // ✅ 중복 제거된 데이터 저장
 
+          // ✅ 마커 캐시/풀 초기화
+          window.__middleSchoolMarkerPool = null;
+          if (!window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache = new Map();
+
           // ✅ 마커 업데이트
           updateMiddleSchoolMarkers();
 
-          // ✅ 지도 이동 시 현재 범위 내 중학교 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            updateMiddleSchoolMarkers();
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
         } catch (error) {
           console.error("❌ 중학교 데이터 로드 실패:", error);
         }
       }
 
-      function updateMiddleSchoolMarkers() {
-        const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
-
-        // ✅ 기존 중학교 마커 제거
-        middleSchoolMarkers.forEach((marker) => marker.setMap(null));
-        middleSchoolMarkers = [];
-
-        if (!showMiddleSchools) return; // 중학교 표시 체크 해제 시 종료
-
-        if (window.map.getZoom() < 14) {
-          return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-        }
-
-        let bounds = window.map.getBounds();
-        let filteredSchools = window.middleSchoolData.filter((school) =>
-          bounds.hasLatLng(new naver.maps.LatLng(school["위도"], school["경도"])),
-        );
-        filteredSchools.forEach((school) => {
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = "midSchool.png";
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 4px;
-        padding: 2px 5px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-          infoBox.textContent = `${school["학교명"]} (${String(school["학업성취도"]).replaceAll("%", "")} / ${String(school["특목고"]).replaceAll("%", "")})`;
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoBox);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(school["위도"], school["경도"]),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
-          addMarkerRightClickEvent(marker, markerElement);
-
-          middleSchoolMarkers.push(marker);
+      function _buildMiddleSchoolMarkerEntry(school) {
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = "midSchool.png";
+        markerIcon.style = "width: 32px; height: 32px;";
+        const infoBox = document.createElement("div");
+        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        infoBox.textContent = `${school["학교명"]} (${String(school["학업성취도"]).replaceAll("%", "")} / ${String(school["특목고"]).replaceAll("%", "")})`;
+        markerElement.appendChild(markerIcon);
+        markerElement.appendChild(infoBox);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(school["위도"], school["경도"]),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        return { marker, lat: school["위도"], lng: school["경도"] };
+      }
+
+      async function rebuildMiddleSchoolPool() {
+        if (window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__middleSchoolMarkerPool) { window.__middleSchoolMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__middleSchoolMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.middleSchoolData) return;
+        await loadSigBoundaryOnce();
+        const _inSgg = _makeSigunguChecker();
+        window.__middleSchoolMarkerPool = window.middleSchoolData
+          .filter((s) => _inSgg(s["위도"], s["경도"]))
+          .map((s) => _buildMiddleSchoolMarkerEntry(s));
+      }
+
+      async function updateMiddleSchoolMarkers() {
+        if (!window.middleSchoolData) return;
+        const showMiddleSchools = document.getElementById("toggleMiddleSchools").checked;
+        if (!showMiddleSchools || window.map.getZoom() < 14) {
+          window.__middleSchoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__middleSchoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__middleSchoolMarkerPool) { await rebuildMiddleSchoolPool(); }
+          window.__middleSchoolMarkerPool.forEach(({ marker, lat, lng }) => {
+            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          });
+        } else {
+          if (!window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const school of window.middleSchoolData) {
+            const lat = school["위도"], lng = school["경도"];
+            if (!bounds.hasLatLng(new naver.maps.LatLng(lat, lng))) continue;
+            const key = String(school["학교 ID"] ?? school["학교명"] ?? "");
+            visibleKeys.add(key);
+            if (!window.__middleSchoolMarkerCache.has(key)) window.__middleSchoolMarkerCache.set(key, _buildMiddleSchoolMarkerEntry(school));
+            toShow.push(window.__middleSchoolMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker }) => marker.setMap(window.map));
+          window.__middleSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
       }
 
       // ✅ 중학교 체크박스 변경 시 마커 업데이트
-      document.getElementById("toggleMiddleSchools").addEventListener("change", () => {
-        updateMiddleSchoolMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleMiddleSchools").addEventListener("change", async () => {
+        await updateMiddleSchoolMarkers(); // ✅ 즉시 업데이트
       });
+
+      // ── 시군구 폴리곤 내부 판별 유틸 ──────────────────────────────
+      function pointInRing(lat, lng, ring) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const xi = ring[i][0], yi = ring[i][1];
+          const xj = ring[j][0], yj = ring[j][1];
+          if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi)
+            inside = !inside;
+        }
+        return inside;
+      }
+      function pointInMultiPolygon(lat, lng, geometry) {
+        const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
+        for (const poly of polys) {
+          if (pointInRing(lat, lng, poly[0])) return true;
+        }
+        return false;
+      }
+      function isPointInSelectedSigungu(lat, lng) {
+        if (selectedSigunguSet.size === 0) return true;
+        if (!sigGeojsonRaw || !sigGeojsonRaw.features) return true;
+        const selectedCodes5 = new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)));
+        const matchingFeatures = sigGeojsonRaw.features.filter((f) =>
+          selectedCodes5.has(String(f.properties.sgg_cd))
+        );
+        return matchingFeatures.some((f) => pointInMultiPolygon(lat, lng, f.geometry));
+      }
+      // 배치 판별용: matchingFeatures를 1회만 계산하고 클로저로 반환
+      function _makeSigunguChecker() {
+        if (selectedSigunguSet.size === 0 || !sigGeojsonRaw?.features) return () => true;
+        const codes5 = new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)));
+        const features = sigGeojsonRaw.features.filter((f) => codes5.has(String(f.properties.sgg_cd)));
+        return (lat, lng) => features.some((f) => pointInMultiPolygon(lat, lng, f.geometry));
+      }
+      // ─────────────────────────────────────────────────────────────
 
       let facilityMarkers = []; // ✅ 지도에 표시된 시설 마커 저장
 
@@ -6242,92 +6235,86 @@ const originalBase64 = event.target.result;
           //console.log("✅ 시설 데이터 로드 완료", facilities);
           window.facilityData = facilities; // ✅ 전체 시설 데이터 저장
 
+          // ✅ 마커 캐시/풀 초기화
+          window.__facilityMarkerPool = null;
+          if (!window.__facilityMarkerCache) window.__facilityMarkerCache = new Map();
+
           // ✅ 초기 마커 업데이트
           updateFacilityMarkers(window.map.getBounds());
 
-          // ✅ 지도 이동 시 현재 범위 내 시설 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            const bounds = window.map.getBounds();
-            updateFacilityMarkers(bounds);
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
         } catch (error) {
           console.error("❌ 시설 데이터 로드 실패:", error);
         }
       }
 
-      function updateFacilityMarkers() {
-        const showFacilities = document.getElementById("toggleFacilities").checked;
-
-        // ✅ 기존 시설 마커 제거
-        facilityMarkers.forEach((marker) => marker.setMap(null));
-        facilityMarkers = [];
-
-        if (!showFacilities) return; // 체크 해제 시 종료
-        if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-
-        let bounds = window.map.getBounds();
-        let filteredFacilities = window.facilityData.filter((facility) =>
-          bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng)),
-        );
-
-        filteredFacilities.forEach((facility) => {
-          let iconSrc = "default.png"; // 기본 아이콘 (예외처리)
-          if (facility.category === 10) {
-            iconSrc = facility.description.includes("백화점") ? "depart.png" : "mart.png";
-          } else if (facility.category === 9) {
-            iconSrc = "hospital.png";
-          }
-
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = iconSrc;
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 6px;
-        padding: 5px 10px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        max-width: 140px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-
-          if (facility.category === 10) {
-            infoBox.textContent = `${facility.description} (${facility.name})`;
-          } else if (facility.category === 9) {
-            infoBox.textContent = `${facility.name}`;
-          }
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoBox);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(facility.lat, facility.lng),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
-          addMarkerRightClickEvent(marker, markerElement);
-
-          facilityMarkers.push(marker);
+      function _buildFacilityMarkerEntry(facility) {
+        const iconSrc = facility.category === 10
+          ? (facility.description.includes("백화점") ? "depart.png" : "mart.png")
+          : facility.category === 9 ? "hospital.png" : "default.png";
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = iconSrc;
+        markerIcon.style = "width: 32px; height: 32px;";
+        const infoBox = document.createElement("div");
+        infoBox.style = "background:white;border:1px solid gray;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        infoBox.textContent = facility.category === 10 ? `${facility.description} (${facility.name})` : facility.name;
+        markerElement.appendChild(markerIcon);
+        markerElement.appendChild(infoBox);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(facility.lat, facility.lng),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        return { marker, lat: facility.lat, lng: facility.lng };
+      }
+
+      async function rebuildFacilityPool() {
+        if (window.__facilityMarkerCache) window.__facilityMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__facilityMarkerPool) { window.__facilityMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__facilityMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.facilityData) return;
+        await loadSigBoundaryOnce();
+        const _inSgg = _makeSigunguChecker();
+        window.__facilityMarkerPool = window.facilityData
+          .filter((f) => _inSgg(f.lat, f.lng))
+          .map((f) => _buildFacilityMarkerEntry(f));
+      }
+
+      async function updateFacilityMarkers() {
+        if (!window.facilityData) return;
+        const showFacilities = document.getElementById("toggleFacilities").checked;
+        if (!showFacilities || window.map.getZoom() < 14) {
+          window.__facilityMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__facilityMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__facilityMarkerPool) { await rebuildFacilityPool(); }
+          window.__facilityMarkerPool.forEach(({ marker, lat, lng }) => {
+            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          });
+        } else {
+          if (!window.__facilityMarkerCache) window.__facilityMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const facility of window.facilityData) {
+            if (!bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng))) continue;
+            const key = `${facility.name}|${facility.lat}|${facility.lng}`;
+            visibleKeys.add(key);
+            if (!window.__facilityMarkerCache.has(key)) window.__facilityMarkerCache.set(key, _buildFacilityMarkerEntry(facility));
+            toShow.push(window.__facilityMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker }) => marker.setMap(window.map));
+          window.__facilityMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
       }
 
       // ✅ 시설 체크박스 변경 시 마커 업데이트
-      document.getElementById("toggleFacilities").addEventListener("change", () => {
-        updateFacilityMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleFacilities").addEventListener("change", async () => {
+        await updateFacilityMarkers(); // ✅ 즉시 업데이트
       });
 
       let starbucksMarkers = []; // ✅ 지도에 표시된 스타벅스 마커 저장
@@ -6339,63 +6326,81 @@ const originalBase64 = event.target.result;
           //console.log("✅ 스타벅스 데이터 로드 완료", starbucks);
           window.starbucksData = starbucks; // ✅ 전체 스타벅스 데이터 저장
 
+          // ✅ 마커 캐시/풀 초기화
+          window.__starbucksMarkerPool = null;
+          if (!window.__starbucksMarkerCache) window.__starbucksMarkerCache = new Map();
+
           // ✅ 초기 마커 업데이트
           updateStarbucksMarkers(window.map.getBounds());
 
-          // ✅ 지도 이동 시 현재 범위 내 스타벅스 마커 업데이트
-          naver.maps.Event.addListener(window.map, "idle", function () {
-            const bounds = window.map.getBounds();
-            updateStarbucksMarkers(bounds);
-          });
+          // idle 처리는 중앙 리스너(createMap)에서 통합 담당
         } catch (error) {
           console.error("❌ 스타벅스 데이터 로드 실패:", error);
         }
       }
 
-      function updateStarbucksMarkers() {
-        const showStarbucks = document.getElementById("toggleStarbucks").checked;
-
-        // ✅ 기존 스타벅스 마커 제거
-        starbucksMarkers.forEach((marker) => marker.setMap(null));
-        starbucksMarkers = [];
-
-        if (!showStarbucks) return; // 체크 해제 시 종료
-        if (window.map.getZoom() < 14) return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
-
-        let bounds = window.map.getBounds();
-        let filteredStarbucks = window.starbucksData.filter((store) =>
-          bounds.hasLatLng(new naver.maps.LatLng(store.lat, store.lot)),
-        );
-
-        filteredStarbucks.forEach((store) => {
-          let iconSrc = store.s_name.includes("R") ? "starbucksReserve.png" : "starbucks.png";
-
-          // ✅ 마커 컨테이너를 markerElement로 활용
-          const markerElement = document.createElement("div");
-          markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-          const markerIcon = document.createElement("img");
-          markerIcon.src = iconSrc;
-          markerIcon.style = "width: 32px; height: 32px;";
-
-          markerElement.appendChild(markerIcon);
-
-          const marker = new naver.maps.Marker({
-            position: new naver.maps.LatLng(store.lat, store.lot),
-            map: window.map,
-            icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
-          });
-
-          // ✅ 우클릭 이벤트에 markerElement 전달
-          addMarkerRightClickEvent(marker, markerElement);
-
-          starbucksMarkers.push(marker);
+      function _buildStarbucksMarkerEntry(store) {
+        const iconSrc = store.s_name.includes("R") ? "starbucksReserve.png" : "starbucks.png";
+        const markerElement = document.createElement("div");
+        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
+        const markerIcon = document.createElement("img");
+        markerIcon.src = iconSrc;
+        markerIcon.style = "width: 32px; height: 32px;";
+        markerElement.appendChild(markerIcon);
+        const marker = new naver.maps.Marker({
+          position: new naver.maps.LatLng(store.lat, store.lot),
+          map: null,
+          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
+        addMarkerRightClickEvent(marker, markerElement);
+        return { marker, lat: parseFloat(store.lat), lng: parseFloat(store.lot) };
+      }
+
+      async function rebuildStarbucksPool() {
+        if (window.__starbucksMarkerCache) window.__starbucksMarkerCache.forEach(({ marker }) => marker.setMap(null));
+        if (window.__starbucksMarkerPool) { window.__starbucksMarkerPool.forEach(({ marker }) => marker.setMap(null)); window.__starbucksMarkerPool = null; }
+        if (selectedSigunguSet.size === 0 || !window.starbucksData) return;
+        await loadSigBoundaryOnce();
+        const _inSgg = _makeSigunguChecker();
+        window.__starbucksMarkerPool = window.starbucksData
+          .filter((s) => _inSgg(parseFloat(s.lat), parseFloat(s.lot)))
+          .map((s) => _buildStarbucksMarkerEntry(s));
+      }
+
+      async function updateStarbucksMarkers() {
+        if (!window.starbucksData) return;
+        const showStarbucks = document.getElementById("toggleStarbucks").checked;
+        if (!showStarbucks || window.map.getZoom() < 14) {
+          window.__starbucksMarkerPool?.forEach(({ marker }) => marker.setMap(null));
+          window.__starbucksMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          return;
+        }
+        const bounds = window.map.getBounds();
+        if (selectedSigunguSet.size > 0) {
+          if (!window.__starbucksMarkerPool) { await rebuildStarbucksPool(); }
+          window.__starbucksMarkerPool.forEach(({ marker, lat, lng }) => {
+            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          });
+        } else {
+          if (!window.__starbucksMarkerCache) window.__starbucksMarkerCache = new Map();
+          const visibleKeys = new Set();
+          const toShow = [];
+          for (const store of window.starbucksData) {
+            const lat = parseFloat(store.lat), lng = parseFloat(store.lot);
+            if (!bounds.hasLatLng(new naver.maps.LatLng(lat, lng))) continue;
+            const key = `${store.s_name}|${store.lat}|${store.lot}`;
+            visibleKeys.add(key);
+            if (!window.__starbucksMarkerCache.has(key)) window.__starbucksMarkerCache.set(key, _buildStarbucksMarkerEntry(store));
+            toShow.push(window.__starbucksMarkerCache.get(key));
+          }
+          toShow.forEach(({ marker }) => marker.setMap(window.map));
+          window.__starbucksMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+        }
       }
 
       // ✅ 스타벅스 체크박스 변경 시 마커 업데이트
-      document.getElementById("toggleStarbucks").addEventListener("change", () => {
-        updateStarbucksMarkers(); // ✅ 즉시 업데이트
+      document.getElementById("toggleStarbucks").addEventListener("change", async () => {
+        await updateStarbucksMarkers(); // ✅ 즉시 업데이트
       });
 
       ////////////////////////// 이동 이벤트 //////////////////////////
@@ -7262,14 +7267,20 @@ const originalBase64 = event.target.result;
         if (!window.__photoMemoVisible) return; // 체크박스 OFF면 아무것도 안 함
         if (!window.__photoMemoIndexLoaded) return; // 인덱스가 아직 로드 안 됨
 
+        if (window.map.getZoom() < 14) {
+          window.__photoMemoMarkers.forEach((_, id) => __removePhotoMemoMarker(id));
+          return;
+        }
+
         const bounds = window.map.getBounds?.();
         if (!bounds) return;
 
         const inView = new Set();
+        const _inSgg = _makeSigunguChecker();
         for (const entry of window.__photoMemoIndex) {
           try {
             if (typeof entry.lat !== "number" || typeof entry.lng !== "number") continue;
-            if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng))) {
+            if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng)) && _inSgg(entry.lat, entry.lng)) {
               const id = String(entry.id);
               inView.add(id);
               // 마커 없고 아직 로딩 중이 아닐 때만 DB에서 full record 불러와 마커 생성
@@ -7601,7 +7612,9 @@ const originalBase64 = event.target.result;
     <button type="button" data-action="file">🖼️ 파일</button>
     <button type="button" data-action="cancel">취소</button>
   `;
-        mapEl.appendChild(menu);
+        // 포토메모 메뉴는 mapWrapper에 append (overflow:hidden 클리핑 방지)
+        const wrapperEl = document.getElementById("mapWrapper") || mapEl;
+        wrapperEl.appendChild(menu);
 
         menu.addEventListener("click", (ev) => {
           const btn = ev.target?.closest?.("button");
@@ -10319,6 +10332,21 @@ min-height: 24px;
             try {
               window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false);
             } catch (e) {}
+
+            // 마커 재생성(메모 아이콘 제거 효과)
+            const marker = apartmentMarkers[id];
+            if (marker) {
+              marker.setMap(null);
+              delete apartmentMarkers[id];
+            }
+            const apartment = apartmentData.find((a) => String(a.id) === String(id));
+            if (apartment) {
+              const isSiseMap = document.getElementById("toggleSiseMap")?.checked;
+              const newMarker = isSiseMap ? renderSiseMapMarker(apartment) : createDefaultMarker(apartment);
+              newMarker.__siseMap = isSiseMap;
+              apartmentMarkers[id] = newMarker;
+            }
+
             alert("해당 메모가 삭제되었습니다.");
             db.close(); // ✅ DB 연결 정리
             loadNote(id); // 삭제 후 화면 갱신
@@ -10749,7 +10777,7 @@ min-height: 24px;
       }
 
       // ▼ 필터 변경 이벤트
-      function applyRegionFilterUpdate() {
+      async function applyRegionFilterUpdate() {
         // 시도/시군구 필터가 바뀌면: 기존 마커(캐시)를 즉시 제거하고, 현재 bounds로 다시 그림
         if (window.apartmentMarkers) {
           Object.values(window.apartmentMarkers).forEach((m) => {
@@ -10773,6 +10801,22 @@ min-height: 24px;
 
         if (window.map && window.map.getBounds) {
           updateMarkers(window.map.getBounds());
+        }
+        // 시군구 변경 → 풀 재빌드 후 마커 갱신
+        await Promise.all([
+          rebuildSchoolPool(),
+          rebuildMiddleSchoolPool(),
+          rebuildFacilityPool(),
+          rebuildStarbucksPool(),
+        ]);
+        if (document.getElementById("toggleSchools")?.checked) updateSchoolMarkers();
+        if (document.getElementById("toggleMiddleSchools")?.checked) updateMiddleSchoolMarkers();
+        if (document.getElementById("toggleFacilities")?.checked) updateFacilityMarkers();
+        if (document.getElementById("toggleStarbucks")?.checked) updateStarbucksMarkers();
+        // 포토메모: 시군구 필터 변경 시 기존 마커 전체 제거 후 새 필터로 재로드
+        if (window.__photoMemoVisible) {
+          window.__photoMemoMarkers.forEach((_, id) => __removePhotoMemoMarker(id));
+          updatePhotoMemoMarkersByBounds();
         }
       }
 
@@ -10839,10 +10883,7 @@ min-height: 24px;
           const firstCode = [...selectedSigunguSet][0];
           target = apartmentData.find((a) => String(a.sigungu).trim() === firstCode);
         }
-        // 시군구 미선택(전체)이고 시도만 선택된 경우 시도로 이동
-        if (!target && selectedSigunguSet.size === 0 && siCode) {
-          target = apartmentData.find((a) => String(a.sido).trim() === siCode);
-        }
+        // 시도만 선택된 경우 지도 이동 안 함 (시군구 선택 시에만 이동)
         if (!target) return;
 
         const center = new naver.maps.LatLng(parseFloat(target.lat), parseFloat(target.lng));
