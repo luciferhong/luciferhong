@@ -3536,12 +3536,12 @@
         const z = window.map.getZoom();
         const _selKey = [...selectedSigunguSet].sort().join(",");
 
-        // 줌 또는 시군구 선택이 변경되면 전체 초기화 후 재빌드
-        if (z !== lastAdmZoom || _selKey !== lastAdmSelKey) {
-          for (const [, entry] of admFeatureMap) {
-            entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-            if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-          }
+        const needsRebuildAdm = (z !== lastAdmZoom || _selKey !== lastAdmSelKey);
+        const toRemoveAdm = [];
+        const toAddAdm = [];
+
+        if (needsRebuildAdm) {
+          for (const [, entry] of admFeatureMap) toRemoveAdm.push(entry);
           admFeatureMap.clear();
           lastAdmZoom = z;
           lastAdmSelKey = _selKey;
@@ -3552,7 +3552,7 @@
           : null;
         const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
 
-        const newVisibleSet = new Set();
+        const newVisibleKeysAdm = new Set();
 
         for (const f of admPrepared) {
           if (!bboxIntersects(bounds, f.bbox)) continue;
@@ -3561,18 +3561,18 @@
           const key = admCode10 || JSON.stringify(f.bbox);
           const _admCode5 = admCode10.substring(0, 5);
           const isSelected = !!(_selectedCodes5Adm && _selectedCodes5Adm.has(_admCode5));
-          newVisibleSet.add(key);
+          newVisibleKeysAdm.add(key);
 
-          if (admFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
+          if (!needsRebuildAdm && admFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
 
-          // 새 폴리곤 생성
+          // 새 폴리곤 생성 (map: null — rAF에서 atomic으로 표시)
           const polygons = [];
           const polys = f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates];
           polys.forEach((poly) => {
             if (!poly || !poly[0] || poly[0].length < 3) return;
             const path = poly[0].map((c) => new naver.maps.LatLng(c[1], c[0]));
             polygons.push(new naver.maps.Polygon({
-              map: window.map,
+              map: null,
               paths: path,
               strokeColor: isSelected ? "#FF69B4" : "#1e40af",
               strokeOpacity: isSelected ? 1 : 0.85,
@@ -3583,7 +3583,7 @@
             }));
           });
 
-          // 라벨 생성
+          // 라벨 생성 (map: null)
           let label = null;
           const fullName =
             (f.properties && (f.properties.adm_nm || f.properties.NAME || f.properties.A2 || f.properties.name)) || "";
@@ -3601,7 +3601,7 @@
                 : name;
               label = new naver.maps.Marker({
                 position: center,
-                map: window.map,
+                map: null,
                 clickable: false,
                 zIndex: 999998,
                 icon: {
@@ -3612,16 +3612,38 @@
             }
           }
 
-          admFeatureMap.set(key, { polygons, label, isSelected });
+          const entry = { polygons, label, isSelected };
+          admFeatureMap.set(key, entry);
+          toAddAdm.push(entry);
         }
 
-        // 화면 밖으로 나간 것 제거
-        for (const [key, entry] of admFeatureMap) {
-          if (!newVisibleSet.has(key)) {
-            entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-            if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-            admFeatureMap.delete(key);
+        if (!needsRebuildAdm) {
+          // 증분: 화면 밖으로 나간 것 수집
+          const keysToRemoveAdm = [];
+          for (const [key, entry] of admFeatureMap) {
+            if (!newVisibleKeysAdm.has(key)) {
+              toRemoveAdm.push(entry);
+              keysToRemoveAdm.push(key);
+            }
           }
+          keysToRemoveAdm.forEach((k) => admFeatureMap.delete(k));
+        }
+
+        // Atomic rAF: 제거 + 표시를 같은 페인트 사이클에서
+        if (toRemoveAdm.length > 0 || toAddAdm.length > 0) {
+          const _snapRemoveAdm = toRemoveAdm;
+          const _snapAddAdm = toAddAdm;
+          const _mapRefAdm = window.map;
+          requestAnimationFrame(() => {
+            _snapRemoveAdm.forEach(({ polygons, label }) => {
+              polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
+              if (label) { try { label.setMap(null); } catch (e) {} }
+            });
+            _snapAddAdm.forEach(({ polygons, label }) => {
+              polygons.forEach((p) => { try { p.setMap(_mapRefAdm); } catch (e) {} });
+              if (label) { try { label.setMap(_mapRefAdm); } catch (e) {} }
+            });
+          });
         }
       }
 
@@ -3716,12 +3738,12 @@
 
         const _selKey = [...selectedSigunguSet].sort().join(",");
 
-        // 줌 또는 시군구 선택이 변경되면 전체 초기화 후 재빌드
-        if (z !== lastEmdZoom || _selKey !== lastEmdSelKey) {
-          for (const [, entry] of emdFeatureMap) {
-            entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-            if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-          }
+        const needsRebuildEmd = (z !== lastEmdZoom || _selKey !== lastEmdSelKey);
+        const toRemoveEmd = [];
+        const toAddEmd = [];
+
+        if (needsRebuildEmd) {
+          for (const [, entry] of emdFeatureMap) toRemoveEmd.push(entry);
           emdFeatureMap.clear();
           lastEmdZoom = z;
           lastEmdSelKey = _selKey;
@@ -3732,7 +3754,7 @@
           : null;
         const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
 
-        const newVisibleSet = new Set();
+        const newVisibleKeysEmd = new Set();
 
         for (const f of emdPrepared) {
           if (!bboxIntersects(bounds, f.bbox)) continue;
@@ -3741,18 +3763,18 @@
           const key = emdCode8 || JSON.stringify(f.bbox);
           const _emdCode5 = emdCode8.substring(0, 5);
           const isSelected = !!(_selectedCodes5Emd && _selectedCodes5Emd.has(_emdCode5));
-          newVisibleSet.add(key);
+          newVisibleKeysEmd.add(key);
 
-          if (emdFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
+          if (!needsRebuildEmd && emdFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
 
-          // 새 폴리곤 생성
+          // 새 폴리곤 생성 (map: null — rAF에서 atomic으로 표시)
           const polygons = [];
           const polys = f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates];
           polys.forEach((poly) => {
             if (!poly || !poly[0] || poly[0].length < 3) return;
             const path = poly[0].map((c) => new naver.maps.LatLng(c[1], c[0]));
             polygons.push(new naver.maps.Polygon({
-              map: window.map,
+              map: null,
               paths: path,
               strokeColor: isSelected ? "#FF69B4" : "#000000",
               strokeOpacity: isSelected ? 1 : 0.9,
@@ -3763,7 +3785,7 @@
             }));
           });
 
-          // 라벨 생성
+          // 라벨 생성 (map: null)
           let label = null;
           if (z >= 15) {
             const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
@@ -3780,7 +3802,7 @@
                   : name;
                 label = new naver.maps.Marker({
                   position: latlng,
-                  map: window.map,
+                  map: null,
                   clickable: false,
                   zIndex: 999999,
                   icon: {
@@ -3792,16 +3814,38 @@
             }
           }
 
-          emdFeatureMap.set(key, { polygons, label, isSelected });
+          const entry = { polygons, label, isSelected };
+          emdFeatureMap.set(key, entry);
+          toAddEmd.push(entry);
         }
 
-        // 화면 밖으로 나간 것 제거
-        for (const [key, entry] of emdFeatureMap) {
-          if (!newVisibleSet.has(key)) {
-            entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-            if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-            emdFeatureMap.delete(key);
+        if (!needsRebuildEmd) {
+          // 증분: 화면 밖으로 나간 것 수집
+          const keysToRemoveEmd = [];
+          for (const [key, entry] of emdFeatureMap) {
+            if (!newVisibleKeysEmd.has(key)) {
+              toRemoveEmd.push(entry);
+              keysToRemoveEmd.push(key);
+            }
           }
+          keysToRemoveEmd.forEach((k) => emdFeatureMap.delete(k));
+        }
+
+        // Atomic rAF: 제거 + 표시를 같은 페인트 사이클에서
+        if (toRemoveEmd.length > 0 || toAddEmd.length > 0) {
+          const _snapRemoveEmd = toRemoveEmd;
+          const _snapAddEmd = toAddEmd;
+          const _mapRefEmd = window.map;
+          requestAnimationFrame(() => {
+            _snapRemoveEmd.forEach(({ polygons, label }) => {
+              polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
+              if (label) { try { label.setMap(null); } catch (e) {} }
+            });
+            _snapAddEmd.forEach(({ polygons, label }) => {
+              polygons.forEach((p) => { try { p.setMap(_mapRefEmd); } catch (e) {} });
+              if (label) { try { label.setMap(_mapRefEmd); } catch (e) {} }
+            });
+          });
         }
       }
 
@@ -3912,12 +3956,12 @@
         const _selKey = [...selectedSigunguSet].sort().join(",");
         const _styleKey = `${sigStyleMode}|${_selKey}`;
 
-        // 줌, 시군구 선택, 스타일 변경 시 전체 초기화 후 재빌드
-        if (z !== lastSigZoom || _styleKey !== lastSigSelKey) {
-          for (const [, entry] of sigFeatureMap) {
-            entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-            if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-          }
+        const needsRebuildSig = (z !== lastSigZoom || _styleKey !== lastSigSelKey);
+        const toRemoveSig = [];
+        const toAddSig = [];
+
+        if (needsRebuildSig) {
+          for (const [, entry] of sigFeatureMap) toRemoveSig.push(entry);
           sigFeatureMap.clear();
           lastSigZoom = z;
           lastSigSelKey = _styleKey;
@@ -3929,7 +3973,7 @@
         const isAdminStyle = sigStyleMode === "admin";
         const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
 
-        const newVisibleSet = new Set();
+        const newVisibleKeysSig = new Set();
 
         for (const f of sigPrepared) {
           if (!bboxIntersects(bounds, f.bbox)) continue;
@@ -3937,18 +3981,18 @@
           const _sigCode5 = String(f.properties?.sgg_cd ?? "");
           const key = _sigCode5 || JSON.stringify(f.bbox);
           const isSelected = !!(_selectedCodes5Sig && _selectedCodes5Sig.has(_sigCode5));
-          newVisibleSet.add(key);
+          newVisibleKeysSig.add(key);
 
-          if (sigFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
+          if (!needsRebuildSig && sigFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
 
-          // 새 폴리곤 생성
+          // 새 폴리곤 생성 (map: null — rAF에서 atomic으로 표시)
           const polygons = [];
           const polys = f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates];
           polys.forEach((poly) => {
             const ring = poly[0];
             const path = ring.map((c) => new naver.maps.LatLng(c[1], c[0]));
             polygons.push(new naver.maps.Polygon({
-              map: window.map,
+              map: null,
               paths: path,
               strokeColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
               strokeOpacity: isSelected ? 1 : (isAdminStyle ? 0.85 : 1),
@@ -3959,7 +4003,7 @@
             }));
           });
 
-          // 라벨 생성
+          // 라벨 생성 (map: null)
           let label = null;
           const name = f.properties?.sgg_nm || f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
           if (name) {
@@ -3971,7 +4015,7 @@
               const color = isAdminStyle ? "#1e40af" : "#000000";
               label = new naver.maps.Marker({
                 position: center,
-                map: window.map,
+                map: null,
                 clickable: false,
                 zIndex: 999998,
                 icon: {
@@ -3982,16 +4026,38 @@
             }
           }
 
-          sigFeatureMap.set(key, { polygons, label, isSelected });
+          const entry = { polygons, label, isSelected };
+          sigFeatureMap.set(key, entry);
+          toAddSig.push(entry);
         }
 
-        // 화면 밖으로 나간 것 제거
-        for (const [key, entry] of sigFeatureMap) {
-          if (!newVisibleSet.has(key)) {
-            entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-            if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-            sigFeatureMap.delete(key);
+        if (!needsRebuildSig) {
+          // 증분: 화면 밖으로 나간 것 수집
+          const keysToRemoveSig = [];
+          for (const [key, entry] of sigFeatureMap) {
+            if (!newVisibleKeysSig.has(key)) {
+              toRemoveSig.push(entry);
+              keysToRemoveSig.push(key);
+            }
           }
+          keysToRemoveSig.forEach((k) => sigFeatureMap.delete(k));
+        }
+
+        // Atomic rAF: 제거 + 표시를 같은 페인트 사이클에서
+        if (toRemoveSig.length > 0 || toAddSig.length > 0) {
+          const _snapRemoveSig = toRemoveSig;
+          const _snapAddSig = toAddSig;
+          const _mapRefSig = window.map;
+          requestAnimationFrame(() => {
+            _snapRemoveSig.forEach(({ polygons, label }) => {
+              polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
+              if (label) { try { label.setMap(null); } catch (e) {} }
+            });
+            _snapAddSig.forEach(({ polygons, label }) => {
+              polygons.forEach((p) => { try { p.setMap(_mapRefSig); } catch (e) {} });
+              if (label) { try { label.setMap(_mapRefSig); } catch (e) {} }
+            });
+          });
         }
       }
 
