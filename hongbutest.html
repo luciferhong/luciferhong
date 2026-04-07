@@ -2587,7 +2587,22 @@
             if (window.__middleSchoolsReady) updateMiddleSchoolMarkers();
             if (window.__starbucksReady) updateStarbucksMarkers();
             if (window.__facilitiesReady) updateFacilityMarkers();
-
+            // 경계선 canvas 갱신
+            try {
+              if (_boundaryZoomClearing) {
+                // 줌 중 idle 발생 — 즉시 표시하지 않고 debounce로 줌 완전 종료 후 표시
+                if (_boundaryShowTimer) clearTimeout(_boundaryShowTimer);
+                _boundaryShowTimer = setTimeout(() => {
+                  _boundaryZoomClearing = false;
+                  try { drawBoundaryCanvas(); } catch (e) {}
+                  if (_boundaryCanvas) _boundaryCanvas.style.visibility = 'visible';
+                }, 250);
+              } else {
+                // 일반 드래그/패닝 — 즉시 갱신
+                try { drawBoundaryCanvas(); } catch (e) {}
+                if (_boundaryCanvas) _boundaryCanvas.style.visibility = 'visible';
+              }
+            } catch (e) {}
             // 💾 메모 캐시 추가 정리 (매 idle마다 한 번 더 점검)
             try {
               const bounds = window.map.getBounds();
@@ -2612,6 +2627,38 @@
               }
             } catch (e) {}
           });
+
+          // 드래그 중 canvas를 타일과 함께 transform으로 이동 (깜박임 방지)
+          naver.maps.Event.addListener(window.map, "drag", () => {
+            try {
+              const c = _boundaryCanvas;
+              const a = window._boundaryCanvasAnchor;
+              if (!c || !a) return;
+              const bounds = window.map.getBounds();
+              if (!bounds) return;
+              const sw1 = bounds.getSW();
+              const _mY = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+              const dx = -((sw1.lng() - a.swLng) / a.lngRange) * a.w;
+              const dy = ((_mY(sw1.lat()) - a.mercSW) / a.mercRange) * a.h;
+              c.style.transform = `translate(${dx}px, ${dy}px)`;
+            } catch (e) {}
+          });
+
+          // 줌 변경 중 경계 숨기기 (idle에서 재그림)
+          naver.maps.Event.addListener(window.map, "zoom_changed", () => {
+            try { _startBoundaryZoomClear(); } catch (e) {}
+          });
+
+          // wheel/터치 핀치 시작 즉시 RAF 루프 시작 (zoom_changed보다 빠름)
+          const _mapElForZoom = document.getElementById("map");
+          if (_mapElForZoom) {
+            _mapElForZoom.addEventListener("wheel", () => {
+              try { _startBoundaryZoomClear(); } catch (e) {}
+            }, { passive: true });
+            _mapElForZoom.addEventListener("touchstart", (ev) => {
+              if (ev.touches.length >= 2) try { _startBoundaryZoomClear(); } catch (e) {}
+            }, { passive: true });
+          }
           window.__mapIdleListenerReady = true;
         }
         if (window.mapHandler) {
@@ -2722,6 +2769,11 @@
         });
 
         setupRightClickEvent(); // 길찾기용 우클릭 이벤트
+
+        // 지도 크기 변경 시 canvas 크기/위치 보정
+        naver.maps.Event.addListener(window.map, "resize", () => {
+          try { drawBoundaryCanvas(); } catch (e) {}
+        });
 
         //모바일이면 현재 위치로 이동
       }
@@ -3265,14 +3317,225 @@
       let emdRedrawTimer = null;
       let emdBoundMap = null; // 마지막으로 바인딩된 map 인스턴스
 
-      function clearEmdPolygons() {
-        for (const [, entry] of emdFeatureMap) {
-          entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-          if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
+      // ─── Canvas 경계선 레이어 ───────────────────────────────────────
+      let _boundaryCanvas = null;
+
+      function _ensureBoundaryCanvas() {
+        if (_boundaryCanvas && _boundaryCanvas.isConnected) return _boundaryCanvas;
+        const mapEl = document.getElementById("map");
+        if (!mapEl) return null;
+        if (_boundaryCanvas) { try { _boundaryCanvas.remove(); } catch (e) {} }
+        const c = document.createElement("canvas");
+        c.style.cssText = "position:absolute;top:0;left:0;pointer-events:none;z-index:200;";
+        if (_boundaryZoomClearing) c.style.visibility = 'hidden'; // 줌 중 새 canvas도 숨김 유지
+        mapEl.appendChild(c);
+        _boundaryCanvas = c;
+        return c;
+      }
+
+      function clearBoundaryCanvas() {
+        const c = _boundaryCanvas;
+        if (!c) return;
+        const ctx = c.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+      }
+
+      // 줌 애니메이션 중 canvas를 숨기는 처리 (clear + visibility 동시 적용)
+      let _boundaryZoomClearing = false;
+      let _boundaryShowTimer = null;
+      function _startBoundaryZoomClear() {
+        _boundaryZoomClearing = true;
+        // 예약된 show 타이머 취소 — 연속 wheel tick 사이 idle에서 표시되는 것 방지
+        if (_boundaryShowTimer) { clearTimeout(_boundaryShowTimer); _boundaryShowTimer = null; }
+        // canvas를 즉시 숨김 — 어떤 redraw가 발생해도 화면에 표시되지 않음
+        if (_boundaryCanvas) _boundaryCanvas.style.visibility = 'hidden';
+        try { clearBoundaryCanvas(); } catch (e) {}
+      }
+
+      function _drawFeatureOnCanvas(ctx, toXY, geometry, isSelected, defaultColor, lineWidth) {
+        const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
+        ctx.strokeStyle = isSelected ? "#FF69B4" : defaultColor;
+        ctx.lineWidth = isSelected ? lineWidth + 1 : lineWidth;
+        for (const poly of polys) {
+          const ring = poly[0];
+          if (!ring || ring.length < 3) continue;
+          ctx.beginPath();
+          const [x0, y0] = toXY(ring[0][1], ring[0][0]);
+          ctx.moveTo(x0, y0);
+          for (let i = 1; i < ring.length; i++) {
+            const [x, y] = toXY(ring[i][1], ring[i][0]);
+            ctx.lineTo(x, y);
+          }
+          ctx.closePath();
+          ctx.stroke();
         }
+      }
+
+      function _drawTextOnCanvas(ctx, mainText, subText, x, y, fontSize, color) {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const ff = "'Apple SD Gothic Neo','Noto Sans KR','맑은 고딕',sans-serif";
+        const drawLine = (text, cx, cy, sz) => {
+          ctx.font = `bold ${sz}px ${ff}`;
+          ctx.lineWidth = Math.max(2, sz * 0.28);
+          ctx.strokeStyle = "rgba(255,255,255,0.92)";
+          ctx.strokeText(text, cx, cy);
+          ctx.fillStyle = color;
+          ctx.fillText(text, cx, cy);
+        };
+        if (subText) {
+          const lineH = Math.round(fontSize * 1.3);
+          drawLine(mainText, x, y - lineH * 0.5, fontSize);
+          drawLine(subText, x, y + lineH * 0.5, Math.max(8, Math.round(fontSize * 0.78)));
+        } else {
+          drawLine(mainText, x, y, fontSize);
+        }
+        ctx.restore();
+      }
+
+      function drawBoundaryCanvas() {
+        if (!window.map) return;
+        if (_boundaryZoomClearing) return; // 줌 애니메이션 중에는 그리지 않음
+        const boundaryOn = isBoundaryCheckboxOn();
+        const adminOn = isAdminBoundaryCheckboxOn();
+        const z = window.map.getZoom();
+
+        if (z <= 12 || (!boundaryOn && !adminOn)) {
+          clearBoundaryCanvas();
+          return;
+        }
+
+        const canvas = _ensureBoundaryCanvas();
+        if (!canvas) return;
+
+        const mapEl = document.getElementById("map");
+        const w = mapEl.offsetWidth;
+        const h = mapEl.offsetHeight;
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+        }
+        const ctx = canvas.getContext("2d");
+        canvas.style.transform = ''; // 드래그 중 적용된 transform 초기화
+        ctx.clearRect(0, 0, w, h);
+
+        const bounds = window.map.getBounds();
+        if (!bounds) return;
+        const sw = bounds.getSW();
+        const ne = bounds.getNE();
+        const lngRange = ne.lng() - sw.lng();
+        // 웹 메르카토르 y 변환
+        const _mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+        const mercSW = _mercY(sw.lat());
+        const mercNE = _mercY(ne.lat());
+        const mercRange = mercNE - mercSW;
+        const toXY = (lat, lng) => [
+          ((lng - sw.lng()) / lngRange) * w,
+          ((mercNE - _mercY(lat)) / mercRange) * h,
+        ];
+
+        const _selCodes5 = selectedSigunguSet.size > 0
+          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
+          : null;
+
+        // ── SIG (줌 13~14) ──────────────────────────────────────────
+        if (z > 12 && z <= 14) {
+          if (!sigPrepared) return;
+          const isAdminStyle = adminOn && !boundaryOn;
+          const lineColor = isAdminStyle ? "#1e40af" : "#000000";
+
+          ctx.globalAlpha = 0.9;
+          for (const f of sigPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code5 = String(f.properties?.sgg_cd ?? "");
+            const isSelected = !!(_selCodes5 && _selCodes5.has(code5));
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, isSelected, lineColor, 2.5);
+          }
+          ctx.globalAlpha = 1;
+
+          for (const f of sigPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const name = f.properties?.sgg_nm || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
+            if (!name) continue;
+            const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
+            const [lx, ly] = toXY(latlng.lat(), latlng.lng());
+            if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
+            const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 10, max: 20, hideIfTooSmall: true });
+            if (fs <= 0) continue;
+            _drawTextOnCanvas(ctx, name, "", lx, ly, fs, isAdminStyle ? "#1e40af" : "#000000");
+          }
+          return;
+        }
+
+        // ── EMD (줌 15+, 법정동 ON) ──────────────────────────────────
+        if (boundaryOn && z >= 15) {
+          if (!emdPrepared || !emdPopulationMap) return;
+
+          ctx.globalAlpha = 0.9;
+          for (const f of emdPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code8 = getEmdCodeFromProps(f.properties);
+            const code5 = code8.substring(0, 5);
+            const isSelected = !!(_selCodes5 && _selCodes5.has(code5));
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, isSelected, "#000000", 1.5);
+          }
+          ctx.globalAlpha = 1;
+
+          for (const f of emdPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code8 = getEmdCodeFromProps(f.properties);
+            const name = (f.properties?.A2 || f.properties?.name || f.properties?.EMD_NM) || "";
+            if (!name) continue;
+            const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
+            const [lx, ly] = toXY(latlng.lat(), latlng.lng());
+            if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
+            const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 9, max: 20, hideIfTooSmall: true });
+            if (fs <= 0) continue;
+            const subline = formatEmdSublineByCode(code8);
+            _drawTextOnCanvas(ctx, name, subline, lx, ly, fs, "#000000");
+          }
+        }
+
+        // ── ADM (줌 15+, 행정동 ON) ──────────────────────────────────
+        if (adminOn && z >= 15) {
+          if (!admPrepared || !admPopulationMap) return;
+
+          ctx.globalAlpha = 0.9;
+          for (const f of admPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code10 = getAdmCodeFromProps(f.properties);
+            const code5 = code10.substring(0, 5);
+            const isSelected = !!(_selCodes5 && _selCodes5.has(code5));
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, isSelected, "#1e40af", 1.5);
+          }
+          ctx.globalAlpha = 1;
+
+          for (const f of admPrepared) {
+            if (!bboxIntersects(bounds, f.bbox)) continue;
+            const code10 = getAdmCodeFromProps(f.properties);
+            const fullName = (f.properties?.adm_nm || f.properties?.NAME || f.properties?.A2 || f.properties?.name) || "";
+            const name = String(fullName).trim().split(/\s+/).pop() || "";
+            if (!name) continue;
+            const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
+            const [lx, ly] = toXY(latlng.lat(), latlng.lng());
+            if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
+            const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 9, max: 20, hideIfTooSmall: true });
+            if (fs <= 0) continue;
+            const subline = formatAdmSublineByCode(code10);
+            _drawTextOnCanvas(ctx, name, subline, lx, ly, fs, "#1e40af");
+          }
+        }
+        // 드래그 추적용 기준점 저장
+        window._boundaryCanvasAnchor = { swLng: sw.lng(), swLat: sw.lat(), mercSW, lngRange, mercRange, w, h };
+      }
+      // ─── Canvas 경계선 레이어 끝 ─────────────────────────────────────
+
+      function clearEmdPolygons() {
         emdFeatureMap.clear();
         lastEmdZoom = -1;
         lastEmdSelKey = "";
+        clearBoundaryCanvas();
       }
 
       function bboxIntersects(bounds, bbox) {
@@ -3429,13 +3692,10 @@
       }
 
       function clearAdmPolygons() {
-        for (const [, entry] of admFeatureMap) {
-          entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-          if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-        }
         admFeatureMap.clear();
         lastAdmZoom = -1;
         lastAdmSelKey = "";
+        clearBoundaryCanvas();
       }
 
       function clearAdmLabels() {
@@ -3509,142 +3769,14 @@
       }
 
       function redrawAdmByBounds() {
-        try {
-          prepareAdmPreparedOnce();
-        } catch (e) {
-          console.error("ADM prepare 실패:", e);
-          return;
-        }
-
+        // Canvas 방식으로 전환 — drawBoundaryCanvas()에서 통합 처리
         if (!admPopulationMap) {
           loadAdmPopulationOnce()
             .then(() => { try { scheduleAdmRedraw(); } catch (e) {} })
             .catch(() => {});
-          return; // 인구 데이터 로드 완료 후 한 번만 그림
-        }
-
-        if (!window.map) return;
-
-        if (!shouldShowAdminBoundary()) {
-          clearAdmPolygons();
           return;
         }
-
-        const bounds = window.map.getBounds();
-        if (!bounds) return;
-
-        const z = window.map.getZoom();
-        const _selKey = [...selectedSigunguSet].sort().join(",");
-
-        const needsRebuildAdm = (z !== lastAdmZoom || _selKey !== lastAdmSelKey);
-        const toRemoveAdm = [];
-        const toAddAdm = [];
-
-        if (needsRebuildAdm) {
-          for (const [, entry] of admFeatureMap) toRemoveAdm.push(entry);
-          admFeatureMap.clear();
-          lastAdmZoom = z;
-          lastAdmSelKey = _selKey;
-        }
-
-        const _selectedCodes5Adm = selectedSigunguSet.size > 0
-          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
-          : null;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-
-        const newVisibleKeysAdm = new Set();
-
-        for (const f of admPrepared) {
-          if (!bboxIntersects(bounds, f.bbox)) continue;
-
-          const admCode10 = getAdmCodeFromProps(f.properties);
-          const key = admCode10 || JSON.stringify(f.bbox);
-          const _admCode5 = admCode10.substring(0, 5);
-          const isSelected = !!(_selectedCodes5Adm && _selectedCodes5Adm.has(_admCode5));
-          newVisibleKeysAdm.add(key);
-
-          if (!needsRebuildAdm && admFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
-
-          // 새 폴리곤 생성 (map: null — rAF에서 atomic으로 표시)
-          const polygons = [];
-          const polys = f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates];
-          polys.forEach((poly) => {
-            if (!poly || !poly[0] || poly[0].length < 3) return;
-            const path = poly[0].map((c) => new naver.maps.LatLng(c[1], c[0]));
-            polygons.push(new naver.maps.Polygon({
-              map: null,
-              paths: path,
-              strokeColor: isSelected ? "#FF69B4" : "#1e40af",
-              strokeOpacity: isSelected ? 1 : 0.85,
-              strokeWeight: isSelected ? 3 : 2,
-              fillColor: isSelected ? "#FF69B4" : "#1e40af",
-              fillOpacity: 0.01,
-              zIndex: isSelected ? 2 : 1,
-            }));
-          });
-
-          // 라벨 생성 (map: null)
-          let label = null;
-          const fullName =
-            (f.properties && (f.properties.adm_nm || f.properties.NAME || f.properties.A2 || f.properties.name)) || "";
-          const name = String(fullName).trim().split(/\s+/).pop() || "";
-          if (name) {
-            const subline = formatAdmSublineByCode(admCode10);
-            const { latlng: center, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
-            const fs = _label_calcFitFontSize({
-              bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 9, max: maxLabelSize, hideIfTooSmall: true,
-            });
-            if (fs > 0) {
-              const sublinePx = Math.max(8, Math.round(fs * 0.8));
-              const html = subline
-                ? `${name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${subline}</span>`
-                : name;
-              label = new naver.maps.Marker({
-                position: center,
-                map: null,
-                clickable: false,
-                zIndex: 999998,
-                icon: {
-                  content: `<div class="emd-label" style="font-size:${fs}px; color:#1e40af; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15; transform:translate(-50%,-50%);">${html}</div>`,
-                  anchor: new naver.maps.Point(0, 0),
-                },
-              });
-            }
-          }
-
-          const entry = { polygons, label, isSelected };
-          admFeatureMap.set(key, entry);
-          toAddAdm.push(entry);
-        }
-
-        if (!needsRebuildAdm) {
-          // 증분: 화면 밖으로 나간 것 수집
-          const keysToRemoveAdm = [];
-          for (const [key, entry] of admFeatureMap) {
-            if (!newVisibleKeysAdm.has(key)) {
-              toRemoveAdm.push(entry);
-              keysToRemoveAdm.push(key);
-            }
-          }
-          keysToRemoveAdm.forEach((k) => admFeatureMap.delete(k));
-        }
-
-        // Atomic rAF: 제거 + 표시를 같은 페인트 사이클에서
-        if (toRemoveAdm.length > 0 || toAddAdm.length > 0) {
-          const _snapRemoveAdm = toRemoveAdm;
-          const _snapAddAdm = toAddAdm;
-          const _mapRefAdm = window.map;
-          requestAnimationFrame(() => {
-            _snapRemoveAdm.forEach(({ polygons, label }) => {
-              polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-              if (label) { try { label.setMap(null); } catch (e) {} }
-            });
-            _snapAddAdm.forEach(({ polygons, label }) => {
-              polygons.forEach((p) => { try { p.setMap(_mapRefAdm); } catch (e) {} });
-              if (label) { try { label.setMap(_mapRefAdm); } catch (e) {} }
-            });
-          });
-        }
+        drawBoundaryCanvas();
       }
 
       function scheduleAdmRedraw() {
@@ -3711,154 +3843,23 @@
       }
 
       function redrawEmdByBounds() {
-        try {
-          prepareEmdPreparedOnce();
-        } catch (e) {
-          console.error("redrawEmdByBounds prepare 실패:", e);
-          return;
-        }
-
+        // Canvas 방식으로 전환 — drawBoundaryCanvas()에서 통합 처리
         if (!emdPopulationMap) {
           loadEmdPopulationOnce()
             .then(() => { try { scheduleEmdRedraw(); } catch (e) {} })
             .catch(() => {});
-          return; // 인구 데이터 로드 완료 후 한 번만 그림
-        }
-
-        if (!window.map) return;
-
-        const z = window.map.getZoom();
-        if (!shouldShowEmdBoundary()) {
-          clearEmdPolygons();
           return;
         }
-
-        const bounds = window.map.getBounds();
-        if (!bounds) return;
-
-        const _selKey = [...selectedSigunguSet].sort().join(",");
-
-        const needsRebuildEmd = (z !== lastEmdZoom || _selKey !== lastEmdSelKey);
-        const toRemoveEmd = [];
-        const toAddEmd = [];
-
-        if (needsRebuildEmd) {
-          for (const [, entry] of emdFeatureMap) toRemoveEmd.push(entry);
-          emdFeatureMap.clear();
-          lastEmdZoom = z;
-          lastEmdSelKey = _selKey;
-        }
-
-        const _selectedCodes5Emd = selectedSigunguSet.size > 0
-          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
-          : null;
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-
-        const newVisibleKeysEmd = new Set();
-
-        for (const f of emdPrepared) {
-          if (!bboxIntersects(bounds, f.bbox)) continue;
-
-          const emdCode8 = getEmdCodeFromProps(f.properties);
-          const key = emdCode8 || JSON.stringify(f.bbox);
-          const _emdCode5 = emdCode8.substring(0, 5);
-          const isSelected = !!(_selectedCodes5Emd && _selectedCodes5Emd.has(_emdCode5));
-          newVisibleKeysEmd.add(key);
-
-          if (!needsRebuildEmd && emdFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
-
-          // 새 폴리곤 생성 (map: null — rAF에서 atomic으로 표시)
-          const polygons = [];
-          const polys = f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates];
-          polys.forEach((poly) => {
-            if (!poly || !poly[0] || poly[0].length < 3) return;
-            const path = poly[0].map((c) => new naver.maps.LatLng(c[1], c[0]));
-            polygons.push(new naver.maps.Polygon({
-              map: null,
-              paths: path,
-              strokeColor: isSelected ? "#FF69B4" : "#000000",
-              strokeOpacity: isSelected ? 1 : 0.9,
-              strokeWeight: isSelected ? 3 : 2,
-              fillColor: isSelected ? "#FF69B4" : "#000000",
-              fillOpacity: 0.01,
-              zIndex: isSelected ? 2 : 1,
-            }));
-          });
-
-          // 라벨 생성 (map: null)
-          let label = null;
-          if (z >= 15) {
-            const name = (f.properties && (f.properties.A2 || f.properties.name || f.properties.EMD_NM)) || "";
-            if (name) {
-              const subline = formatEmdSublineByCode(emdCode8);
-              const { latlng, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
-              const fs = _label_calcFitFontSize({
-                bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 9, max: maxLabelSize, hideIfTooSmall: true,
-              });
-              if (fs > 0) {
-                const sublinePx = Math.max(8, Math.round(fs * 0.8));
-                const html = subline
-                  ? `${name}<br><span style="font-size:${sublinePx}px; font-weight:700;">${subline}</span>`
-                  : name;
-                label = new naver.maps.Marker({
-                  position: latlng,
-                  map: null,
-                  clickable: false,
-                  zIndex: 999999,
-                  icon: {
-                    content: `<div class="emd-label" style="font-size:${fs}px; white-space:nowrap; word-break:keep-all; text-align:center; line-height:1.15; transform:translate(-50%,-50%);">${html}</div>`,
-                    anchor: new naver.maps.Point(0, 0),
-                  },
-                });
-              }
-            }
-          }
-
-          const entry = { polygons, label, isSelected };
-          emdFeatureMap.set(key, entry);
-          toAddEmd.push(entry);
-        }
-
-        if (!needsRebuildEmd) {
-          // 증분: 화면 밖으로 나간 것 수집
-          const keysToRemoveEmd = [];
-          for (const [key, entry] of emdFeatureMap) {
-            if (!newVisibleKeysEmd.has(key)) {
-              toRemoveEmd.push(entry);
-              keysToRemoveEmd.push(key);
-            }
-          }
-          keysToRemoveEmd.forEach((k) => emdFeatureMap.delete(k));
-        }
-
-        // Atomic rAF: 제거 + 표시를 같은 페인트 사이클에서
-        if (toRemoveEmd.length > 0 || toAddEmd.length > 0) {
-          const _snapRemoveEmd = toRemoveEmd;
-          const _snapAddEmd = toAddEmd;
-          const _mapRefEmd = window.map;
-          requestAnimationFrame(() => {
-            _snapRemoveEmd.forEach(({ polygons, label }) => {
-              polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-              if (label) { try { label.setMap(null); } catch (e) {} }
-            });
-            _snapAddEmd.forEach(({ polygons, label }) => {
-              polygons.forEach((p) => { try { p.setMap(_mapRefEmd); } catch (e) {} });
-              if (label) { try { label.setMap(_mapRefEmd); } catch (e) {} }
-            });
-          });
-        }
+        drawBoundaryCanvas();
       }
 
       // ✅ SIG helpers
       // ==============================
       function clearSigPolygons() {
-        for (const [, entry] of sigFeatureMap) {
-          entry.polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-          if (entry.label) { try { entry.label.setMap(null); } catch (e) {} }
-        }
         sigFeatureMap.clear();
         lastSigZoom = -1;
         lastSigSelKey = "";
+        clearBoundaryCanvas();
       }
 
       function clearSigLabels() {
@@ -3940,208 +3941,54 @@
       }
 
       function redrawSigByBounds() {
-        try {
-          prepareSigPreparedOnce();
-        } catch (e) {
-          console.error("redrawSigByBounds prepare 실패:", e);
-          return;
-        }
-
-        if (!window.map || !sigPrepared) return;
-
-        const bounds = window.map.getBounds();
-        if (!bounds) return;
-
-        const z = window.map.getZoom();
-        const _selKey = [...selectedSigunguSet].sort().join(",");
-        const _styleKey = `${sigStyleMode}|${_selKey}`;
-
-        const needsRebuildSig = (z !== lastSigZoom || _styleKey !== lastSigSelKey);
-        const toRemoveSig = [];
-        const toAddSig = [];
-
-        if (needsRebuildSig) {
-          for (const [, entry] of sigFeatureMap) toRemoveSig.push(entry);
-          sigFeatureMap.clear();
-          lastSigZoom = z;
-          lastSigSelKey = _styleKey;
-        }
-
-        const _selectedCodes5Sig = selectedSigunguSet.size > 0
-          ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
-          : null;
-        const isAdminStyle = sigStyleMode === "admin";
-        const maxLabelSize = window.matchMedia && window.matchMedia("(max-width: 768px)").matches ? 18 : 20;
-
-        const newVisibleKeysSig = new Set();
-
-        for (const f of sigPrepared) {
-          if (!bboxIntersects(bounds, f.bbox)) continue;
-
-          const _sigCode5 = String(f.properties?.sgg_cd ?? "");
-          const key = _sigCode5 || JSON.stringify(f.bbox);
-          const isSelected = !!(_selectedCodes5Sig && _selectedCodes5Sig.has(_sigCode5));
-          newVisibleKeysSig.add(key);
-
-          if (!needsRebuildSig && sigFeatureMap.has(key)) continue; // 이미 표시 중 → 스킵
-
-          // 새 폴리곤 생성 (map: null — rAF에서 atomic으로 표시)
-          const polygons = [];
-          const polys = f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates];
-          polys.forEach((poly) => {
-            const ring = poly[0];
-            const path = ring.map((c) => new naver.maps.LatLng(c[1], c[0]));
-            polygons.push(new naver.maps.Polygon({
-              map: null,
-              paths: path,
-              strokeColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
-              strokeOpacity: isSelected ? 1 : (isAdminStyle ? 0.85 : 1),
-              strokeWeight: 3,
-              fillColor: isSelected ? "#FF69B4" : (isAdminStyle ? "#1e40af" : "#000000"),
-              fillOpacity: isAdminStyle ? 0.01 : 0,
-              zIndex: isSelected ? 2 : 1,
-            }));
-          });
-
-          // 라벨 생성 (map: null)
-          let label = null;
-          const name = f.properties?.sgg_nm || f.properties?.A2 || f.properties?.SIG_KOR_NM || f.properties?.NAME || "";
-          if (name) {
-            const { latlng: center, polylabelBbox } = getLabelDataByPolylabel(f.geometry, f.bbox);
-            const fs = _label_calcFitFontSize({
-              bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 10, max: maxLabelSize, hideIfTooSmall: true,
-            });
-            if (fs > 0) {
-              const color = isAdminStyle ? "#1e40af" : "#000000";
-              label = new naver.maps.Marker({
-                position: center,
-                map: null,
-                clickable: false,
-                zIndex: 999998,
-                icon: {
-                  content: `<div class="sig-label" style="font-size:${fs}px; color:${color}; transform:translate(-50%,-50%);">${name}</div>`,
-                  anchor: new naver.maps.Point(0, 0),
-                },
-              });
-            }
-          }
-
-          const entry = { polygons, label, isSelected };
-          sigFeatureMap.set(key, entry);
-          toAddSig.push(entry);
-        }
-
-        if (!needsRebuildSig) {
-          // 증분: 화면 밖으로 나간 것 수집
-          const keysToRemoveSig = [];
-          for (const [key, entry] of sigFeatureMap) {
-            if (!newVisibleKeysSig.has(key)) {
-              toRemoveSig.push(entry);
-              keysToRemoveSig.push(key);
-            }
-          }
-          keysToRemoveSig.forEach((k) => sigFeatureMap.delete(k));
-        }
-
-        // Atomic rAF: 제거 + 표시를 같은 페인트 사이클에서
-        if (toRemoveSig.length > 0 || toAddSig.length > 0) {
-          const _snapRemoveSig = toRemoveSig;
-          const _snapAddSig = toAddSig;
-          const _mapRefSig = window.map;
-          requestAnimationFrame(() => {
-            _snapRemoveSig.forEach(({ polygons, label }) => {
-              polygons.forEach((p) => { try { p.setMap(null); } catch (e) {} });
-              if (label) { try { label.setMap(null); } catch (e) {} }
-            });
-            _snapAddSig.forEach(({ polygons, label }) => {
-              polygons.forEach((p) => { try { p.setMap(_mapRefSig); } catch (e) {} });
-              if (label) { try { label.setMap(_mapRefSig); } catch (e) {} }
-            });
-          });
-        }
+        // Canvas 방식으로 전환 — drawBoundaryCanvas()에서 통합 처리
+        drawBoundaryCanvas();
       }
 
       function redrawBoundaryByZoom() {
         if (!window.map) return;
-
+        // 줌 애니메이션 중(RAF clear 루프 실행 중)에는 그리지 않음
+        if (_boundaryZoomClearing) return;
         const z = window.map.getZoom();
         const boundaryOn = isBoundaryCheckboxOn();
         const adminOn = isAdminBoundaryCheckboxOn();
 
-        // =========================
-        // ✅ 줌 13~14: SIG 데이터 사용
-        // - 법정동경계 ON 이거나 행정동경계 ON 이면 SIG를 표시
-        // - 행정동경계 ON이면 SIG를 행정동 스타일(파란색)로 표시
-        // =========================
-        if (z > 12 && z <= 14) {
-          // EMD/ADM는 이 구간에서 숨김
-          clearEmdPolygons();
-          clearEmdLabels();
-          clearAdmPolygons();
-          clearAdmLabels();
-
-          if (boundaryOn || adminOn) {
-            sigStyleMode = adminOn ? "admin" : "default";
-            loadSigBoundaryOnce().then(() => {
-              try {
-                redrawSigByBounds();
-              } catch (e) {
-                console.error("SIG redraw 실패:", e);
-              }
-            });
-          } else {
-            sigStyleMode = "default";
-            clearSigPolygons();
-            clearSigLabels();
-          }
+        if (z <= 12 || (!boundaryOn && !adminOn)) {
+          clearBoundaryCanvas();
           return;
         }
 
-        // =========================
-        // ✅ 줌 15 이상: 동(법정/행정)
-        // =========================
-        sigStyleMode = "default";
-        clearSigPolygons();
-        clearSigLabels();
-
-        if (!boundaryOn) {
-          clearEmdPolygons();
-          clearEmdLabels();
-        } else {
-          // EMD: zoom >= 15
-          loadEmdBoundaryOnce().then(() => {
-            try {
-              redrawEmdByBounds();
-            } catch (e) {
-              console.error("EMD redraw 실패:", e);
-            }
-          });
+        // 필요한 데이터 로드 후 canvas 렌더링
+        const loaders = [];
+        if (z > 12 && z <= 14 && (boundaryOn || adminOn)) {
+          sigStyleMode = adminOn && !boundaryOn ? "admin" : "default";
+          loaders.push(
+            loadSigBoundaryOnce()
+              .then(() => { try { prepareSigPreparedOnce(); } catch (e) {} })
+          );
+        }
+        if (z >= 15 && boundaryOn) {
+          loaders.push(
+            loadEmdBoundaryOnce()
+              .then(() => { try { prepareEmdPreparedOnce(); } catch (e) {} })
+              .then(() => loadEmdPopulationOnce())
+          );
+        }
+        if (z >= 15 && adminOn) {
+          loaders.push(
+            loadAdmBoundaryOnce()
+              .then(() => { try { prepareAdmPreparedOnce(); } catch (e) {} })
+              .then(() => loadAdmPopulationOnce())
+          );
         }
 
-        if (adminOn && z >= 15) {
-          loadAdmBoundaryOnce().then(() => {
-            try {
-              redrawAdmByBounds();
-            } catch (e) {
-              console.error("ADM redraw 실패:", e);
-            }
-          });
-        } else {
-          clearAdmPolygons();
-          clearAdmLabels();
+        if (loaders.length === 0) {
+          drawBoundaryCanvas();
+          return;
         }
-
-        // =========================
-        // ✅ 줌 12 이하: 전부 숨김
-        // =========================
-        if (z <= 12) {
-          clearSigPolygons();
-          clearSigLabels();
-          clearEmdPolygons();
-          clearEmdLabels();
-          clearAdmPolygons();
-          clearAdmLabels();
-        }
+        Promise.all(loaders)
+          .then(() => drawBoundaryCanvas())
+          .catch((e) => console.error("Boundary 데이터 로드 실패:", e));
       }
 
       function scheduleEmdRedraw() {
@@ -5616,43 +5463,7 @@
           }
         }
 
-        // ✅ `MapHandler` 클래스 생성 후 지도 객체와 연결
-        //new MapHandler(window.map);
-
-        // ✅ 아파트 데이터 불러오기
-
-        // ✅ 지도 이동 시 현재 범위 내 아파트 마커 업데이트
-        // ✅ 지도 위치(센터/줌) 저장은 createMap() 내부에서 현재 map 인스턴스에 바인딩됨 (setupMapPositionAutoSave)
-
-        //console.log("✅ 네이버 지도 초기화 완료.");
-
-        // ✅ 0) 메모 DB + 메모 존재 키셋을 가장 먼저 준비 (아파트 마커/메모 아이콘이 최우선)
-        await initMemoIndexedDB();
-        await loadMemoKeySetOnce();
-        // ✅ 0-1) 포토메모 인덱스(경량)는 체크박스 ON 시 로드 — 초기화 시 자동 로드 안 함
-
-        // ✅ 1) 아파트(마커) 먼저 로드
-        await loadApartments();
-
-        // ✅ 2) 나머지는 병렬 로드 (환경/스벅/상세/길찾기 등)
-        Promise.allSettled([loadApartmentsDetail(), loadFacilities(), loadStarbucks(), findWay()])
-          .then((results) => {
-            const ok = results.filter((r) => r.status === "fulfilled").length;
-            const fail = results.filter((r) => r.status === "rejected").length;
-            //console.log(`✅ 백그라운드 로딩 완료: ok=${ok}, fail=${fail}`);
-          })
-          .catch(console.warn);
-        if (window.map) {
-          setupRightClickEvent();
-        } else {
-          // ✅ 지도 로드 후 이벤트를 추가하는 방식
-          const checkMapLoaded = setInterval(() => {
-            if (window.map) {
-              clearInterval(checkMapLoaded);
-              setupRightClickEvent();
-            }
-          }, 100); // 🔹 100ms 간격으로 지도 로드 확인
-        }
+        // ✅ 데이터 로드/이벤트 등록은 createMap() 내부에서 처리됨 (중복 호출 방지)
 
         const metaViewport = document.querySelector("meta[name='viewport']");
 
