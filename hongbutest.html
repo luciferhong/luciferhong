@@ -1375,6 +1375,31 @@
         };
 
         // Storage quota monitor
+        function showStorageWarning(pct) {
+          const isCritical = pct >= 92;
+          const storageKey = isCritical ? "storageWarnCritical" : "storageWarnHigh";
+          const today = new Date().toDateString();
+          if (localStorage.getItem(storageKey) === today) return;
+          localStorage.setItem(storageKey, today);
+
+          const banner = document.createElement("div");
+          banner.style.cssText = [
+            "position:fixed", "top:12px", "left:50%", "transform:translateX(-50%)",
+            `background:${isCritical ? "#d32f2f" : "#e65100"}`, "color:#fff",
+            "padding:12px 16px", "border-radius:10px", "z-index:99999",
+            "font-size:14px", "text-align:center", "line-height:1.5",
+            "box-shadow:0 3px 10px rgba(0,0,0,0.4)", "max-width:300px", "width:90%",
+          ].join(";");
+          banner.innerHTML =
+            `<div style="font-weight:bold">${isCritical ? "🚨 저장공간이 거의 꽉 찼습니다!" : "⚠️ 저장공간이 부족합니다"}</div>` +
+            `<div style="font-size:12px;margin-top:3px">포토메모가 삭제될 수 있어요 (${pct.toFixed(0)}% 사용 중)</div>` +
+            `<div style="margin-top:8px;display:flex;justify-content:center;gap:12px;align-items:center">` +
+            `<a href="memoBackup.html" target="_blank" style="color:#fff;font-weight:bold;text-decoration:underline">📦 지금 백업하기</a>` +
+            `<span style="cursor:pointer;font-size:18px;line-height:1" onclick="this.closest('div').remove()">✕</span>` +
+            `</div>`;
+          document.body.appendChild(banner);
+        }
+
         async function reportStorage() {
           try {
             if (navigator.storage && navigator.storage.estimate) {
@@ -1387,7 +1412,7 @@
                   "STAT",
                   `Storage: ${(usage / 1048576).toFixed(1)}MB / ${(quota / 1048576).toFixed(1)}MB (${pct.toFixed(1)}%)`,
                 );
-                if (pct >= 92) showToast("⚠️ 저장공간이 거의 꽉 찼어요. (브라우저 저장소)");
+                if (pct >= 80) showStorageWarning(pct);
               }
             }
           } catch (e) {
@@ -1556,7 +1581,7 @@
       <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
 
       <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
-      <label><input type="checkbox" id="togglePhotoMemo" />포토메모</label>
+      <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
       <div
         id="locationPopup"
         style="
@@ -5456,6 +5481,12 @@
           );
         }
 
+        // ✅ OS의 자동 eviction 방지 (저장공간 부족 시 IndexedDB 삭제 예방)
+        if (navigator.storage && navigator.storage.persist) {
+          const granted = await navigator.storage.persist();
+          if (!granted) console.warn("⚠️ 영구 저장 권한 없음 - OS가 저장 데이터를 삭제할 수 있습니다.");
+        }
+
         await initIndexedDB();
 
         // ✅ 저장된 UI 옵션 복원 + 자동 저장 설정
@@ -6648,7 +6679,16 @@ const originalBase64 = event.target.result;
             resolve(true);
           };
 
-          request.onerror = (e) => reject(e.target.error);
+          request.onerror = (e) => {
+            const err = e.target.error;
+            console.error("❌ hongbuMemo DB 열기 실패:", err);
+            // 저장공간 부족 또는 DB 손상 시 사용자에게 안내
+            const msg = err && err.name === "QuotaExceededError"
+              ? "❌ 저장공간이 부족합니다. 기기 저장공간을 확보해 주세요."
+              : "❌ 포토메모 DB를 열 수 없습니다.\n크롬 설정 → 사이트 설정 → 저장용량 → 데이터 삭제 후 새로고침 해주세요.";
+            showToast(msg);
+            reject(err);
+          };
         });
       }
 
@@ -6744,7 +6784,7 @@ const originalBase64 = event.target.result;
       window.__photoMemoPendingCoord = null; // {lat,lng}
       window.__photoMemoIndexLoaded = window.__photoMemoIndexLoaded || false; // 인덱스 로드 완료 여부
       window.__photoMemoLoadingIds = window.__photoMemoLoadingIds || new Set(); // DB에서 로딩 중인 id 집합
-      window.__photoMemoVisible = window.__photoMemoVisible || false; // 포토메모 체크박스 상태
+      window.__photoMemoVisible = window.__photoMemoVisible !== undefined ? window.__photoMemoVisible : true; // 포토메모 체크박스 상태 (첫 로드 기본값: ON)
 
       function __uuidv4() {
         try {
