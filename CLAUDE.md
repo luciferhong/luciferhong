@@ -70,6 +70,14 @@ Uses `@capacitor-community/text-to-speech` (v6). iOS: `UIBackgroundModes: audio`
 - **모든 설명과 과정은 한글로 작성한다.**
 - **구글 시트 읽기:** WebFetch로 `https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv` 사용.
 
+## 핸드오버 (Claude Code → Copilot 인계)
+
+토큰 한도 도달 시 또는 사용자가 "핸드오버" 요청 시:
+1. `HANDOVER.md`를 프로젝트 루트에 생성/업데이트한다.
+2. 포함 내용: 현재 작업 중인 파일 및 변경 내용, 완료된 것, 남은 것, 코파일럿 인계 컨텍스트(제약사항 포함).
+3. 코파일럿에서 `#file:HANDOVER.md`로 로드하여 이어받는다.
+4. `HANDOVER.md`는 Git 추적 대상이므로 민감 정보(토큰, 비밀번호) 포함 금지.
+
 ## migration — 전출입 현황 뷰어
 
 **빌드:** `python _build_migration.py` → `migration_data.json`, `emd/{sgg5}.json`, `emd_out/{sgg5}.json`
