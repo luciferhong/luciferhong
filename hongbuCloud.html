@@ -4663,21 +4663,30 @@
           const data = await __driveReadIndex();
           let driveVaultId = data.vaultId;
 
+          const localVaultId = localStorage.getItem("hongbu_drive_vault_id");
+
           if (!driveVaultId) {
-            // 기존 index.json에 vaultId 없음 → 지금 추가하고 현재 기기를 기준으로 설정
+            // Drive에 vaultId 없음 (우리 코드 적용 전에 만들어진 Drive)
             driveVaultId = (typeof crypto !== "undefined" && crypto.randomUUID)
               ? crypto.randomUUID()
               : Date.now().toString(36) + Math.random().toString(36).slice(2);
             data.vaultId = driveVaultId;
             await __driveWriteIndex(data);
+
+            if (localVaultId) {
+              // 이 기기에 이전 계정 기록이 있음 → 다른 계정으로 판단, 플래그 초기화
+              console.log("Drive 계정 전환 감지 (Drive vaultId 없음, 로컬:", localVaultId, ") → 플래그 초기화");
+              __syncProgressShow("☁️ 새 계정 감지: 동기화 플래그 초기화 중...");
+              await __gdriveResetLocalSyncFlags();
+            }
+            // localVaultId 없으면 이 기기 첫 사용 → 플래그 초기화 불필요
             localStorage.setItem("hongbu_drive_vault_id", driveVaultId);
-            return; // 기존 유저 첫 vaultId 설정 → 플래그 초기화 불필요
+            return;
           }
 
-          const localVaultId = localStorage.getItem("hongbu_drive_vault_id");
           if (localVaultId === driveVaultId) return; // 동일 계정 → 아무것도 안 함
 
-          // 다른 계정 (또는 이 기기 첫 접속) → 로컬 플래그 초기화
+          // 다른 계정 (vaultId 불일치) → 로컬 플래그 초기화
           console.log("Drive 계정 전환 감지 (local:", localVaultId, "/ drive:", driveVaultId, ") → 로컬 동기화 플래그 초기화");
           __syncProgressShow("☁️ 새 계정 감지: 동기화 플래그 초기화 중...");
           await __gdriveResetLocalSyncFlags();
@@ -5207,9 +5216,15 @@
           const localIds = new Set((window.__photoMemoIndex || []).map((m) => String(m.id)));
           console.log(`포토메모 동기화 시작: Drive ${driveMemos.length}개 / 로컬 ${localIds.size}개`);
 
-          // ② Drive→로컬: Drive에만 있는 항목
+          // ② Drive→로컬: Drive에만 있는 항목 추가 + 기존 항목 imageFileId 복원
           const toAddLocal = driveMemos.filter((m) => !localIds.has(String(m.id)));
-          if (toAddLocal.length > 0) {
+          // 계정 전환 등으로 imageFileId가 초기화된 로컬 항목 → Drive의 imageFileId로 복원
+          const toRestoreFileId = driveMemos.filter((m) => {
+            if (!m.imageFileId) return false;
+            const local = (window.__photoMemoIndex || []).find((l) => String(l.id) === String(m.id));
+            return local && !local.imageFileId;
+          });
+          if (toAddLocal.length > 0 || toRestoreFileId.length > 0) {
             await initMemoIndexedDB();
             const dbAdd = await __openHongbuMemoDb();
             await new Promise((resolve, reject) => {
@@ -5226,14 +5241,28 @@
                   imageDataUrl: "", // 원본은 Drive에만 — 클릭 시 lazy 다운로드
                 });
               }
+              for (const m of toRestoreFileId) {
+                // 기존 로컬 레코드를 읽어서 imageFileId만 Drive 값으로 복원
+                const getReq = store.get(String(m.id));
+                getReq.onsuccess = () => {
+                  const rec = getReq.result;
+                  if (rec) store.put({ ...rec, imageFileId: m.imageFileId });
+                };
+              }
             });
             for (const m of toAddLocal) window.__photoMemoIndex.push({ ...m, imageDataUrl: "" });
-            console.log(`Drive→로컬 포토메모 병합: ${toAddLocal.length}개 추가`);
+            for (const m of toRestoreFileId) {
+              const local = (window.__photoMemoIndex || []).find((l) => String(l.id) === String(m.id));
+              if (local) local.imageFileId = m.imageFileId;
+            }
+            if (toAddLocal.length > 0) console.log(`Drive→로컬 포토메모 병합: ${toAddLocal.length}개 추가`);
+            if (toRestoreFileId.length > 0) console.log(`포토메모 imageFileId 복원: ${toRestoreFileId.length}개`);
             changed = true;
           }
 
           // ③ 로컬→Drive: 로컬에만 있는 항목
           const toUpload = (window.__photoMemoIndex || []).filter((m) => !driveMap.has(String(m.id)));
+          console.log(`포토메모 로컬→Drive 대상: ${toUpload.length}개 (로컬 ${(window.__photoMemoIndex||[]).length}개 중 Drive에 없는 것)`);
           if (toUpload.length === 0) return; // 업로드할 것 없으면 index.json write 생략
 
           await initMemoIndexedDB();
@@ -5369,6 +5398,8 @@
           // ③ 로컬→Drive: 로컬에만 있는 메모 중 _driveIndexed가 아닌 것만 (진짜 새 메모)
           //    _driveIndexed인 것은 Drive에서 삭제된 것이므로 재업로드 금지
           const localOnlyNotes = [...localMap.values()].filter((n) => !driveMap.has(String(n.id)) && !n._driveIndexed);
+          const driveIndexedNotInDrive = [...localMap.values()].filter((n) => !driveMap.has(String(n.id)) && n._driveIndexed);
+          console.log(`단지메모 로컬→Drive 대상: ${localOnlyNotes.length}개 / 이전계정 플래그(스킵): ${driveIndexedNotInDrive.length}개`);
           if (localOnlyNotes.length === 0) {
             db.close();
             return changed; // 업로드할 것 없으면 index.json write 생략
