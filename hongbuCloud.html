@@ -1674,15 +1674,6 @@
         <input type="file" id="photoMemoFileInput" accept="image/*" style="display: none" />
       </div>
 
-      <!-- ☁️ Google Drive 연동 버튼 (hongbuCloud 전용) -->
-      <div style="margin-top: 4px; padding: 4px 0; border-top: 1px dashed #444;">
-        <span style="font-size: 11px; color: #94a3b8; margin-right: 6px;">☁️ Drive:</span>
-        <button onclick="migratePhotoMemosToGDrive()">📤 포토메모 Drive 업로드</button>
-        <button onclick="__driveBackupApartmentNotes()">💾 단지메모 Drive 백업</button>
-        <button onclick="__driveRestoreApartmentNotes()">♻️ 단지메모 Drive 복원</button>
-        <button id="gdriveAuthToggleBtn" onclick="__gdriveAuthToggle()">🔑 로그인</button>
-      </div>
-
       <button onclick="window.open('https://cafe.naver.com/wecando7/11456373', '_blank')">🔗 카페 글 링크</button>
 
       <button id="siseExportBtn" style="display: none">시세지도 백업</button>
@@ -1691,6 +1682,15 @@
       <div style="flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0">
         <button id="siseVer2ImportBtn" style="display: block">시세지도Ver2에서 가져오기</button>
         <button id="siseVer2ResetBtn" style="display: block">시세지도Ver2데이터 초기화</button>
+      </div>
+
+      <!-- ☁️ Google Drive 연동 버튼 (hongbuCloud 전용) -->
+      <div style="margin-top: 4px; padding: 4px 0; border-top: 1px dashed #444;">
+        <span style="font-size: 11px; color: #94a3b8; margin-right: 6px;">☁️ Drive:</span>
+        <button onclick="migratePhotoMemosToGDrive()">📤 포토메모 Drive 업로드</button>
+        <button onclick="__driveBackupApartmentNotes()">💾 단지메모 Drive 백업</button>
+        <button onclick="__driveRestoreApartmentNotes()">♻️ 단지메모 Drive 복원</button>
+        <button id="gdriveAuthToggleBtn" onclick="__gdriveAuthToggle()">🔑 로그인</button>
       </div>
 
     </div>
@@ -4511,20 +4511,9 @@
             callback: async (resp) => {
               const overlay = document.getElementById("gdriveAuthOverlay");
               if (resp.error) {
-                // 조용한 로그인 실패(세션 만료 등) → 오버레이 표시
-                const silentErrors = ["interaction_required", "login_required", "account_selection_required", "consent_required"];
-                if (silentErrors.includes(resp.error)) {
-                  console.log("조용한 로그인 실패:", resp.error, "→ 오버레이 표시");
-                  if (overlay) overlay.style.display = "flex";
-                  return;
-                }
-                console.error("OAuth error:", resp);
+                // 모든 OAuth 에러 → 오버레이 표시 (자동 로그인 실패 포함)
+                console.warn("OAuth 로그인 실패:", resp.error, resp.error_description || "");
                 if (overlay) overlay.style.display = "flex";
-                const errEl = document.getElementById("gdriveAuthError");
-                if (errEl) {
-                  errEl.textContent = "로그인 실패: " + (resp.error_description || resp.error);
-                  errEl.style.display = "block";
-                }
                 return;
               }
               // 로그인 성공 → 오버레이 닫기
@@ -4809,20 +4798,29 @@
 
         const isReturningUser = localStorage.getItem("__hongbuDriveAutoLogin") === "1";
 
-        // 재방문 시: 오버레이 숨기고 조용히 토큰 재발급 시도
-        if (isReturningUser && overlay) overlay.style.display = "none";
+        // 재방문 시: 오버레이를 "한 번 탭하면 재연결" 모드로 전환
+        if (isReturningUser && overlay) {
+          const inner = overlay.querySelector("div");
+          if (inner) {
+            inner.innerHTML = `
+              <div style="font-size:44px; margin-bottom:10px;">☁️</div>
+              <h2 style="margin:0 0 8px; font-size:17px; color:#f1f5f9;">Drive 재연결</h2>
+              <p style="margin:0 0 6px; color:#94a3b8; font-size:13px; line-height:1.6;">
+                화면을 탭하면 자동으로 연결됩니다.
+              </p>
+              <p style="color:#64748b; font-size:11px;">(동의 화면 없이 바로 연결)</p>
+            `;
+          }
+          overlay.style.cursor = "pointer";
+          overlay.addEventListener("click", () => __gdriveSignIn(), { once: true });
+        }
 
         __gdriveInit()
-          .catch((e) => console.error("gdrive init 실패:", e))
+          .catch((e) => console.warn("gdrive init 실패:", e))
           .finally(() => {
             if (btn) {
               btn.disabled = false;
-              btn.addEventListener("click", () => __gdriveSignIn());
-            }
-            if (isReturningUser && window.__gdriveTokenClient) {
-              // prompt: "none" → Google 세션이 살아있으면 팝업 없이 자동 로그인
-              // 실패 시 callback에서 interaction_required 감지 → 오버레이 다시 표시
-              window.__gdriveTokenClient.requestAccessToken({ prompt: "none" });
+              if (!isReturningUser) btn.addEventListener("click", () => __gdriveSignIn());
             }
           });
       });
@@ -11460,8 +11458,8 @@ min-height: 24px;
             try {
               window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false);
             } catch (e) {}
-            // Drive 자동 동기화 (백그라운드 — 실패 시 무시)
-            __driveSyncApartmentNotesSilent();
+            // Drive 즉시 단건 삭제 동기화 (백그라운드 — 실패 시 무시)
+            __driveSyncOneApartmentNote(id, null);
 
             // 마커 재생성(메모 아이콘 제거 효과)
             const marker = apartmentMarkers[id];
