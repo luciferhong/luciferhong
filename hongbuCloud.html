@@ -4607,6 +4607,7 @@
 
         __syncProgressShow("☁️ Drive 연결 중...");
         await __ensureDriveStructure();
+        await __gdriveCheckVaultId(); // 계정 전환 감지: 다른 계정이면 로컬 플래그 초기화
         window.__gdriveReady = true;
         __gdriveUpdateAuthBtn();
         window.__photoMemoIndexLoaded = false;
@@ -4654,6 +4655,98 @@
         window.__gdriveIndexFileId = await __driveFindOrCreateIndexFile(window.__gdriveRootFolderId);
       }
 
+      // 계정 전환 감지: Drive index.json의 vaultId와 로컬 저장값 비교
+      // 다른 계정이면 로컬 _driveIndexed / imageFileId 플래그를 초기화해서
+      // 기존 로컬 데이터가 "신규 데이터"로 취급되어 Drive에 업로드되게 함
+      async function __gdriveCheckVaultId() {
+        try {
+          const data = await __driveReadIndex();
+          let driveVaultId = data.vaultId;
+
+          if (!driveVaultId) {
+            // 기존 index.json에 vaultId 없음 → 지금 추가하고 현재 기기를 기준으로 설정
+            driveVaultId = (typeof crypto !== "undefined" && crypto.randomUUID)
+              ? crypto.randomUUID()
+              : Date.now().toString(36) + Math.random().toString(36).slice(2);
+            data.vaultId = driveVaultId;
+            await __driveWriteIndex(data);
+            localStorage.setItem("hongbu_drive_vault_id", driveVaultId);
+            return; // 기존 유저 첫 vaultId 설정 → 플래그 초기화 불필요
+          }
+
+          const localVaultId = localStorage.getItem("hongbu_drive_vault_id");
+          if (localVaultId === driveVaultId) return; // 동일 계정 → 아무것도 안 함
+
+          // 다른 계정 (또는 이 기기 첫 접속) → 로컬 플래그 초기화
+          console.log("Drive 계정 전환 감지 (local:", localVaultId, "/ drive:", driveVaultId, ") → 로컬 동기화 플래그 초기화");
+          __syncProgressShow("☁️ 새 계정 감지: 동기화 플래그 초기화 중...");
+          await __gdriveResetLocalSyncFlags();
+          localStorage.setItem("hongbu_drive_vault_id", driveVaultId);
+        } catch (e) {
+          console.warn("vaultId 확인 실패 (무시):", e);
+        }
+      }
+
+      // 로컬 DB의 Drive 동기화 플래그 초기화
+      // - 단지메모: _driveIndexed 제거 → 다음 동기화에서 "신규 메모"로 Drive에 업로드됨
+      // - 포토메모: imageFileId 제거 → 다음 동기화에서 이미지 파일을 새 Drive에 재업로드됨
+      async function __gdriveResetLocalSyncFlags() {
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+
+          // 단지메모: _driveIndexed 플래그 제거
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction(["apartmentNotes"], "readwrite");
+            tx.oncomplete = () => resolve();
+            tx.onerror = (e) => reject(e.target.error);
+            const store = tx.objectStore("apartmentNotes");
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+              const cursor = e.target.result;
+              if (cursor) {
+                if (cursor.value._driveIndexed) {
+                  const updated = { ...cursor.value };
+                  delete updated._driveIndexed;
+                  cursor.update(updated);
+                }
+                cursor.continue();
+              }
+            };
+            req.onerror = () => resolve();
+          });
+
+          // 포토메모: imageFileId 제거 (새 계정 Drive에 해당 파일 없으므로 재업로드 필요)
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction(["photoMemos"], "readwrite");
+            tx.oncomplete = () => { db.close(); resolve(); };
+            tx.onerror = (e) => { db.close(); reject(e.target.error); };
+            const store = tx.objectStore("photoMemos");
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+              const cursor = e.target.result;
+              if (cursor) {
+                if (cursor.value.imageFileId) {
+                  cursor.update({ ...cursor.value, imageFileId: "" });
+                }
+                cursor.continue();
+              }
+            };
+            req.onerror = () => { db.close(); resolve(); };
+          });
+
+          // 인메모리 인덱스도 초기화
+          if (Array.isArray(window.__photoMemoIndex)) {
+            window.__photoMemoIndex.forEach((m) => { m.imageFileId = ""; });
+          }
+          window.__photoMemoImageCache?.clear?.();
+
+          console.log("로컬 동기화 플래그 초기화 완료");
+        } catch (e) {
+          console.warn("플래그 초기화 실패 (무시):", e);
+        }
+      }
+
       // 이미지 항목에서 base64 data URL 추출 (구형 string 또는 신형 {data, fileId} 모두 지원)
       function __getImgData(item) {
         return typeof item === "string" ? item : (item?.data || "");
@@ -4696,7 +4789,8 @@
         if (resp.result.files && resp.result.files.length > 0) return resp.result.files[0].id;
         // index.json 기본 구조: { memos: [ {id, lat, lng, ts, thumb, ...} ], apartmentNotes: [...] }
         const metadata = { name: "index.json", parents: [parentId], mimeType: "application/json" };
-        const body = JSON.stringify({ memos: [], apartmentNotes: [] });
+        const newVaultId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+        const body = JSON.stringify({ memos: [], apartmentNotes: [], vaultId: newVaultId });
         const created = await __driveUploadMultipart(metadata, body, "application/json");
         return created.id;
       }
