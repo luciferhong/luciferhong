@@ -1680,7 +1680,7 @@
         <button onclick="migratePhotoMemosToGDrive()">📤 포토메모 Drive 업로드</button>
         <button onclick="__driveBackupApartmentNotes()">💾 단지메모 Drive 백업</button>
         <button onclick="__driveRestoreApartmentNotes()">♻️ 단지메모 Drive 복원</button>
-        <button onclick="__gdriveSignOut()">🚪 로그아웃</button>
+        <button id="gdriveAuthToggleBtn" onclick="__gdriveAuthToggle()">🔑 로그인</button>
       </div>
 
       <button onclick="window.open('https://cafe.naver.com/wecando7/11456373', '_blank')">🔗 카페 글 링크</button>
@@ -4563,6 +4563,24 @@
         }
       }
 
+      function __gdriveUpdateAuthBtn() {
+        const btn = document.getElementById("gdriveAuthToggleBtn");
+        if (!btn) return;
+        if (window.__gdriveReady && window.__gdriveAccessToken) {
+          btn.textContent = "🚪 로그아웃";
+        } else {
+          btn.textContent = "🔑 로그인";
+        }
+      }
+
+      function __gdriveAuthToggle() {
+        if (window.__gdriveReady && window.__gdriveAccessToken) {
+          __gdriveSignOut();
+        } else {
+          __gdriveSignIn();
+        }
+      }
+
       function __gdriveSignOut() {
         localStorage.removeItem("__hongbuDriveAutoLogin"); // 자동 로그인 플래그 제거
         if (window.__gdriveAccessToken) {
@@ -4583,6 +4601,7 @@
         window.__photoMemoImageCache?.clear?.();
         const overlay = document.getElementById("gdriveAuthOverlay");
         if (overlay) overlay.style.display = "flex";
+        __gdriveUpdateAuthBtn();
       }
 
       function __syncProgressShow(msg) {
@@ -4601,6 +4620,7 @@
         __syncProgressShow("☁️ Drive 연결 중...");
         await __ensureDriveStructure();
         window.__gdriveReady = true;
+        __gdriveUpdateAuthBtn();
         window.__photoMemoIndexLoaded = false;
         window.__photoMemoIndex = [];
 
@@ -4617,14 +4637,22 @@
 
         // 포토메모 + 단지메모 순서대로 동기화 (백그라운드 — 둘 다 완료 시 알림)
         (async () => {
+          let photoChanged = false, aptChanged = false;
           try {
             __syncProgressShow("☁️ 포토메모 동기화 중...");
-            await __driveFullSyncPhotoMemos();
+            photoChanged = await __driveFullSyncPhotoMemos();
           } catch (e) { console.warn("포토메모 동기화 실패:", e); }
           try {
             __syncProgressShow("☁️ 단지메모 동기화 중...");
-            await __driveFullSyncApartmentNotes();
+            aptChanged = await __driveFullSyncApartmentNotes();
           } catch (e) { console.warn("단지메모 동기화 실패:", e); }
+          // 변경사항 있으면 맵 갱신
+          if (photoChanged) {
+            try { if (window.__photoMemoVisible) updatePhotoMemoMarkersByBounds(); } catch (_) {}
+          }
+          if (aptChanged) {
+            try { refreshApartmentMarkers(); } catch (_) {}
+          }
           __syncProgressShow("✅ Drive 동기화 완료");
           setTimeout(() => __syncProgressHide(), 2500);
         })();
@@ -4895,6 +4923,87 @@
       }
 
       // 단지 메모 Drive 백그라운드 동기화 (silent — 이미지는 aptImages/ 개별 파일로 분리)
+      // 단지메모 단건 Drive 동기화 (저장/삭제 즉시 호출용)
+      // note=null 이면 Drive에서 해당 id 제거, note가 있으면 추가/갱신
+      async function __driveSyncOneApartmentNote(id, note) {
+        if (!window.__gdriveReady || !window.__gdriveIndexFileId) return;
+        try {
+          const idStr = String(id);
+          const driveData = await __driveReadIndex();
+          const notes = Array.isArray(driveData.apartmentNotes) ? driveData.apartmentNotes : [];
+
+          if (!note) {
+            // ── 삭제: Drive index에서 제거 + 이미지 파일 삭제
+            const existing = notes.find((n) => String(n.id) === idStr);
+            if (!existing) return; // Drive에도 없으면 불필요
+            for (const fid of (existing.driveImageFileIds || [])) {
+              try { await gapi.client.drive.files.delete({ fileId: fid }); } catch (_) {}
+            }
+            driveData.apartmentNotes = notes.filter((n) => String(n.id) !== idStr);
+          } else {
+            // ── 저장/수정: 이미지 업로드 후 index 갱신
+            const images = Array.isArray(note.images) ? note.images : [];
+            const existing = notes.find((n) => String(n.id) === idStr);
+            const prevFileIds = new Set(existing?.driveImageFileIds || []);
+            const currentFileIds = new Set(images.map(__getImgFileId).filter(Boolean));
+
+            // Drive에는 있지만 로컬에서 삭제된 이미지 파일 제거
+            for (const fid of prevFileIds) {
+              if (!currentFileIds.has(fid)) {
+                try { await gapi.client.drive.files.delete({ fileId: fid }); } catch (_) {}
+              }
+            }
+
+            // fileId 없는 이미지 → Drive 신규 업로드
+            const updatedImages = [];
+            let changed = false;
+            for (const item of images) {
+              const imgData = __getImgData(item);
+              const fileId = __getImgFileId(item);
+              if (!fileId && imgData && imgData.startsWith("data:")) {
+                try {
+                  const blob = __dataUrlToBlob(imgData);
+                  if (blob && window.__gdriveAptImagesFolderId) {
+                    const created = await __driveUploadMultipart(
+                      { name: `apt_${idStr}_${Date.now()}.jpg`, parents: [window.__gdriveAptImagesFolderId] },
+                      blob, "image/jpeg"
+                    );
+                    updatedImages.push({ data: imgData, fileId: created.id });
+                    changed = true;
+                  } else { updatedImages.push(item); }
+                } catch (_) { updatedImages.push(item); }
+              } else {
+                updatedImages.push(item);
+              }
+            }
+
+            // 새 fileId가 생겼으면 IndexedDB도 업데이트
+            if (changed) {
+              const db2 = await __openHongbuMemoDb();
+              await new Promise((res, rej) => {
+                const tx = db2.transaction(["apartmentNotes"], "readwrite");
+                tx.oncomplete = () => { db2.close(); res(); };
+                tx.onerror = (e) => { db2.close(); rej(e.target.error); };
+                tx.objectStore("apartmentNotes").put({ ...note, images: updatedImages });
+              });
+            }
+
+            const driveNote = {
+              id: note.id, memo: note.memo || "",
+              driveImageFileIds: updatedImages.map(__getImgFileId).filter(Boolean),
+            };
+            const idx = notes.findIndex((n) => String(n.id) === idStr);
+            if (idx >= 0) notes[idx] = driveNote; else notes.push(driveNote);
+            driveData.apartmentNotes = notes;
+          }
+
+          await __driveWriteIndex(driveData);
+          console.log(`단지메모 Drive 단건 동기화: ${id} (${note ? "저장" : "삭제"})`);
+        } catch (e) {
+          console.warn("단지메모 Drive 단건 동기화 실패 (무시):", e);
+        }
+      }
+
       async function __driveSyncApartmentNotesSilent() {
         if (!window.__gdriveReady || !window.__gdriveIndexFileId) return;
         try {
@@ -4985,7 +5094,8 @@
       // - Drive→로컬: Drive에만 있는 항목 IndexedDB에 추가
       // - 로컬→Drive: 로컬에만 있는 항목 이미지 업로드 후 index.json 갱신
       async function __driveFullSyncPhotoMemos() {
-        if (!window.__gdriveReady || !window.__gdriveIndexFileId) return;
+        if (!window.__gdriveReady || !window.__gdriveIndexFileId) return false;
+        let changed = false;
         try {
           // ① index.json 단 1회 읽기
           const data = await __driveReadIndex();
@@ -5016,7 +5126,7 @@
             });
             for (const m of toAddLocal) window.__photoMemoIndex.push({ ...m, imageDataUrl: "" });
             console.log(`Drive→로컬 포토메모 병합: ${toAddLocal.length}개 추가`);
-            try { if (window.__photoMemoVisible) updatePhotoMemoMarkersByBounds(); } catch (_) {}
+            changed = true;
           }
 
           // ③ 로컬→Drive: 로컬에만 있는 항목
@@ -5074,10 +5184,12 @@
             // ④ index.json 단 1회 쓰기
             await __driveWriteIndex(data);
             console.log(`로컬→Drive 포토메모 업로드: ${uploaded}개`);
+            changed = true;
           }
         } catch (e) {
           console.warn("포토메모 양방향 동기화 실패 (무시):", e);
         }
+        return changed;
       }
 
       // 하위 호환 별칭 (기존 개별 호출 코드가 있는 경우)
@@ -5088,7 +5200,8 @@
       // - Drive→로컬: Drive에 있는 모든 메모를 로컬에 병합
       // - 로컬→Drive: 로컬에만 있는 메모(Drive에 없는 id)만 Drive에 추가
       async function __driveFullSyncApartmentNotes() {
-        if (!window.__gdriveReady || !window.__gdriveIndexFileId) return;
+        if (!window.__gdriveReady || !window.__gdriveIndexFileId) return false;
+        let changed = false;
         try {
           // ① index.json 단 1회 읽기
           const data = await __driveReadIndex();
@@ -5137,6 +5250,7 @@
             });
             window.__memoPresenceCache?.clear?.();
             console.log(`Drive→로컬 단지메모 병합: ${driveNotes.length}개`);
+            changed = true;
           }
 
           // ③ 로컬→Drive: 로컬에만 있는 메모(Drive에 없는 id) 수집
@@ -5193,9 +5307,11 @@
           data.apartmentNotes = [...driveNotes, ...newDriveNotes];
           await __driveWriteIndex(data);
           console.log(`로컬→Drive 단지메모 업로드: ${newDriveNotes.length}개`);
+          changed = true;
         } catch (e) {
           console.warn("단지메모 양방향 동기화 실패 (무시):", e);
         }
+        return changed;
       }
 
       // 하위 호환 별칭
@@ -10395,6 +10511,8 @@ min-height: 24px;
                       try {
                         window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false);
                       } catch (e) {}
+                      // Drive 즉시 단건 삭제 동기화 (백그라운드 — 실패 시 무시)
+                      __driveSyncOneApartmentNote(id, null);
                       // UI 초기화
                       aptMemoImageList[id] = [];
                       loadNote(id);
@@ -10431,8 +10549,8 @@ min-height: 24px;
                   try {
                     window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), true);
                   } catch (e) {}
-                  // Drive 자동 동기화 (백그라운드 — 실패 시 무시)
-                  __driveSyncApartmentNotesSilent();
+                  // Drive 즉시 단건 동기화 (백그라운드 — 실패 시 무시)
+                  __driveSyncOneApartmentNote(id, toSave);
                   loadNote(id);
 
                   // 마커 재생성(메모 아이콘 반영)
