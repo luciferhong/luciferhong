@@ -1202,7 +1202,7 @@
           기존 다른 드라이브 파일은 볼 수 없습니다.
         </p>
         <button id="gdriveSkipBtn" style="margin-top:14px; background:none; border:none;
-                color:#475569; font-size:12px; cursor:pointer; text-decoration:underline;">
+                color:#94a3b8; font-size:15px; font-weight:700; cursor:pointer; text-decoration:underline;">
           로그인 없이 로컬에만 저장
         </button>
       </div>
@@ -4805,11 +4805,23 @@
             inner.innerHTML = `
               <div style="font-size:44px; margin-bottom:10px;">☁️</div>
               <h2 style="margin:0 0 8px; font-size:17px; color:#f1f5f9;">Drive 재연결</h2>
-              <p style="margin:0 0 6px; color:#94a3b8; font-size:13px; line-height:1.6;">
-                화면을 탭하면 자동으로 연결됩니다.
+              <p style="margin:0 0 16px; color:#94a3b8; font-size:13px; line-height:1.6;">
+                화면을 탭하면 자동으로 연결됩니다.<br>
+                <span style="color:#64748b; font-size:11px;">(동의 화면 없이 바로 연결)</span>
               </p>
-              <p style="color:#64748b; font-size:11px;">(동의 화면 없이 바로 연결)</p>
+              <button id="gdriveReconnectSkipBtn" style="background:none; border:none;
+                      color:#94a3b8; font-size:15px; font-weight:700; cursor:pointer; text-decoration:underline;">
+                연결 안 함 (로컬에만 저장)
+              </button>
             `;
+            // 취소 버튼은 오버레이 클릭 이벤트 전파 차단
+            const skipBtn2 = inner.querySelector("#gdriveReconnectSkipBtn");
+            if (skipBtn2) {
+              skipBtn2.addEventListener("click", (e) => {
+                e.stopPropagation();
+                overlay.style.display = "none";
+              });
+            }
           }
           overlay.style.cursor = "pointer";
           overlay.addEventListener("click", () => __gdriveSignIn(), { once: true });
@@ -4975,14 +4987,14 @@
               }
             }
 
-            // 새 fileId가 생겼으면 IndexedDB도 업데이트
-            if (changed) {
+            // 새 fileId가 생겼거나 _driveIndexed 플래그 미설정이면 IndexedDB 업데이트
+            if (changed || !note._driveIndexed) {
               const db2 = await __openHongbuMemoDb();
               await new Promise((res, rej) => {
                 const tx = db2.transaction(["apartmentNotes"], "readwrite");
                 tx.oncomplete = () => { db2.close(); res(); };
                 tx.onerror = (e) => { db2.close(); rej(e.target.error); };
-                tx.objectStore("apartmentNotes").put({ ...note, images: updatedImages });
+                tx.objectStore("apartmentNotes").put({ ...note, images: changed ? updatedImages : images, _driveIndexed: true });
               });
             }
 
@@ -5222,8 +5234,12 @@
             req.onerror = () => resolve(map);
           });
 
-          // ② Drive→로컬: Drive의 모든 메모를 로컬에 반영 (이미지 데이터 보존)
-          if (driveNotes.length > 0) {
+          // ② Drive→로컬: Drive의 모든 메모를 로컬에 반영 (_driveIndexed: true 태그)
+          //    + Drive에 없는데 _driveIndexed인 로컬 메모는 삭제 (다른 기기에서 삭제된 것)
+          {
+            const driveDeletedLocally = [...localMap.values()].filter(
+              (n) => !driveMap.has(String(n.id)) && n._driveIndexed
+            );
             await new Promise((resolve, reject) => {
               const tx = db.transaction(["apartmentNotes"], "readwrite");
               tx.oncomplete = () => { resolve(); };
@@ -5242,28 +5258,36 @@
                   mergedImages = [];
                 }
                 try {
-                  store.put({ id: driveNote.id, memo: driveNote.memo || (local?.memo || ""), images: mergedImages });
+                  store.put({ id: driveNote.id, memo: driveNote.memo || (local?.memo || ""), images: mergedImages, _driveIndexed: true });
                 } catch (_) {}
+              }
+              // Drive에서 삭제된 메모를 로컬에서도 삭제
+              for (const n of driveDeletedLocally) {
+                try { store.delete(n.id); } catch (_) {}
               }
             });
             window.__memoPresenceCache?.clear?.();
-            console.log(`Drive→로컬 단지메모 병합: ${driveNotes.length}개`);
-            changed = true;
+            if (driveNotes.length > 0 || driveDeletedLocally.length > 0) {
+              console.log(`Drive→로컬 단지메모 병합: ${driveNotes.length}개, 삭제: ${driveDeletedLocally.length}개`);
+              changed = true;
+            }
           }
 
-          // ③ 로컬→Drive: 로컬에만 있는 메모(Drive에 없는 id) 수집
-          const localOnlyNotes = [...localMap.values()].filter((n) => !driveMap.has(String(n.id)));
+          // ③ 로컬→Drive: 로컬에만 있는 메모 중 _driveIndexed가 아닌 것만 (진짜 새 메모)
+          //    _driveIndexed인 것은 Drive에서 삭제된 것이므로 재업로드 금지
+          const localOnlyNotes = [...localMap.values()].filter((n) => !driveMap.has(String(n.id)) && !n._driveIndexed);
           if (localOnlyNotes.length === 0) {
             db.close();
-            return; // 업로드할 것 없으면 index.json write 생략
+            return changed; // 업로드할 것 없으면 index.json write 생략
           }
 
           // 로컬 전용 메모 이미지 업로드 (fileId 없는 것만)
           const newDriveNotes = [];
+          const notesNeedingFlag = []; // 이미지 업로드 없이 _driveIndexed만 필요한 메모
           for (const note of localOnlyNotes) {
             const images = Array.isArray(note.images) ? note.images : [];
             const updatedImages = [];
-            let changed = false;
+            let imgChanged = false;
             for (const item of images) {
               const imgData = __getImgData(item);
               const fileId = __getImgFileId(item);
@@ -5276,7 +5300,7 @@
                       blob, "image/jpeg"
                     );
                     updatedImages.push({ data: imgData, fileId: created.id });
-                    changed = true;
+                    imgChanged = true;
                   } else {
                     updatedImages.push(item);
                   }
@@ -5285,14 +5309,18 @@
                 updatedImages.push(item);
               }
             }
-            if (changed) {
+            if (imgChanged) {
+              // 새 fileId + _driveIndexed: true 로컬 반영
               const db2 = await __openHongbuMemoDb();
               await new Promise((res, rej) => {
                 const tx = db2.transaction(["apartmentNotes"], "readwrite");
                 tx.oncomplete = () => { db2.close(); res(); };
                 tx.onerror = (e) => { db2.close(); rej(e.target.error); };
-                tx.objectStore("apartmentNotes").put({ ...note, images: updatedImages });
+                tx.objectStore("apartmentNotes").put({ ...note, images: updatedImages, _driveIndexed: true });
               });
+            } else {
+              // 이미지 변경 없는 메모는 나중에 일괄 플래그 설정
+              notesNeedingFlag.push(note);
             }
             newDriveNotes.push({
               id: note.id, memo: note.memo || "",
@@ -5305,6 +5333,20 @@
           data.apartmentNotes = [...driveNotes, ...newDriveNotes];
           await __driveWriteIndex(data);
           console.log(`로컬→Drive 단지메모 업로드: ${newDriveNotes.length}개`);
+
+          // ⑤ 이미지 업로드 없었던 메모에 _driveIndexed: true 일괄 마킹
+          if (notesNeedingFlag.length > 0) {
+            const db3 = await __openHongbuMemoDb();
+            await new Promise((res, rej) => {
+              const tx = db3.transaction(["apartmentNotes"], "readwrite");
+              tx.oncomplete = () => { db3.close(); res(); };
+              tx.onerror = (e) => { db3.close(); rej(e.target.error); };
+              const store = tx.objectStore("apartmentNotes");
+              for (const note of notesNeedingFlag) {
+                try { store.put({ ...note, _driveIndexed: true }); } catch (_) {}
+              }
+            });
+          }
           changed = true;
         } catch (e) {
           console.warn("단지메모 양방향 동기화 실패 (무시):", e);
