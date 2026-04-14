@@ -4509,8 +4509,17 @@
             client_id: __GOOGLE_CLIENT_ID,
             scope: __GOOGLE_SCOPE,
             callback: async (resp) => {
+              const overlay = document.getElementById("gdriveAuthOverlay");
               if (resp.error) {
+                // 조용한 로그인 실패(세션 만료 등) → 오버레이 표시
+                const silentErrors = ["interaction_required", "login_required", "account_selection_required", "consent_required"];
+                if (silentErrors.includes(resp.error)) {
+                  console.log("조용한 로그인 실패:", resp.error, "→ 오버레이 표시");
+                  if (overlay) overlay.style.display = "flex";
+                  return;
+                }
                 console.error("OAuth error:", resp);
+                if (overlay) overlay.style.display = "flex";
                 const errEl = document.getElementById("gdriveAuthError");
                 if (errEl) {
                   errEl.textContent = "로그인 실패: " + (resp.error_description || resp.error);
@@ -4518,6 +4527,8 @@
                 }
                 return;
               }
+              // 로그인 성공 → 오버레이 닫기
+              if (overlay) overlay.style.display = "none";
               window.__gdriveAccessToken = resp.access_token;
               gapi.client.setToken({ access_token: resp.access_token });
               localStorage.setItem("__hongbuDriveAutoLogin", "1"); // 자동 로그인 플래그 저장
@@ -4768,35 +4779,22 @@
 
         if (btn) btn.disabled = true; // 초기화 전까지 비활성화
 
-        // 이전에 로그인한 적 있으면 오버레이를 "탭하여 재연결" 모드로 변경
         const isReturningUser = localStorage.getItem("__hongbuDriveAutoLogin") === "1";
-        if (isReturningUser && overlay) {
-          // 오버레이 전체를 클릭 가능하게 → 어디를 눌러도 로그인 트리거
-          overlay.style.cursor = "pointer";
-          overlay.title = "탭하여 Drive 재연결";
-          // 안내 문구 및 버튼 교체
-          const inner = overlay.querySelector("div");
-          if (inner) {
-            inner.innerHTML = `
-              <div style="font-size:48px; margin-bottom:12px;">☁️</div>
-              <h2 style="margin:0 0 8px; font-size:18px; color:#f1f5f9;">Drive 재연결</h2>
-              <p style="margin:0 0 20px; color:#94a3b8; font-size:13px; line-height:1.6;">
-                화면을 탭하면 Google Drive에<br>자동으로 연결됩니다.
-              </p>
-              <p style="color:#64748b; font-size:11px;">계정 선택 화면이 잠깐 뜰 수 있습니다.</p>
-            `;
-          }
-          overlay.addEventListener("click", () => __gdriveSignIn(), { once: true });
-        }
+
+        // 재방문 시: 오버레이 숨기고 조용히 토큰 재발급 시도
+        if (isReturningUser && overlay) overlay.style.display = "none";
 
         __gdriveInit()
           .catch((e) => console.error("gdrive init 실패:", e))
           .finally(() => {
             if (btn) {
-              btn.disabled = false; // 초기화 완료 후 활성화
-              if (!isReturningUser) {
-                btn.addEventListener("click", () => __gdriveSignIn());
-              }
+              btn.disabled = false;
+              btn.addEventListener("click", () => __gdriveSignIn());
+            }
+            if (isReturningUser && window.__gdriveTokenClient) {
+              // prompt: "none" → Google 세션이 살아있으면 팝업 없이 자동 로그인
+              // 실패 시 callback에서 interaction_required 감지 → 오버레이 다시 표시
+              window.__gdriveTokenClient.requestAccessToken({ prompt: "none" });
             }
           });
       });
