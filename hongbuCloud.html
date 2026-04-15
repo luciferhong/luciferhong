@@ -1696,14 +1696,14 @@
           <span id="driveUploadPanel" style="display:none;align-items:center;gap:4px;">
             <select id="driveSyncUploadSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
             <select id="driveSyncUploadSigungu" style="height:26px;font-size:12px;" disabled><option value="">시군구 선택</option></select>
-            <button onclick="__sggUpload(document.getElementById('driveSyncUploadSigungu').value)" style="font-size:12px;padding:3px 8px;">실행</button>
+            <button onclick="__sggUploadWithConfirm(document.getElementById('driveSyncUploadSigungu').value)" style="font-size:12px;padding:3px 8px;">실행</button>
             <button onclick="document.getElementById('driveUploadPanel').style.display='none'" style="font-size:11px;padding:3px 5px;">✕</button>
           </span>
           <!-- 다운로드 패널: Drive 데이터 기반 -->
           <span id="driveDownloadPanel" style="display:none;align-items:center;gap:4px;">
             <select id="driveSyncDownloadSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
             <select id="driveSyncDownloadSigungu" style="height:26px;font-size:12px;" disabled><option value="">시군구 선택</option></select>
-            <button onclick="__sggDownload(document.getElementById('driveSyncDownloadSigungu').value)" style="font-size:12px;padding:3px 8px;">실행</button>
+            <button onclick="__sggDownloadWithConfirm(document.getElementById('driveSyncDownloadSigungu').value)" style="font-size:12px;padding:3px 8px;">실행</button>
             <button onclick="document.getElementById('driveDownloadPanel').style.display='none'" style="font-size:11px;padding:3px 5px;">✕</button>
           </span>
         </span>
@@ -5855,6 +5855,104 @@
         if (type === 'notes' && !data.notes) data.notes = {};
         if (type === 'photos' && !data.photos) data.photos = {};
         return { fileId, data };
+      }
+
+      // ── Drive storageQuota 조회 ──
+      async function __driveGetStorageQuota() {
+        const resp = await gapi.client.drive.about.get({ fields: 'storageQuota' });
+        const q = resp.result.storageQuota || {};
+        return {
+          limit: Number(q.limit || 0),
+          usage: Number(q.usage || 0),
+          usageInDrive: Number(q.usageInDrive || 0),
+        };
+      }
+
+      // ── 로컬(브라우저/IndexedDB) 용량 조회 ──
+      async function __getLocalStorageEstimate() {
+        if (!navigator.storage?.estimate) return null;
+        const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+        return { usage, quota, free: Math.max(0, quota - usage) };
+      }
+
+      // ── 바이트 단위 포매터 ──
+      function __fmtBytes(n) {
+        if (!n || n <= 0) return '0 B';
+        const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.min(u.length - 1, Math.floor(Math.log10(n) / 3));
+        return (n / Math.pow(1000, i)).toFixed(i ? 2 : 0) + ' ' + u[i];
+      }
+
+      // ── 중앙 컨펌 모달 (Promise<boolean>) ──
+      function __showConfirmModal(title, bodyHtml, { okLabel = '확인', cancelLabel = '취소' } = {}) {
+        return new Promise((resolve) => {
+          const bg = document.createElement('div');
+          bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+          const box = document.createElement('div');
+          box.style.cssText = 'background:#fff;border-radius:10px;padding:20px 24px;min-width:280px;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-family:inherit;';
+          box.innerHTML = `
+            <div style="font-size:16px;font-weight:600;margin-bottom:12px;">${title}</div>
+            <div style="font-size:13px;line-height:1.6;margin-bottom:16px;">${bodyHtml}</div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+              <button id="__cfm_cancel" style="padding:6px 14px;font-size:13px;">${cancelLabel}</button>
+              <button id="__cfm_ok" style="padding:6px 14px;font-size:13px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;">${okLabel}</button>
+            </div>`;
+          bg.appendChild(box);
+          document.body.appendChild(bg);
+          const done = (v) => { bg.remove(); resolve(v); };
+          box.querySelector('#__cfm_ok').onclick = () => done(true);
+          box.querySelector('#__cfm_cancel').onclick = () => done(false);
+          bg.onclick = (e) => { if (e.target === bg) done(false); };
+        });
+      }
+
+      // ── 업로드 컨펌 래퍼: Drive 잔여 용량 표시 후 실행 ──
+      async function __sggUploadWithConfirm(sgg5) {
+        if (!window.__gdriveReady) { __sggUpload(sgg5); return; }
+        if (!sgg5) { alert('시군구를 선택하세요'); return; }
+
+        let quotaHtml = '<span style="color:#999;">Drive 용량 조회 실패</span>';
+        try {
+          const q = await __driveGetStorageQuota();
+          if (q.limit > 0) {
+            const free = Math.max(0, q.limit - q.usage);
+            quotaHtml = `사용 <b>${__fmtBytes(q.usage)}</b> / ${__fmtBytes(q.limit)}<br>잔여 <b style="color:#1976d2;">${__fmtBytes(free)}</b>`;
+          } else {
+            quotaHtml = `사용 <b>${__fmtBytes(q.usage)}</b> (무제한 계정)`;
+          }
+        } catch (e) { console.warn('[Drive quota 조회 실패]', e); }
+
+        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        const ok = await __showConfirmModal(
+          `☁️ ${sName} 업로드`,
+          `<div style="margin-bottom:10px;">구글 드라이브 저장 공간</div>${quotaHtml}`,
+          { okLabel: '업로드' }
+        );
+        if (ok) __sggUpload(sgg5);
+      }
+
+      // ── 다운로드 컨펌 래퍼: 로컬 잔여 용량 표시 후 실행 ──
+      async function __sggDownloadWithConfirm(sgg5) {
+        if (!window.__gdriveReady) { __sggDownload(sgg5); return; }
+        if (!sgg5) { alert('시군구를 선택하세요'); return; }
+
+        let localHtml = '<span style="color:#999;">로컬 용량 조회 실패 (브라우저 미지원)</span>';
+        try {
+          const est = await __getLocalStorageEstimate();
+          if (est) {
+            localHtml = est.quota > 0
+              ? `사용 <b>${__fmtBytes(est.usage)}</b> / ${__fmtBytes(est.quota)}<br>잔여 <b style="color:#1976d2;">${__fmtBytes(est.free)}</b>`
+              : `사용 <b>${__fmtBytes(est.usage)}</b>`;
+          }
+        } catch (e) { console.warn('[로컬 용량 조회 실패]', e); }
+
+        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        const ok = await __showConfirmModal(
+          `⬇️ ${sName} 다운로드`,
+          `<div style="margin-bottom:10px;">내 기기 저장 공간</div>${localHtml}`,
+          { okLabel: '다운로드' }
+        );
+        if (ok) __sggDownload(sgg5);
       }
 
       // ── Drive 이미지 파일 다운로드 (Blob → dataUrl) ──
