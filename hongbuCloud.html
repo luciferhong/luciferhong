@@ -6504,6 +6504,10 @@
           const dlNoteImgs = new Map();
           const dlPhotoImgs = new Map();
           let imgDownOk = 0, imgDownFail = 0;
+          // 404 = 파일 삭제됨 → orphan으로 마크하여 Drive JSON 정리
+          const noteOrphanFids = new Set();
+          const photoOrphanFids = new Set();
+          const is404 = (e) => /(\b|^)404(\b|$)/.test(String(e?.message || e));
           await __runConcurrent([
             ...noteImgDl.map(t => async () => {
               try {
@@ -6515,6 +6519,7 @@
                 }
               } catch (e) {
                 imgDownFail++;
+                if (is404(e)) noteOrphanFids.add(t.fileId);
                 window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
               }
             }),
@@ -6528,10 +6533,49 @@
                 }
               } catch (e) {
                 imgDownFail++;
+                if (is404(e)) photoOrphanFids.add(t.fileId);
                 window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
               }
             }),
           ]);
+
+          // orphan 정리: 404가 발생한 fileId를 Drive JSON에서 제거 후 재기록
+          // → 다음 sync에서 같은 404가 반복되지 않도록 자기치유
+          if (noteOrphanFids.size > 0 || photoOrphanFids.size > 0) {
+            let prunedNotes = 0, prunedPhotos = 0;
+            for (const item of Object.values(finalNotesMap)) {
+              if (item.deletedAt || !Array.isArray(item.imageFileIds)) continue;
+              const before = item.imageFileIds.length;
+              item.imageFileIds = item.imageFileIds.filter(f => !noteOrphanFids.has(f));
+              if (item.imageFileIds.length !== before) prunedNotes++;
+            }
+            for (const item of Object.values(finalPhotosMap)) {
+              if (item.deletedAt) continue;
+              if (item.imageFileId && photoOrphanFids.has(item.imageFileId)) {
+                item.imageFileId = '';
+                prunedPhotos++;
+              }
+            }
+            if (prunedNotes + prunedPhotos > 0) {
+              try {
+                __syncProgressShow(`🧹 ${sName} Drive 정리 중... (orphan ${noteOrphanFids.size + photoOrphanFids.size}개)`);
+                const cleanIso = new Date().toISOString();
+                await Promise.all([
+                  prunedNotes > 0
+                    ? __driveWriteSggFile(notesFileId, { sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: cleanIso, notes: finalNotesMap })
+                    : Promise.resolve(),
+                  prunedPhotos > 0
+                    ? __driveWriteSggFile(photosFileId, { sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: cleanIso, photos: finalPhotosMap })
+                    : Promise.resolve(),
+                ]);
+                window.hongbuDebugLog?.('ERR', `[sync] orphan 정리 완료`,
+                  `단지 fileId ${noteOrphanFids.size}개 제거 → 노트 ${prunedNotes}개 갱신 / ` +
+                  `포토 fileId ${photoOrphanFids.size}개 제거 → 포토 ${prunedPhotos}개 갱신`);
+              } catch (e) {
+                window.hongbuDebugLog?.('ERR', '[sync] orphan 정리 실패', e?.message || e);
+              }
+            }
+          }
 
           // 썸네일 없는 포토 — 생성
           const thumbGen = new Map();
