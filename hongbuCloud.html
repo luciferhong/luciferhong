@@ -5879,6 +5879,23 @@
         if (!resp.ok) throw new Error(`sgg 파일 저장 실패: ${resp.status}`);
       }
 
+      // Drive 이미지 파일(fileId) → Blob (base64 변환 없음, 메모리 절감용)
+      async function __driveDownloadImageAsBlob(fileId) {
+        const doFetch = async () => {
+          const resp = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+            { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` } }
+          );
+          if (!resp.ok) throw new Error(`Drive 이미지 다운로드 실패: ${resp.status}`);
+          return await resp.blob();
+        };
+        try { return await doFetch(); }
+        catch (e1) {
+          await new Promise((r) => setTimeout(r, 400));
+          return await doFetch(); // 1회 재시도
+        }
+      }
+
       // Drive 이미지 파일(fileId) → dataUrl. 일시 실패 시 1회 재시도.
       async function __driveDownloadImageAsDataUrl(fileId) {
         const doFetch = async () => {
@@ -6631,21 +6648,24 @@
             }
           }));
 
-          // 포토 이미지: 스트리밍 처리 — 청크 다운로드 → 즉시 IDB 저장 → 해제
-          // (모바일 OOM 방지: 222개 base64 동시 누적 차단)
-          const PHOTO_STREAM_CHUNK = 8;
-          const PHOTO_STREAM_CONCURRENCY = 4;
+          // 포토 이미지: 스트리밍 처리 — Blob 직접 IDB 저장 (base64 변환 없음)
+          // iOS Safari 탭 리프레시 차단:
+          // - Blob을 imageDataUrl(base64) 변환하면 ~33% 추가 메모리 + FileReader 오버헤드
+          // - IDB는 Blob을 native binary로 저장 (효율적)
+          // - 표시 시점에 URL.createObjectURL(blob)로 lazy 변환 (read 경로가 imageBlob 지원함)
+          const PHOTO_STREAM_CHUNK = 4;       // iOS: 더 작게
+          const PHOTO_STREAM_CONCURRENCY = 2; // iOS: 동시 fetch 줄임
           for (let i = 0; i < photoImgDl.length; i += PHOTO_STREAM_CHUNK) {
             const slice = photoImgDl.slice(i, i + PHOTO_STREAM_CHUNK);
             const done = Math.min(i + PHOTO_STREAM_CHUNK, photoImgDl.length);
             __syncProgressShow(`🔄 ${sName} 포토 다운로드 ${done}/${photoImgDl.length}...`);
 
-            // 1) 다운로드
-            const chunkUrls = new Map(); // id → dataUrl
+            // 1) Blob 다운로드 (dataUrl 변환 없음)
+            const chunkBlobs = new Map(); // id → Blob
             await __runConcurrent(slice.map(t => async () => {
               try {
-                const url = await __driveDownloadImageAsDataUrl(t.fileId);
-                if (url) { chunkUrls.set(t.id, url); imgDownOk++; }
+                const blob = await __driveDownloadImageAsBlob(t.fileId);
+                if (blob && blob.size > 0) { chunkBlobs.set(t.id, blob); imgDownOk++; }
                 else {
                   imgDownFail++;
                   window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
@@ -6657,18 +6677,17 @@
               }
             }), PHOTO_STREAM_CONCURRENCY);
 
-            // 2) 썸네일 생성 (필요한 것만)
+            // 2) 썸네일 생성 — Drive 메타에 thumbDataUrl이 없을 때만 (드문 케이스)
+            //    A기기 업로드 시 thumbDataUrl이 메타에 함께 저장되므로, 보통은 스킵됨
             const chunkThumbs = new Map();
             const chunkThumbTasks = [];
-            for (const [id, dataUrl] of chunkUrls) {
+            for (const [id, blob] of chunkBlobs) {
               const w = photoResult.toLocalMap[id];
               const D = drivePhotos[id];
-              const needThumb = (w && !w.thumbDataUrl) || (!w && D && !D.thumbDataUrl);
-              if (needThumb) {
+              const winnerThumb = (w && w.thumbDataUrl) || (D && D.thumbDataUrl);
+              if (!winnerThumb) {
                 chunkThumbTasks.push(async () => {
                   try {
-                    const blob = __dataUrlToBlob(dataUrl);
-                    if (!blob) return;
                     const thumbBlob = await __fileToThumbBlob(blob, 96, 0.82);
                     const thumbUrl = await __blobToDataUrl(thumbBlob);
                     if (thumbUrl) chunkThumbs.set(id, thumbUrl);
@@ -6676,20 +6695,20 @@
                 });
               }
             }
-            if (chunkThumbTasks.length) await __runConcurrent(chunkThumbTasks, 2);
+            if (chunkThumbTasks.length) await __runConcurrent(chunkThumbTasks, 1); // iOS: 썸 1개씩
 
-            // 3) chunk 단위 IDB write — 메모리 점유 최소화
+            // 3) chunk 단위 IDB write — Blob 직접 저장 (base64 안 만듦)
             const chunkPuts = [];
-            for (const [id, dataUrl] of chunkUrls) {
+            for (const [id, blob] of chunkBlobs) {
               streamedPhotoIds.add(id);
               const w = photoResult.toLocalMap[id];
               const D = drivePhotos[id];
               const L = localPhotos[id] || {};
 
-              if (w && w.deletedAt) continue; // tombstone은 별도 루프에서 처리
+              if (w && w.deletedAt) continue;
 
               const winner = w || D;
-              if (!winner) continue; // 이상 케이스 방어
+              if (!winner) continue;
 
               chunkPuts.push({
                 id,
@@ -6699,7 +6718,8 @@
                 note: winner.note || L.note || '',
                 thumbDataUrl: winner.thumbDataUrl || L.thumbDataUrl || chunkThumbs.get(id) || '',
                 imageFileId: winner.imageFileId || '',
-                imageDataUrl: dataUrl,
+                imageDataUrl: '',  // base64 미생성 — read 경로가 imageBlob fallback 지원
+                imageBlob: blob,   // Blob 직접 저장
                 updatedAt: winner.updatedAt || L.updatedAt || Date.now(),
                 deletedAt: null,
               });
@@ -6716,9 +6736,9 @@
             }
 
             // 명시적 해제 + GC 기회
-            chunkUrls.clear();
+            chunkBlobs.clear();
             chunkThumbs.clear();
-            await new Promise(r => setTimeout(r, 0));
+            await new Promise(r => setTimeout(r, 16)); // iOS: 16ms (1프레임) 양보
           }
 
           // orphan 정리: 404가 발생한 fileId를 Drive JSON에서 제거 후 재기록
