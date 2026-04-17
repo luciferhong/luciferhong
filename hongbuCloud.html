@@ -5880,11 +5880,15 @@
       }
 
       // Drive 이미지 파일(fileId) → Blob (base64 변환 없음, 메모리 절감용)
+      // cache:'no-store' — iOS Safari 내부 HTTP 캐시 누적 차단
       async function __driveDownloadImageAsBlob(fileId) {
         const doFetch = async () => {
           const resp = await fetch(
             `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-            { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` } }
+            {
+              headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` },
+              cache: 'no-store',
+            }
           );
           if (!resp.ok) throw new Error(`Drive 이미지 다운로드 실패: ${resp.status}`);
           return await resp.blob();
@@ -5894,6 +5898,15 @@
           await new Promise((r) => setTimeout(r, 400));
           return await doFetch(); // 1회 재시도
         }
+      }
+
+      // dataUrl → Blob (복원 패턴 dataUrlToBlob와 동일 — fetch native 디코딩)
+      async function __syncDataUrlToBlob(dataUrl) {
+        try {
+          if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
+          const res = await fetch(dataUrl);
+          return await res.blob();
+        } catch (_) { return null; }
       }
 
       // Drive 이미지 파일(fileId) → dataUrl. 일시 실패 시 1회 재시도.
@@ -6648,97 +6661,106 @@
             }
           }));
 
-          // 포토 이미지: 스트리밍 처리 — Blob 직접 IDB 저장 (base64 변환 없음)
-          // iOS Safari 탭 리프레시 차단:
-          // - Blob을 imageDataUrl(base64) 변환하면 ~33% 추가 메모리 + FileReader 오버헤드
-          // - IDB는 Blob을 native binary로 저장 (효율적)
-          // - 표시 시점에 URL.createObjectURL(blob)로 lazy 변환 (read 경로가 imageBlob 지원함)
-          const PHOTO_STREAM_CHUNK = 4;       // iOS: 더 작게
-          const PHOTO_STREAM_CONCURRENCY = 2; // iOS: 동시 fetch 줄임
-          for (let i = 0; i < photoImgDl.length; i += PHOTO_STREAM_CHUNK) {
-            const slice = photoImgDl.slice(i, i + PHOTO_STREAM_CHUNK);
-            const done = Math.min(i + PHOTO_STREAM_CHUNK, photoImgDl.length);
-            __syncProgressShow(`🔄 ${sName} 포토 다운로드 ${done}/${photoImgDl.length}...`);
+          // 포토 이미지: 로컬 복원(saveOnePhoto) 패턴 정확히 모방
+          // 1) 1장씩 fetch → Blob
+          // 2) Drive thumbDataUrl을 Blob으로 변환하여 thumbBlob 저장 (string 보유 X)
+          // 3) record는 lean (imageDataUrl/thumbDataUrl 필드 없음)
+          // 4) **fresh DB open + close per record** — long-lived connection 누적 차단
+          // 5) 명시적 nullify + 30ms GC 양보
+          // 6) progress UI는 5회마다만 (DOM reflow 부담 절감)
+          //
+          // photoMemo 읽기 경로([hongbuCloud.html:9877-9889]) 가 thumbBlob/imageBlob fallback 지원
+          for (let i = 0; i < photoImgDl.length; i++) {
+            const t = photoImgDl[i];
+            if (i % 5 === 0 || i === photoImgDl.length - 1) {
+              __syncProgressShow(`🔄 ${sName} 포토 ${i + 1}/${photoImgDl.length}...`);
+            }
+            // 진행 단계 디버그 로그 (20회마다 — 어디서 죽는지 추적)
+            if (i % 20 === 0 && i > 0) {
+              window.hongbuDebugLog?.('ERR', '[sync] 포토 진행', `${i}/${photoImgDl.length} (ok=${imgDownOk} fail=${imgDownFail})`);
+            }
 
-            // 1) Blob 다운로드 (dataUrl 변환 없음)
-            const chunkBlobs = new Map(); // id → Blob
-            await __runConcurrent(slice.map(t => async () => {
-              try {
-                const blob = await __driveDownloadImageAsBlob(t.fileId);
-                if (blob && blob.size > 0) { chunkBlobs.set(t.id, blob); imgDownOk++; }
-                else {
-                  imgDownFail++;
-                  window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
-                }
-              } catch (e) {
+            let blob = null;
+            try {
+              blob = await __driveDownloadImageAsBlob(t.fileId);
+              if (!blob || blob.size === 0) {
+                blob = null;
                 imgDownFail++;
-                if (is404(e)) photoOrphanFids.add(t.fileId);
-                window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
+                window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
               }
-            }), PHOTO_STREAM_CONCURRENCY);
-
-            // 2) 썸네일 생성 — Drive 메타에 thumbDataUrl이 없을 때만 (드문 케이스)
-            //    A기기 업로드 시 thumbDataUrl이 메타에 함께 저장되므로, 보통은 스킵됨
-            const chunkThumbs = new Map();
-            const chunkThumbTasks = [];
-            for (const [id, blob] of chunkBlobs) {
-              const w = photoResult.toLocalMap[id];
-              const D = drivePhotos[id];
-              const winnerThumb = (w && w.thumbDataUrl) || (D && D.thumbDataUrl);
-              if (!winnerThumb) {
-                chunkThumbTasks.push(async () => {
-                  try {
-                    const thumbBlob = await __fileToThumbBlob(blob, 96, 0.82);
-                    const thumbUrl = await __blobToDataUrl(thumbBlob);
-                    if (thumbUrl) chunkThumbs.set(id, thumbUrl);
-                  } catch (_) {}
-                });
-              }
+            } catch (e) {
+              imgDownFail++;
+              if (is404(e)) photoOrphanFids.add(t.fileId);
+              window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
+              await new Promise(r => setTimeout(r, 30));
+              continue;
             }
-            if (chunkThumbTasks.length) await __runConcurrent(chunkThumbTasks, 1); // iOS: 썸 1개씩
-
-            // 3) chunk 단위 IDB write — Blob 직접 저장 (base64 안 만듦)
-            const chunkPuts = [];
-            for (const [id, blob] of chunkBlobs) {
-              streamedPhotoIds.add(id);
-              const w = photoResult.toLocalMap[id];
-              const D = drivePhotos[id];
-              const L = localPhotos[id] || {};
-
-              if (w && w.deletedAt) continue;
-
-              const winner = w || D;
-              if (!winner) continue;
-
-              chunkPuts.push({
-                id,
-                lat: Number(winner.lat),
-                lng: Number(winner.lng),
-                createdAt: winner.createdAt || L.createdAt || 0,
-                note: winner.note || L.note || '',
-                thumbDataUrl: winner.thumbDataUrl || L.thumbDataUrl || chunkThumbs.get(id) || '',
-                imageFileId: winner.imageFileId || '',
-                imageDataUrl: '',  // base64 미생성 — read 경로가 imageBlob fallback 지원
-                imageBlob: blob,   // Blob 직접 저장
-                updatedAt: winner.updatedAt || L.updatedAt || Date.now(),
-                deletedAt: null,
-              });
+            if (!blob) {
+              await new Promise(r => setTimeout(r, 30));
+              continue;
             }
 
-            if (chunkPuts.length > 0) {
+            const w = photoResult.toLocalMap[t.id];
+            const D = drivePhotos[t.id];
+            const L = localPhotos[t.id] || {};
+            if (w && w.deletedAt) {
+              blob = null;
+              await new Promise(r => setTimeout(r, 30));
+              continue;
+            }
+            const winner = w || D;
+            if (!winner) {
+              blob = null;
+              await new Promise(r => setTimeout(r, 30));
+              continue;
+            }
+
+            // Drive의 thumbDataUrl을 Blob으로 변환 (복원 패턴 — record엔 thumbBlob만)
+            const thumbDataUrlSrc = winner.thumbDataUrl || L.thumbDataUrl || '';
+            let thumbBlob = thumbDataUrlSrc ? await __syncDataUrlToBlob(thumbDataUrlSrc) : null;
+
+            imgDownOk++;
+            streamedPhotoIds.add(t.id);
+
+            // record 필드 lean화 — 복원 saveOnePhoto와 동일한 shape
+            // imageFileId만 sync 메타로 추가 보존 (이후 동기화에서 fileId 매칭 필요)
+            const record = {
+              id: t.id,
+              lat: Number(winner.lat),
+              lng: Number(winner.lng),
+              createdAt: winner.createdAt || L.createdAt || 0,
+              note: winner.note || L.note || '',
+              imageBlob: blob,
+              thumbBlob: thumbBlob || blob, // thumbBlob 없으면 imageBlob 재사용 (복원 패턴 12863-12864)
+              imageFileId: winner.imageFileId || '',
+              updatedAt: winner.updatedAt || L.updatedAt || Date.now(),
+              deletedAt: null,
+            };
+
+            // IDB write — 매 record 마다 fresh open + close (복원 패턴 12869-12890)
+            // long-lived shared connection 의 internal buffer 누적 차단
+            try {
               await new Promise((res, rej) => {
-                const tx = db.transaction(['photoMemos'], 'readwrite');
-                tx.oncomplete = () => res();
-                tx.onerror = e => rej(e.target.error);
-                const s = tx.objectStore('photoMemos');
-                for (const r of chunkPuts) s.put(r);
+                const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                req.onsuccess = (e) => {
+                  const idbInstance = e.target.result;
+                  const tx = idbInstance.transaction(['photoMemos'], 'readwrite');
+                  tx.objectStore('photoMemos').put(record);
+                  tx.oncomplete = () => { idbInstance.close(); res(); };
+                  tx.onerror = (err) => { idbInstance.close(); rej(err?.target?.error || err); };
+                };
+                req.onerror = (err) => rej(err?.target?.error || err);
               });
+            } catch (e) {
+              window.hongbuDebugLog?.('ERR', '[sync] photo IDB put 실패', `id=${t.id} ${e?.message || e}`);
             }
 
-            // 명시적 해제 + GC 기회
-            chunkBlobs.clear();
-            chunkThumbs.clear();
-            await new Promise(r => setTimeout(r, 16)); // iOS: 16ms (1프레임) 양보
+            // 즉시 참조 해제 (복원 패턴 12892-12894)
+            record.imageBlob = null;
+            record.thumbBlob = null;
+            blob = null;
+            thumbBlob = null;
+            await new Promise(r => setTimeout(r, 30));
           }
 
           // orphan 정리: 404가 발생한 fileId를 Drive JSON에서 제거 후 재기록
@@ -7004,21 +7026,25 @@
             });
           } catch (_) {}
 
-          try {
-            refreshApartmentMarkers();
-            console.log('[sync] refreshApartmentMarkers 완료, 단지메모 마커 수:', Object.keys(apartmentMarkers || {}).length);
-          } catch (e) { console.warn('[sync] refreshApartmentMarkers 실패', e); }
-          // 안전망: 클러스터/IndexedDB 비동기 정착 후 한 번 더 재구성
+          // 마커 재구성은 2초 지연 — sync 직후 메모리 정리 시간 확보 (복원 패턴 [13006])
+          // 이미지 다수 다운로드 후 즉시 마커 렌더하면 iOS Safari가 한 번 더 메모리 압박 받음
           setTimeout(() => {
-            try { refreshApartmentMarkers(); } catch (_) {}
-          }, 200);
-
-          try {
-            window.__photoMemoIndexLoaded = false;
-            window.__photoMemoIndex = [];
-            if (typeof loadPhotoMemoIndexOnce === 'function') await loadPhotoMemoIndexOnce();
-            if (window.__photoMemoVisible && typeof updatePhotoMemoMarkersByBounds === 'function') updatePhotoMemoMarkersByBounds();
-          } catch (_) {}
+            try {
+              refreshApartmentMarkers();
+              console.log('[sync] refreshApartmentMarkers 완료 (지연 2초 후), 단지메모 마커 수:', Object.keys(apartmentMarkers || {}).length);
+            } catch (e) { console.warn('[sync] refreshApartmentMarkers 실패', e); }
+            try {
+              window.__photoMemoIndexLoaded = false;
+              window.__photoMemoIndex = [];
+              if (typeof loadPhotoMemoIndexOnce === 'function') {
+                loadPhotoMemoIndexOnce().then(() => {
+                  if (window.__photoMemoVisible && typeof updatePhotoMemoMarkersByBounds === 'function') {
+                    updatePhotoMemoMarkersByBounds();
+                  }
+                }).catch(() => {});
+              }
+            } catch (_) {}
+          }, 2000);
 
           __syncProgressHide();
 
