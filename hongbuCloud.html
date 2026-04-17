@@ -5756,6 +5756,8 @@
         await initMemoIndexedDB();
         const db = await __openHongbuMemoDb();
 
+        // 메모리 절감: 캐시에는 summary({id, updatedAt, deletedAt})만 저장
+        // 전체 레코드(base64 이미지 포함)는 __sggSync에서 선택된 sgg5에 대해서만 IDB.get()으로 재조회
         await new Promise((resolve) => {
           const tx = db.transaction(['apartmentNotes'], 'readonly');
           const req = tx.objectStore('apartmentNotes').openCursor();
@@ -5766,13 +5768,16 @@
             const isTombstone = !!note?.deletedAt;
             const memoText = String(note?.memo ?? '').replace(/<[^>]*>/g, '').trim();
             const hasContent = memoText.length > 0 || (Array.isArray(note?.images) && note.images.length > 0);
-            // tombstone도 머지 대상에 포함 (Drive로 전파 필요)
             if (hasContent || isTombstone) {
               const region = __syncNoteRegion(note);
               if (region?.sgg5) {
                 if (!__syncRegionCache.notesBySgg.has(region.sgg5))
                   __syncRegionCache.notesBySgg.set(region.sgg5, []);
-                __syncRegionCache.notesBySgg.get(region.sgg5).push(note);
+                __syncRegionCache.notesBySgg.get(region.sgg5).push({
+                  id: note.id ?? note.aptId ?? note.apartmentId,
+                  updatedAt: note.updatedAt,
+                  deletedAt: note.deletedAt,
+                });
                 __addToSyncSidoCache(region);
               }
             }
@@ -5796,7 +5801,11 @@
               if (region?.sgg5) {
                 if (!__syncRegionCache.photosBySgg.has(region.sgg5))
                   __syncRegionCache.photosBySgg.set(region.sgg5, []);
-                __syncRegionCache.photosBySgg.get(region.sgg5).push(photo);
+                __syncRegionCache.photosBySgg.get(region.sgg5).push({
+                  id: photo.id,
+                  updatedAt: photo.updatedAt,
+                  deletedAt: photo.deletedAt,
+                });
                 __addToSyncSidoCache(region);
               }
             }
@@ -6039,34 +6048,50 @@
       }
 
       // 마이그레이션: updatedAt/deletedAt 없는 기존 레코드 백필 (1회만 실행)
+      // 청크 단위(30개)로 트랜잭션 분할 — 모바일 OOM 방지 (base64 이미지 포함 레코드)
       async function __ensureUpdatedAtMigration() {
         if (localStorage.getItem(__SYNC_MIG_FLAG) === '1') return;
+        const CHUNK = 30;
         try {
           await initMemoIndexedDB();
           const db = await __openHongbuMemoDb();
           for (const storeName of ['apartmentNotes', 'photoMemos']) {
             if (!db.objectStoreNames.contains(storeName)) continue;
-            await new Promise((resolve) => {
-              const tx = db.transaction([storeName], 'readwrite');
-              tx.oncomplete = () => resolve();
-              tx.onerror = () => resolve();
-              const store = tx.objectStore(storeName);
-              const req = store.openCursor();
-              req.onsuccess = (e) => {
-                const c = e.target.result;
-                if (!c) return;
-                const v = c.value;
-                let changed = false;
-                if (typeof v.updatedAt !== 'number') {
-                  v.updatedAt = Number(v.createdAt) || Date.now();
-                  changed = true;
-                }
-                if (!('deletedAt' in v)) { v.deletedAt = null; changed = true; }
-                if (changed) c.update(v);
-                c.continue();
-              };
-              req.onerror = () => resolve();
-            });
+            let lastKey = null;
+            // 청크별로 트랜잭션을 새로 열어 메모리 누적 방지
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const processed = await new Promise((resolve) => {
+                const tx = db.transaction([storeName], 'readwrite');
+                let count = 0, nextKey = lastKey;
+                tx.oncomplete = () => resolve({ count, nextKey });
+                tx.onerror = () => resolve({ count, nextKey });
+                const store = tx.objectStore(storeName);
+                const range = lastKey == null ? null : IDBKeyRange.lowerBound(lastKey, true);
+                const req = range ? store.openCursor(range) : store.openCursor();
+                req.onsuccess = (e) => {
+                  const c = e.target.result;
+                  if (!c) return;
+                  const v = c.value;
+                  let changed = false;
+                  if (typeof v.updatedAt !== 'number') {
+                    v.updatedAt = Number(v.createdAt) || Date.now();
+                    changed = true;
+                  }
+                  if (!('deletedAt' in v)) { v.deletedAt = null; changed = true; }
+                  if (changed) c.update(v);
+                  nextKey = c.key;
+                  count++;
+                  if (count >= CHUNK) return; // 청크 종료 → 트랜잭션 commit
+                  c.continue();
+                };
+                req.onerror = () => resolve({ count, nextKey });
+              });
+              lastKey = processed.nextKey;
+              if (processed.count < CHUNK) break;
+              // GC 기회 부여
+              await new Promise(r => setTimeout(r, 0));
+            }
           }
           db.close();
           localStorage.setItem(__SYNC_MIG_FLAG, '1');
@@ -6149,6 +6174,28 @@
         };
       }
 
+      // summary 배열({id,...})로부터 IDB 전체 레코드를 ID 단위로 재조회
+      async function __sggLoadFullRecords(db, storeName, summaries) {
+        const result = {};
+        if (!summaries || !summaries.length) return result;
+        await new Promise((resolve) => {
+          const tx = db.transaction([storeName], 'readonly');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+          const store = tx.objectStore(storeName);
+          for (const s of summaries) {
+            const id = String(s?.id ?? '').trim();
+            if (!id) continue;
+            const req = store.get(id);
+            req.onsuccess = (e) => {
+              const v = e.target.result;
+              if (v) result[id] = v;
+            };
+          }
+        });
+        return result;
+      }
+
       // sgg5 단위 단일 동기화 — 업로드/다운로드 통합
       async function __sggSync(sgg5) {
         if (!window.__gdriveReady) {
@@ -6180,18 +6227,11 @@
           const driveNotes = driveNotesData.notes || {};
           const drivePhotos = drivePhotosData.photos || {};
 
+          // 캐시는 summary만 보관 → 선택된 sgg5의 전체 레코드를 IDB에서 재조회
           const localNotesArr = __syncRegionCache.notesBySgg.get(sgg5) || [];
           const localPhotosArr = __syncRegionCache.photosBySgg.get(sgg5) || [];
-          const localNotes = {};
-          for (const n of localNotesArr) {
-            const id = String(n.id ?? n.aptId ?? n.apartmentId ?? '').trim();
-            if (id) localNotes[id] = n;
-          }
-          const localPhotos = {};
-          for (const p of localPhotosArr) {
-            const id = String(p.id || '').trim();
-            if (id) localPhotos[id] = p;
-          }
+          const localNotes = await __sggLoadFullRecords(db, 'apartmentNotes', localNotesArr);
+          const localPhotos = await __sggLoadFullRecords(db, 'photoMemos', localPhotosArr);
 
           const noteResult = __syncMergeById(localNotes, driveNotes, 'note');
           const photoResult = __syncMergeById(localPhotos, drivePhotos, 'photo');
