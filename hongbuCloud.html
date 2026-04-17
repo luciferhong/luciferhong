@@ -6607,31 +6607,45 @@
           const dlCount = noteImgDl.length + photoImgDl.length;
           if (dlCount) __syncProgressShow(`🔄 ${sName} 이미지 다운로드... (${dlCount}개)`);
           const dlNoteImgs = new Map();
-          const dlPhotoImgs = new Map();
+          const dlPhotoImgs = new Map(); // 스트리밍 후엔 비어있음 — 호환 위해 유지
+          const streamedPhotoIds = new Set(); // 스트리밍 처리된 photo id (아래 photoLocalPuts 루프에서 skip)
           let imgDownOk = 0, imgDownFail = 0;
           // 404 = 파일 삭제됨 → orphan으로 마크하여 Drive JSON 정리
           const noteOrphanFids = new Set();
           const photoOrphanFids = new Set();
           const is404 = (e) => String(e?.message || e).includes('404');
-          await __runConcurrent([
-            ...noteImgDl.map(t => async () => {
-              try {
-                const url = await __driveDownloadImageAsDataUrl(t.fileId);
-                if (url) { dlNoteImgs.set(`${t.id}:${t.fileId}`, url); imgDownOk++; }
-                else {
-                  imgDownFail++;
-                  window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
-                }
-              } catch (e) {
+
+          // 노트 이미지: 일괄 다운로드 (수가 적음 — 메모리 부담 작음)
+          await __runConcurrent(noteImgDl.map(t => async () => {
+            try {
+              const url = await __driveDownloadImageAsDataUrl(t.fileId);
+              if (url) { dlNoteImgs.set(`${t.id}:${t.fileId}`, url); imgDownOk++; }
+              else {
                 imgDownFail++;
-                if (is404(e)) noteOrphanFids.add(t.fileId);
-                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
               }
-            }),
-            ...photoImgDl.map(t => async () => {
+            } catch (e) {
+              imgDownFail++;
+              if (is404(e)) noteOrphanFids.add(t.fileId);
+              window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
+            }
+          }));
+
+          // 포토 이미지: 스트리밍 처리 — 청크 다운로드 → 즉시 IDB 저장 → 해제
+          // (모바일 OOM 방지: 222개 base64 동시 누적 차단)
+          const PHOTO_STREAM_CHUNK = 8;
+          const PHOTO_STREAM_CONCURRENCY = 4;
+          for (let i = 0; i < photoImgDl.length; i += PHOTO_STREAM_CHUNK) {
+            const slice = photoImgDl.slice(i, i + PHOTO_STREAM_CHUNK);
+            const done = Math.min(i + PHOTO_STREAM_CHUNK, photoImgDl.length);
+            __syncProgressShow(`🔄 ${sName} 포토 다운로드 ${done}/${photoImgDl.length}...`);
+
+            // 1) 다운로드
+            const chunkUrls = new Map(); // id → dataUrl
+            await __runConcurrent(slice.map(t => async () => {
               try {
                 const url = await __driveDownloadImageAsDataUrl(t.fileId);
-                if (url) { dlPhotoImgs.set(t.id, url); imgDownOk++; }
+                if (url) { chunkUrls.set(t.id, url); imgDownOk++; }
                 else {
                   imgDownFail++;
                   window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
@@ -6641,8 +6655,71 @@
                 if (is404(e)) photoOrphanFids.add(t.fileId);
                 window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
               }
-            }),
-          ]);
+            }), PHOTO_STREAM_CONCURRENCY);
+
+            // 2) 썸네일 생성 (필요한 것만)
+            const chunkThumbs = new Map();
+            const chunkThumbTasks = [];
+            for (const [id, dataUrl] of chunkUrls) {
+              const w = photoResult.toLocalMap[id];
+              const D = drivePhotos[id];
+              const needThumb = (w && !w.thumbDataUrl) || (!w && D && !D.thumbDataUrl);
+              if (needThumb) {
+                chunkThumbTasks.push(async () => {
+                  try {
+                    const blob = __dataUrlToBlob(dataUrl);
+                    if (!blob) return;
+                    const thumbBlob = await __fileToThumbBlob(blob, 96, 0.82);
+                    const thumbUrl = await __blobToDataUrl(thumbBlob);
+                    if (thumbUrl) chunkThumbs.set(id, thumbUrl);
+                  } catch (_) {}
+                });
+              }
+            }
+            if (chunkThumbTasks.length) await __runConcurrent(chunkThumbTasks, 2);
+
+            // 3) chunk 단위 IDB write — 메모리 점유 최소화
+            const chunkPuts = [];
+            for (const [id, dataUrl] of chunkUrls) {
+              streamedPhotoIds.add(id);
+              const w = photoResult.toLocalMap[id];
+              const D = drivePhotos[id];
+              const L = localPhotos[id] || {};
+
+              if (w && w.deletedAt) continue; // tombstone은 별도 루프에서 처리
+
+              const winner = w || D;
+              if (!winner) continue; // 이상 케이스 방어
+
+              chunkPuts.push({
+                id,
+                lat: Number(winner.lat),
+                lng: Number(winner.lng),
+                createdAt: winner.createdAt || L.createdAt || 0,
+                note: winner.note || L.note || '',
+                thumbDataUrl: winner.thumbDataUrl || L.thumbDataUrl || chunkThumbs.get(id) || '',
+                imageFileId: winner.imageFileId || '',
+                imageDataUrl: dataUrl,
+                updatedAt: winner.updatedAt || L.updatedAt || Date.now(),
+                deletedAt: null,
+              });
+            }
+
+            if (chunkPuts.length > 0) {
+              await new Promise((res, rej) => {
+                const tx = db.transaction(['photoMemos'], 'readwrite');
+                tx.oncomplete = () => res();
+                tx.onerror = e => rej(e.target.error);
+                const s = tx.objectStore('photoMemos');
+                for (const r of chunkPuts) s.put(r);
+              });
+            }
+
+            // 명시적 해제 + GC 기회
+            chunkUrls.clear();
+            chunkThumbs.clear();
+            await new Promise(r => setTimeout(r, 0));
+          }
 
           // orphan 정리: 404가 발생한 fileId를 Drive JSON에서 제거 후 재기록
           // → 다음 sync에서 같은 404가 반복되지 않도록 자기치유
@@ -6742,6 +6819,8 @@
           const photoLocalPuts = [];
           const photoLocalDels = [];
           for (const [id, winner] of Object.entries(photoResult.toLocalMap)) {
+            // 스트리밍에서 이미 IDB에 저장된 photo는 skip (이미지 다운로드 + put 완료)
+            if (streamedPhotoIds.has(id)) continue;
             if (winner.deletedAt && winner.deletedAt < gcCutoff) {
               photoLocalDels.push(id);
               continue;
