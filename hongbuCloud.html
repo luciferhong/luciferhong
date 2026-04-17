@@ -6644,21 +6644,102 @@
           const photoOrphanFids = new Set();
           const is404 = (e) => String(e?.message || e).includes('404');
 
-          // 노트 이미지: 일괄 다운로드 (수가 적음 — 메모리 부담 작음)
-          await __runConcurrent(noteImgDl.map(t => async () => {
-            try {
-              const url = await __driveDownloadImageAsDataUrl(t.fileId);
-              if (url) { dlNoteImgs.set(`${t.id}:${t.fileId}`, url); imgDownOk++; }
-              else {
-                imgDownFail++;
-                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
+          // 노트 이미지: 노트별 그룹화 → 노트당 sequential 다운로드 → fresh DB write → 해제
+          // (포토와 동일한 패턴 — 일괄 base64 누적 시 iOS OOM)
+          const streamedNoteIds = new Set();
+          const noteGroups = new Map(); // noteId → [task, ...]
+          for (const t of noteImgDl) {
+            if (!noteGroups.has(t.id)) noteGroups.set(t.id, []);
+            noteGroups.get(t.id).push(t);
+          }
+          let noteGroupIdx = 0;
+          for (const [noteId, tasks] of noteGroups) {
+            noteGroupIdx++;
+            const newImageEntries = []; // {data, fileId} 누적 — 노트당 1번만
+            for (let k = 0; k < tasks.length; k++) {
+              const t = tasks[k];
+              const failTxt = imgDownFail > 0 ? ` ⚠️${imgDownFail}` : '';
+              __syncProgressShow(`🔄 ${sName} 단지 ${noteGroupIdx}/${noteGroups.size} 이미지 ${k + 1}/${tasks.length} (✓${imgDownOk}${failTxt})`);
+              if (k > 0 && k % 20 === 0) {
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 진행',
+                  `note ${noteGroupIdx}/${noteGroups.size} img ${k}/${tasks.length} (전체 ok=${imgDownOk} fail=${imgDownFail})`);
               }
-            } catch (e) {
-              imgDownFail++;
-              if (is404(e)) noteOrphanFids.add(t.fileId);
-              window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
+              let blob = null, dataUrl = null;
+              try {
+                blob = await __driveDownloadImageAsBlob(t.fileId);
+                if (blob && blob.size > 0) {
+                  dataUrl = await __blobToDataUrl(blob);
+                }
+                blob = null;
+              } catch (e) {
+                imgDownFail++;
+                if (is404(e)) noteOrphanFids.add(t.fileId);
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패', `id=${noteId} fileId=${t.fileId} ${e?.message || e}`);
+                await new Promise(r => setTimeout(r, 30));
+                continue;
+              }
+              if (!dataUrl) {
+                imgDownFail++;
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 빈 응답', `id=${noteId} fileId=${t.fileId}`);
+                await new Promise(r => setTimeout(r, 30));
+                continue;
+              }
+              imgDownOk++;
+              newImageEntries.push({ data: dataUrl, fileId: t.fileId });
+              dataUrl = null;
+              await new Promise(r => setTimeout(r, 30));
             }
-          }));
+
+            // IDB write (per-note, fresh open + close — 복원 패턴)
+            if (newImageEntries.length > 0) {
+              streamedNoteIds.add(noteId);
+              const winner = noteResult.toLocalMap[noteId];
+              const D = driveNotes[noteId];
+              const L = localNotes[noteId];
+              const meta = winner || D;
+              if (meta && !meta.deletedAt) {
+                const existingImgs = __sanitizeImages(L?.images || []);
+                const haveFids = new Set(existingImgs.map(__getImgFileId).filter(f => {
+                  const item = existingImgs.find(x => __getImgFileId(x) === f);
+                  return f && (__getImgData(item) || '').startsWith('data:');
+                }));
+                const finalImages = existingImgs.slice();
+                for (const entry of newImageEntries) {
+                  if (haveFids.has(entry.fileId)) continue;
+                  const idx = finalImages.findIndex(it => __getImgFileId(it) === entry.fileId);
+                  if (idx >= 0) finalImages[idx] = entry;
+                  else finalImages.push(entry);
+                }
+                const record = {
+                  id: noteId,
+                  memo: meta.memo || L?.memo || '',
+                  images: finalImages,
+                  updatedAt: meta.updatedAt || L?.updatedAt || Date.now(),
+                  deletedAt: null,
+                };
+                try {
+                  await new Promise((res, rej) => {
+                    const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                    req.onsuccess = (e) => {
+                      const idbInstance = e.target.result;
+                      const tx = idbInstance.transaction(['apartmentNotes'], 'readwrite');
+                      tx.objectStore('apartmentNotes').put(record);
+                      tx.oncomplete = () => { idbInstance.close(); res(); };
+                      tx.onerror = (err) => { idbInstance.close(); rej(err?.target?.error || err); };
+                    };
+                    req.onerror = (err) => rej(err?.target?.error || err);
+                  });
+                } catch (e) {
+                  window.hongbuDebugLog?.('ERR', '[sync] 단지 노트 IDB put 실패', `id=${noteId} ${e?.message || e}`);
+                }
+                // 명시적 해제
+                record.images = null;
+                finalImages.length = 0;
+              }
+            }
+            newImageEntries.length = 0;
+            await new Promise(r => setTimeout(r, 30));
+          }
 
           // 포토 이미지: 로컬 복원(saveOnePhoto) 패턴 정확히 모방
           // 1) 1장씩 fetch → Blob
@@ -6830,6 +6911,8 @@
           const noteLocalPuts = [];
           const noteLocalDels = [];
           for (const [id, winner] of Object.entries(noteResult.toLocalMap)) {
+            // 노트 이미지 streaming에서 이미 IDB write 완료된 노트는 skip
+            if (streamedNoteIds.has(id)) continue;
             if (winner.deletedAt && winner.deletedAt < gcCutoff) {
               noteLocalDels.push(id);
               continue;
