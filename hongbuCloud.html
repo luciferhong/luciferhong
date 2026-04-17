@@ -6231,6 +6231,71 @@
         return { localNotes, localPhotos };
       }
 
+      // 로컬 IDB에서 데이터가 존재하는 sgg5 Set만 추출 (memoBackup 패턴)
+      // - 커서 visitor가 sgg5만 추출 → 풀 레코드는 즉시 GC
+      // - 포토메모 0개면 SIG 로드 스킵
+      // - SIG 로드 실패 시 단지메모 sgg5만 반환 (안전 fallback)
+      async function __collectLocalSgg5Set() {
+        const sgg5Set = new Set();
+        await __loadAptIndexForSync();
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+
+        // 단지메모: aptId → __syncAptIndex에서 sgg5 조회 (SIG 불필요)
+        await new Promise((resolve) => {
+          const tx = db.transaction(['apartmentNotes'], 'readonly');
+          const req = tx.objectStore('apartmentNotes').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const note = c.value;
+            const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+            if (id) {
+              const region = __syncAptIndex.get(id);
+              if (region?.sgg5) sgg5Set.add(region.sgg5);
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
+        });
+
+        // 포토메모 존재 여부 cheap check
+        let hasAnyPhoto = false;
+        await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').openCursor();
+          req.onsuccess = (e) => { hasAnyPhoto = !!e.target.result; resolve(); };
+          req.onerror = () => resolve();
+        });
+
+        if (hasAnyPhoto) {
+          let sigOk = true;
+          try { await __ensureSyncSigIndex(); }
+          catch (e) {
+            sigOk = false;
+            window.hongbuDebugLog?.('ERR', '[sync] SIG 인덱스 로드 실패 → 포토메모 지역 스킵', e?.message || e);
+          }
+          if (sigOk) {
+            await new Promise((resolve) => {
+              const tx = db.transaction(['photoMemos'], 'readonly');
+              const req = tx.objectStore('photoMemos').openCursor();
+              req.onsuccess = (e) => {
+                const c = e.target.result;
+                if (!c) { resolve(); return; }
+                const photo = c.value;
+                const region = __syncPhotoRegion(photo);
+                if (region?.sgg5) sgg5Set.add(region.sgg5);
+                c.continue();
+              };
+              req.onerror = () => resolve();
+            });
+          }
+        }
+
+        db.close();
+        return sgg5Set;
+      }
+
       // sgg5 단위 단일 동기화 — 업로드/다운로드 통합
       async function __sggSync(sgg5) {
         if (!window.__gdriveReady) {
@@ -6311,7 +6376,7 @@
                 imgUpOk++;
               } catch (e) {
                 imgUpFail++;
-                console.warn('[sync] 단지 이미지 업로드 실패', t.id, e);
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 업로드 실패', `id=${t.id} ${e?.message || e}`);
               }
             }),
             ...photoImgTasks.map(t => async () => {
@@ -6326,7 +6391,7 @@
                 imgUpOk++;
               } catch (e) {
                 imgUpFail++;
-                console.warn('[sync] 포토 이미지 업로드 실패', t.id, e);
+                window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 업로드 실패', `id=${t.id} ${e?.message || e}`);
               }
             }),
           ]);
@@ -6444,20 +6509,26 @@
               try {
                 const url = await __driveDownloadImageAsDataUrl(t.fileId);
                 if (url) { dlNoteImgs.set(`${t.id}:${t.fileId}`, url); imgDownOk++; }
-                else { imgDownFail++; console.warn('[sync] 단지 이미지 빈 응답', t.id, t.fileId); }
+                else {
+                  imgDownFail++;
+                  window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
+                }
               } catch (e) {
                 imgDownFail++;
-                console.warn('[sync] 단지 이미지 다운로드 실패', t.id, t.fileId, e);
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
               }
             }),
             ...photoImgDl.map(t => async () => {
               try {
                 const url = await __driveDownloadImageAsDataUrl(t.fileId);
                 if (url) { dlPhotoImgs.set(t.id, url); imgDownOk++; }
-                else { imgDownFail++; console.warn('[sync] 포토 이미지 빈 응답', t.id, t.fileId); }
+                else {
+                  imgDownFail++;
+                  window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 빈 응답', `id=${t.id} fileId=${t.fileId}`);
+                }
               } catch (e) {
                 imgDownFail++;
-                console.warn('[sync] 포토 이미지 다운로드 실패', t.id, t.fileId, e);
+                window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 다운로드 실패', `id=${t.id} fileId=${t.fileId} ${e?.message || e}`);
               }
             }),
           ]);
@@ -6708,7 +6779,11 @@
             lines.push(`이미지 다운로드 ${imgDownOk}/${imgDownOk + imgDownFail}` + (imgDownFail ? ` ⚠️ 실패 ${imgDownFail}` : ''));
           }
           if (gcNoteCount + gcPhotoCount > 0) lines.push(`(30일 GC: 단지 ${gcNoteCount}, 포토 ${gcPhotoCount})`);
-          if (hasFail) lines.push('개발자 도구 콘솔에 상세 로그가 남습니다.');
+          if (hasFail) {
+            lines.push('화면 상단 디버그 로그에 실패 상세가 남습니다.');
+            // 디버그 오버레이에 요약 기록 (실패 시에만 — ERR은 오버레이 자동 표시)
+            window.hongbuDebugLog?.('ERR', `[sync] ${sName} 일부 실패`, lines.slice(1).join('\n'));
+          }
           alert(lines.join('\n'));
 
         } catch (e) {
@@ -6773,9 +6848,10 @@
         return [...sgg5Set].sort();
       }
 
-      // ── 동기화 UI 열기 (apt.json + Drive 시군구 합집합) ──
-      // ⚠ IDB 스캔하지 않음 — 모바일 OOM 방지. 로컬 메모 카운트는 표시 안 함.
-      // 실제 sync 시점에만 선택된 sgg5의 IDB 레코드를 타겟 스캔.
+      // ── 동기화 UI 열기 (데이터가 있는 sgg5만 표시 — memoBackup 패턴) ──
+      // - 단지메모: aptId → __syncAptIndex로 sgg5 추출 (SIG 불필요, 가벼움)
+      // - 포토메모: SIG 인덱스 필요 (포토 0개면 스킵, 로드 실패 시 단지만 사용)
+      // - Drive: 업로드된 sgg5 파일 목록과 합집합
       async function __openDriveSyncUI() {
         const panel = document.getElementById('driveSyncPanel');
         if (!panel) return;
@@ -6783,35 +6859,46 @@
 
         __syncProgressShow('🔄 지역 목록 불러오는 중...');
         let sgg5DriveList = [];
+        let localSgg5Set = new Set();
         try {
           await __loadAptIndexForSync();
+          // 로컬 IDB 스캔 (memoBackup 패턴 — sgg5 Set만 추출, 풀 레코드 보유 X)
+          try { localSgg5Set = await __collectLocalSgg5Set(); }
+          catch (e) {
+            window.hongbuDebugLog?.('ERR', '[sync] 로컬 sgg5 수집 실패', e?.message || e);
+          }
           if (window.__gdriveReady) {
-            try { sgg5DriveList = await __getDriveSggList(); } catch (e) { console.warn('[sync] Drive 목록 조회 실패:', e); }
+            try { sgg5DriveList = await __getDriveSggList(); }
+            catch (e) { window.hongbuDebugLog?.('ERR', '[sync] Drive 목록 조회 실패', e?.message || e); }
           }
         } catch (e) {
-          console.warn('[sync] 지역 목록 조회 실패:', e);
+          window.hongbuDebugLog?.('ERR', '[sync] 지역 목록 조회 실패', e?.message || e);
         }
         __syncProgressHide();
 
-        // apt.json(__syncAptIndex) + Drive sgg5 목록으로만 드롭다운 구성
+        // 데이터가 있는 sgg5만 (로컬 ∪ Drive)
         const sidoNameMap = new Map(Object.entries(__SYNC_SIDO_CODE_NAME_MAP));
-        const sggBySido = new Map(); // sidoCode2 -> Map(sgg5 -> {name, onDrive})
+        const sggBySido = new Map(); // sidoCode2 -> Map(sgg5 -> {name, onLocal, onDrive})
 
-        // apt.json 분 — 모든 시군구 표시
-        for (const apt of __syncAptIndex.values()) {
-          if (!apt.sgg5 || !apt.sidoCode) continue;
-          if (!sggBySido.has(apt.sidoCode)) sggBySido.set(apt.sidoCode, new Map());
-          const m = sggBySido.get(apt.sidoCode);
-          if (!m.has(apt.sgg5)) m.set(apt.sgg5, { name: apt.sigunguName || apt.sgg5, onDrive: false });
-        }
-        // Drive 분 — 표시 + ☁️ 배지
-        for (const sgg5 of sgg5DriveList) {
+        const addSgg5 = (sgg5, { onLocal = false, onDrive = false }) => {
+          if (!sgg5 || sgg5.length < 5) return;
           const sc = sgg5.substring(0, 2);
           if (!sggBySido.has(sc)) sggBySido.set(sc, new Map());
           const m = sggBySido.get(sc);
-          if (m.has(sgg5)) m.get(sgg5).onDrive = true;
-          else m.set(sgg5, { name: __syncSigunguNameByCode5.get(sgg5) || sgg5, onDrive: true });
-        }
+          if (m.has(sgg5)) {
+            const cur = m.get(sgg5);
+            if (onLocal) cur.onLocal = true;
+            if (onDrive) cur.onDrive = true;
+          } else {
+            const name = __syncSigunguNameByCode5.get(sgg5)
+              || [...__syncAptIndex.values()].find(a => a.sgg5 === sgg5)?.sigunguName
+              || sgg5;
+            m.set(sgg5, { name, onLocal, onDrive });
+          }
+        };
+
+        for (const sgg5 of localSgg5Set) addSgg5(sgg5, { onLocal: true });
+        for (const sgg5 of sgg5DriveList) addSgg5(sgg5, { onDrive: true });
 
         const sidoSel = document.getElementById('driveSyncSido');
         const sigunguSel = document.getElementById('driveSyncSigungu');
@@ -6838,7 +6925,7 @@
           const items = Array.from(sggBySido.get(sel).entries())
             .map(([sgg5, o]) => ({
               value: sgg5,
-              label: `${o.name}${o.onDrive ? ' ☁️' : ''}`,
+              label: `${o.name}${o.onLocal ? ' 📱' : ''}${o.onDrive ? ' ☁️' : ''}`,
             }))
             .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
           for (const item of items) {
