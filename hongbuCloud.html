@@ -4654,6 +4654,8 @@
       // 다른 계정이면 로컬 _driveIndexed / imageFileId 플래그를 초기화해서
       // 기존 로컬 데이터가 "신규 데이터"로 취급되어 Drive에 업로드되게 함
       async function __gdriveCheckVaultId() {
+        // S4: vault 체크/리셋 중에는 sync 차단 — 도중에 sync 시작하면 stale aptIndex/IDB 사용 가능성
+        window.__gdriveBusy = true;
         try {
           const data = await __driveReadIndex();
           let driveVaultId = data.vaultId;
@@ -4688,6 +4690,8 @@
           localStorage.setItem("hongbu_drive_vault_id", driveVaultId);
         } catch (e) {
           console.warn("vaultId 확인 실패 (무시):", e);
+        } finally {
+          window.__gdriveBusy = false;
         }
       }
 
@@ -5847,7 +5851,17 @@
           { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` } }
         );
         if (!resp.ok) throw new Error(`sgg 파일 읽기 실패: ${resp.status}`);
-        try { return await resp.json(); } catch (_) { return {}; }
+        // parse 실패 시 throw — 빈 객체 fallback은 데이터 손실 위험 (S1)
+        // 빈 응답("")은 새로 만든 파일일 수 있으므로 빈 객체 반환
+        const text = await resp.text();
+        if (!text || !text.trim()) return {};
+        try { return JSON.parse(text); }
+        catch (e) {
+          throw Object.assign(
+            new Error(`sgg 파일 JSON parse 실패 (fileId=${fileId}, ${text.length}바이트): ${e.message}`),
+            { code: 'SGG_PARSE_FAIL', fileId, bodySnippet: text.slice(0, 200) }
+          );
+        }
       }
 
       async function __driveWriteSggFile(fileId, data) {
@@ -6138,7 +6152,16 @@
           const item = data[key][id];
           if (!item || typeof item !== 'object') { delete data[key][id]; continue; }
           if (typeof item.updatedAt !== 'number') item.updatedAt = fileTs;
-          if (!('deletedAt' in item)) item.deletedAt = null;
+          // S5: deletedAt 타입 정규화 — string ISO 또는 falsy → number | null
+          // GC 비교(`it.deletedAt < gcCutoff`)가 number 기준이므로 string은 NaN 비교로 GC 누락됨
+          if (!('deletedAt' in item)) {
+            item.deletedAt = null;
+          } else if (typeof item.deletedAt === 'string') {
+            const t = Date.parse(item.deletedAt);
+            item.deletedAt = Number.isFinite(t) ? t : null;
+          } else if (typeof item.deletedAt !== 'number' || !Number.isFinite(item.deletedAt)) {
+            item.deletedAt = item.deletedAt ? Number(item.deletedAt) || null : null;
+          }
         }
         return data;
       }
@@ -6324,6 +6347,24 @@
           return;
         }
         if (!sgg5) { alert('시군구를 선택하세요'); return; }
+
+        // S4: vault 체크/리셋 중이면 stale 데이터 위험 — 차단
+        if (window.__gdriveBusy) {
+          window.hongbuDebugLog?.('ERR', '[sync] vault 체크 중 차단', `sgg5=${sgg5}`);
+          alert('⏳ Drive 계정 확인 중입니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+
+        // S3a: 단일 탭 sync 중복 호출 방지 — 진행 중이면 알림 후 무시
+        if (window.__sggSyncBusy) {
+          const busySgg = window.__sggSyncBusySgg || '?';
+          const msg = `⚠️ 다른 sync가 진행 중입니다 (${busySgg}). 끝날 때까지 기다려주세요.`;
+          window.hongbuDebugLog?.('ERR', '[sync] 중복 실행 차단', `요청 sgg5=${sgg5} / 진행 중=${busySgg}`);
+          alert(msg);
+          return;
+        }
+        window.__sggSyncBusy = true;
+        window.__sggSyncBusySgg = sgg5;
 
         const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
         __syncProgressShow(`🔄 ${sName} 동기화 준비 중...`);
@@ -6605,9 +6646,9 @@
 
           // orphan 정리: 404가 발생한 fileId를 Drive JSON에서 제거 후 재기록
           // → 다음 sync에서 같은 404가 반복되지 않도록 자기치유
-          window.hongbuDebugLog?.('ERR', '[sync] orphan 추적',
-            `404 감지: 단지 ${noteOrphanFids.size}개 / 포토 ${photoOrphanFids.size}개 / 총 실패 ${imgDownFail}건`);
           if (noteOrphanFids.size > 0 || photoOrphanFids.size > 0) {
+            window.hongbuDebugLog?.('ERR', '[sync] orphan 추적',
+              `404 감지: 단지 ${noteOrphanFids.size}개 / 포토 ${photoOrphanFids.size}개 / 총 실패 ${imgDownFail}건`);
             let prunedNotes = 0, prunedPhotos = 0;
             const noteCandidates = Object.keys(finalNotesMap).length;
             const photoCandidates = Object.keys(finalPhotosMap).length;
@@ -6906,7 +6947,28 @@
         } catch (e) {
           __syncProgressHide();
           console.error('[sync] 실패', e);
-          alert('❌ 동기화 실패: ' + (e?.message || e));
+          // S1: Drive JSON parse 실패는 데이터 손상이므로 자동 진행 차단
+          if (e?.code === 'SGG_PARSE_FAIL') {
+            window.hongbuDebugLog?.('ERR', '[sync] Drive JSON 손상 감지 — 동기화 중단',
+              `fileId=${e.fileId}\n응답 일부: ${e.bodySnippet || '(없음)'}\n` +
+              `→ Drive 콘솔에서 해당 파일을 확인하세요. 잘못된 본을 덮어쓰지 않도록 sync 차단됨.`);
+            alert(
+              '❌ Drive 동기화 파일이 손상되어 있습니다.\n\n' +
+              '안전을 위해 동기화를 중단했습니다.\n' +
+              '현재 sgg5 sync 파일이 잘못된 JSON 형식이라 머지 시 데이터가 유실될 수 있습니다.\n\n' +
+              '대처:\n' +
+              '1. drive.google.com → 앱 폴더에서 해당 sgg5 파일을 확인\n' +
+              '2. 휴지통에 이전 버전이 있다면 복원\n' +
+              '3. 또는 메모 백업(memoBackup.html)에서 로컬→Drive 재업로드\n\n' +
+              '디버그 로그에 fileId와 응답 일부가 기록되어 있습니다.'
+            );
+          } else {
+            alert('❌ 동기화 실패: ' + (e?.message || e));
+          }
+        } finally {
+          // S3a: 단일 탭 sync lock 해제 — try/catch 어떤 경로로 끝나도 반드시 풀림
+          window.__sggSyncBusy = false;
+          window.__sggSyncBusySgg = null;
         }
       }
 
@@ -6973,6 +7035,13 @@
         const panel = document.getElementById('driveSyncPanel');
         if (!panel) return;
         if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+
+        // S4: vault 체크/리셋 중이면 차단 — stale aptIndex/IDB 사용 시 메모 손실 위험
+        if (window.__gdriveBusy) {
+          window.hongbuDebugLog?.('ERR', '[sync] vault 체크 중 UI 차단', '');
+          alert('⏳ Drive 계정 확인 중입니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
 
         __syncProgressShow('🔄 지역 목록 불러오는 중...');
         let sgg5DriveList = [];
