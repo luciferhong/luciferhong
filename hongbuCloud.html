@@ -5920,6 +5920,25 @@
         return { fileId, data: normalized };
       }
 
+      // ── Drive 폴더 내 fileId Set 조회 (무결성 검증용) ──
+      async function __driveListFolderFileIds(folderId) {
+        const ids = new Set();
+        if (!folderId) return ids;
+        let pageToken = null;
+        do {
+          const params = {
+            q: `'${folderId}' in parents and trashed=false`,
+            fields: 'nextPageToken,files(id)',
+            pageSize: 1000,
+          };
+          if (pageToken) params.pageToken = pageToken;
+          const resp = await gapi.client.drive.files.list(params);
+          for (const f of (resp.result.files || [])) ids.add(f.id);
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        return ids;
+      }
+
       // ── Drive storageQuota 조회 ──
       async function __driveGetStorageQuota() {
         const resp = await gapi.client.drive.about.get({ fields: 'storageQuota' });
@@ -6326,6 +6345,51 @@
             await Promise.all([__driveGetSggData(sgg5, 'notes'), __driveGetSggData(sgg5, 'photos')]);
           const driveNotes = driveNotesData.notes || {};
           const drivePhotos = drivePhotosData.photos || {};
+
+          // 사전 무결성 검증: aptImages/photoImages 폴더 실제 파일과 비교 → 깨진 fileId 미리 제거
+          // (다운로드 시 404 발생 차단, 단일 Drive write로 정리)
+          __syncProgressShow(`🔄 ${sName} 무결성 검증 중...`);
+          const [validNoteFids, validPhotoFids] = await Promise.all([
+            __driveListFolderFileIds(window.__gdriveAptImagesFolderId).catch((e) => {
+              window.hongbuDebugLog?.('ERR', '[sync] aptImages 목록 실패', e?.message || e);
+              return null;
+            }),
+            __driveListFolderFileIds(window.__gdrivePhotosFolderId).catch((e) => {
+              window.hongbuDebugLog?.('ERR', '[sync] photoImages 목록 실패', e?.message || e);
+              return null;
+            }),
+          ]);
+          let preNoteAffected = 0, prePhotoAffected = 0;
+          const preOrphanFidsN = new Set(), preOrphanFidsP = new Set();
+          if (validNoteFids) {
+            for (const note of Object.values(driveNotes)) {
+              if (!Array.isArray(note.imageFileIds) || !note.imageFileIds.length) continue;
+              const filtered = [];
+              for (const fid of note.imageFileIds) {
+                if (validNoteFids.has(fid)) filtered.push(fid);
+                else preOrphanFidsN.add(fid);
+              }
+              if (filtered.length !== note.imageFileIds.length) {
+                note.imageFileIds = filtered;
+                preNoteAffected++;
+              }
+            }
+          }
+          if (validPhotoFids) {
+            for (const photo of Object.values(drivePhotos)) {
+              if (!photo.imageFileId) continue;
+              if (!validPhotoFids.has(photo.imageFileId)) {
+                preOrphanFidsP.add(photo.imageFileId);
+                photo.imageFileId = '';
+                prePhotoAffected++;
+              }
+            }
+          }
+          if (preOrphanFidsN.size + preOrphanFidsP.size > 0) {
+            window.hongbuDebugLog?.('ERR', '[sync] 사전 정리',
+              `깨진 참조 — 단지 fileId ${preOrphanFidsN.size}개 / ${preNoteAffected}개 노트, ` +
+              `포토 fileId ${preOrphanFidsP.size}개 / ${prePhotoAffected}개 포토`);
+          }
 
           // 선택된 sgg5의 로컬 레코드만 추출 (memoBackup 패턴 — 풀 레코드 누적 X)
           const { localNotes, localPhotos } = await __sggLoadLocalForSgg(db, sgg5);
