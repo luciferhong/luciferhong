@@ -1667,7 +1667,6 @@
         <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
         <button onclick="deleteMemoDB()">🗑️ 단지메모 일괄 삭제</button>
         <button onclick="deletePhotoMemoDB()">📸 포토메모 일괄 삭제</button>
-        <button onclick="__localClearImageCache()">📱 저장공간 확보</button>
 
         <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
         <input type="file" id="photoMemoCameraInput" accept="image/*" capture="environment" style="display: none" />
@@ -6635,7 +6634,7 @@
           }
 
           const dlCount = noteImgDl.length + photoImgDl.length;
-          if (dlCount) __syncProgressShow(`🔄 ${sName} 이미지 다운로드... (${dlCount}개)`);
+          if (dlCount) __syncProgressShow(`🔄 ${sName} 이미지 다운로드 시작 — 단지 ${noteImgDl.length} + 포토 ${photoImgDl.length}`);
           const dlNoteImgs = new Map();
           const dlPhotoImgs = new Map(); // 스트리밍 후엔 비어있음 — 호환 위해 유지
           const streamedPhotoIds = new Set(); // 스트리밍 처리된 photo id (아래 photoLocalPuts 루프에서 skip)
@@ -6672,9 +6671,9 @@
           // photoMemo 읽기 경로([hongbuCloud.html:9877-9889]) 가 thumbBlob/imageBlob fallback 지원
           for (let i = 0; i < photoImgDl.length; i++) {
             const t = photoImgDl[i];
-            if (i % 5 === 0 || i === photoImgDl.length - 1) {
-              __syncProgressShow(`🔄 ${sName} 포토 ${i + 1}/${photoImgDl.length}...`);
-            }
+            // 매 iteration 진행 표시 (실시간) — 처리/전체 + 누적 성공/실패
+            const failTxt = imgDownFail > 0 ? ` ⚠️${imgDownFail}` : '';
+            __syncProgressShow(`🔄 ${sName} 포토 ${i + 1}/${photoImgDl.length} (✓${imgDownOk}${failTxt})`);
             // 진행 단계 디버그 로그 (20회마다 — 어디서 죽는지 추적)
             if (i % 20 === 0 && i > 0) {
               window.hongbuDebugLog?.('ERR', '[sync] 포토 진행', `${i}/${photoImgDl.length} (ok=${imgDownOk} fail=${imgDownFail})`);
@@ -7254,74 +7253,6 @@
       function __initDriveSyncPanel() {
         const panel = document.getElementById('driveSyncControls');
         if (panel) panel.style.display = 'inline-flex';
-      }
-
-      // ================================================================
-      // 저장공간 확보 — 로컬 이미지 캐시만 제거 (Drive 무손상)
-      // ================================================================
-
-      // 헬퍼: IndexedDB store 전체 읽기
-      async function __readAllFromStore(db, storeName) {
-        return new Promise((resolve) => {
-          const results = [];
-          const tx = db.transaction([storeName], "readonly");
-          const req = tx.objectStore(storeName).openCursor();
-          req.onsuccess = (e) => {
-            const c = e.target.result;
-            if (c) { results.push(c.value); c.continue(); }
-            else resolve(results);
-          };
-          req.onerror = () => resolve([]);
-        });
-      }
-
-      // 로컬 이미지 base64만 삭제 — fileId 보존 → 다음 열람 시 Drive에서 lazy 다운로드
-      async function __localClearImageCache() {
-        await initMemoIndexedDB();
-        const db = await __openHongbuMemoDb();
-
-        const photoMemos = await __readAllFromStore(db, "photoMemos");
-        const aptNotes = await __readAllFromStore(db, "apartmentNotes");
-
-        let msg = "로컬 기기의 이미지 데이터를 삭제합니다.\n메모·마커는 유지되며, 이미지는 Drive에서 다시 다운로드됩니다.";
-        if (!window.__gdriveReady || !window.__gdriveIndexFileId)
-          msg += "\n\n⚠️ Drive 미로그인 상태입니다. Drive에 없는 이미지는 복구할 수 없습니다.";
-        if (!confirm(msg + "\n\n계속할까요?")) { db.close(); return; }
-
-        // 포토메모: imageFileId 있는 것만 imageDataUrl 초기화
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction(["photoMemos"], "readwrite");
-          tx.oncomplete = () => resolve();
-          tx.onerror = (e) => reject(e.target.error);
-          const store = tx.objectStore("photoMemos");
-          for (const rec of photoMemos) {
-            if (rec.imageDataUrl && rec.imageFileId) {
-              store.put({ ...rec, imageDataUrl: "" });
-            }
-          }
-        });
-
-        // 단지메모: fileId 있는 이미지만 data 초기화
-        await new Promise((resolve, reject) => {
-          const tx = db.transaction(["apartmentNotes"], "readwrite");
-          tx.oncomplete = () => { db.close(); resolve(); };
-          tx.onerror = (e) => { db.close(); reject(e.target.error); };
-          const store = tx.objectStore("apartmentNotes");
-          for (const note of aptNotes) {
-            const images = (note.images || []).map((img) => {
-              const fid = __getImgFileId(img);
-              const dat = __getImgData(img);
-              return (fid && dat) ? { data: "", fileId: fid } : img;
-            });
-            store.put({ ...note, images });
-          }
-        });
-
-        // 인메모리 이미지 캐시 정리
-        window.__photoMemoImageCache?.clear?.();
-
-        __syncProgressShow("✅ 로컬 이미지 캐시 삭제 완료");
-        setTimeout(() => __syncProgressHide(), 2500);
       }
 
       // ================================
