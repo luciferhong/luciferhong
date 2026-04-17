@@ -6507,7 +6507,7 @@
           // 404 = 파일 삭제됨 → orphan으로 마크하여 Drive JSON 정리
           const noteOrphanFids = new Set();
           const photoOrphanFids = new Set();
-          const is404 = (e) => /(\b|^)404(\b|$)/.test(String(e?.message || e));
+          const is404 = (e) => String(e?.message || e).includes('404');
           await __runConcurrent([
             ...noteImgDl.map(t => async () => {
               try {
@@ -6541,8 +6541,12 @@
 
           // orphan 정리: 404가 발생한 fileId를 Drive JSON에서 제거 후 재기록
           // → 다음 sync에서 같은 404가 반복되지 않도록 자기치유
+          window.hongbuDebugLog?.('ERR', '[sync] orphan 추적',
+            `404 감지: 단지 ${noteOrphanFids.size}개 / 포토 ${photoOrphanFids.size}개 / 총 실패 ${imgDownFail}건`);
           if (noteOrphanFids.size > 0 || photoOrphanFids.size > 0) {
             let prunedNotes = 0, prunedPhotos = 0;
+            const noteCandidates = Object.keys(finalNotesMap).length;
+            const photoCandidates = Object.keys(finalPhotosMap).length;
             for (const item of Object.values(finalNotesMap)) {
               if (item.deletedAt || !Array.isArray(item.imageFileIds)) continue;
               const before = item.imageFileIds.length;
@@ -6556,6 +6560,8 @@
                 prunedPhotos++;
               }
             }
+            window.hongbuDebugLog?.('ERR', '[sync] orphan pruning',
+              `finalNotes ${noteCandidates}개 중 ${prunedNotes}개 갱신 / finalPhotos ${photoCandidates}개 중 ${prunedPhotos}개 갱신`);
             if (prunedNotes + prunedPhotos > 0) {
               try {
                 __syncProgressShow(`🧹 ${sName} Drive 정리 중... (orphan ${noteOrphanFids.size + photoOrphanFids.size}개)`);
@@ -6574,6 +6580,9 @@
               } catch (e) {
                 window.hongbuDebugLog?.('ERR', '[sync] orphan 정리 실패', e?.message || e);
               }
+            } else {
+              window.hongbuDebugLog?.('ERR', '[sync] orphan 정리 skip',
+                `finalNotesMap/finalPhotosMap에 해당 fileId 없음 — 매핑 누락 가능성`);
             }
           }
 
