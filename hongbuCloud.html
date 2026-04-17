@@ -5656,22 +5656,25 @@
           'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson',
           'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson',
         ];
+        const prepared = [];
         try {
-          const results = await Promise.all(parts.map(async p => {
+          // 순차 로드 + 즉시 features 추출/raw GC — 모바일 OOM 방지
+          for (const p of parts) {
             const r = await fetch(p, { cache: 'no-store' });
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.json();
-          }));
-          const features = results.flatMap(fc => fc?.features || []);
-          const prepared = [];
-          for (const f of features) {
-            const geom = f?.geometry;
-            if (!geom) continue;
-            const bbox = __syncBbox(geom);
-            if (!bbox) continue;
-            const region = __syncPickSigRegion(f?.properties || {});
-            if (!region) continue;
-            prepared.push({ bbox, geometry: geom, region });
+            let fc = await r.json();
+            for (const f of (fc?.features || [])) {
+              const geom = f?.geometry;
+              if (!geom) continue;
+              const bbox = __syncBbox(geom);
+              if (!bbox) continue;
+              const region = __syncPickSigRegion(f?.properties || {});
+              if (!region) continue;
+              prepared.push({ bbox, geometry: geom, region });
+            }
+            fc = null;
+            // 다음 fetch 전 한 박자 쉬어 GC 기회 부여
+            await new Promise(r => setTimeout(r, 0));
           }
           __syncSigIndex.prepared = prepared;
           __syncSigIndex.grid = __syncBuildSigGrid(prepared);
@@ -5682,6 +5685,23 @@
           console.warn('[CloudSync] SIG GeoJSON 로드 실패:', e);
         }
         __syncSigIndex.loaded = true;
+      }
+
+      // 로컬에 포토메모가 1개라도 있는지 빠르게 확인 (SIG 인덱스 필요 여부 판단용)
+      async function __syncHasAnyPhotoMemo() {
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          if (!db.objectStoreNames.contains('photoMemos')) { db.close(); return false; }
+          const result = await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => resolve(!!e.target.result);
+            req.onerror = () => resolve(false);
+          });
+          db.close();
+          return result;
+        } catch (_) { return false; }
       }
 
       function __syncPhotoRegion(photo) {
@@ -5728,7 +5748,11 @@
         __syncRegionCache.built = false;
 
         await __loadAptIndexForSync();
-        await __ensureSyncSigIndex();
+        // 포토메모가 있을 때만 SIG 인덱스 로드 (29MB GeoJSON — 모바일 OOM 방지)
+        // 단지메모는 aptId로 매칭하므로 SIG 불필요
+        if (await __syncHasAnyPhotoMemo()) {
+          await __ensureSyncSigIndex();
+        }
         await initMemoIndexedDB();
         const db = await __openHongbuMemoDb();
 
