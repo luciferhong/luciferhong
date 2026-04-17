@@ -6174,26 +6174,61 @@
         };
       }
 
-      // summary 배열({id,...})로부터 IDB 전체 레코드를 ID 단위로 재조회
-      async function __sggLoadFullRecords(db, storeName, summaries) {
-        const result = {};
-        if (!summaries || !summaries.length) return result;
+      // 선택된 sgg5의 로컬 레코드만 타겟 스캔 (memoBackup 패턴)
+      // - 커서 visitor가 sgg5 일치 시에만 레코드 보관 → 메모리 누적 최소화
+      // - 포토메모는 0개면 SIG 인덱스 로드 자체를 스킵
+      async function __sggLoadLocalForSgg(db, sgg5) {
+        const localNotes = {};
+        const localPhotos = {};
+
+        // 단지메모: __syncAptIndex(aptId→sgg5)로 매칭, SIG 불필요
         await new Promise((resolve) => {
-          const tx = db.transaction([storeName], 'readonly');
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-          const store = tx.objectStore(storeName);
-          for (const s of summaries) {
-            const id = String(s?.id ?? '').trim();
-            if (!id) continue;
-            const req = store.get(id);
-            req.onsuccess = (e) => {
-              const v = e.target.result;
-              if (v) result[id] = v;
-            };
-          }
+          const tx = db.transaction(['apartmentNotes'], 'readonly');
+          const req = tx.objectStore('apartmentNotes').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const note = c.value;
+            const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+            if (id) {
+              const region = __syncAptIndex.get(id);
+              if (region?.sgg5 === sgg5) localNotes[id] = note;
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
         });
-        return result;
+
+        // 포토메모 존재 여부 cheap check (cursor 1회)
+        let hasAnyPhoto = false;
+        await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').openCursor();
+          req.onsuccess = (e) => { hasAnyPhoto = !!e.target.result; resolve(); };
+          req.onerror = () => resolve();
+        });
+
+        if (hasAnyPhoto) {
+          await __ensureSyncSigIndex();
+          await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) { resolve(); return; }
+              const photo = c.value;
+              const id = String(photo?.id || '').trim();
+              if (id) {
+                const region = __syncPhotoRegion(photo);
+                if (region?.sgg5 === sgg5) localPhotos[id] = photo;
+              }
+              c.continue();
+            };
+            req.onerror = () => resolve();
+          });
+        }
+
+        return { localNotes, localPhotos };
       }
 
       // sgg5 단위 단일 동기화 — 업로드/다운로드 통합
@@ -6217,21 +6252,18 @@
           }
 
           await __ensureUpdatedAtMigration();
-          if (!__syncRegionCache.built) await __buildSyncRegionCache();
+          await __loadAptIndexForSync(); // 단지메모 sgg5 매핑용
           await initMemoIndexedDB();
           const db = await __openHongbuMemoDb();
 
-          // Drive 읽기 + 로컬 tombstone 수집 (region cache는 tombstone 포함)
+          // Drive 읽기 + 로컬 타겟 스캔
           const [{ fileId: notesFileId, data: driveNotesData }, { fileId: photosFileId, data: drivePhotosData }] =
             await Promise.all([__driveGetSggData(sgg5, 'notes'), __driveGetSggData(sgg5, 'photos')]);
           const driveNotes = driveNotesData.notes || {};
           const drivePhotos = drivePhotosData.photos || {};
 
-          // 캐시는 summary만 보관 → 선택된 sgg5의 전체 레코드를 IDB에서 재조회
-          const localNotesArr = __syncRegionCache.notesBySgg.get(sgg5) || [];
-          const localPhotosArr = __syncRegionCache.photosBySgg.get(sgg5) || [];
-          const localNotes = await __sggLoadFullRecords(db, 'apartmentNotes', localNotesArr);
-          const localPhotos = await __sggLoadFullRecords(db, 'photoMemos', localPhotosArr);
+          // 선택된 sgg5의 로컬 레코드만 추출 (memoBackup 패턴 — 풀 레코드 누적 X)
+          const { localNotes, localPhotos } = await __sggLoadLocalForSgg(db, sgg5);
 
           const noteResult = __syncMergeById(localNotes, driveNotes, 'note');
           const photoResult = __syncMergeById(localPhotos, drivePhotos, 'photo');
@@ -6741,7 +6773,9 @@
         return [...sgg5Set].sort();
       }
 
-      // ── 동기화 UI 열기 (로컬 ∪ Drive 시군구 합집합) ──
+      // ── 동기화 UI 열기 (apt.json + Drive 시군구 합집합) ──
+      // ⚠ IDB 스캔하지 않음 — 모바일 OOM 방지. 로컬 메모 카운트는 표시 안 함.
+      // 실제 sync 시점에만 선택된 sgg5의 IDB 레코드를 타겟 스캔.
       async function __openDriveSyncUI() {
         const panel = document.getElementById('driveSyncPanel');
         if (!panel) return;
@@ -6750,37 +6784,33 @@
         __syncProgressShow('🔄 지역 목록 불러오는 중...');
         let sgg5DriveList = [];
         try {
-          await __ensureUpdatedAtMigration();
           await __loadAptIndexForSync();
-          await __buildSyncRegionCache();
           if (window.__gdriveReady) {
             try { sgg5DriveList = await __getDriveSggList(); } catch (e) { console.warn('[sync] Drive 목록 조회 실패:', e); }
           }
         } catch (e) {
-          console.warn('[sync] 지역 캐시 빌드 실패:', e);
+          console.warn('[sync] 지역 목록 조회 실패:', e);
         }
         __syncProgressHide();
 
-        // 로컬 시군구 코드 + Drive 시군구 코드 합집합
+        // apt.json(__syncAptIndex) + Drive sgg5 목록으로만 드롭다운 구성
         const sidoNameMap = new Map(Object.entries(__SYNC_SIDO_CODE_NAME_MAP));
-        const sggBySido = new Map(); // sidoCode2 -> Map(sgg5 -> {name, localCnt, onDrive})
+        const sggBySido = new Map(); // sidoCode2 -> Map(sgg5 -> {name, onDrive})
 
-        // 로컬 분
-        for (const [sidoCode, obj] of __syncRegionCache.bySido.entries()) {
-          for (const [sgg5, sObj] of obj.sigungu.entries()) {
-            if (!sggBySido.has(sidoCode)) sggBySido.set(sidoCode, new Map());
-            const nc = (__syncRegionCache.notesBySgg.get(sgg5) || []).length;
-            const pc = (__syncRegionCache.photosBySgg.get(sgg5) || []).length;
-            sggBySido.get(sidoCode).set(sgg5, { name: sObj.name || sgg5, localCnt: nc + pc, onDrive: false });
-          }
+        // apt.json 분 — 모든 시군구 표시
+        for (const apt of __syncAptIndex.values()) {
+          if (!apt.sgg5 || !apt.sidoCode) continue;
+          if (!sggBySido.has(apt.sidoCode)) sggBySido.set(apt.sidoCode, new Map());
+          const m = sggBySido.get(apt.sidoCode);
+          if (!m.has(apt.sgg5)) m.set(apt.sgg5, { name: apt.sigunguName || apt.sgg5, onDrive: false });
         }
-        // Drive 분
+        // Drive 분 — 표시 + ☁️ 배지
         for (const sgg5 of sgg5DriveList) {
           const sc = sgg5.substring(0, 2);
           if (!sggBySido.has(sc)) sggBySido.set(sc, new Map());
           const m = sggBySido.get(sc);
           if (m.has(sgg5)) m.get(sgg5).onDrive = true;
-          else m.set(sgg5, { name: __syncSigunguNameByCode5.get(sgg5) || sgg5, localCnt: 0, onDrive: true });
+          else m.set(sgg5, { name: __syncSigunguNameByCode5.get(sgg5) || sgg5, onDrive: true });
         }
 
         const sidoSel = document.getElementById('driveSyncSido');
@@ -6789,7 +6819,7 @@
 
         sidoSel.innerHTML = '<option value="">시도 선택</option>';
         const sidoItems = [...sggBySido.keys()]
-          .map(sc => ({ value: sc, label: sidoNameMap.get(sc) || __syncRegionCache.bySido.get(sc)?.name || sc }))
+          .map(sc => ({ value: sc, label: sidoNameMap.get(sc) || sc }))
           .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
         for (const item of sidoItems) {
           const opt = document.createElement('option');
@@ -6808,7 +6838,7 @@
           const items = Array.from(sggBySido.get(sel).entries())
             .map(([sgg5, o]) => ({
               value: sgg5,
-              label: `${o.name}${o.localCnt ? ` (로컬 ${o.localCnt})` : ''}${o.onDrive ? ' ☁️' : ''}`,
+              label: `${o.name}${o.onDrive ? ' ☁️' : ''}`,
             }))
             .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
           for (const item of items) {
