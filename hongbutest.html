@@ -9409,10 +9409,41 @@ min-height: 24px;
         }
       }
 
+      // 문자열 리터럴 안의 미이스케이프 제어문자를 안전하게 이스케이프 (모바일 JSON.parse 호환)
+      function __escapeJSONControlChars(raw) {
+        let out = '';
+        let inString = false;
+        let escape = false;
+        for (let i = 0; i < raw.length; i++) {
+          const ch = raw[i];
+          const code = raw.charCodeAt(i);
+          if (escape) { out += ch; escape = false; continue; }
+          if (inString && ch === '\\') { out += ch; escape = true; continue; }
+          if (ch === '"') { inString = !inString; out += ch; continue; }
+          if (inString && code < 0x20) {
+            if (ch === '\n') out += '\\n';
+            else if (ch === '\r') out += '\\r';
+            else if (ch === '\t') out += '\\t';
+            else out += '\\u' + code.toString(16).padStart(4, '0');
+            continue;
+          }
+          out += ch;
+        }
+        return out;
+      }
+      function __safeJSONParse(raw) {
+        try { return JSON.parse(raw); }
+        catch (e) {
+          if (!/control character/i.test(e?.message || '')) throw e;
+          console.warn('[import] JSON 제어문자 감지 → 이스케이프 후 재시도');
+          return JSON.parse(__escapeJSONControlChars(raw));
+        }
+      }
+
       function importFromJSON(file) {
         const reader = new FileReader();
         reader.onload = function (event) {
-          const data = JSON.parse(event.target.result);
+          const data = __safeJSONParse(event.target.result);
 
           initIndexedDB()
             .then((db) => {
@@ -9454,7 +9485,7 @@ min-height: 24px;
       function importFromSiseVer2JSON(file) {
         const reader = new FileReader();
         reader.onload = function (event) {
-          const json = JSON.parse(event.target.result);
+          const json = __safeJSONParse(event.target.result);
           const data = Array.isArray(json) ? json : json.apartments;
 
           if (!Array.isArray(data)) {
