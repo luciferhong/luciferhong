@@ -6282,13 +6282,6 @@
             await Promise.all(slice.map(async (t) => {
               let blob = null;
               const tTask = performance.now();
-              // [perf] hang 감지 — 20초 초과 시 경고 로그
-              const slowTimer = setTimeout(() => {
-                try {
-                  window.hongbuDebugLog?.('ERR', '[sync:perf] HANG?',
-                    `upload ${t.filename} > 20s (blob=${blob ? Math.round(blob.size/1024)+'kB' : 'null'})`);
-                } catch (_) {}
-              }, 20000);
               try {
                 const tBlobStart = performance.now();
                 if (t.kind === 'photo' && t.blob) blob = t.blob;
@@ -6306,19 +6299,13 @@
                 const p = created.__perf || {};
                 const kB = Math.round((p.size || blob.size || 0) / 1024);
                 const perfMsg = `${t.kind} ${t.filename} size=${kB}kB blob=${tBlobMs}ms build=${p.tBuildMs||0}ms fetch=${p.tFetchMs||0}ms status=${p.status||'?'} total=${totalMs}ms`;
-                if (totalMs > 5000) {
-                  console.warn('[sync:perf] SLOW upload', perfMsg);
-                  try { window.hongbuDebugLog?.('ERR', '[sync:perf] SLOW upload', perfMsg); } catch (_) {}
-                } else {
-                  console.log('[sync:perf] upload', perfMsg);
-                }
+                console.log('[sync:perf] upload', perfMsg);
               } catch (e) {
                 imgUpFail++;
                 const totalMs = Math.round(performance.now() - tTask);
                 window.hongbuDebugLog?.('ERR', '[sync] 이미지 업로드 실패',
                   `${t.kind} ${t.filename} total=${totalMs}ms ${e?.message || e}`);
               } finally {
-                clearTimeout(slowTimer);
                 blob = null;
               }
             }));
@@ -11898,10 +11885,41 @@ min-height: 24px;
         }
       }
 
+      // 문자열 리터럴 안의 미이스케이프 제어문자를 안전하게 이스케이프 (모바일 JSON.parse 호환)
+      function __escapeJSONControlChars(raw) {
+        let out = '';
+        let inString = false;
+        let escape = false;
+        for (let i = 0; i < raw.length; i++) {
+          const ch = raw[i];
+          const code = raw.charCodeAt(i);
+          if (escape) { out += ch; escape = false; continue; }
+          if (inString && ch === '\\') { out += ch; escape = true; continue; }
+          if (ch === '"') { inString = !inString; out += ch; continue; }
+          if (inString && code < 0x20) {
+            if (ch === '\n') out += '\\n';
+            else if (ch === '\r') out += '\\r';
+            else if (ch === '\t') out += '\\t';
+            else out += '\\u' + code.toString(16).padStart(4, '0');
+            continue;
+          }
+          out += ch;
+        }
+        return out;
+      }
+      function __safeJSONParse(raw) {
+        try { return JSON.parse(raw); }
+        catch (e) {
+          if (!/control character/i.test(e?.message || '')) throw e;
+          console.warn('[import] JSON 제어문자 감지 → 이스케이프 후 재시도');
+          return JSON.parse(__escapeJSONControlChars(raw));
+        }
+      }
+
       function importFromJSON(file) {
         const reader = new FileReader();
         reader.onload = function (event) {
-          const data = JSON.parse(event.target.result);
+          const data = __safeJSONParse(event.target.result);
 
           initIndexedDB()
             .then((db) => {
@@ -11943,7 +11961,7 @@ min-height: 24px;
       function importFromSiseVer2JSON(file) {
         const reader = new FileReader();
         reader.onload = function (event) {
-          const json = JSON.parse(event.target.result);
+          const json = __safeJSONParse(event.target.result);
           const data = Array.isArray(json) ? json : json.apartments;
 
           if (!Array.isArray(data)) {
