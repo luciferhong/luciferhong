@@ -3831,6 +3831,25 @@ function parsePriceDataFromTable(tableContainer) {
 
 async function exportHongSiseToJSON() {
     try {
+        // ✅ 시군구 필터 확인 — 선택된 시군구만 내보내 파일 크기 축소 (모바일 import 가능하도록)
+        const selectedCodes = Array.from(selectedSigunguSet || []);
+        const sggFilterActive = selectedCodes.length > 0;
+        if (!sggFilterActive) {
+            alert("⚠️ 시군구를 먼저 선택해주세요.\n상단 '시군구' 필터에서 백업할 시군구를 하나 이상 선택한 뒤 다시 시도해주세요.");
+            return;
+        }
+
+        // id → sigungu 매핑 (apartmentData 기반) — apartments store 필터링에 사용
+        const idToSgg = new Map();
+        if (Array.isArray(apartmentData)) {
+            for (const apt of apartmentData) {
+                if (apt && apt.id != null && apt.sigungu) {
+                    idToSgg.set(String(apt.id), String(apt.sigungu));
+                }
+            }
+        }
+        const selectedSet = new Set(selectedCodes);
+
         const request = indexedDB.open("hongSise", HONGSISE_DB_VERSION);
 
         request.onerror = function(event) {
@@ -3850,7 +3869,23 @@ async function exportHongSiseToJSON() {
                     const getAllRequest = store.getAll();
 
                     getAllRequest.onsuccess = () => {
-                        exportData[storeName] = getAllRequest.result;
+                        let items = getAllRequest.result || [];
+                        // apartments store만 시군구 필터 적용
+                        if (sggFilterActive && storeName === "apartments") {
+                            items = items.filter(item => {
+                                let id = item && item.id;
+                                if (!id && item && typeof item.idType === "string" && item.idType.includes("-")) {
+                                    id = item.idType.split("-")[0];
+                                }
+                                const sgg = idToSgg.get(String(id));
+                                return sgg && selectedSet.has(sgg);
+                            });
+                        }
+                        // fileCache는 재생성 가능한 캐시이므로 필터 활성 시 제외 (파일 크기 축소)
+                        if (sggFilterActive && storeName === "fileCache") {
+                            items = [];
+                        }
+                        exportData[storeName] = items;
                         resolve();
                     };
 
@@ -3861,11 +3896,30 @@ async function exportHongSiseToJSON() {
                 });
             }));
 
-            // 저장할 파일 이름 생성
+            // 저장할 파일 이름 생성 — 시군구 선택 상태 반영
             const now = new Date();
             const formattedDate = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
             const formattedTime = `${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
-            const defaultFilename = `시세지도Ver2_가격_백업_${formattedDate}_${formattedTime}.json`;
+            // 코드 → 시군구명 매핑 (파일명 생성용)
+            const sggCodeToName = new Map();
+            if (Array.isArray(apartmentData)) {
+                for (const apt of apartmentData) {
+                    if (apt && apt.sigungu && apt.sigunguNm) {
+                        sggCodeToName.set(String(apt.sigungu), String(apt.sigunguNm));
+                    }
+                }
+            }
+            const sggNames = selectedCodes.map(c => sggCodeToName.get(String(c)) || String(c));
+            let sggSuffix;
+            if (sggNames.length === 1) sggSuffix = `_${sggNames[0]}`;
+            else if (sggNames.length <= 3) sggSuffix = `_${sggNames.join('_')}`;
+            else sggSuffix = `_${sggNames[0]}외${sggNames.length - 1}`;
+            // 파일명 금지 문자 제거
+            sggSuffix = sggSuffix.replace(/[<>:"/\\|?*]/g, '');
+            const defaultFilename = `시세지도Ver2_가격_백업${sggSuffix}_${formattedDate}_${formattedTime}.json`;
+
+            const aptCount = (exportData.apartments || []).length;
+            console.log(`📊 내보낼 apartments 항목: ${aptCount}개 (시군구 필터: ${sggFilterActive ? selectedCodes.join(',') : '없음'})`);
 
             const jsonStr = JSON.stringify(exportData, null, 2);
 
