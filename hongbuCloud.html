@@ -11885,34 +11885,25 @@ min-height: 24px;
         }
       }
 
-      // 문자열 리터럴 안의 미이스케이프 제어문자를 안전하게 이스케이프 (모바일 JSON.parse 호환)
-      function __escapeJSONControlChars(raw) {
-        let out = '';
-        let inString = false;
-        let escape = false;
-        for (let i = 0; i < raw.length; i++) {
-          const ch = raw[i];
-          const code = raw.charCodeAt(i);
-          if (escape) { out += ch; escape = false; continue; }
-          if (inString && ch === '\\') { out += ch; escape = true; continue; }
-          if (ch === '"') { inString = !inString; out += ch; continue; }
-          if (inString && code < 0x20) {
-            if (ch === '\n') out += '\\n';
-            else if (ch === '\r') out += '\\r';
-            else if (ch === '\t') out += '\\t';
-            else out += '\\u' + code.toString(16).padStart(4, '0');
-            continue;
-          }
-          out += ch;
-        }
-        return out;
-      }
+      // 문자열 리터럴 내부의 미이스케이프 제어문자만 regex 1회 치환으로 escape (모바일 메모리 절약)
       function __safeJSONParse(raw) {
         try { return JSON.parse(raw); }
         catch (e) {
           if (!/control character/i.test(e?.message || '')) throw e;
           console.warn('[import] JSON 제어문자 감지 → 이스케이프 후 재시도');
-          return JSON.parse(__escapeJSONControlChars(raw));
+          const cleaned = raw.replace(/"(?:[^"\\]|\\[\s\S])*"/g, (m) => {
+            if (!/[\x00-\x1F]/.test(m)) return m;
+            return m.replace(/[\x00-\x1F]/g, (c) => {
+              const code = c.charCodeAt(0);
+              if (code === 0x0A) return '\\n';
+              if (code === 0x0D) return '\\r';
+              if (code === 0x09) return '\\t';
+              if (code === 0x08) return '\\b';
+              if (code === 0x0C) return '\\f';
+              return '\\u' + code.toString(16).padStart(4, '0');
+            });
+          });
+          return JSON.parse(cleaned);
         }
       }
 
