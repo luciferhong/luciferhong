@@ -70,6 +70,14 @@ Uses `@capacitor-community/text-to-speech` (v6). iOS: `UIBackgroundModes: audio`
 - **모든 설명과 과정은 한글로 작성한다.**
 - **구글 시트 읽기:** WebFetch로 `https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv` 사용.
 
+## IndexedDB 스키마 규칙 (`hongbu` DB)
+
+- **스키마 변경 시 `HONGBU_DB_VERSION`을 반드시 +1** 한다. (새 객체 스토어 추가, 기존 스토어 구조 변경 모두 포함)
+- 이 상수는 **`hongbu.html`·`hongbuCloud.html`·`hongbutest.html` 세 파일에 중복 정의**되어 있음. 한 파일만 올리면 다른 파일 열 때 `VersionError`가 발생하므로 **세 파일을 동시에 같은 값**으로 올린다. (백업 파일 `hongbu_YYYYMMDD.html`, `hongbutest_restored.html` 제외)
+- `initIndexedDB()`의 `onupgradeneeded` 안에서 `if (!db.objectStoreNames.contains(...))`로 **멱등적으로** 생성한다.
+- `setHongbuSetting`처럼 DB를 여는 함수는 자체 `indexedDB.open`을 두지 말고 **`initIndexedDB()`를 `await` 해서 재사용**한다. 이렇게 해야 `onupgradeneeded`가 한 곳에만 있어 누락/중복을 막는다.
+- **자가 복구용 `currentVersion+1` bump는 금지**. 사용자의 DB 버전이 배포된 상수보다 높아지면 이후 `indexedDB.open(name, lowerVersion)`이 영구적으로 `VersionError`로 실패한다.
+
 ## 핸드오버 (Claude Code → Copilot 인계)
 
 토큰 한도 도달 시 또는 사용자가 "핸드오버" 요청 시:
