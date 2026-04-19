@@ -70,13 +70,37 @@ Uses `@capacitor-community/text-to-speech` (v6). iOS: `UIBackgroundModes: audio`
 - **모든 설명과 과정은 한글로 작성한다.**
 - **구글 시트 읽기:** WebFetch로 `https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv` 사용.
 
-## IndexedDB 스키마 규칙 (`hongbu` DB)
+## IndexedDB 스키마 규칙 (`hongbu` / `hongbuMemo` DB)
 
-- **스키마 변경 시 `HONGBU_DB_VERSION`을 반드시 +1** 한다. (새 객체 스토어 추가, 기존 스토어 구조 변경 모두 포함)
-- 이 상수는 **`hongbu.html`·`hongbuCloud.html`·`hongbutest.html` 세 파일에 중복 정의**되어 있음. 한 파일만 올리면 다른 파일 열 때 `VersionError`가 발생하므로 **세 파일을 동시에 같은 값**으로 올린다. (백업 파일 `hongbu_YYYYMMDD.html`, `hongbutest_restored.html` 제외)
-- `initIndexedDB()`의 `onupgradeneeded` 안에서 `if (!db.objectStoreNames.contains(...))`로 **멱등적으로** 생성한다.
-- `setHongbuSetting`처럼 DB를 여는 함수는 자체 `indexedDB.open`을 두지 말고 **`initIndexedDB()`를 `await` 해서 재사용**한다. 이렇게 해야 `onupgradeneeded`가 한 곳에만 있어 누락/중복을 막는다.
-- **자가 복구용 `currentVersion+1` bump는 금지**. 사용자의 DB 버전이 배포된 상수보다 높아지면 이후 `indexedDB.open(name, lowerVersion)`이 영구적으로 `VersionError`로 실패한다.
+### 버전 변경 전 사전 체크 (BLOCKING)
+
+`HONGBU_DB_VERSION`·`HONGBU_MEMO_DB_VERSION` 등 IndexedDB 버전 상수를 수정하기 **전에 반드시** 아래 절차를 밟는다. 한 파일만 올리면 나머지 파일에서 `VersionError`로 DB가 아예 안 열려 지도 공백 같은 무응답 버그가 된다.
+
+1. **영향 파일 목록 확정** — 같은 DB를 쓰는 모든 HTML을 찾는다.
+   - `hongbu` DB: `grep -n "HONGBU_DB_VERSION\s*=" *.html`
+   - `hongbuMemo` DB: `grep -n "HONGBU_MEMO_DB_VERSION\s*=\|DB_VERSION\s*=" *.html` → `DB_NAME='hongbuMemo'`인 파일만 선별
+2. **백업 제외** — `*_YYYYMMDD.html`·`*_restored.html`은 제외 대상. 활성 운영 파일만 대상.
+3. **수정 금지 파일 확인** — `hongbu.html`처럼 Claude가 직접 수정할 수 없는 파일은 사용자 동의/수동 배포 전략을 먼저 합의한 뒤 착수.
+4. **onupgradeneeded 멱등성 확인** — 대상 파일들의 `onupgradeneeded`가 `if (!db.objectStoreNames.contains(...))`로 스토어를 **멱등 생성**하는지 점검. 아니면 먼저 멱등화.
+5. **동시 커밋** — 결정된 활성 파일 전부를 **같은 값**으로 한 번에 올린다.
+
+### `hongbu` DB 공통 규칙
+
+- 스키마 변경(새 스토어 추가, 기존 스토어 구조 변경)은 **반드시 `HONGBU_DB_VERSION`을 +1**.
+- 상수는 `hongbu.html`·`hongbuCloud.html`·`hongbutest.html` 세 파일에 중복 정의. 세 파일 동시 갱신.
+- `initIndexedDB()`의 `onupgradeneeded`에서 `if (!db.objectStoreNames.contains(...))`로 멱등 생성.
+- `setHongbuSetting`처럼 DB를 여는 함수는 자체 `indexedDB.open`을 두지 말고 **`initIndexedDB()`를 `await` 해서 재사용**한다. (`onupgradeneeded`가 한 곳에만 있어야 누락/중복 방지)
+- `initIndexedDB()`에는 `onblocked` 핸들러와 타임아웃을 둔다. 다른 탭이 이전 버전 연결을 잡고 있으면 `onsuccess`/`onerror`가 발화되지 않아 Promise가 영원히 pending 돼 UI가 멈추기 때문.
+- **자가 복구용 `currentVersion+1` 자동 bump는 금지**. 사용자 DB 버전이 배포 상수보다 높아지면 이후 `indexedDB.open(name, lowerVersion)`이 영구적으로 `VersionError`.
+
+### `hongbuMemo` DB 주의사항
+
+- 상수 이름이 파일 계열별로 **다르다**. 한 이름만 grep하면 누락된다.
+  - `HONGBU_MEMO_DB_VERSION` — `hongbu.html`·`hongbutest.html`·`hongbuCloud.html` 계열.
+  - `DB_VERSION` (+ `DB_NAME = 'hongbuMemo'`) — `memoBackup.html`·`memoMapExport.html`·`memoClipboard.html`·`memoPage.html`·`memoPageDownload.html` 계열.
+  - 버전 상수 없이 `DB_NAME`만 쓰는 파일도 있음(예: `hongbumemoDelete.html`).
+- 현재(2026-04-19 기준) v4/v5 드리프트 존재: `memoClipboard.html`·`memoPage.html`·`memoPageDownload.html`가 v4, 나머지 활성 파일은 v5. 별도 티켓에서 정렬 예정.
+- `initMemoIndexedDB()`(`hongbutest.html:6683-6694`)는 스토어 누락 감지 시 DB 삭제→재생성하는 자가 복구 로직이 이미 있어 현재는 치명적 버그 없음. 단, **사용자 데이터 삭제 리스크**가 있으므로 신규 개선은 `hongbu` DB와 동일한 무삭제 방식으로 통일한다.
 
 ## 핸드오버 (Claude Code → Copilot 인계)
 

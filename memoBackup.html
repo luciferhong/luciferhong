@@ -53,6 +53,10 @@
       <label>시군구
         <select id="sigunguFilter" disabled><option value="">전체</option></select>
       </label>
+      <label style="flex-direction:row; align-items:center; gap:6px;">
+        <input type="checkbox" id="photosOnly" />
+        📷 포토메모만
+      </label>
       <button id="refreshRegions" class="secondary">🔄 지역 새로고침</button>
       <span id="aptStatus" class="muted">(아파트 데이터 자동 로드 대기)</span>
       <span class="counter">선택된 메모: <b id="selCount">0</b>건</span>
@@ -160,6 +164,7 @@
   const els = {
     sido: document.getElementById('sidoFilter'),
     sigungu: document.getElementById('sigunguFilter'),
+    photosOnly: document.getElementById('photosOnly'),
     refresh: document.getElementById('refreshRegions'),
     status: document.getElementById('aptStatus'),
     selCount: document.getElementById('selCount'),
@@ -168,6 +173,7 @@
     modal: document.getElementById('busyModal'),
     busyText: document.getElementById('busyText'),
   };
+  const isPhotosOnly = () => !!els.photosOnly?.checked;
   const setAptStatus = t => { els.status.textContent = t; };
 
   // 로딩 모달
@@ -728,8 +734,8 @@
     // 메모/포토가 동일한 지역 키를 쓰도록 SIG 인덱스를 먼저 준비
     await ensureSigRegionIndex();
 
-    // 1) apartmentNotes: aptIndex 매핑으로 지역 판별
-    if (aptIndex.size > 0) {
+    // 1) apartmentNotes: aptIndex 매핑으로 지역 판별 — "포토메모만"이면 단지메모 순회는 건너뜀
+    if (!isPhotosOnly() && aptIndex.size > 0) {
       await iterateNotes(n => {
         if (!hasMemoContent(n)) return;
         const r = regionFromNoteViaApt(n);
@@ -854,7 +860,9 @@
     const ts = koreaTime.toISOString().replace(/T/, '_').replace(/:/g, '-').replace(/\..+/, '');
 
     const head = document.createElement('div');
-    head.innerHTML = `<h3>📁 총 ${totalParts}개의 백업 파일 · 메모 ${selectedNoteCount}건 · 포토 ${selectedPhotoCount}건</h3>`;
+    head.innerHTML = isPhotosOnly()
+      ? `<h3>📁 총 ${totalParts}개의 백업 파일 · 포토메모 ${selectedPhotoCount}건</h3>`
+      : `<h3>📁 총 ${totalParts}개의 백업 파일 · 메모 ${selectedNoteCount}건 · 포토 ${selectedPhotoCount}건</h3>`;
     els.downloads.appendChild(head);
 
     for (let p = 1, i = 0; i < selectedRefsSnapshot.length; p++, i += chunkSize) {
@@ -936,7 +944,9 @@
 
         const a = document.createElement('a');
         a.href = url;
-        a.download = `홍부_메모백업_${ts}_part${partNo}_메모${outNotes.length}_포토${outPhotos.length}.json`;
+        a.download = isPhotosOnly()
+          ? `홍부_포토메모백업_${ts}_part${partNo}_포토${outPhotos.length}.json`
+          : `홍부_메모백업_${ts}_part${partNo}_메모${outNotes.length}_포토${outPhotos.length}.json`;
         document.body.appendChild(a);
         a.click();
         setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 800);
@@ -969,6 +979,15 @@
   els.sigungu.addEventListener('change', debounce(() => {
     updateSelectedCountFast();
   }, 80));
+
+  // "포토메모만" 토글: 캐시를 다시 구성해야 시도/시군구 드롭다운 카운트가 포토만으로 정확해진다.
+  els.photosOnly.addEventListener('change', async () => {
+    showBusy(isPhotosOnly() ? '포토메모만 재구성 중…' : '전체 메모 재구성 중…');
+    els.downloads.innerHTML = '';
+    await buildRegionCacheOnce();
+    hideBusy();
+    await rebuildFiltersFromCache(true);
+  });
 
   els.backup.addEventListener('click', backupSelectedNotes);
 
