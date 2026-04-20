@@ -6796,10 +6796,17 @@
             }
           }
 
-          // 로컬 승자 + 양쪽 공통의 로컬 레코드에 있는 이미지 모두 체크 (Drive에 없는 이름만 업로드)
+          // 로컬 승자 + 양쪽 공통의 로컬 레코드에 있는 이미지 체크 (Drive에 없는 이름만 업로드)
+          // D가 winner(toLocalMap)인 노트는 스킵 — 다른 기기가 삭제한 사진을 재업로드하지 않도록
           const tCollect = performance.now();
-          for (const [id, L] of Object.entries(localNotes)) addNoteUploads(id, L);
-          for (const [id, L] of Object.entries(localPhotos)) addPhotoUploads(id, L);
+          for (const [id, L] of Object.entries(localNotes)) {
+            if (noteResult.toLocalMap[id]) continue;
+            addNoteUploads(id, L);
+          }
+          for (const [id, L] of Object.entries(localPhotos)) {
+            if (photoResult.toLocalMap[id]) continue;
+            addPhotoUploads(id, L);
+          }
           __perfMark('collectUploadTasks',
             `uploadTasks=${uploadTasks.length} (note=${uploadTasks.filter(t => t.kind === 'note').length} photo=${uploadTasks.filter(t => t.kind === 'photo').length}) in ${Math.round(performance.now() - tCollect)}ms`);
           // 스킵 이유 진단 — 로컬 레코드가 있는데 skip된 게 하나라도 있으면 출력
@@ -7186,12 +7193,18 @@
               continue;
             }
             const L = localNotes[id];
-            // 로컬에 data 있는 기존 이미지는 유지, Drive 메타에는 imageFiles 없으므로 이미지 목록은 로컬 기준
+            const effectiveSgg5 = winner.sgg5 || L?.sgg5 || sgg5;
+            // D가 winner → 로컬 이미지 중 Drive 폴더에 실제 존재하는 것만 유지
+            // (다른 기기가 삭제한 사진을 로컬에서도 제거)
             const imgs = (L?.images || [])
-              .filter((it) => it?.addedAt && (__getImgData(it) || '').startsWith('data:'))
+              .filter((it) => {
+                if (!it?.addedAt || !(__getImgData(it) || '').startsWith('data:')) return false;
+                const fname = __aptImgFilename({ sgg5: effectiveSgg5, id }, it.addedAt);
+                return driveAptNameMap.has(fname);
+              })
               .map((it) => ({ data: __getImgData(it), addedAt: it.addedAt }));
             noteLocalPuts.push({
-              id, sgg5: winner.sgg5 || L?.sgg5 || sgg5,
+              id, sgg5: effectiveSgg5,
               memo: winner.memo || '', images: imgs,
               updatedAt: winner.updatedAt, deletedAt: null,
             });
