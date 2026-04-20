@@ -6162,8 +6162,8 @@
       // 비정상 DB 손실 감지 모달, 재시도 큐, 비용 가드 포함.
       // ================================
 
-      const __AUTO_SYNC_DEBOUNCE_DEFAULT_MS = 3000;
-      const __AUTO_SYNC_DEBOUNCE_THROTTLED_MS = 30000;
+      const __AUTO_SYNC_DEBOUNCE_DEFAULT_MS = 30000;
+      const __AUTO_SYNC_DEBOUNCE_THROTTLED_MS = 180000;
       let __autoSyncDebounceMs = __AUTO_SYNC_DEBOUNCE_DEFAULT_MS;
       const __autoSyncDirtySet = new Set();
       let __autoSyncTimer = null;
@@ -6899,7 +6899,7 @@
               // tombstone → 해당 aptId prefix 모든 Drive 파일 삭제
               const prefix = `apt_${sgg5}_${id}_`;
               for (const [fname, fid] of driveAptNameMap) {
-                if (fname.startsWith(prefix)) deleteTasks.push({ fid, fname });
+                if (fname.startsWith(prefix)) deleteTasks.push({ fid, fname, kind: 'apt' });
               }
               continue;
             }
@@ -6909,14 +6909,14 @@
             const prefix = `apt_${sgg5}_${id}_`;
             for (const [fname, fid] of driveAptNameMap) {
               if (!fname.startsWith(prefix)) continue;
-              if (!localFiles.has(fname)) deleteTasks.push({ fid, fname });
+              if (!localFiles.has(fname)) deleteTasks.push({ fid, fname, kind: 'apt' });
             }
           }
           for (const [id, winner] of Object.entries(photoResult.toDriveMap)) {
             if (winner.deletedAt) {
               const fname = __photoImgFilename(winner);
               const fid = drivePhotoNameMap.get(fname);
-              if (fid) deleteTasks.push({ fid, fname });
+              if (fid) deleteTasks.push({ fid, fname, kind: 'photo' });
               continue;
             }
             // 좌표 변경 등으로 과거 파일명이 다르면 옛 파일은 사용자가 Drive에서 직접 정리
@@ -6925,7 +6925,11 @@
             __syncProgressShow(`🔄 ${sName} Drive 정리 중... (${deleteTasks.length}개)`);
             const tDel = performance.now();
             for (const t of deleteTasks) {
-              try { await gapi.client.drive.files.delete({ fileId: t.fid }); }
+              try {
+                await gapi.client.drive.files.delete({ fileId: t.fid });
+                if (t.kind === 'apt') driveAptNameMap.delete(t.fname);
+                else if (t.kind === 'photo') drivePhotoNameMap.delete(t.fname);
+              }
               catch (e) {
                 window.hongbuDebugLog?.('ERR', '[sync] Drive 파일 삭제 실패', `${t.fname} ${e?.message || e}`);
               }
