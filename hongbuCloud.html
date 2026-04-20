@@ -6525,6 +6525,45 @@
         }
       }
 
+      // 동기화 오류 메시지 추출 — gapi / fetch / 일반 Error 대응
+      function __formatSyncErr(e) {
+        if (e == null) return '(unknown)';
+        if (typeof e === 'string') return e;
+        const gapiMsg = e?.result?.error?.message || e?.error?.message;
+        if (gapiMsg) {
+          const code = e?.result?.error?.code || e?.status || e?.code;
+          return code ? `${gapiMsg} (code=${code})` : gapiMsg;
+        }
+        if (e.message) return e.code ? `${e.message} (code=${e.code})` : e.message;
+        if (typeof e.body === 'string' && e.body) return e.body.slice(0, 300);
+        if (typeof e.status === 'number') return `HTTP ${e.status} ${e.statusText || ''}`.trim();
+        try { return JSON.stringify(e).slice(0, 500); } catch (_) {}
+        return String(e);
+      }
+
+      // 인증 실패(401) 감지. 403은 메시지가 토큰/인증 관련일 때만 포함.
+      function __isAuthError(e) {
+        const code = e?.result?.error?.code || e?.status;
+        if (code === 401) return true;
+        if (code === 403) {
+          const msg = e?.result?.error?.message || '';
+          return /authError|invalid|expired|token/i.test(msg);
+        }
+        return false;
+      }
+
+      // 저장된 토큰 폐기 + 재로그인 오버레이 노출
+      function __handleAuthExpired() {
+        try { localStorage.removeItem('__hongbuDriveToken'); } catch (_) {}
+        window.__gdriveAccessToken = null;
+        window.__gdriveReady = false;
+        try { gapi.client.setToken(null); } catch (_) {}
+        try { __gdriveUpdateAuthBtn(); } catch (_) {}
+        const overlay = document.getElementById('gdriveAuthOverlay');
+        if (overlay) overlay.style.display = 'flex';
+        try { showToast('🔑 Drive 로그인이 만료되었습니다. 다시 로그인해주세요.', 6000); } catch (_) {}
+      }
+
       // sgg5 단위 단일 동기화 — 파일명 기반 (filename prefix 매칭)
       // 규칙: apt_{sgg5}_{aptId}_{addedAt}.jpg / photo_{sgg5}_{lat6}_{lng6}_{addedAt}.jpg
       // opts.silent=true: 성공/경고 alert 생략(자동 동기화 경로). 오류만 토스트로 표시.
@@ -7268,6 +7307,17 @@
           }
           if (silent) {
             console.log('[sync:auto] 완료', lines.join(' / '));
+            // ▼ 자동 동기화도 상단 배너로 짧게 알림 (수동 경로의 UX와 동일)
+            try {
+              const el = document.getElementById('gdriveProgress');
+              if (el) {
+                el.textContent = title;
+                el.style.display = 'block';
+                setTimeout(() => {
+                  if (el.textContent === title) { el.style.display = 'none'; el.textContent = ''; }
+                }, 1500);
+              }
+            } catch (_) {}
             // 자동경로: 부분 실패가 있으면 오류만 토스트로 알림
             if (hasFail) {
               try { showToast(`⚠️ ${sName} 자동 동기화 일부 실패 — 디버그 로그 확인`, 5000); } catch (_) {}
@@ -7278,7 +7328,20 @@
 
         } catch (e) {
           __syncProgressHide();
-          console.error('[sync] 실패', e);
+          const errMsg = __formatSyncErr(e);
+          console.error('[sync] 실패', e, '→', errMsg);
+          try { window.hongbuDebugLog?.('ERR', '[sync] 실패', errMsg); } catch (_) {}
+
+          // 401 인증 실패: 저장된 토큰 삭제 + 재로그인 오버레이
+          if (__isAuthError(e)) {
+            __handleAuthExpired();
+            if (!silent) {
+              alert('❌ Drive 로그인이 만료되었습니다.\n우측 상단 🔑 로그인 버튼을 눌러 다시 연결해주세요.');
+            }
+            if (silent) throw e;
+            return;
+          }
+
           if (e?.code === 'SGG_PARSE_FAIL') {
             window.hongbuDebugLog?.('ERR', '[sync] Drive JSON 손상 감지 — 동기화 중단',
               `fileId=${e.fileId}\n응답 일부: ${e.bodySnippet || '(없음)'}`);
@@ -7289,9 +7352,9 @@
             }
           } else {
             if (silent) {
-              try { showToast(`❌ 자동 동기화 실패: ${e?.message || e}`, 6000); } catch (_) {}
+              try { showToast(`❌ 자동 동기화 실패: ${errMsg}`, 6000); } catch (_) {}
             } else {
-              alert('❌ 동기화 실패: ' + (e?.message || e));
+              alert('❌ 동기화 실패: ' + errMsg);
             }
           }
           if (silent) throw e; // 자동경로는 상위 __runAutoSyncFor의 catch에서 pending 재적재
