@@ -6556,6 +6556,16 @@
         return String(e);
       }
 
+      // 네트워크 에러(fetch 실패) 감지 — 브라우저별 메시지 변이 모두 커버
+      // Safari/WebKit: "Load failed" / Chrome: "Failed to fetch" / Firefox: "NetworkError..."
+      function __isNetworkError(e) {
+        if (!e) return false;
+        const msg = (e.message || String(e)).toLowerCase();
+        if (e.name === 'TypeError' && /load failed|failed to fetch|network/.test(msg)) return true;
+        if (/load failed|failed to fetch|network\s*error/.test(msg)) return true;
+        return false;
+      }
+
       // 인증 실패(401) 감지. 403은 메시지가 토큰/인증 관련일 때만 포함.
       function __isAuthError(e) {
         const code = e?.result?.error?.code || e?.status;
@@ -7357,11 +7367,11 @@
         } catch (e) {
           __syncProgressHide();
           const errMsg = __formatSyncErr(e);
-          console.error('[sync] 실패', e, '→', errMsg);
-          try { window.hongbuDebugLog?.('ERR', '[sync] 실패', errMsg); } catch (_) {}
+          console.error('[sync] 실패', e, '→', errMsg); // DevTools는 항상
 
           // 401 인증 실패: 저장된 토큰 삭제 + 재로그인 오버레이
           if (__isAuthError(e)) {
+            try { window.hongbuDebugLog?.('ERR', '[sync] 실패(인증)', errMsg); } catch (_) {}
             __handleAuthExpired();
             if (!silent) {
               alert('❌ Drive 로그인이 만료되었습니다.\n우측 상단 🔑 로그인 버튼을 눌러 다시 연결해주세요.');
@@ -7370,6 +7380,38 @@
             return;
           }
 
+          // 네트워크 에러: pending 큐에 적재하고 자동 재시도 유도
+          // - 1차 실패: 디버그 창에 ERR 대신 INFO로만 기록 (사용자에게 "에러"로 보이지 않도록)
+          // - 반복 실패: ERR로 전환하여 디버그 창에 노출
+          if (__isNetworkError(e)) {
+            let attempts = 0;
+            try {
+              const q = __readPendingQueue();
+              const entry = q.find(x => x.sgg5 === sgg5);
+              if (entry) attempts = Number(entry.attempts) || 0;
+            } catch (_) {}
+            try { __enqueuePending(sgg5); } catch (_) {}
+
+            if (attempts === 0) {
+              try { window.hongbuDebugLog?.('INFO', '[sync] 네트워크 일시 장애 — 자동 재시도 예정', `${sName} ${errMsg}`); } catch (_) {}
+              if (!silent) {
+                try { showToast(`⚠️ ${sName} 네트워크 일시 장애 — 자동 재시도됩니다.`, 3000); } catch (_) {}
+              }
+            } else {
+              try { window.hongbuDebugLog?.('ERR', '[sync] 네트워크 실패 반복', `${sName} ${errMsg} (attempts=${attempts + 1})`); } catch (_) {}
+              const userMsg = `⚠️ ${sName} 네트워크 연결 실패 — 인터넷 상태를 확인해주세요.`;
+              if (silent) {
+                try { showToast(userMsg, 6000); } catch (_) {}
+              } else {
+                alert(userMsg + `\n\n(상세: ${errMsg}, 재시도 ${attempts + 1}회)`);
+              }
+            }
+            if (silent) throw e;
+            return;
+          }
+
+          // 기타 에러: ERR 로그
+          try { window.hongbuDebugLog?.('ERR', '[sync] 실패', errMsg); } catch (_) {}
           if (e?.code === 'SGG_PARSE_FAIL') {
             window.hongbuDebugLog?.('ERR', '[sync] Drive JSON 손상 감지 — 동기화 중단',
               `fileId=${e.fileId}\n응답 일부: ${e.bodySnippet || '(없음)'}`);
