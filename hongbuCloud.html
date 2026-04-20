@@ -6289,6 +6289,10 @@
         const schedule = (s) => {
           if (!s) { console.warn('[autoSync] sgg5 추론 실패 — 스킵', { ctx }); return; }
           __autoSyncDirtySet.add(String(s));
+          // 캐시: __findMostRecentlyEditedSgg5의 IDB 전수 스캔 회피
+          try {
+            localStorage.setItem('__hongbuLastEditedSgg5', JSON.stringify({ sgg5: String(s), ts: Date.now() }));
+          } catch (_) {}
           console.log(`[autoSync] 스케줄 OK sgg5=${s}, debounce=${__autoSyncDebounceMs}ms, deferred=${__autoSyncDeferred}`);
           if (__autoSyncDeferred) return;
           if (__autoSyncTimer) clearTimeout(__autoSyncTimer);
@@ -6323,6 +6327,17 @@
 
       // 로컬 IDB에서 updatedAt 최댓값을 가진 레코드의 sgg5 찾기
       async function __findMostRecentlyEditedSgg5() {
+        // localStorage 캐시 우선 — IDB 전수 스캔 회피 (쓰기 훅에서 매번 갱신됨)
+        try {
+          const raw = localStorage.getItem('__hongbuLastEditedSgg5');
+          if (raw) {
+            const cached = JSON.parse(raw);
+            if (cached && cached.sgg5) {
+              return { sgg5: String(cached.sgg5), ts: Number(cached.ts) || 0 };
+            }
+          }
+        } catch (_) {}
+        // 캐시 미스 (최초 실행 또는 localStorage 삭제됨) — IDB 전수 스캔 fallback
         try { await __loadAptIndexForSync(); } catch (_) {}
         await initMemoIndexedDB();
         const db = await __openHongbuMemoDb();
