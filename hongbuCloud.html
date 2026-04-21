@@ -4612,7 +4612,13 @@
 
       function __syncProgressShow(msg) {
         if (window.__syncProgressSuppress) {
-          // 자동 동기화 경로: 상단 UI 대신 디버그 로그만 남김
+          // 자동 동기화 경로: 상단 UI 대신 디버그 로그만 남김.
+          // 기존 UI가 켜져 있으면 hide (이전 메시지가 "멈춘 것처럼" 남는 걸 방지).
+          const el = document.getElementById("gdriveProgress");
+          if (el && el.style.display !== "none") {
+            el.style.display = "none";
+            el.textContent = "";
+          }
           try { window.hongbuDebugLog?.('INFO', '[sync:auto]', msg); } catch (_) {}
           return;
         }
@@ -4815,6 +4821,18 @@
         if (typeof __ensureUpdatedAtMigration === 'function') {
           __ensureUpdatedAtMigration().catch(e => console.warn('[migration] 실패(무시):', e));
         }
+
+        // 이미지 중복 제거 마이그레이션 — 초기 로드 블로킹 방지 위해 idle 시점에 지연 실행 (1회만)
+        setTimeout(() => {
+          if (typeof __dedupeApartmentImagesMigration === 'function') {
+            __dedupeApartmentImagesMigration().catch(e => console.warn('[migration:aptImgDedup] 실패(무시):', e));
+          }
+        }, 20000);
+        setTimeout(() => {
+          if (typeof __dedupePhotoMemosMigration === 'function') {
+            __dedupePhotoMemosMigration().catch(e => console.warn('[migration:photoDedup] 실패(무시):', e));
+          }
+        }, 45000);
 
         // ▼ 자동 동기화 sgg5 추론을 위해 apt.json 인덱스 선제 로드
         if (typeof __loadAptIndexForSync === 'function') {
@@ -5947,6 +5965,173 @@
         }
       }
 
+      // apartmentNotes 의 images[] 에 DataURL 중복이 있으면 가장 작은 addedAt 만 남기고 제거.
+      // 변경된 sgg5 는 __scheduleAutoSync 로 트리거 → Drive orphan jpg 는 __sggSync 가 자동 정리.
+      const __APT_IMG_DEDUP_FLAG = '__hongbuAptImgDedupDone';
+      async function __dedupeApartmentImagesMigration() {
+        if (localStorage.getItem(__APT_IMG_DEDUP_FLAG) === 'v1') return;
+        let changedNotes = 0;
+        let droppedImgs = 0;
+        const dirtySgg5 = new Map(); // sgg5 → aptId (대표)
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          if (!db.objectStoreNames.contains('apartmentNotes')) {
+            db.close();
+            localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v1');
+            return;
+          }
+          await new Promise((resolve) => {
+            const tx = db.transaction(['apartmentNotes'], 'readwrite');
+            tx.oncomplete = resolve;
+            tx.onerror = resolve;
+            tx.onabort = resolve;
+            const store = tx.objectStore('apartmentNotes');
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) return;
+              const v = c.value;
+              if (Array.isArray(v.images) && v.images.length > 1) {
+                const best = new Map(); // data → { addedAt, img }
+                for (const img of v.images) {
+                  const data = __getImgData(img);
+                  if (!data) continue;
+                  const addedAt = (img && typeof img === 'object' && img.addedAt) ? img.addedAt : 0;
+                  const existing = best.get(data);
+                  if (!existing || addedAt < existing.addedAt) {
+                    best.set(data, { addedAt, img });
+                  }
+                }
+                const deduped = [...best.values()]
+                  .map((x) => x.img)
+                  .sort((a, b) => (a?.addedAt || 0) - (b?.addedAt || 0));
+                if (deduped.length < v.images.length) {
+                  droppedImgs += (v.images.length - deduped.length);
+                  v.images = deduped;
+                  v.updatedAt = Date.now();
+                  c.update(v);
+                  changedNotes++;
+                  const sgg5 = String(v.sgg5 || '').trim();
+                  const aptId = String(v.id || '').trim();
+                  if (sgg5 && !dirtySgg5.has(sgg5)) dirtySgg5.set(sgg5, aptId);
+                }
+              }
+              c.continue();
+            };
+          });
+          db.close();
+          localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v1');
+          const msg = `changedNotes=${changedNotes}, droppedImgs=${droppedImgs}`;
+          console.log('[migration:aptImgDedup] 완료', msg);
+          window.hongbuDebugLog?.('INFO', '[migration:aptImgDedup]', msg);
+          // Drive orphan 정리 트리거 (로그인 여부와 무관 — scheduleAutoSync 가 내부 확인)
+          for (const [sgg5, aptId] of dirtySgg5) {
+            try { __scheduleAutoSync(sgg5, { aptId }); } catch (_) {}
+          }
+        } catch (e) {
+          console.warn('[migration:aptImgDedup] 실패 (무시):', e);
+          window.hongbuDebugLog?.('ERR', '[migration:aptImgDedup] 실패', e?.message || e);
+        }
+      }
+
+      // photoMemos 중 (lat6, lng6, note, imageDataUrl) 시그니처 동일 레코드 중복 제거.
+      // 가장 오래된 createdAt 만 남기고 나머지는 __photoMemoDelete 로 제거 (scheduleAutoSync 자동).
+      // 메모리 절약: 1차 패스는 커서로 경량 시그니처(앞 256자)만 수집, 2차로 후보 id 만 다시 조회.
+      const __PHOTO_DEDUP_FLAG = '__hongbuPhotoDedupDone';
+      async function __dedupePhotoMemosMigration() {
+        if (localStorage.getItem(__PHOTO_DEDUP_FLAG) === 'v1') return;
+        let removedCount = 0;
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          if (!db.objectStoreNames.contains('photoMemos')) {
+            db.close();
+            localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v1');
+            return;
+          }
+
+          // 1차: 커서로 경량 시그니처만 수집 (DataURL 은 앞 256자 + length 만)
+          const lightBuckets = new Map(); // sig → [{id, createdAt}]
+          await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            tx.oncomplete = resolve;
+            tx.onerror = resolve;
+            tx.onabort = resolve;
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) return;
+              const v = c.value;
+              const id = String(v?.id || '').trim();
+              const data = v?.imageDataUrl || '';
+              if (id && typeof v.lat === 'number' && typeof v.lng === 'number' && data) {
+                const lat6 = v.lat.toFixed(6);
+                const lng6 = v.lng.toFixed(6);
+                const note = String(v.note || '');
+                const sig = `${lat6}|${lng6}|${note}|${data.length}|${data.substring(0, 256)}`;
+                if (!lightBuckets.has(sig)) lightBuckets.set(sig, []);
+                lightBuckets.get(sig).push({ id, createdAt: v.createdAt || 0 });
+              }
+              c.continue();
+            };
+          });
+
+          // 후보 id 수집 (중복 가능성 있는 그룹만)
+          const candidateIds = [];
+          for (const group of lightBuckets.values()) {
+            if (group.length < 2) continue;
+            for (const it of group) candidateIds.push(it.id);
+          }
+
+          // 2차: 후보 id 만 store.get 으로 조회하여 DataURL 전체 비교
+          const dataMap = new Map(); // id → DataURL
+          if (candidateIds.length > 0) {
+            await new Promise((resolve) => {
+              const tx = db.transaction(['photoMemos'], 'readonly');
+              tx.oncomplete = resolve;
+              tx.onerror = resolve;
+              tx.onabort = resolve;
+              const store = tx.objectStore('photoMemos');
+              for (const id of candidateIds) {
+                const r = store.get(id);
+                r.onsuccess = () => {
+                  const rec = r.result;
+                  if (rec) dataMap.set(id, rec.imageDataUrl || '');
+                };
+              }
+            });
+          }
+          db.close();
+
+          const toDelete = [];
+          for (const group of lightBuckets.values()) {
+            if (group.length < 2) continue;
+            const exact = new Map();
+            for (const it of group) {
+              const data = dataMap.get(it.id) || '';
+              if (!exact.has(data)) exact.set(data, []);
+              exact.get(data).push(it);
+            }
+            for (const exGroup of exact.values()) {
+              if (exGroup.length < 2) continue;
+              exGroup.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+              for (let i = 1; i < exGroup.length; i++) toDelete.push(exGroup[i].id);
+            }
+          }
+          for (const id of toDelete) {
+            try { await __photoMemoDelete(id); removedCount++; } catch (_) {}
+          }
+          localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v1');
+          const msg = `removed=${removedCount}, candidates=${candidateIds.length}`;
+          console.log('[migration:photoDedup] 완료', msg);
+          window.hongbuDebugLog?.('INFO', '[migration:photoDedup]', msg);
+        } catch (e) {
+          console.warn('[migration:photoDedup] 실패 (무시):', e);
+          window.hongbuDebugLog?.('ERR', '[migration:photoDedup] 실패', e?.message || e);
+        }
+      }
+
       // Drive sgg JSON 정규화 (schemaVersion 1 → 2)
       function __normalizeSggData(data, type) {
         const key = type === 'notes' ? 'notes' : 'photos';
@@ -6578,12 +6763,20 @@
       }
 
       // 저장된 토큰 폐기 + 재로그인 오버레이 노출
-      function __handleAuthExpired() {
+      // opts.silent=true: 오버레이/토스트 생략 후 silent 재로그인(prompt:"none") 자동 시도.
+      //                   GIS callback 은 성공/실패 모두 비동기이므로 호출 직후엔 UI 개입 없이 끝남.
+      //                   silent 재발급에 실패하면 GIS 표준 callback 오류 처리에서 오버레이 노출로 폴백.
+      function __handleAuthExpired(opts) {
+        const silent = !!(opts && opts.silent);
         try { localStorage.removeItem('__hongbuDriveToken'); } catch (_) {}
         window.__gdriveAccessToken = null;
         window.__gdriveReady = false;
         try { gapi.client.setToken(null); } catch (_) {}
         try { __gdriveUpdateAuthBtn(); } catch (_) {}
+        if (silent) {
+          try { __gdriveSignIn({ silent: true }); } catch (_) {}
+          return;
+        }
         const overlay = document.getElementById('gdriveAuthOverlay');
         if (overlay) overlay.style.display = 'flex';
         try { showToast('🔑 Drive 로그인이 만료되었습니다. 다시 로그인해주세요.', 6000); } catch (_) {}
@@ -6610,7 +6803,7 @@
         if (window.__sggSyncBusy) {
           const busySgg = window.__sggSyncBusySgg || '?';
           const msg = `⚠️ 다른 sync가 진행 중입니다 (${busySgg}). 끝날 때까지 기다려주세요.`;
-          window.hongbuDebugLog?.('ERR', '[sync] 중복 실행 차단', `요청 sgg5=${sgg5} / 진행 중=${busySgg}`);
+          window.hongbuDebugLog?.('INFO', '[sync] 중복 실행 차단', `요청 sgg5=${sgg5} / 진행 중=${busySgg}`);
           if (!silent) alert(msg);
           return;
         }
@@ -7369,14 +7562,16 @@
           const errMsg = __formatSyncErr(e);
           console.error('[sync] 실패', e, '→', errMsg); // DevTools는 항상
 
-          // 401 인증 실패: 저장된 토큰 삭제 + 재로그인 오버레이
+          // 401 인증 실패: 자동 경로면 조용히 재로그인, 수동 경로면 오버레이+알림
           if (__isAuthError(e)) {
+            if (silent) {
+              try { window.hongbuDebugLog?.('INFO', '[sync] 실패(인증) — 자동 재로그인 시도'); } catch (_) {}
+              __handleAuthExpired({ silent: true });
+              throw e;
+            }
             try { window.hongbuDebugLog?.('ERR', '[sync] 실패(인증)', errMsg); } catch (_) {}
             __handleAuthExpired();
-            if (!silent) {
-              alert('❌ Drive 로그인이 만료되었습니다.\n우측 상단 🔑 로그인 버튼을 눌러 다시 연결해주세요.');
-            }
-            if (silent) throw e;
+            alert('❌ Drive 로그인이 만료되었습니다.\n우측 상단 🔑 로그인 버튼을 눌러 다시 연결해주세요.');
             return;
           }
 
@@ -7517,10 +7712,22 @@
           }
           if (window.__gdriveReady) {
             try { sgg5DriveList = await __getDriveSggList(); }
-            catch (e) { window.hongbuDebugLog?.('ERR', '[sync] Drive 목록 조회 실패', e?.message || e); }
+            catch (e) {
+              if (__isAuthError(e)) {
+                try { window.hongbuDebugLog?.('INFO', '[sync] Drive 세션 만료 — 재로그인 시도'); } catch (_) {}
+                __handleAuthExpired({ silent: true });
+              } else {
+                window.hongbuDebugLog?.('ERR', '[sync] Drive 목록 조회 실패', e?.message || e);
+              }
+            }
           }
         } catch (e) {
-          window.hongbuDebugLog?.('ERR', '[sync] 지역 목록 조회 실패', e?.message || e);
+          if (__isAuthError(e)) {
+            try { window.hongbuDebugLog?.('INFO', '[sync] Drive 세션 만료 — 재로그인 시도'); } catch (_) {}
+            __handleAuthExpired({ silent: true });
+          } else {
+            window.hongbuDebugLog?.('ERR', '[sync] 지역 목록 조회 실패', e?.message || e);
+          }
         }
         __syncProgressHide();
 
@@ -8937,6 +9144,122 @@
         });
       }
 
+      // 아파트 메모 파일 input change 리스너를 1회만 등록 (showApartmentInfo 재호출 시 누적 방지)
+      function setupAptMemoInputHandlerOnce() {
+        if (window.__aptMemoInputsBound) return;
+        const imageInput = document.getElementById("imageInput");
+        const cameraInput = document.getElementById("cameraInput");
+        if (!imageInput && !cameraInput) return;
+        window.__aptMemoInputsBound = true;
+
+        const handleImageFiles = (files) => {
+          const apartmentId = __currentMemoAptId;
+          if (!apartmentId) return;
+          if (!files || !files.length) return;
+          const preview = document.getElementById("imagePreview");
+          if (preview) preview.style.display = "flex";
+          for (const file of files) {
+            const reader = new FileReader();
+            reader.onload = async function (event) {
+              const originalDataUrl = event.target.result;
+              let imageDataUrl = originalDataUrl;
+              try {
+                imageDataUrl = await compressImage(originalDataUrl, 1600, 0.82);
+              } catch (err) {
+                console.warn("이미지 압축 실패. 원본으로 저장합니다.", err);
+                imageDataUrl = originalDataUrl;
+              }
+
+              if (!aptMemoImageList[apartmentId]) {
+                aptMemoImageList[apartmentId] = [];
+              }
+              // 중복 방지: 같은 DataURL 이미 있으면 skip
+              if (aptMemoImageList[apartmentId].some((item) => __getImgData(item) === imageDataUrl)) return;
+              const imgItem = { data: imageDataUrl, addedAt: Date.now() + aptMemoImageList[apartmentId].length };
+              aptMemoImageList[apartmentId].push(imgItem);
+
+              const wrapper = document.createElement("div");
+              wrapper.style.position = "relative";
+              wrapper.style.display = "inline-block";
+              wrapper.style.marginRight = "6px";
+              wrapper.style.width = "60px";
+              wrapper.style.height = "60px";
+
+              const canvas = document.createElement("canvas");
+              canvas.width = 60;
+              canvas.height = 60;
+              canvas.style.border = "1px solid #ccc";
+              canvas.style.borderRadius = "4px";
+              canvas.style.cursor = "pointer";
+              canvas.title = "미리보기";
+
+              const ctx = canvas.getContext("2d");
+              const img = new Image();
+              img.onload = () => ctx.drawImage(img, 0, 0, 60, 60);
+              img.src = imageDataUrl;
+
+              canvas.onclick = (e) => {
+                e.stopPropagation();
+                const list = aptMemoImageList[apartmentId] || [];
+                const dataList = list.map(__getImgData);
+                const idx = dataList.indexOf(imageDataUrl);
+                openModalImage(imageDataUrl, dataList, idx);
+              };
+
+              const deleteBtn = document.createElement("div");
+              deleteBtn.textContent = "✕";
+              deleteBtn.style.position = "absolute";
+              deleteBtn.style.top = "2px";
+              deleteBtn.style.right = "2px";
+              deleteBtn.style.background = "rgba(0,0,0,0.6)";
+              deleteBtn.style.color = "white";
+              deleteBtn.style.borderRadius = "50%";
+              deleteBtn.style.width = "16px";
+              deleteBtn.style.height = "16px";
+              deleteBtn.style.display = "flex";
+              deleteBtn.style.alignItems = "center";
+              deleteBtn.style.justifyContent = "center";
+              deleteBtn.style.cursor = "pointer";
+              deleteBtn.style.fontSize = "12px";
+
+              deleteBtn.onclick = (e) => {
+                e.stopPropagation();
+                if (confirm("사진을 삭제합니다")) {
+                  aptMemoImageList[apartmentId] = aptMemoImageList[apartmentId].filter((i) => __getImgData(i) !== imageDataUrl);
+                  wrapper.remove();
+                  const previewEl = document.getElementById("imagePreview");
+                  if (previewEl && previewEl.children.length === 0) {
+                    previewEl.style.display = "none";
+                  }
+                }
+              };
+
+              wrapper.appendChild(canvas);
+              wrapper.appendChild(deleteBtn);
+              const previewEl = document.getElementById("imagePreview");
+              if (previewEl) {
+                previewEl.appendChild(wrapper);
+                previewEl.scrollLeft = previewEl.scrollWidth;
+              }
+            };
+            reader.readAsDataURL(file);
+          }
+        };
+
+        if (imageInput) {
+          imageInput.addEventListener("change", (e) => {
+            handleImageFiles(e.target.files);
+            e.target.value = "";
+          });
+        }
+        if (cameraInput) {
+          cameraInput.addEventListener("change", (e) => {
+            handleImageFiles(e.target.files);
+            e.target.value = "";
+          });
+        }
+      }
+
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
         if (document.getElementById("toggleSiseMap").checked) return;
@@ -9082,114 +9405,7 @@
 
         loadNote(apartmentId);
 
-        setTimeout(() => {
-          const imageInput = document.getElementById("imageInput");
-          const cameraInput = document.getElementById("cameraInput");
-          const preview = document.getElementById("imagePreview");
-
-          const handleImageFiles = (files) => {
-            if (!files.length) return;
-            preview.style.display = "flex";
-            for (const file of files) {
-              const reader = new FileReader();
-              reader.onload = async function (event) {
-                const originalDataUrl = event.target.result;
-
-                // ✅ DataURL 저장 방식은 그대로 두고, 저장 직전에 리사이즈/재압축하여 용량만 줄임
-                let imageDataUrl = originalDataUrl;
-                try {
-                  // 긴 변 1600px 제한 + JPEG 품질 0.82 (원하면 값 조정 가능)
-                  imageDataUrl = await compressImage(originalDataUrl, 1600, 0.82);
-                } catch (err) {
-                  console.warn("이미지 압축 실패. 원본으로 저장합니다.", err);
-                  imageDataUrl = originalDataUrl;
-                }
-
-                if (!aptMemoImageList[apartmentId]) {
-                  aptMemoImageList[apartmentId] = [];
-                }
-                // [파일명 기반] {data, addedAt} 객체로 저장 — saveNote 시 addedAt 확정/보정
-                const imgItem = { data: imageDataUrl, addedAt: Date.now() + aptMemoImageList[apartmentId].length };
-                aptMemoImageList[apartmentId].push(imgItem);
-
-                const wrapper = document.createElement("div");
-                wrapper.style.position = "relative";
-                wrapper.style.display = "inline-block";
-                wrapper.style.marginRight = "6px";
-                wrapper.style.width = "60px";
-                wrapper.style.height = "60px";
-
-                const canvas = document.createElement("canvas");
-                canvas.width = 60;
-                canvas.height = 60;
-                canvas.style.border = "1px solid #ccc";
-                canvas.style.borderRadius = "4px";
-                canvas.style.cursor = "pointer";
-                canvas.title = "미리보기";
-
-                const ctx = canvas.getContext("2d");
-                const img = new Image();
-                img.onload = () => ctx.drawImage(img, 0, 0, 60, 60);
-                img.src = imageDataUrl;
-
-                canvas.onclick = (e) => {
-                  e.stopPropagation();
-                  const list = aptMemoImageList[apartmentId] || [];
-                  const dataList = list.map(__getImgData);
-                  const idx = dataList.indexOf(imageDataUrl);
-                  openModalImage(imageDataUrl, dataList, idx);
-                };
-
-                const deleteBtn = document.createElement("div");
-                deleteBtn.textContent = "✕";
-                deleteBtn.style.position = "absolute";
-                deleteBtn.style.top = "2px";
-                deleteBtn.style.right = "2px";
-                deleteBtn.style.background = "rgba(0,0,0,0.6)";
-                deleteBtn.style.color = "white";
-                deleteBtn.style.borderRadius = "50%";
-                deleteBtn.style.width = "16px";
-                deleteBtn.style.height = "16px";
-                deleteBtn.style.display = "flex";
-                deleteBtn.style.alignItems = "center";
-                deleteBtn.style.justifyContent = "center";
-                deleteBtn.style.cursor = "pointer";
-                deleteBtn.style.fontSize = "12px";
-
-                deleteBtn.onclick = (e) => {
-                  e.stopPropagation();
-                  if (confirm("사진을 삭제합니다")) {
-                    aptMemoImageList[apartmentId] = aptMemoImageList[apartmentId].filter((i) => __getImgData(i) !== imageDataUrl);
-                    wrapper.remove();
-                    if (preview.children.length === 0) {
-                      preview.style.display = "none";
-                    }
-                  }
-                };
-
-                wrapper.appendChild(canvas);
-                wrapper.appendChild(deleteBtn);
-                preview.appendChild(wrapper);
-                preview.scrollLeft = preview.scrollWidth;
-              };
-              reader.readAsDataURL(file);
-            }
-          };
-
-          if (imageInput) {
-            imageInput.addEventListener("change", (e) => {
-              handleImageFiles(e.target.files);
-              e.target.value = "";
-            });
-          }
-
-          if (cameraInput) {
-            cameraInput.addEventListener("change", (e) => {
-              handleImageFiles(e.target.files);
-              e.target.value = "";
-            });
-          }
-        }, 0);
+        setupAptMemoInputHandlerOnce();
 
         showSiseVer2DataToggle(apartmentId);
       }
@@ -10756,14 +10972,6 @@
             };
 
             await __photoMemoPut(rec);
-            // 경량 인덱스에 추가 (Blob 없이)
-            window.__photoMemoIndex.push({
-              id: rec.id,
-              lat: rec.lat,
-              lng: rec.lng,
-              createdAt: rec.createdAt,
-              note: rec.note,
-            });
             window.__photoMemoPendingCoord = null;
 
             // 포토메모 체크박스 ON일 때만 즉시 마커 생성
@@ -12874,6 +13082,13 @@ min-height: 24px;
                   const existingAddedAt = (img && typeof img === 'object' && img.addedAt) ? img.addedAt : null;
                   return { data, addedAt: existingAddedAt || (now + i) };
                 }).filter(Boolean);
+                // 최종 방어: DataURL 기준 중복 제거
+                const __seenImgData = new Set();
+                toSave.images = toSave.images.filter((img) => {
+                  if (__seenImgData.has(img.data)) return false;
+                  __seenImgData.add(img.data);
+                  return true;
+                });
                 toSave.updatedAt = now;
                 toSave.deletedAt = null;
 
