@@ -4617,8 +4617,10 @@
         if (window.__syncProgressSuppress) {
           // 자동 동기화 경로: 상단 UI 대신 디버그 로그만 남김.
           // 기존 UI가 켜져 있으면 hide (이전 메시지가 "멈춘 것처럼" 남는 걸 방지).
+          // 단, 완료 배너가 표시 중(__syncCompletionBannerUntil 타임락)이면 건드리지 않는다.
           const el = document.getElementById("gdriveProgress");
-          if (el && el.style.display !== "none") {
+          const bannerLocked = window.__syncCompletionBannerUntil && Date.now() < window.__syncCompletionBannerUntil;
+          if (el && el.style.display !== "none" && !bannerLocked) {
             el.style.display = "none";
             el.textContent = "";
           }
@@ -7580,19 +7582,25 @@
           }
           if (silent) {
             console.log('[sync:auto] 완료', lines.join(' / '));
-            // ▼ 자동 동기화도 상단 배너로 짧게 알림 (수동 경로의 UX와 동일)
-            try {
-              const el = document.getElementById('gdriveProgress');
-              if (el) {
-                el.textContent = title;
-                el.style.display = 'block';
-                setTimeout(() => {
-                  if (el.textContent === title) { el.style.display = 'none'; el.textContent = ''; }
-                }, 1500);
-              }
-            } catch (_) {}
-            // 자동경로: 부분 실패가 있으면 오류만 토스트로 알림
-            if (hasFail) {
+            // ▼ 자동 동기화는 진행 중에는 화면 미표시. 성공 시에만 "동기화 완료" 배너를 상단에 1.5초 노출.
+            //    후속 pending flush 가 곧바로 __syncProgressShow 를 호출해 배너가 지워지는 race 는
+            //    __syncCompletionBannerUntil 타임락(__syncProgressShow 내부)으로 보호된다.
+            if (!hasFail) {
+              try {
+                const el = document.getElementById('gdriveProgress');
+                if (el) {
+                  const banner = '✅ 동기화 완료';
+                  el.textContent = banner;
+                  el.style.display = 'block';
+                  window.__syncCompletionBannerUntil = Date.now() + 1500;
+                  setTimeout(() => {
+                    if (el.textContent === banner) { el.style.display = 'none'; el.textContent = ''; }
+                    window.__syncCompletionBannerUntil = 0;
+                  }, 1500);
+                }
+              } catch (_) {}
+            } else {
+              // 자동경로: 부분 실패는 배너 없이 토스트로만 알림
               try { showToast(`⚠️ ${sName} 자동 동기화 일부 실패 — 디버그 로그 확인`, 5000); } catch (_) {}
             }
           } else {
