@@ -6622,16 +6622,35 @@
         };
       }
 
+      // sggSyncBusy 플래그가 false 가 될 때까지 폴링. maxMs 초과 시 false 반환.
+      async function __waitForSyncIdle(maxMs) {
+        const pollMs = 500;
+        const start = Date.now();
+        while (window.__sggSyncBusy) {
+          if (Date.now() - start > maxMs) return false;
+          await new Promise(r => setTimeout(r, pollMs));
+        }
+        return true;
+      }
+
       // 로그인 직후: 최근 수정 지역 dry-run → 변경 있으면 사용자 확인 모달 → 확인 시 동기화
+      // 다른 sync 가 진행 중이면 최대 2분 대기 후 dry-run 을 다시 돌려, 그래도 할 일이 남아 있을 때만 팝업을 띄움.
+      // 사용자 확인 후 race 로 다시 busy 가 되면 한 번 더 기다린 뒤 재검증한다.
       async function __postLoginSyncCheck() {
         try {
+          const idle = await __waitForSyncIdle(120000);
+          if (!idle) {
+            console.warn('[autoSync:postLogin] sync busy 2분 초과 — 이번 주기 skip, 다음 flush 에서 처리');
+            return;
+          }
+
           const { sgg5, ts } = await __findMostRecentlyEditedSgg5();
           if (!sgg5) { console.log('[autoSync:postLogin] 수정 이력 없음'); return; }
           console.log(`[autoSync:postLogin] 최근 수정 지역 sgg5=${sgg5}, ts=${ts ? new Date(ts).toLocaleString() : 'N/A'}`);
 
           const diff = await __sggDryRunDiff(sgg5);
           if (!diff.hasChanges) {
-            console.log('[autoSync:postLogin] 드라이브와 동일 — 동기화 불필요');
+            console.log('[autoSync:postLogin] 드라이브와 동일 — 동기화 불필요 (팝업 미표시)');
             return;
           }
 
@@ -6650,12 +6669,31 @@
 
           let go = false;
           try { go = window.confirm(msg); } catch (_) {}
-          if (go) {
-            console.log('[autoSync:postLogin] 사용자 확인 → 수동 경로로 __sggSync 실행 (진행 UI + 결과 alert 표시)');
-            await __sggSync(sgg5); // silent 옵션 없음 → 상단 진행 UI + 완료/실패 alert 정상 표시
-          } else {
+          if (!go) {
             console.log('[autoSync:postLogin] 사용자 취소');
+            return;
           }
+
+          // 사용자 OK — confirm 읽는 동안 다른 sync 가 시작됐을 수 있으므로 idle 재대기
+          if (window.__sggSyncBusy) {
+            console.log('[autoSync:postLogin] confirm 후 busy 재발생 — idle 대기 (최대 2분)');
+            const idle2 = await __waitForSyncIdle(120000);
+            if (!idle2) {
+              console.warn('[autoSync:postLogin] confirm 후 busy 2분 초과 — 자동 큐에 맡김');
+              try { __enqueuePending(sgg5); } catch (_) {}
+              try { showToast('☁️ 다른 동기화가 진행 중입니다. 끝나면 자동 재시도됩니다.', 4000); } catch (_) {}
+              return;
+            }
+            // idle 된 뒤 변경이 이미 해소됐을 수 있으므로 재확인
+            const diff2 = await __sggDryRunDiff(sgg5);
+            if (!diff2.hasChanges) {
+              console.log('[autoSync:postLogin] busy 해제 후 재확인 — 동기화 불필요');
+              return;
+            }
+          }
+
+          console.log('[autoSync:postLogin] 사용자 확인 → 수동 경로로 __sggSync 실행');
+          await __sggSync(sgg5);
         } catch (e) {
           console.warn('[autoSync:postLogin] 실패:', e);
         }
@@ -6777,13 +6815,13 @@
         window.__gdriveReady = false;
         try { gapi.client.setToken(null); } catch (_) {}
         try { __gdriveUpdateAuthBtn(); } catch (_) {}
-        if (silent) {
-          try { __gdriveSignIn({ silent: true }); } catch (_) {}
-          return;
-        }
+        // 자동경로: 제스처 없는 상태에서 prompt:'none' 호출은 GSI popup 차단 에러([GSI_LOGGER])를 유발하므로 호출하지 않는다.
+        // 토큰만 폐기하고 오버레이를 띄워, 다음 사용자 제스처에서 수동 재로그인하도록 유도한다.
         const overlay = document.getElementById('gdriveAuthOverlay');
         if (overlay) overlay.style.display = 'flex';
-        try { showToast('🔑 Drive 로그인이 만료되었습니다. 다시 로그인해주세요.', 6000); } catch (_) {}
+        if (!silent) {
+          try { showToast('🔑 Drive 로그인이 만료되었습니다. 다시 로그인해주세요.', 6000); } catch (_) {}
+        }
       }
 
       // sgg5 단위 단일 동기화 — 파일명 기반 (filename prefix 매칭)
