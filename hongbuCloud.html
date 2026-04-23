@@ -5974,7 +5974,7 @@
       // 변경된 sgg5 는 __scheduleAutoSync 로 트리거 → Drive orphan jpg 는 __sggSync 가 자동 정리.
       const __APT_IMG_DEDUP_FLAG = '__hongbuAptImgDedupDone';
       async function __dedupeApartmentImagesMigration() {
-        if (localStorage.getItem(__APT_IMG_DEDUP_FLAG) === 'v1') return;
+        if (localStorage.getItem(__APT_IMG_DEDUP_FLAG) === 'v2') return;
         let changedNotes = 0;
         let droppedImgs = 0;
         const dirtySgg5 = new Map(); // sgg5 → aptId (대표)
@@ -5983,7 +5983,7 @@
           const db = await __openHongbuMemoDb();
           if (!db.objectStoreNames.contains('apartmentNotes')) {
             db.close();
-            localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v1');
+            localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v2');
             return;
           }
           await new Promise((resolve) => {
@@ -6026,7 +6026,7 @@
             };
           });
           db.close();
-          localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v1');
+          localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v2');
           const msg = `changedNotes=${changedNotes}, droppedImgs=${droppedImgs}`;
           console.log('[migration:aptImgDedup] 완료', msg);
           window.hongbuDebugLog?.('INFO', '[migration:aptImgDedup]', msg);
@@ -6045,14 +6045,14 @@
       // 메모리 절약: 1차 패스는 커서로 경량 시그니처(앞 256자)만 수집, 2차로 후보 id 만 다시 조회.
       const __PHOTO_DEDUP_FLAG = '__hongbuPhotoDedupDone';
       async function __dedupePhotoMemosMigration() {
-        if (localStorage.getItem(__PHOTO_DEDUP_FLAG) === 'v1') return;
+        if (localStorage.getItem(__PHOTO_DEDUP_FLAG) === 'v2') return;
         let removedCount = 0;
         try {
           await initMemoIndexedDB();
           const db = await __openHongbuMemoDb();
           if (!db.objectStoreNames.contains('photoMemos')) {
             db.close();
-            localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v1');
+            localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v2');
             return;
           }
 
@@ -6127,7 +6127,7 @@
           for (const id of toDelete) {
             try { await __photoMemoDelete(id); removedCount++; } catch (_) {}
           }
-          localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v1');
+          localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v2');
           const msg = `removed=${removedCount}, candidates=${candidateIds.length}`;
           console.log('[migration:photoDedup] 완료', msg);
           window.hongbuDebugLog?.('INFO', '[migration:photoDedup]', msg);
@@ -7327,7 +7327,11 @@
                 .map((it) => ({ data: __getImgData(it), addedAt: it.addedAt }));
               const byAddedAt = new Map(existingImgs.map((x) => [x.addedAt, x]));
               for (const entry of newImageEntries) byAddedAt.set(entry.addedAt, entry);
-              const finalImages = Array.from(byAddedAt.values()).sort((a, b) => a.addedAt - b.addedAt);
+              // 같은 사진이 서로 다른 addedAt 으로 중복 저장되는 것 차단 (data 기준 dedup)
+              const seenData = new Set();
+              const finalImages = Array.from(byAddedAt.values())
+                .sort((a, b) => a.addedAt - b.addedAt)
+                .filter((it) => it?.data && !seenData.has(it.data) && seenData.add(it.data));
               const record = {
                 id: noteId,
                 sgg5: meta.sgg5 || sgg5,
