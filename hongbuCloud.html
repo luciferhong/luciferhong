@@ -7883,16 +7883,21 @@
                   const tx = db.transaction(["apartmentNotes"], "readonly");
                   const store = tx.objectStore("apartmentNotes");
 
-                  const getReq = store.getKey ? store.getKey(id) : store.get(id);
+                  // ⚠️ tombstone 레코드({deletedAt:<ts>, memo:'', images:[]}) 를 "메모 있음" 으로 오판하면
+                  //    다른 기기에서 삭제한 단지에 아이콘만 남고 내용은 빈 상태가 된다.
+                  //    getKey 대신 get 으로 레코드를 받아 deletedAt / 실제 내용 존재 여부를 체크한다.
+                  const getReq = store.get(id);
                   getReq.onsuccess = () => {
-                    const exists = store.getKey
-                      ? getReq.result !== undefined && getReq.result !== null
-                      : !!getReq.result;
-                    window.__memoPresenceCache.set(id, exists);
+                    const rec = getReq.result;
+                    const hasContent = !!rec && !rec.deletedAt && (
+                      (typeof rec.memo === 'string' && rec.memo.trim().length > 0) ||
+                      (Array.isArray(rec.images) && rec.images.length > 0)
+                    );
+                    window.__memoPresenceCache.set(id, hasContent);
                     try {
                       db.close();
                     } catch (e) {} // ✅ 새로운 DB 연결 닫기
-                    resolve(exists);
+                    resolve(hasContent);
                   };
                   getReq.onerror = () => {
                     // 에러면 없는 것으로 처리(표기만)
