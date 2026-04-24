@@ -6785,13 +6785,23 @@
         return String(e);
       }
 
-      // 네트워크 에러(fetch 실패) 감지 — 브라우저별 메시지 변이 모두 커버
+      // 네트워크 에러(fetch 실패) 감지 — 브라우저별 메시지 변이 + gapi.client 포맷 모두 커버
       // Safari/WebKit: "Load failed" / Chrome: "Failed to fetch" / Firefox: "NetworkError..."
+      // gapi: { result: { error: { code: -1, message: "A network error occurred..." } } }
       function __isNetworkError(e) {
         if (!e) return false;
-        const msg = (e.message || String(e)).toLowerCase();
-        if (e.name === 'TypeError' && /load failed|failed to fetch|network/.test(msg)) return true;
-        if (/load failed|failed to fetch|network\s*error/.test(msg)) return true;
+        const code = e?.result?.error?.code ?? e?.status ?? e?.code;
+        if (code === -1) return true;
+        const parts = [
+          e.message,
+          e?.result?.error?.message,
+          e?.error?.message,
+          typeof e?.body === 'string' ? e.body : '',
+          String(e),
+        ];
+        const joined = parts.map((s) => String(s || '')).join(' | ').toLowerCase();
+        if (e?.name === 'TypeError' && /load failed|failed to fetch|network/.test(joined)) return true;
+        if (/load failed|failed to fetch|network\s*error|network error occurred/.test(joined)) return true;
         return false;
       }
 
@@ -7614,7 +7624,43 @@
         } catch (e) {
           __syncProgressHide();
           const errMsg = __formatSyncErr(e);
-          console.error('[sync] 실패', e, '→', errMsg); // DevTools는 항상
+
+          // 진입 계측 + 로그 throttle: 같은 sgg5에 대해 짧은 시간 반복 발화 시 2차 이후 압축.
+          // 지속 burst 원인(__sggSync 중복 호출 경로)을 count=3 시점에 스택 1회 기록해 추적.
+          window.__sggSyncCatchStats = window.__sggSyncCatchStats || new Map();
+          const __catchStat = window.__sggSyncCatchStats.get(sgg5) ||
+            { count: 0, firstAt: 0, lastLogAt: 0, resetTimer: null };
+          __catchStat.count++;
+          const __now = Date.now();
+          if (!__catchStat.firstAt) __catchStat.firstAt = __now;
+          const __shouldLog =
+            __catchStat.count <= 2 ||
+            (__now - __catchStat.lastLogAt) > 2000;
+          if (__shouldLog) {
+            __catchStat.lastLogAt = __now;
+            console.error('[sync] 실패', e, '→', errMsg,
+              `(sgg5=${sgg5}, catchCount=${__catchStat.count})`);
+          }
+          if (__catchStat.count === 3) {
+            try {
+              console.warn('[sync:trace] 동일 sgg5 catch burst — 호출 경로 스택',
+                new Error('sync-catch-burst').stack);
+              window.hongbuDebugLog?.('WARN', '[sync] catch burst 감지',
+                `sgg5=${sgg5} count=${__catchStat.count}`);
+            } catch (_) {}
+          }
+          if (__catchStat.resetTimer) clearTimeout(__catchStat.resetTimer);
+          __catchStat.resetTimer = setTimeout(() => {
+            const final = window.__sggSyncCatchStats?.get(sgg5);
+            if (final && final.count > 3) {
+              try {
+                window.hongbuDebugLog?.('ERR', '[sync] catch burst 종료',
+                  `sgg5=${sgg5} totalCount=${final.count} 기간=${Date.now() - final.firstAt}ms`);
+              } catch (_) {}
+            }
+            window.__sggSyncCatchStats?.delete(sgg5);
+          }, 10000);
+          window.__sggSyncCatchStats.set(sgg5, __catchStat);
 
           // 401 인증 실패: 자동 경로면 조용히 재로그인, 수동 경로면 오버레이+알림
           if (__isAuthError(e)) {
@@ -7659,8 +7705,10 @@
             return;
           }
 
-          // 기타 에러: ERR 로그
-          try { window.hongbuDebugLog?.('ERR', '[sync] 실패', errMsg); } catch (_) {}
+          // 기타 에러: ERR 로그 (burst 2차 이후 압축)
+          if (__shouldLog) {
+            try { window.hongbuDebugLog?.('ERR', '[sync] 실패', errMsg); } catch (_) {}
+          }
           if (e?.code === 'SGG_PARSE_FAIL') {
             window.hongbuDebugLog?.('ERR', '[sync] Drive JSON 손상 감지 — 동기화 중단',
               `fileId=${e.fileId}\n응답 일부: ${e.bodySnippet || '(없음)'}`);
