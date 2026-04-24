@@ -140,6 +140,22 @@ Uses `@capacitor-community/text-to-speech` (v6). iOS: `UIBackgroundModes: audio`
 
 **기능:** 지역/면적/단지 필터, X축 시작 시점 고정(stableOrder), forward-fill, RAF smoothstep 애니메이션, 1x~10x 배속.
 
+## shorts — YouTube 다운로드 웹앱
+
+**파일:** `shorts.html` + `shorts_server.py` (포트 7124, `127.0.0.1` 바인딩) + `ecosystem.config.js` PM2 `shorts` 앱
+
+**공개 URL:** `https://shorts.luciferhong.com/shorts.html` (Cloudflare Tunnel `hongbu-shorts` 경유 HTTPS). 토큰 `luciferhong2026` 쿼리 파라미터.
+
+**의존성:** `yt-dlp`(pip), `ffmpeg`(winget `Gyan.FFmpeg`), `cloudflared`(Windows 서비스)
+
+**외부 노출:** Cloudflare Tunnel. 집 PC의 cloudflared가 아웃바운드로 엣지에 연결 → `shorts.luciferhong.com`으로 공개. 공인 IP·포트포워딩·DDNS 불필요. config: `C:\Users\hoses\.cloudflared\config.yml`.
+
+**엔드포인트:** `/health`, `/`·`/shorts.html`(HTML 직접 서빙), `/info`, `/start`, `/progress`(SSE), `/file`, `/cancel`
+
+**기능:** URL 입력 → yt-dlp로 `bestvideo+bestaudio` MP4 머지 다운로드. SSE로 실시간 진행률·속도·ETA. 라이브는 `live_from_start: True`로 처음부터, 중단 버튼으로 부분 파일(`.ts`) 저장.
+
+**서버 로그:** `pm2 logs shorts --lines 50 --nostream` 또는 `C:\Users\hoses\.pm2\logs\shorts-*.log`
+
 ## hongbutest.html — 주요 아키텍처 패턴
 
 **시군구 필터 마커:** 시군구 미선택 시 `__xxxMarkerCache(Map)` 뷰포트 lazy, 선택 시 `__xxxMarkerPool(Array)` 풀 재빌드(`rebuildXxxPool()`). 변경 시 `applyRegionFilterUpdate()` → `Promise.all([rebuildSchoolPool, ...])`.
