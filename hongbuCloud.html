@@ -4519,9 +4519,14 @@
             callback: async (resp) => {
               const overlay = document.getElementById("gdriveAuthOverlay");
               if (resp.error) {
-                // 모든 OAuth 에러 → 오버레이 표시 (자동 로그인 실패 포함)
+                // 모든 OAuth 에러 → 오버레이 표시 (자동 로그인 실패 포함).
+                // silent 재발급 대기자(__gdrivePendingRenew)에게는 실패 통지 후 종료.
                 console.warn("OAuth 로그인 실패:", resp.error, resp.error_description || "");
+                // silent prompt 거부는 popup이 떠야 하는 정상 분기 — 오버레이로 수동 로그인 유도.
                 if (overlay) overlay.style.display = "flex";
+                if (typeof window.__gdrivePendingRenew === 'function') {
+                  try { window.__gdrivePendingRenew(false); } catch (_) {}
+                }
                 return;
               }
               // 로그인 성공 → 오버레이 닫기
@@ -4529,10 +4534,11 @@
               window.__gdriveAccessToken = resp.access_token;
               gapi.client.setToken({ access_token: resp.access_token });
               // 자동 로그인 플래그 + access_token 저장 (항상)
+              let expires_at = 0;
               try {
                 localStorage.setItem("__hongbuDriveAutoLogin", "1");
                 const expiresIn = Number(resp.expires_in) || 3600; // 초
-                const expires_at = Date.now() + (expiresIn * 1000 - 60000); // 1분 여유
+                expires_at = Date.now() + (expiresIn * 1000 - 60000); // 1분 여유
                 localStorage.setItem("__hongbuDriveToken", JSON.stringify({
                   access_token: resp.access_token,
                   expires_at,
@@ -4542,6 +4548,15 @@
                 await __gdriveOnSignedIn();
               } catch (e) {
                 console.error("로그인 후 초기화 실패:", e);
+              }
+              // 토큰/ready 세팅 + 초기화가 끝난 시점에 silent 재발급 대기자에게 성공 통지.
+              // (retry 호출자가 __gdriveReady=true / 새 토큰을 안전하게 사용할 수 있도록 마지막에 resolve)
+              if (typeof window.__gdrivePendingRenew === 'function') {
+                try { window.__gdrivePendingRenew(true); } catch (_) {}
+              }
+              // 다음 만료 5분 전 silent 재발급 예약 (페이지 장시간 체류 시 무중단 갱신)
+              if (expires_at) {
+                try { __gdriveScheduleRefresh(expires_at); } catch (_) {}
               }
             },
           });
@@ -4863,6 +4878,8 @@
                   const minsLeft = Math.round((tok.expires_at - Date.now()) / 60000);
                   console.log(`[gdrive] 저장된 토큰 복원 — 만료까지 ${minsLeft}분`);
                   __tokenRestored = true;
+                  // 만료 5분 전 silent 재발급 예약 (페이지 새로고침 후에도 무중단 갱신 유지)
+                  try { __gdriveScheduleRefresh(Number(tok.expires_at)); } catch (_) {}
                   (async () => {
                     try { await __gdriveOnSignedIn(); }
                     catch (e) {
@@ -6816,6 +6833,55 @@
         return false;
       }
 
+      // GIS silent 재발급. prompt:'none'은 popup이 아니라 iframe으로 동작하므로
+      // 사용자 제스처 없는 자동 경로에서도 popup 차단 경고를 일으키지 않는다.
+      // 결과는 initTokenClient callback에서 window.__gdrivePendingRenew(ok)로 전달.
+      // 8초 안에 callback이 안 오면 실패로 간주 (네트워크/iframe 차단 케이스).
+      function __gdriveRenewSilent() {
+        return new Promise((resolve) => {
+          if (!window.__gdriveTokenClient) { resolve(false); return; }
+          let settled = false;
+          const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            if (window.__gdrivePendingRenew === finish) window.__gdrivePendingRenew = null;
+            resolve(!!ok);
+          };
+          // 동시 다중 호출 방어: 직전 대기자를 false로 종결
+          if (typeof window.__gdrivePendingRenew === 'function') {
+            try { window.__gdrivePendingRenew(false); } catch (_) {}
+          }
+          window.__gdrivePendingRenew = finish;
+          setTimeout(() => finish(false), 8000);
+          try {
+            window.__gdriveTokenClient.requestAccessToken({ prompt: 'none' });
+          } catch (e) {
+            console.warn('[gdrive] silent 재발급 호출 실패:', e);
+            finish(false);
+          }
+        });
+      }
+
+      // 만료 5분 전 silent 재발급을 setTimeout으로 예약. 한 번에 하나만 유지.
+      // expires_at 자체가 이미 임박/지났으면 즉시 갱신.
+      function __gdriveScheduleRefresh(expires_at) {
+        const exp = Number(expires_at) || 0;
+        if (!exp) return;
+        if (window.__gdriveRefreshTimer) {
+          clearTimeout(window.__gdriveRefreshTimer);
+          window.__gdriveRefreshTimer = null;
+        }
+        const ms = exp - Date.now() - 5 * 60 * 1000;
+        if (ms <= 0) {
+          __gdriveRenewSilent().catch(() => {});
+          return;
+        }
+        window.__gdriveRefreshTimer = setTimeout(() => {
+          window.__gdriveRefreshTimer = null;
+          __gdriveRenewSilent().catch(() => {});
+        }, ms);
+      }
+
       // 저장된 토큰 폐기 + 재로그인 오버레이 노출
       // opts.silent=true: 오버레이/토스트 생략 후 silent 재로그인(prompt:"none") 자동 시도.
       //                   GIS callback 은 성공/실패 모두 비동기이므로 호출 직후엔 UI 개입 없이 끝남.
@@ -7662,14 +7728,30 @@
           }, 10000);
           window.__sggSyncCatchStats.set(sgg5, __catchStat);
 
-          // 401 인증 실패: 자동 경로면 조용히 재로그인, 수동 경로면 오버레이+알림
+          // 401 인증 실패: silent 재발급(prompt:'none', popup 안 뜸) 1회 시도 후 회복되면
+          // 동일 sgg5에 대해 1회 재시도. 그래도 실패면 자동 경로는 조용히 throw,
+          // 수동 경로는 오버레이+알림으로 사용자 재로그인 유도.
           if (__isAuthError(e)) {
+            const isAuthRetry = !!(opts && opts._authRetry);
+            if (!isAuthRetry) {
+              try { window.hongbuDebugLog?.('INFO', '[sync] 401 감지 — silent 재발급 후 재시도', `sgg5=${sgg5}`); } catch (_) {}
+              const renewed = await __gdriveRenewSilent();
+              if (renewed && window.__gdriveAccessToken) {
+                try { window.hongbuDebugLog?.('INFO', '[sync] silent 재발급 성공 — 1회 재시도', `sgg5=${sgg5}`); } catch (_) {}
+                // 재진입은 busy 가드(라인 6923)에 막히므로 현재 호출의 busy 플래그를 먼저 푼다.
+                // (outer finally가 나중에 한 번 더 false로 세팅하지만 idempotent)
+                window.__sggSyncBusy = false;
+                window.__sggSyncBusySgg = null;
+                return __sggSync(sgg5, Object.assign({}, opts || {}, { _authRetry: true }));
+              }
+              try { window.hongbuDebugLog?.('ERR', '[sync] silent 재발급 실패 — 수동 로그인 필요', `sgg5=${sgg5}`); } catch (_) {}
+            } else {
+              try { window.hongbuDebugLog?.('ERR', '[sync] 재시도에도 401 — 수동 로그인 필요', `sgg5=${sgg5}`); } catch (_) {}
+            }
             if (silent) {
-              try { window.hongbuDebugLog?.('INFO', '[sync] 실패(인증) — 자동 재로그인 시도'); } catch (_) {}
               __handleAuthExpired({ silent: true });
               throw e;
             }
-            try { window.hongbuDebugLog?.('ERR', '[sync] 실패(인증)', errMsg); } catch (_) {}
             __handleAuthExpired();
             alert('❌ Drive 로그인이 만료되었습니다.\n우측 상단 🔑 로그인 버튼을 눌러 다시 연결해주세요.');
             return;
