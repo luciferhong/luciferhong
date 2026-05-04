@@ -1800,6 +1800,7 @@
       <button id="completePolygonBtn" type="button">면적 그리기 완료</button>
       <button id="downloadPolygonBtn" type="button">면적 다운로드</button>
       <button id="uploadPolygonBtn" type="button">면적 불러오기</button>
+      <button id="clearPolygonBtn" type="button">면적 초기화</button>
       <input type="file" id="polygonRestoreInput" accept=".json" style="display: none" />
       <input type="file" id="gpxFileInput" style="display: none" accept=".gpx" />
       <div style="flex-basis: 100%"></div>
@@ -8168,9 +8169,41 @@ const originalBase64 = event.target.result;
           });
         }
 
-        // 면적 그리기 완료 — 그리기 모드 중일 때만 동작 (drawBtn 재클릭과 동일)
+        // 면적 그리기 완료 —
+        // 1) Naver DrawingManager의 commit 메서드가 있으면 직접 호출 (가장 안전)
+        // 2) 없으면 ESC keydown을 합성해 dispatch — keyCode/which를 getter로 강제 주입해
+        //    isTrusted=false임에도 keyCode를 보고 분기하는 핸들러가 인식하도록 시도.
+        // ⚠️ "drawBtn 토글 폴백"은 진행 중 점들을 폐기시키므로 사용하지 않는다.
+        //    commit에 실패하면 사용자가 직접 ESC를 누르거나 더블클릭으로 마무리한다.
         document.getElementById("completePolygonBtn")?.addEventListener("click", () => {
-          if (drawBtn && drawBtn.classList.contains("is-drawing")) drawBtn.click();
+          if (!drawBtn || !drawBtn.classList.contains("is-drawing")) return;
+          const dm = window.__polyDrawingManager;
+          // (1) drawingManager 내부 commit 메서드 시도
+          let committedVia = null;
+          const candidates = ["finishDrawing", "endDrawing", "completeDrawing", "_finishDrawing", "stopDrawing"];
+          for (const m of candidates) {
+            if (typeof dm?.[m] === "function") {
+              try { dm[m](); committedVia = m; break; } catch (_) {}
+            }
+          }
+          // (2) ESC keydown 합성 — 여러 target에 dispatch
+          if (!committedVia) {
+            const mapEl = document.getElementById("map");
+            const targets = [document, window, document.body, mapEl].filter(Boolean);
+            const makeEvt = (type) => {
+              const evt = new KeyboardEvent(type, {
+                key: "Escape", code: "Escape",
+                bubbles: true, cancelable: true, view: window,
+              });
+              try { Object.defineProperty(evt, "keyCode", { get: () => 27 }); } catch (_) {}
+              try { Object.defineProperty(evt, "which", { get: () => 27 }); } catch (_) {}
+              return evt;
+            };
+            targets.forEach((t) => {
+              try { t.dispatchEvent(makeEvt("keydown")); } catch (_) {}
+              try { t.dispatchEvent(makeEvt("keyup")); } catch (_) {}
+            });
+          }
         });
 
         // 면적그리기 다운로드 버튼
@@ -8190,6 +8223,11 @@ const originalBase64 = event.target.result;
           if (!file) return;
           await uploadPolygonMemos(file);
           e.target.value = "";
+        });
+
+        // 면적 초기화 버튼
+        document.getElementById("clearPolygonBtn")?.addEventListener("click", () => {
+          clearAllPolygonMemos();
         });
 
         const onDrawingAdded = (overlay) => {
@@ -9016,6 +9054,43 @@ const originalBase64 = event.target.result;
         } catch (e) {
           console.warn("면적그리기 다운로드 실패:", e);
           alert("면적그리기 다운로드 실패: " + (e?.message || e));
+        }
+      }
+
+      // 모든 면적그리기 일괄 삭제 (화면 + DB). 복구 불가 — confirm 필수.
+      async function clearAllPolygonMemos() {
+        const ok = confirm("⚠️ 모든 면적그리기를 삭제합니다.\n복구가 불가능합니다.\n계속하시겠습니까?");
+        if (!ok) return;
+        try {
+          // 1) 화면에서 모든 폴리곤 제거 (Map 변형 중이라 스냅샷 후 순회)
+          if (window.__polygonMemos) {
+            const polygons = Array.from(window.__polygonMemos.keys());
+            polygons.forEach((p) => {
+              try { removePolygonMemo(p); } catch (_) {}
+            });
+          }
+          // 2) DB에 잔여 레코드가 있을 가능성 대비 store 전체 비우기
+          await initMemoIndexedDB();
+          await new Promise((resolve, reject) => {
+            const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+            req.onerror = (e) => reject(e.target.error);
+            req.onsuccess = (e) => {
+              const db = e.target.result;
+              try {
+                const tx = db.transaction([POLYGON_STORE], "readwrite");
+                tx.objectStore(POLYGON_STORE).clear();
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
+              } catch (err) {
+                db.close();
+                reject(err);
+              }
+            };
+          });
+          alert("면적그리기를 모두 삭제했습니다.");
+        } catch (e) {
+          console.warn("면적 초기화 실패:", e);
+          alert("면적 초기화 실패: " + (e?.message || e));
         }
       }
 
