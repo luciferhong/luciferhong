@@ -3176,8 +3176,9 @@
         window.currentLocationMarker = new naver.maps.Marker({
           position: currentLocation,
           map: window.map,
+          zIndex: 10000000,
           icon: {
-            content: `<div style="width: 14px; height: 14px; background-color: red; border-radius: 50%; border: 3px solid white;"></div>`,
+            content: `<div style="width: 14px; height: 14px; background-color: red; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>`,
             anchor: new naver.maps.Point(7, 7),
           },
         });
@@ -8271,14 +8272,24 @@ const originalBase64 = event.target.result;
         renderPolygonMemoView(polygon, infoWindow);
         ensurePolygonMemoZoomBound(map);
 
-        // 폴리곤 클릭 → 색상 팔레트 (메모 입력도 팔레트에서 처리). 항상 폴리곤 centroid 근처에 표시.
+        // 폴리곤 클릭 → 색상 팔레트 (메모 입력도 팔레트에서 처리). 클릭한 픽셀 위치 옆에 표시.
         // 단, 그리기 모드 활성 중에는 새 폴리곤 그리기에 방해되지 않도록 색상 팔레트를 띄우지 않는다.
         try {
-          naver.maps.Event.addListener(polygon, "click", () => {
+          naver.maps.Event.addListener(polygon, "click", (e) => {
             const drawBtn = document.getElementById("drawPolygonBtn");
             if (drawBtn && drawBtn.classList.contains("is-drawing")) return;
-            const anchorCoord = new naver.maps.LatLng(centroid.lat, centroid.lng);
-            showPolygonColorPalette(polygon, anchorCoord, map);
+            // 클릭 위치를 지도 컨테이너 좌상단 기준 픽셀로 변환
+            const mapEl = document.getElementById("map");
+            let px = null, py = null;
+            if (mapEl && e && e.pointerEvent) {
+              const rect = mapEl.getBoundingClientRect();
+              px = e.pointerEvent.clientX - rect.left;
+              py = e.pointerEvent.clientY - rect.top;
+            } else if (e && e.offset) {
+              px = e.offset.x;
+              py = e.offset.y;
+            }
+            showPolygonColorPalette(polygon, { x: px, y: py }, map);
           });
         } catch (e) {}
       }
@@ -8306,7 +8317,7 @@ const originalBase64 = event.target.result;
         }
       }
 
-      function showPolygonColorPalette(polygon, anchorCoord, map) {
+      function showPolygonColorPalette(polygon, anchorPx, map) {
         // 기존 팔레트 + 리스너 정리 (지도에 한 번에 하나만)
         closePolygonColorPalette();
 
@@ -8445,21 +8456,22 @@ const originalBase64 = event.target.result;
         // 다음 frame에 실제 크기 측정 후 mapEl 안에 정확히 들어가도록 위치 결정
         requestAnimationFrame(() => {
           try {
-            const proj = map.getProjection();
-            const offset = proj.fromCoordToOffset(anchorCoord);
             const mw = mapEl.clientWidth;
             const mh = mapEl.clientHeight;
             const pw = wrap.offsetWidth;
             const ph = wrap.offsetHeight;
+            // anchorPx가 없거나 부분적으로 비어있으면 컨테이너 중앙으로 폴백
+            const ax = (anchorPx && isFinite(anchorPx.x)) ? anchorPx.x : mw / 2;
+            const ay = (anchorPx && isFinite(anchorPx.y)) ? anchorPx.y : mh / 2;
             const GAP = 14; // anchor와 팔레트 사이 간격
 
-            // 기본은 폴리곤 우측 아래에 배치
-            let l = offset.x + GAP;
-            let t = offset.y + GAP;
+            // 기본은 클릭 위치 우측 아래에 배치
+            let l = ax + GAP;
+            let t = ay + GAP;
             // 우측이 잘리면 좌측으로 뒤집기
-            if (l + pw > mw - 4) l = offset.x - pw - GAP;
+            if (l + pw > mw - 4) l = ax - pw - GAP;
             // 하단이 잘리면 위쪽으로 뒤집기
-            if (t + ph > mh - 4) t = offset.y - ph - GAP;
+            if (t + ph > mh - 4) t = ay - ph - GAP;
             // 그래도 mapEl 안에 들어오지 않으면 가장자리에 강제 clamp
             l = Math.max(4, Math.min(l, mw - pw - 4));
             t = Math.max(4, Math.min(t, mh - ph - 4));
