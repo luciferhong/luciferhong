@@ -1185,7 +1185,8 @@
       .poly-memo {
         position: relative;
         font-family: 'Malgun Gothic', 'Noto Sans KR', sans-serif;
-        font-size: 13px;
+        font-size: 12px;
+        font-weight: bold;
         background: #fff;
         border: 1px solid #cbd5e1;
         border-radius: 0.6em;
@@ -1194,7 +1195,7 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        max-width: 22em;
+        max-width: 14.5em;
       }
       /* 액션 버튼은 폰트 크기에 영향받지 않도록 px 절대값으로 고정 → 작은 폴리곤에서도 박스 안에 정확히 위치 */
       .poly-memo-actions {
@@ -1225,8 +1226,6 @@
         justify-content: center;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
       }
-      .poly-memo-x { background: #94a3b8; }
-      .poly-memo-x:hover { background: #64748b; }
       .poly-memo-trash { background: #ef4444; font-size: 10px; }
       .poly-memo-trash:hover { background: #b91c1c; }
 
@@ -1332,7 +1331,7 @@
         white-space: pre-wrap;
         word-break: break-all;
         overflow-wrap: anywhere;
-        max-height: 8em;
+        max-height: 5.3em;
         overflow-y: auto;
         padding: 0.15em 0.3em;
         border-radius: 0.3em;
@@ -1764,6 +1763,7 @@
 
       <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
+      <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기</label>
       <div
         id="locationPopup"
         style="
@@ -1797,6 +1797,9 @@
       <button id="uploadGPX">GPX 불러오기</button>
       <button id="continuePolyline">GPX 이어 그리기</button>
       <button id="drawPolygonBtn" type="button">면적 그리기</button>
+      <button id="downloadPolygonBtn" type="button">면적 다운로드</button>
+      <button id="uploadPolygonBtn" type="button">면적 불러오기</button>
+      <input type="file" id="polygonRestoreInput" accept=".json" style="display: none" />
       <input type="file" id="gpxFileInput" style="display: none" accept=".gpx" />
       <div style="flex-basis: 100%"></div>
       <button onclick="window.open('https://luciferhong.github.io/luciferhong/population.html', '_blank')">
@@ -4610,7 +4613,7 @@
       // - 결과는 캐시(Map)하여 반복 조회 방지
       // ================================
       const HONGBU_DB_VERSION = 7;
-      const HONGBU_MEMO_DB_VERSION = 5;
+      const HONGBU_MEMO_DB_VERSION = 6;
 
       window.__memoPresenceCache = window.__memoPresenceCache || new Map();
       window.__memoPresencePending = window.__memoPresencePending || new Map();
@@ -5793,6 +5796,28 @@
         });
       }
 
+      // ✅ 면적그리기(폴리곤 메모) 표시 토글
+      document.getElementById("togglePolygonMemo")?.addEventListener("change", (e) => {
+        const visible = !!e.target.checked;
+        if (!window.__polygonMemos) return;
+        window.__polygonMemos.forEach((iw, polygon) => {
+          try {
+            polygon.setMap(visible ? window.map : null);
+            if (!visible) {
+              try { iw.close(); } catch (_) {}
+            } else if (
+              polygon._memoState && polygon._memoState.text &&
+              !polygon.__memoDisabled &&
+              polygon.__memoCentroid
+            ) {
+              try {
+                iw.open(window.map, new naver.maps.LatLng(polygon.__memoCentroid.lat, polygon.__memoCentroid.lng));
+              } catch (_) {}
+            }
+          } catch (_) {}
+        });
+      });
+
       // ✅ 행정동경계 토글
       const toggleAdminBoundaryEl = document.getElementById("toggleAdminBoundary");
       if (toggleAdminBoundaryEl) {
@@ -6903,12 +6928,18 @@ const originalBase64 = event.target.result;
               const store = db.createObjectStore("photoMemos", { keyPath: "id" });
               store.createIndex("createdAt", "createdAt", { unique: false });
             }
+            // ✅ 면적그리기 폴리곤 메모 (좌표·색·메모·라벨 상태)
+            if (!db.objectStoreNames.contains("polygonMemos")) {
+              const store = db.createObjectStore("polygonMemos", { keyPath: "id" });
+              store.createIndex("createdAt", "createdAt", { unique: false });
+            }
           };
 
           request.onsuccess = function (event) {
             const db = event.target.result;
 
             // ✅ iOS 꼬임 복구: 이미 v4인데 store가 없으면 DB를 지우고 재생성 유도
+            // (polygonMemos는 누락 체크에서 제외 — 자가 복구가 photoMemos 데이터를 삭제할 위험 차단)
             if (!db.objectStoreNames.contains("apartmentNotes") || !db.objectStoreNames.contains("photoMemos")) {
               db.close();
               const del = indexedDB.deleteDatabase("hongbuMemo");
@@ -8108,6 +8139,10 @@ const originalBase64 = event.target.result;
         });
         window.__polyDrawingManager = drawingManager;
 
+        // ✅ IndexedDB(polygonMemos)에서 저장된 폴리곤 메모 복원
+        // attachPolygonMemoUI 안에서는 save를 호출하지 않으므로 무한 저장 루프 없음.
+        try { restorePolygonMemos(map); } catch (e) { console.warn("폴리곤 복원 호출 실패:", e); }
+
         // 그리기 모드 토글 시 모든 기존 폴리곤의 클릭 가능 여부도 같이 토글한다.
         // (그리기 중 기존 폴리곤이 hit-test로 클릭을 가로채면 새 꼭짓점이 안 찍히는 문제 방지)
         const setAllPolygonsClickable = (clickable) => {
@@ -8131,6 +8166,25 @@ const originalBase64 = event.target.result;
             }
           });
         }
+
+        // 면적그리기 다운로드 버튼
+        document.getElementById("downloadPolygonBtn")?.addEventListener("click", () => {
+          downloadPolygonMemos();
+        });
+
+        // 면적그리기 불러오기 버튼 → 숨김 file input 트리거
+        const polygonRestoreInput = document.getElementById("polygonRestoreInput");
+        document.getElementById("uploadPolygonBtn")?.addEventListener("click", () => {
+          if (!polygonRestoreInput) return;
+          polygonRestoreInput.value = ""; // 같은 파일 재선택 가능
+          polygonRestoreInput.click();
+        });
+        polygonRestoreInput?.addEventListener("change", async (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          await uploadPolygonMemos(file);
+          e.target.value = "";
+        });
 
         const onDrawingAdded = (overlay) => {
           // 그리기 완료 후 자동으로 그리기 모드 종료 (의도치 않은 추가 그리기 방지)
@@ -8188,8 +8242,10 @@ const originalBase64 = event.target.result;
 
           if (coords.length < 3) return;
 
+          // 표시 체크박스가 꺼져 있으면 신규 폴리곤도 즉시 숨긴다 (데이터는 저장)
+          const polyVisible = document.getElementById("togglePolygonMemo")?.checked !== false;
           const polygon = new naver.maps.Polygon({
-            map: map,
+            map: polyVisible ? map : null,
             paths: [coords],
             fillColor: "#00aa00",
             fillOpacity: 0.25,
@@ -8202,6 +8258,7 @@ const originalBase64 = event.target.result;
           polygon.__alpha = 0.25;
 
           attachPolygonMemoUI(polygon, map);
+          savePolygonMemo(polygon).catch(console.warn);
         };
 
         // Naver Drawing 모듈은 버전에 따라 이벤트명이 다름.
@@ -8357,6 +8414,7 @@ const originalBase64 = event.target.result;
             // 메모 비움 → 라벨 닫기
             try { iw.close(); } catch (e) {}
           }
+          savePolygonMemo(polygon).catch(console.warn);
         };
         memoInput.addEventListener("change", saveMemo);
         memoInput.addEventListener("blur", saveMemo);
@@ -8407,6 +8465,7 @@ const originalBase64 = event.target.result;
           });
           polygon.__color = c;
           polygon.__alpha = aFinal;
+          savePolygonMemo(polygon).catch(console.warn);
         };
         hexInput.addEventListener("change", applyCustom);
         alphaInput.addEventListener("change", applyCustom);
@@ -8432,6 +8491,7 @@ const originalBase64 = event.target.result;
             });
             polygon.__color = c;
             hexInput.value = c;
+            savePolygonMemo(polygon).catch(console.warn);
             closePolygonColorPalette();
           });
           grid.appendChild(sw);
@@ -8535,8 +8595,9 @@ const originalBase64 = event.target.result;
         const w = Math.abs(maxX - minX);
         const h = Math.abs(maxY - minY);
         const shorter = Math.min(w, h);
-        // 짧은 변의 약 1/12 정도 폰트 크기 — 작은 폴리곤은 6px, 큰 폴리곤은 18px로 클램프
-        const fontSize = Math.max(6, Math.min(18, shorter / 12));
+        // 폴리곤 짧은 변 ~1/12 비율의 동적 폰트, 단지마커 단지명과 같은 12px가 상한.
+        // 작은 폴리곤은 그에 맞춰 작아지고, 큰 폴리곤은 12px에서 멈춘다.
+        const fontSize = Math.min(12, shorter / 12);
         wrap.style.fontSize = fontSize.toFixed(2) + "px";
         // 라벨 max-width를 폴리곤 화면 너비에 동기화 → 폴리곤보다 옆으로 튀어나가지 않음
         const maxW = Math.max(40, w * 0.95);
@@ -8679,7 +8740,7 @@ const originalBase64 = event.target.result;
         });
       }
 
-      // 라벨 우상단 액션 버튼 컨테이너(휴지통=폴리곤 삭제, ×=라벨만 닫기)를 생성한다.
+      // 라벨 우상단 액션 버튼 컨테이너(휴지통=폴리곤 삭제)를 생성한다.
       // 편집 모드(textarea 존재)일 때는 mousedown 단계에서 처리해 textarea blur 자동저장이
       // 의도치 않게 동작하지 않도록 막고, 닫기 전에 입력 내용을 저장한다.
       function buildPolygonMemoActions(polygon, infoWindow, wrap) {
@@ -8697,23 +8758,7 @@ const originalBase64 = event.target.result;
           removePolygonMemo(polygon);
         });
 
-        const xBtn = document.createElement("button");
-        xBtn.type = "button";
-        xBtn.className = "poly-memo-action poly-memo-x";
-        xBtn.textContent = "×";
-        xBtn.title = "라벨 닫기 (폴리곤은 남음)";
-        xBtn.addEventListener("mousedown", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          // X = 라벨 영구 삭제 (메모 텍스트도 함께 비움). mouseover에도 다시 안 뜸.
-          if (!polygon._memoState) polygon._memoState = { text: "", mode: "view" };
-          polygon._memoState.text = "";
-          polygon.__memoDisabled = true;
-          closePolygonMemoLabel(polygon);
-        });
-
         actions.appendChild(trashBtn);
-        actions.appendChild(xBtn);
         return actions;
       }
 
@@ -8793,8 +8838,227 @@ const originalBase64 = event.target.result;
           if (polygon && typeof polygon.setMap === "function") polygon.setMap(null);
         } catch (e) {}
         try {
+          if (polygon && polygon.__memoId) {
+            deletePolygonMemoFromDB(polygon.__memoId).catch(console.warn);
+          }
+        } catch (e) {}
+        try {
           if (window.__polygonMemos) window.__polygonMemos.delete(polygon);
         } catch (e) {}
+      }
+
+      // ================================
+      // 면적그리기(폴리곤 메모) IndexedDB 영속화
+      // - hongbuMemo DB의 polygonMemos 스토어에 좌표·색·메모·라벨 상태 저장
+      // - 사용자 액션(그리기/색변경/메모입력/라벨끄기/삭제) 시점에서만 호출
+      // - 복원은 attachPolygonMemoUI()를 그대로 통과시켜 신규 그리기와 동일 UI
+      // ================================
+      const POLYGON_STORE = "polygonMemos";
+
+      function _polygonRecord(polygon) {
+        if (!polygon.__memoId) {
+          polygon.__memoId = `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        }
+        const coords = (polygon.__memoCoords || []).map((p) => {
+          if (p && typeof p.lat === "function") return { lat: p.lat(), lng: p.lng() };
+          if (p && typeof p.y === "number") return { lat: p.y, lng: p.x };
+          return { lat: p.lat, lng: p.lng };
+        });
+        return {
+          id: polygon.__memoId,
+          coords,
+          color: polygon.__color || "#00aa00",
+          alpha: polygon.__alpha != null ? polygon.__alpha : 0.25,
+          memoText: (polygon._memoState && polygon._memoState.text) || "",
+          labelDisabled: !!polygon.__memoDisabled,
+          createdAt: polygon.__createdAt || (polygon.__createdAt = Date.now()),
+          updatedAt: Date.now(),
+        };
+      }
+
+      async function savePolygonMemo(polygon) {
+        if (!polygon || !Array.isArray(polygon.__memoCoords) || polygon.__memoCoords.length < 3) return;
+        await initMemoIndexedDB();
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onerror = (e) => reject(e.target.error);
+          req.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+              const tx = db.transaction([POLYGON_STORE], "readwrite");
+              tx.objectStore(POLYGON_STORE).put(_polygonRecord(polygon));
+              tx.oncomplete = () => { db.close(); resolve(); };
+              tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
+            } catch (err) {
+              db.close();
+              reject(err);
+            }
+          };
+        });
+      }
+
+      async function deletePolygonMemoFromDB(id) {
+        if (!id) return;
+        await initMemoIndexedDB();
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onerror = (e) => reject(e.target.error);
+          req.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+              const tx = db.transaction([POLYGON_STORE], "readwrite");
+              tx.objectStore(POLYGON_STORE).delete(id);
+              tx.oncomplete = () => { db.close(); resolve(); };
+              tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
+            } catch (err) {
+              db.close();
+              reject(err);
+            }
+          };
+        });
+      }
+
+      async function loadAllPolygonMemos() {
+        await initMemoIndexedDB();
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onerror = (e) => reject(e.target.error);
+          req.onsuccess = (e) => {
+            const db = e.target.result;
+            try {
+              const tx = db.transaction([POLYGON_STORE], "readonly");
+              const getAll = tx.objectStore(POLYGON_STORE).getAll();
+              getAll.onsuccess = () => { db.close(); resolve(getAll.result || []); };
+              getAll.onerror = (ev) => { db.close(); reject(ev.target.error); };
+            } catch (err) {
+              db.close();
+              reject(err);
+            }
+          };
+        });
+      }
+
+      // 한 폴리곤 record를 지도에 렌더링 + window.__polygonMemos 등록.
+      // restorePolygonMemos(IndexedDB) / uploadPolygonMemos(JSON 파일) 양쪽에서 공유.
+      function _attachRestoredPolygon(rec, map, visible) {
+        if (!rec || !Array.isArray(rec.coords) || rec.coords.length < 3) return null;
+        const path = rec.coords.map((p) => new naver.maps.LatLng(p.lat, p.lng));
+        const polygon = new naver.maps.Polygon({
+          map: visible ? map : null,
+          paths: [path],
+          fillColor: rec.color || "#00aa00",
+          fillOpacity: rec.alpha != null ? rec.alpha : 0.25,
+          strokeColor: rec.color || "#00aa00",
+          strokeOpacity: 0,
+          strokeWeight: 0,
+          clickable: true,
+        });
+        polygon.__color = rec.color || "#00aa00";
+        polygon.__alpha = rec.alpha != null ? rec.alpha : 0.25;
+        polygon.__memoId = rec.id || `pm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        polygon.__createdAt = rec.createdAt || Date.now();
+        attachPolygonMemoUI(polygon, map);
+        if (polygon._memoState) polygon._memoState.text = rec.memoText || "";
+        polygon.__memoDisabled = !!rec.labelDisabled;
+        const iw = window.__polygonMemos.get(polygon);
+        if (iw && rec.memoText && !rec.labelDisabled && visible && polygon.__memoCentroid) {
+          try { renderPolygonMemoView(polygon, iw); } catch (_) {}
+          try {
+            iw.open(map, new naver.maps.LatLng(polygon.__memoCentroid.lat, polygon.__memoCentroid.lng));
+          } catch (_) {}
+        }
+        return polygon;
+      }
+
+      async function restorePolygonMemos(map) {
+        try {
+          if (!map || !window.naver || !naver.maps) return;
+          const records = await loadAllPolygonMemos();
+          if (!records.length) return;
+          const visible = document.getElementById("togglePolygonMemo")?.checked !== false;
+          records.forEach((rec) => _attachRestoredPolygon(rec, map, visible));
+        } catch (e) {
+          console.warn("폴리곤 메모 복원 실패:", e);
+        }
+      }
+
+      // 면적그리기 전체를 JSON 파일로 다운로드 (DB에 저장된 모든 폴리곤 메모)
+      async function downloadPolygonMemos() {
+        try {
+          const records = await loadAllPolygonMemos();
+          if (!records.length) {
+            alert("내보낼 면적그리기가 없습니다.");
+            return;
+          }
+          const payload = {
+            version: 1,
+            exportedAt: new Date().toISOString(),
+            polygons: records,
+          };
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+          a.download = `polygonMemos_${ts}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => {
+            try { URL.revokeObjectURL(url); } catch (_) {}
+          }, 1000);
+        } catch (e) {
+          console.warn("면적그리기 다운로드 실패:", e);
+          alert("면적그리기 다운로드 실패: " + (e?.message || e));
+        }
+      }
+
+      // JSON 파일에서 면적그리기 불러오기 (병합 모드 — 동일 id는 화면/DB 모두 교체)
+      async function uploadPolygonMemos(file) {
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          // 형식 호환: 배열 그대로 또는 { polygons: [...] } 둘 다 허용
+          const records = Array.isArray(data) ? data : (data && Array.isArray(data.polygons) ? data.polygons : []);
+          if (!records.length) {
+            alert("불러올 면적그리기 데이터가 없습니다.");
+            return;
+          }
+          const map = window.map;
+          if (!map || !window.naver || !naver.maps) {
+            alert("지도가 준비되지 않았습니다.");
+            return;
+          }
+          const visible = document.getElementById("togglePolygonMemo")?.checked !== false;
+          let imported = 0;
+          let skipped = 0;
+          for (const rec of records) {
+            if (!rec || !Array.isArray(rec.coords) || rec.coords.length < 3) {
+              skipped++;
+              continue;
+            }
+            // 같은 id의 폴리곤이 화면에 이미 있으면 먼저 제거 (DB도 같이 삭제됨)
+            if (rec.id && window.__polygonMemos) {
+              for (const [poly] of window.__polygonMemos) {
+                if (poly && poly.__memoId === rec.id) {
+                  try { removePolygonMemo(poly); } catch (_) {}
+                  break;
+                }
+              }
+            }
+            const polygon = _attachRestoredPolygon(rec, map, visible);
+            if (!polygon) {
+              skipped++;
+              continue;
+            }
+            try { await savePolygonMemo(polygon); } catch (_) {}
+            imported++;
+          }
+          alert(`면적그리기 ${imported}개 불러옴 (건너뜀: ${skipped})`);
+        } catch (e) {
+          console.warn("면적그리기 불러오기 실패:", e);
+          alert("면적그리기 불러오기 실패: " + (e?.message || e));
+        }
       }
 
       function setupPhotoMemoAddMode(map) {
