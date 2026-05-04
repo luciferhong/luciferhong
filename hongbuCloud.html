@@ -11621,39 +11621,82 @@
           });
         }
 
+        // 모바일에서 마지막 vertex가 누락되는 문제 대응:
+        // Naver Drawing은 PC에서 mousemove로 preview 위치를 추적하다가 ESC 시 그 preview를
+        // 마지막 vertex로 사용한다. 모바일은 mousemove가 없어 마지막 탭이 preview 상태로 남고,
+        // ESC 시 폐기된다. 사용자의 마지막 탭 좌표를 따로 기록해 둔 뒤, 완료 시 그 위치에
+        // 합성 dblclick을 dispatch해 명시적으로 closing vertex를 만든다.
+        const __mapEl0 = document.getElementById("map");
+        if (__mapEl0 && !window.__polyLastTapTrackerReady) {
+          window.__polyLastTapTrackerReady = true;
+          window.__polyLastTapPos = null;
+          const recordTap = (e) => {
+            let x, y;
+            if (e.changedTouches && e.changedTouches.length) {
+              x = e.changedTouches[0].clientX;
+              y = e.changedTouches[0].clientY;
+            } else if (typeof e.clientX === "number") {
+              x = e.clientX;
+              y = e.clientY;
+            }
+            if (typeof x === "number" && typeof y === "number") {
+              window.__polyLastTapPos = { x, y };
+            }
+          };
+          __mapEl0.addEventListener("touchend", recordTap, { capture: true, passive: true });
+          __mapEl0.addEventListener("click", recordTap, { capture: true });
+          __mapEl0.addEventListener("mouseup", recordTap, { capture: true });
+        }
+
         // 면적 그리기 완료 —
         // 1) Naver DrawingManager의 commit 메서드가 있으면 직접 호출 (가장 안전)
-        // 2) 없으면 ESC keydown을 합성해 dispatch — keyCode/which를 getter로 강제 주입해
-        //    isTrusted=false임에도 keyCode를 보고 분기하는 핸들러가 인식하도록 시도.
-        // ⚠️ "drawBtn 토글 폴백"은 진행 중 점들을 폐기시키므로 사용하지 않는다.
-        //    commit에 실패하면 사용자가 직접 ESC를 누르거나 더블클릭으로 마무리한다.
+        // 2) 마지막 탭 위치가 있으면 그 좌표에 dblclick 합성 — Naver가 폴리곤을 그 위치에서 close
+        // 3) 그래도 안 되면 ESC keydown 합성 — keyCode/which를 getter로 강제 주입
         document.getElementById("completePolygonBtn")?.addEventListener("click", () => {
           if (!drawBtn || !drawBtn.classList.contains("is-drawing")) return;
-          const dm = window.__polyDrawingManager;
-          let committedVia = null;
-          const candidates = ["finishDrawing", "endDrawing", "completeDrawing", "_finishDrawing", "stopDrawing"];
-          for (const m of candidates) {
-            if (typeof dm?.[m] === "function") {
-              try { dm[m](); committedVia = m; break; } catch (_) {}
+          setTimeout(() => {
+            if (!drawBtn.classList.contains("is-drawing")) return;
+            const dm = window.__polyDrawingManager;
+            let committedVia = null;
+            const candidates = ["finishDrawing", "endDrawing", "completeDrawing", "_finishDrawing", "stopDrawing"];
+            for (const m of candidates) {
+              if (typeof dm?.[m] === "function") {
+                try { dm[m](); committedVia = m; break; } catch (_) {}
+              }
             }
-          }
-          if (!committedVia) {
-            const mapEl = document.getElementById("map");
-            const targets = [document, window, document.body, mapEl].filter(Boolean);
-            const makeEvt = (type) => {
-              const evt = new KeyboardEvent(type, {
-                key: "Escape", code: "Escape",
-                bubbles: true, cancelable: true, view: window,
+            if (!committedVia) {
+              const mapEl = document.getElementById("map");
+              const pos = window.__polyLastTapPos;
+              if (mapEl && pos && typeof pos.x === "number") {
+                const baseOpts = {
+                  bubbles: true, cancelable: true, view: window,
+                  clientX: pos.x, clientY: pos.y,
+                  button: 0,
+                };
+                try {
+                  mapEl.dispatchEvent(new MouseEvent("mousedown", baseOpts));
+                  mapEl.dispatchEvent(new MouseEvent("mouseup", baseOpts));
+                  mapEl.dispatchEvent(new MouseEvent("click", baseOpts));
+                  mapEl.dispatchEvent(new MouseEvent("dblclick", baseOpts));
+                } catch (_) {}
+              }
+              // 폴백: ESC keydown 합성
+              const targets = [document, window, document.body, mapEl].filter(Boolean);
+              const makeEvt = (type) => {
+                const evt = new KeyboardEvent(type, {
+                  key: "Escape", code: "Escape",
+                  bubbles: true, cancelable: true, view: window,
+                });
+                try { Object.defineProperty(evt, "keyCode", { get: () => 27 }); } catch (_) {}
+                try { Object.defineProperty(evt, "which", { get: () => 27 }); } catch (_) {}
+                return evt;
+              };
+              targets.forEach((t) => {
+                try { t.dispatchEvent(makeEvt("keydown")); } catch (_) {}
+                try { t.dispatchEvent(makeEvt("keyup")); } catch (_) {}
               });
-              try { Object.defineProperty(evt, "keyCode", { get: () => 27 }); } catch (_) {}
-              try { Object.defineProperty(evt, "which", { get: () => 27 }); } catch (_) {}
-              return evt;
-            };
-            targets.forEach((t) => {
-              try { t.dispatchEvent(makeEvt("keydown")); } catch (_) {}
-              try { t.dispatchEvent(makeEvt("keyup")); } catch (_) {}
-            });
-          }
+            }
+          }, 50);
         });
 
         // 면적그리기 다운로드 버튼
