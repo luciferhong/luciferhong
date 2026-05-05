@@ -8169,44 +8169,84 @@ const originalBase64 = event.target.result;
           });
         }
 
-        // 모바일에서 마지막 vertex가 누락되는 문제 대응:
-        // Naver Drawing은 PC에서 mousemove로 preview 위치를 추적하다가 ESC 시 그 preview를
-        // 마지막 vertex로 사용한다. 모바일은 mousemove가 없어 마지막 탭이 preview 상태로 남고,
-        // ESC 시 폐기된다. 사용자의 마지막 탭 좌표를 따로 기록해 둔 뒤, 완료 시 그 위치에
-        // 합성 dblclick을 dispatch해 명시적으로 closing vertex를 만든다.
+        // 모바일에서 Naver Drawing이 마지막 탭을 vertex로 commit하지 않는 문제 대응:
+        // 우리가 직접 모든 탭 좌표(LatLng)를 누적 기록해 두고, 완료 시 그 배열로 폴리곤을 생성한다.
+        // Naver Drawing의 in-progress는 어차피 모드 전환 시 폐기되므로 우리만의 데이터로 만들면 안전.
+        // (PC는 touch 이벤트가 안 일어나 배열이 비고, 폴백으로 ESC dispatch 경로 사용)
+        window.__polyOwnVertices = window.__polyOwnVertices || [];
         const __mapEl0 = document.getElementById("map");
-        if (__mapEl0 && !window.__polyLastTapTrackerReady) {
-          window.__polyLastTapTrackerReady = true;
-          window.__polyLastTapPos = null;
-          const recordTap = (e) => {
-            let x, y;
+        if (__mapEl0 && !window.__polyVertexTrackerInstalled) {
+          window.__polyVertexTrackerInstalled = true;
+          const recordVertex = (e) => {
+            if (!drawBtn || !drawBtn.classList.contains("is-drawing")) return;
+            let cx, cy;
             if (e.changedTouches && e.changedTouches.length) {
-              x = e.changedTouches[0].clientX;
-              y = e.changedTouches[0].clientY;
+              cx = e.changedTouches[0].clientX;
+              cy = e.changedTouches[0].clientY;
             } else if (typeof e.clientX === "number") {
-              x = e.clientX;
-              y = e.clientY;
+              cx = e.clientX;
+              cy = e.clientY;
             }
-            if (typeof x === "number" && typeof y === "number") {
-              window.__polyLastTapPos = { x, y };
-            }
+            if (typeof cx !== "number") return;
+            try {
+              const rect = __mapEl0.getBoundingClientRect();
+              const proj = window.map && window.map.getProjection && window.map.getProjection();
+              if (!proj || typeof proj.fromOffsetToCoord !== "function") return;
+              const coord = proj.fromOffsetToCoord(new naver.maps.Point(cx - rect.left, cy - rect.top));
+              if (!coord) return;
+              // 직전 vertex와 거의 같은 위치면 dedupe (touchend+click 중복 방지)
+              const arr = window.__polyOwnVertices;
+              const last = arr[arr.length - 1];
+              if (last) {
+                const dLat = Math.abs(last.lat() - coord.lat());
+                const dLng = Math.abs(last.lng() - coord.lng());
+                if (dLat < 1e-6 && dLng < 1e-6) return;
+              }
+              arr.push(coord);
+            } catch (_) {}
           };
-          __mapEl0.addEventListener("touchend", recordTap, { capture: true, passive: true });
-          __mapEl0.addEventListener("click", recordTap, { capture: true });
-          __mapEl0.addEventListener("mouseup", recordTap, { capture: true });
+          __mapEl0.addEventListener("touchend", recordVertex, { capture: true, passive: true });
+        }
+        // 그리기 모드 토글마다 vertex 배열 초기화 (drawBtn 핸들러 후행으로 등록)
+        if (drawBtn) {
+          drawBtn.addEventListener("click", () => { window.__polyOwnVertices = []; });
         }
 
         // 면적 그리기 완료 —
-        // 1) Naver DrawingManager의 commit 메서드가 있으면 직접 호출 (가장 안전)
-        // 2) 마지막 탭 위치가 있으면 그 좌표에 dblclick 합성 — Naver가 폴리곤을 그 위치에서 close
-        // 3) 그래도 안 되면 ESC keydown 합성 — keyCode/which를 getter로 강제 주입
-        // ⚠️ "drawBtn 토글 폴백"은 진행 중 점들을 폐기시키므로 사용하지 않는다.
+        // (A) 모바일: 우리 vertex 배열에 3개 이상이면 직접 폴리곤 생성 후 그리기 모드 종료
+        // (B) PC/폴백: drawingManager 내부 메서드 → ESC 합성 dispatch
         document.getElementById("completePolygonBtn")?.addEventListener("click", () => {
           if (!drawBtn || !drawBtn.classList.contains("is-drawing")) return;
           setTimeout(() => {
             if (!drawBtn.classList.contains("is-drawing")) return;
+            // (A) 자체 추적 vertex가 충분하면 그걸로 폴리곤 생성 (모바일 경로)
+            const ownVerts = (window.__polyOwnVertices || []).slice();
+            if (ownVerts.length >= 3) {
+              try {
+                const polyVisible = document.getElementById("togglePolygonMemo")?.checked !== false;
+                const polygon = new naver.maps.Polygon({
+                  map: polyVisible ? map : null,
+                  paths: [ownVerts],
+                  fillColor: "#00aa00",
+                  fillOpacity: 0.25,
+                  strokeColor: "#00aa00",
+                  strokeOpacity: 0,
+                  strokeWeight: 0,
+                  clickable: true,
+                });
+                polygon.__color = "#00aa00";
+                polygon.__alpha = 0.25;
+                attachPolygonMemoUI(polygon, map);
+                savePolygonMemo(polygon).catch(console.warn);
+              } catch (e) {
+                console.warn("폴리곤 직접 생성 실패:", e);
+              }
+              // 그리기 모드 종료 (Naver의 in-progress는 폐기됨, 우리는 이미 만들었으니 OK)
+              drawBtn.click();
+              return;
+            }
+            // (B) 폴백 — drawingManager 내부 commit 메서드
             const dm = window.__polyDrawingManager;
-            // (1) drawingManager 내부 commit 메서드 시도
             let committedVia = null;
             const candidates = ["finishDrawing", "endDrawing", "completeDrawing", "_finishDrawing", "stopDrawing"];
             for (const m of candidates) {
@@ -8214,24 +8254,9 @@ const originalBase64 = event.target.result;
                 try { dm[m](); committedVia = m; break; } catch (_) {}
               }
             }
-            // (2) 마지막 탭 위치에 dblclick 합성 (모바일 마지막 vertex 문제 대응)
             if (!committedVia) {
+              // ESC keydown 합성
               const mapEl = document.getElementById("map");
-              const pos = window.__polyLastTapPos;
-              if (mapEl && pos && typeof pos.x === "number") {
-                const baseOpts = {
-                  bubbles: true, cancelable: true, view: window,
-                  clientX: pos.x, clientY: pos.y,
-                  button: 0,
-                };
-                try {
-                  mapEl.dispatchEvent(new MouseEvent("mousedown", baseOpts));
-                  mapEl.dispatchEvent(new MouseEvent("mouseup", baseOpts));
-                  mapEl.dispatchEvent(new MouseEvent("click", baseOpts));
-                  mapEl.dispatchEvent(new MouseEvent("dblclick", baseOpts));
-                } catch (_) {}
-              }
-              // (3) 폴백: ESC keydown 합성 — 여러 target에 dispatch
               const targets = [document, window, document.body, mapEl].filter(Boolean);
               const makeEvt = (type) => {
                 const evt = new KeyboardEvent(type, {
