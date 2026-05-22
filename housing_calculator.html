@@ -567,14 +567,26 @@ function calc() {
   // DSR 기준 최대 대출 (스트레스 금리 반영)
   let dsrMaxLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate); // 만원
   // 수도권 매매가 구간별 대출 한도 (반복 수렴)
-  // 초기 추정: 한도 없이 계산한 price로 구간 판별 후 cap 적용
   if (isMetro) {
-    // LTV 기준 예상 price로 구간 먼저 추정
-    const estLtvPrice = totalEquity / (1 - ltvPct / 100);
-    const estDsrPrice = totalEquity + dsrMaxLoan;
-    const estPrice = Math.min(estLtvPrice, estDsrPrice);
-    const metroCap = getMetroCap(estPrice);
-    dsrMaxLoan = Math.min(dsrMaxLoan, metroCap);
+    // 각 cap을 적용했을 때 실제 price를 계산해서
+    // price가 해당 구간에 실제로 속하는지 검증
+    const caps = [60000, 40000, 20000];
+    let finalCap = 60000;
+    for (const cap of caps) {
+      const trialLoan = Math.min(dsrMaxLoan, cap);
+      // LTV 기준 price
+      const ltvPrice = totalEquity / (1 - ltvPct / 100);
+      const ltvLoan  = ltvPrice * (ltvPct / 100);
+      // 실제 대출 = min(DSR+cap, LTV)
+      const trialActualLoan = Math.min(trialLoan, ltvLoan);
+      const trialPrice = totalEquity + trialActualLoan;
+      // 이 price가 이 cap의 구간에 속하면 확정
+      if (getMetroCap(trialPrice) === cap) {
+        finalCap = cap;
+        break;
+      }
+    }
+    dsrMaxLoan = Math.min(dsrMaxLoan, finalCap);
   }
 
   // LTV 기준: price * ltvPct/100 = loan, price = equity + loan
