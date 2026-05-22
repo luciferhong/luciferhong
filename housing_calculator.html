@@ -409,8 +409,9 @@
           <input type="radio" name="region" value="other" onchange="calc()" style="accent-color:var(--accent)"> 지방
         </label>
       </div>
-      <div id="region-info" style="margin-top:7px; font-size:11px; color:var(--text3); padding:7px 10px; background:rgba(245,200,66,.07); border-radius:7px; border:1px solid rgba(245,200,66,.2); line-height:1.6;">
-        수도권 주담대 최대 대출 <b style="color:var(--yellow)">6억원</b> 한도 적용
+      <div id="region-info" style="margin-top:7px; font-size:11px; color:var(--text3); padding:8px 10px; background:rgba(245,200,66,.07); border-radius:7px; border:1px solid rgba(245,200,66,.2); line-height:1.8; display:none;">
+        수도권 매매가별 주담대 한도<br>
+        <span style="color:var(--text2)">· 15억 이하 → <b style="color:var(--yellow)">6억</b> &nbsp;· 15억~25억 → <b style="color:var(--yellow)">4억</b> &nbsp;· 25억 초과 → <b style="color:var(--yellow)">2억</b></span>
       </div>
     </div>
 
@@ -458,6 +459,17 @@
 
   <!-- 주석 -->
   <div class="note" id="note"></div>
+
+  <!-- 조건 설명 -->
+  <div class="note" style="line-height:2;">
+    <span>📋 적용 규제 요약</span><br>
+    <b style="color:var(--text2)">LTV</b> — 주택가격 대비 대출 비율 상한. 투기과열지구 40%, 조정대상지역 50%, 일반 70% 적용.<br>
+    <b style="color:var(--text2)">DSR</b> — 연소득 대비 연간 원리금 상환액 비율. 은행권 40%, 일부 50% 적용.<br>
+    <b style="color:var(--text2)">스트레스 DSR</b> — 금리 상승 위험 반영을 위해 실제 금리에 가산금리를 더해 대출 한도 산정. 2025년 7월 3단계 시행.<br>
+    &nbsp;&nbsp;&nbsp;· 지방 주담대: <b style="color:var(--yellow)">+0.75%</b> &nbsp;· 수도권 일반: <b style="color:var(--yellow)">+1.5%</b> &nbsp;· 수도권·규제지역(2025.10.16~): <b style="color:var(--yellow)">+3.0%</b><br>
+    <b style="color:var(--text2)">수도권 매매가별 주담대 한도</b> — 매매가 구간에 따라 최대 대출액 별도 제한.<br>
+    &nbsp;&nbsp;&nbsp;· 15억 이하: <b style="color:var(--yellow)">6억</b> &nbsp;· 15억~25억: <b style="color:var(--yellow)">4억</b> &nbsp;· 25억 초과: <b style="color:var(--yellow)">2억</b>
+  </div>
 
 </div>
 
@@ -528,7 +540,12 @@ function calc() {
   const dsrPct  = parseFloat(document.getElementById('dsr').value);
   const stressRate = parseFloat(document.querySelector('input[name=stress]:checked').value) || 0;
   const isMetro = document.querySelector('input[name=region]:checked').value === 'metro';
-  const METRO_LOAN_CAP = 60000; // 수도권 주담대 최대 6억 (만원)
+  // 수도권 매매가 구간별 대출 한도 (만원)
+  function getMetroCap(priceMan) {
+    if (priceMan <= 150000)      return 60000; // 15억 이하 → 6억
+    else if (priceMan <= 250000) return 40000; // 15억~25억 이하 → 4억
+    else                          return 20000; // 25억 초과 → 2억
+  }
   const isJoint = document.querySelector('input[name=mode]:checked').value === 'joint';
   const income2 = isJoint ? (parseFloat(document.getElementById('income2').value) || 0) : 0;
   const equity2 = isJoint ? (parseFloat(document.getElementById('equity2').value) || 0) : 0;
@@ -549,8 +566,16 @@ function calc() {
 
   // DSR 기준 최대 대출 (스트레스 금리 반영)
   let dsrMaxLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate); // 만원
-  // 수도권 6억 한도 적용
-  if (isMetro) dsrMaxLoan = Math.min(dsrMaxLoan, METRO_LOAN_CAP);
+  // 수도권 매매가 구간별 대출 한도 (반복 수렴)
+  // 초기 추정: 한도 없이 계산한 price로 구간 판별 후 cap 적용
+  if (isMetro) {
+    // LTV 기준 예상 price로 구간 먼저 추정
+    const estLtvPrice = totalEquity / (1 - ltvPct / 100);
+    const estDsrPrice = totalEquity + dsrMaxLoan;
+    const estPrice = Math.min(estLtvPrice, estDsrPrice);
+    const metroCap = getMetroCap(estPrice);
+    dsrMaxLoan = Math.min(dsrMaxLoan, metroCap);
+  }
 
   // LTV 기준: price * ltvPct/100 = loan, price = equity + loan
   // price = equity / (1 - ltv/100)
@@ -600,7 +625,7 @@ function calc() {
     <div class="result-item highlight">
       <div class="result-label">최대 대출</div>
       <div class="result-value">${fmtMan(Math.round(loan/100)*100)}</div>
-      <div class="result-sub">LTV ${actualLtvPct}%${isMetro && loan >= METRO_LOAN_CAP - 1 ? ' · 수도권 6억 한도' : ''}</div>
+      <div class="result-sub">LTV ${actualLtvPct}%${isMetro ? ` · 수도권 한도 ${fmtMan(getMetroCap(Math.round(price/100)*100))}` : ''}</div>
     </div>
     <div class="result-item highlight">
       <div class="result-label">자기자본</div>
