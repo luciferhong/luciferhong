@@ -253,6 +253,7 @@
   .binding.ltv  { background: rgba(245,200,66,.12); color: var(--yellow); border: 1px solid rgba(245,200,66,.25); }
   .binding.dsr  { background: rgba(255,107,74,.12); color: var(--accent2); border: 1px solid rgba(255,107,74,.25); }
   .binding.both { background: rgba(61,214,140,.12); color: var(--green);   border: 1px solid rgba(61,214,140,.25); }
+  .binding.cap  { background: rgba(79,142,255,.12); color: var(--accent);  border: 1px solid rgba(79,142,255,.25); }
 
   /* apartment list */
   .apt-section {
@@ -564,59 +565,52 @@ function calc() {
   // 수도권 안내 박스
   document.getElementById('region-info').style.display = isMetro ? 'block' : 'none';
 
-  // DSR 기준 최대 대출 (스트레스 금리 반영)
-  let dsrMaxLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate); // 만원
-  // 수도권 매매가 구간별 대출 한도 (반복 수렴)
+  // DSR / LTV 기준 최대 대출
+  const dsrLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate);
+  const ltvMaxLoan = ltvPct >= 100 ? Infinity : totalEquity * (ltvPct / 100) / (1 - ltvPct / 100);
+
+  // 수도권 매매가 구간별 cap을 self-consistent하게 적용
+  // 각 구간에서 (DSR / LTV / cap / 구간 상한) 제약을 모두 만족하는 최대 price를 구하고
+  // 구간 하한도 만족하는 후보 중 최댓값을 채택
+  let loan, price, appliedCap;
   if (isMetro) {
-    // 각 cap을 적용했을 때 실제 price를 계산해서
-    // price가 해당 구간에 실제로 속하는지 검증
-    const caps = [60000, 40000, 20000];
-    let finalCap = 60000;
-    for (const cap of caps) {
-      const trialLoan = Math.min(dsrMaxLoan, cap);
-      // LTV 기준 price
-      const ltvPrice = totalEquity / (1 - ltvPct / 100);
-      const ltvLoan  = ltvPrice * (ltvPct / 100);
-      // 실제 대출 = min(DSR+cap, LTV)
-      const trialActualLoan = Math.min(trialLoan, ltvLoan);
-      const trialPrice = totalEquity + trialActualLoan;
-      // 이 price가 이 cap의 구간에 속하면 확정
-      if (getMetroCap(trialPrice) === cap) {
-        finalCap = cap;
-        break;
+    const tiers = [
+      { cap: 60000, priceLo: 0,      priceHi: 150000 },
+      { cap: 40000, priceLo: 150000, priceHi: 250000 },
+      { cap: 20000, priceLo: 250000, priceHi: Infinity },
+    ];
+    let best = null;
+    for (const t of tiers) {
+      let maxLoan = Math.min(dsrLoan, t.cap, ltvMaxLoan);
+      if (isFinite(t.priceHi)) maxLoan = Math.min(maxLoan, t.priceHi - totalEquity);
+      if (maxLoan < 0) continue; // 자기자본이 구간 상한을 넘음 → 이 구간 불가
+      const tryPrice = totalEquity + maxLoan;
+      if (t.priceLo > 0 && tryPrice <= t.priceLo) continue; // 구간 하한 미달
+      if (best === null || tryPrice > best.price) {
+        best = { price: tryPrice, loan: maxLoan, cap: t.cap };
       }
     }
-    dsrMaxLoan = Math.min(dsrMaxLoan, finalCap);
-  }
-
-  // LTV 기준: price * ltvPct/100 = loan, price = equity + loan
-  // price = equity / (1 - ltv/100)
-  const ltvMaxPrice = totalEquity / (1 - ltvPct / 100);
-  const ltvMaxLoan  = ltvMaxPrice * (ltvPct / 100);
-
-  // 실제 대출 = min(DSR, LTV)
-  let loan, price, binding;
-  if (ltvMaxLoan <= dsrMaxLoan) {
-    // LTV 바인딩
-    loan    = ltvMaxLoan;
-    price   = ltvMaxPrice;
-    binding = 'ltv';
-  } else {
-    // DSR 바인딩
-    loan    = dsrMaxLoan;
-    price   = totalEquity + dsrMaxLoan;
-    // LTV 체크
-    const actualLtv = loan / price;
-    if (actualLtv > ltvPct / 100) {
-      loan    = ltvMaxLoan;
-      price   = ltvMaxPrice;
-      binding = 'ltv';
+    if (best) {
+      loan = best.loan; price = best.price; appliedCap = best.cap;
     } else {
-      binding = 'dsr';
+      loan = 0; price = totalEquity; appliedCap = 60000;
     }
+  } else {
+    loan = Math.min(dsrLoan, ltvMaxLoan);
+    price = totalEquity + loan;
+    appliedCap = null;
   }
 
-  if (Math.abs(ltvMaxLoan - dsrMaxLoan) < 1) binding = 'both';
+  // 바인딩 판정 — 어느 제약이 묶었는지 (eps: 100만원 허용)
+  const eps = 100;
+  const tightLtv = loan >= ltvMaxLoan - eps;
+  const tightDsr = loan >= dsrLoan - eps;
+  const tightCap = appliedCap !== null && loan >= appliedCap - eps;
+  let binding;
+  if (tightLtv && tightDsr)      binding = 'both';
+  else if (tightLtv)             binding = 'ltv';
+  else if (tightDsr)             binding = 'dsr';
+  else                           binding = 'cap'; // 수도권 cap 또는 구간 경계
 
   const actualLtvPct = (loan / price * 100).toFixed(1);
   const annualPayment = monthlyPayment(loan, rate, term) * 12;
@@ -627,7 +621,12 @@ function calc() {
   document.getElementById('main-price').textContent = fmtMan(Math.round(price / 100) * 100);
 
   // ── binding badge ──
-  const bMap = { ltv: ['ltv','LTV 바인딩','📐'], dsr:['dsr','DSR 바인딩','💰'], both:['both','LTV · DSR 동시 바인딩','⚖️'] };
+  const bMap = {
+    ltv:  ['ltv',  'LTV 바인딩',           '📐'],
+    dsr:  ['dsr',  'DSR 바인딩',           '💰'],
+    both: ['both', 'LTV · DSR 동시 바인딩', '⚖️'],
+    cap:  ['cap',  '수도권 한도 바인딩',     '🏙️'],
+  };
   const [bc, bt, bi] = bMap[binding];
   document.getElementById('binding-badge').innerHTML =
     `<span class="binding ${bc}">${bi} ${bt}</span>`;
@@ -637,7 +636,7 @@ function calc() {
     <div class="result-item highlight">
       <div class="result-label">최대 대출</div>
       <div class="result-value">${fmtMan(Math.round(loan/100)*100)}</div>
-      <div class="result-sub">LTV ${actualLtvPct}%${isMetro ? ` · 수도권 한도 ${fmtMan(getMetroCap(Math.round(price/100)*100))}` : ''}</div>
+      <div class="result-sub">LTV ${actualLtvPct}%${isMetro ? ` · 수도권 한도 ${fmtMan(appliedCap)}` : ''}</div>
     </div>
     <div class="result-item highlight">
       <div class="result-label">자기자본</div>
@@ -660,7 +659,7 @@ function calc() {
   document.getElementById('note').innerHTML =
     `<span>가정:</span> 실제금리 ${rate}%${stressRate>0?` + 스트레스 ${stressRate}% = 심사금리 ${(rate+stressRate).toFixed(1)}%`:''} · ${term}년 원리금균등 · LTV ${ltvPct}% · DSR ${dsrPct}% ` +
     (isJoint ? `· 합산소득 ${fmtMan(totalIncome)} · 합산자본 ${fmtMan(totalEquity)}` : `· 소득 ${fmtMan(totalIncome)} · 자본 ${fmtMan(totalEquity)}`) +
-    `${isMetro ? ' · <span>수도권 최대 대출 6억 한도</span>' : ''}` +
+    `${isMetro ? ` · <span>수도권 최대 대출 ${fmtMan(appliedCap)} 한도</span>` : ''}` +
     `<br><span>참고:</span> 스트레스 DSR은 심사금리로 대출한도를 산정하나 실제 납입금리는 계약금리 기준입니다. 취득세·중개보수 등 부대비용은 미포함.`;
 }
 
