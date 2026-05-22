@@ -330,7 +330,7 @@
     <div class="field">
       <label>자기자본</label>
       <div class="input-wrap">
-        <input type="number" id="equity" value="60000" step="100" oninput="calc()">
+        <input type="number" id="equity" value="20000" step="100" oninput="calc()">
         <span class="unit">만원</span>
       </div>
     </div>
@@ -338,7 +338,7 @@
     <div class="field">
       <label>연 소득</label>
       <div class="input-wrap">
-        <input type="number" id="income" value="8600" step="100" oninput="calc()">
+        <input type="number" id="income" value="5000" step="100" oninput="calc()">
         <span class="unit">만원</span>
       </div>
     </div>
@@ -397,6 +397,21 @@
         </label>
       </div>
       <div id="stress-info" style="margin-top:7px; font-size:11px; color:var(--text3); display:none; padding:7px 10px; background:rgba(79,142,255,.07); border-radius:7px; border:1px solid rgba(79,142,255,.15); line-height:1.6;"></div>
+    </div>
+
+    <div class="field">
+      <label>수도권 여부</label>
+      <div style="display:flex; gap:8px; margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:0;">
+          <input type="radio" name="region" value="metro" checked onchange="calc()" style="accent-color:var(--accent)"> 수도권
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:0;">
+          <input type="radio" name="region" value="other" onchange="calc()" style="accent-color:var(--accent)"> 지방
+        </label>
+      </div>
+      <div id="region-info" style="margin-top:7px; font-size:11px; color:var(--text3); padding:7px 10px; background:rgba(245,200,66,.07); border-radius:7px; border:1px solid rgba(245,200,66,.2); line-height:1.6;">
+        수도권 주담대 최대 대출 <b style="color:var(--yellow)">6억원</b> 한도 적용
+      </div>
     </div>
 
     <div class="field" style="margin-top:8px;">
@@ -484,11 +499,12 @@ function fmtMan(n) {
   return n.toLocaleString() + '만원';
 }
 
-function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears) {
-  // 연간 원리금 한도
+function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears, stressRate) {
+  // 스트레스 DSR: 심사금리 = 실제금리 + 가산금리
+  const evalRate = ratePct + (stressRate || 0);
   const annualLimit = annualIncome * (dsrPct / 100);
   const monthlyLimit = annualLimit / 12;
-  const r = (ratePct / 100) / 12;
+  const r = (evalRate / 100) / 12;
   const n = termYears * 12;
   if (r === 0) return monthlyLimit * n;
   const factor = (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1);
@@ -510,6 +526,9 @@ function calc() {
   const term    = parseFloat(document.getElementById('term').value);
   const ltvPct  = parseFloat(document.getElementById('ltv').value);
   const dsrPct  = parseFloat(document.getElementById('dsr').value);
+  const stressRate = parseFloat(document.querySelector('input[name=stress]:checked').value) || 0;
+  const isMetro = document.querySelector('input[name=region]:checked').value === 'metro';
+  const METRO_LOAN_CAP = 60000; // 수도권 주담대 최대 6억 (만원)
   const isJoint = document.querySelector('input[name=mode]:checked').value === 'joint';
   const income2 = isJoint ? (parseFloat(document.getElementById('income2').value) || 0) : 0;
   const equity2 = isJoint ? (parseFloat(document.getElementById('equity2').value) || 0) : 0;
@@ -517,8 +536,21 @@ function calc() {
   const totalEquity = equity + equity2;
   const totalIncome = income + income2;
 
-  // DSR 기준 최대 대출
-  const dsrMaxLoan = calcDsrLoan(totalIncome, dsrPct, rate, term); // 만원
+  // 스트레스 DSR 안내 박스
+  const infoEl = document.getElementById('stress-info');
+  if (stressRate > 0) {
+    infoEl.style.display = 'block';
+    infoEl.innerHTML = `심사금리 <b style="color:var(--accent)">${(rate+stressRate).toFixed(1)}%</b> 적용 (실제금리 ${rate}% + 가산 ${stressRate}%) · 2025.7.1 스트레스DSR 3단계`;
+  } else {
+    infoEl.style.display = 'none';
+  }
+  // 수도권 안내 박스
+  document.getElementById('region-info').style.display = isMetro ? 'block' : 'none';
+
+  // DSR 기준 최대 대출 (스트레스 금리 반영)
+  let dsrMaxLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate); // 만원
+  // 수도권 6억 한도 적용
+  if (isMetro) dsrMaxLoan = Math.min(dsrMaxLoan, METRO_LOAN_CAP);
 
   // LTV 기준: price * ltvPct/100 = loan, price = equity + loan
   // price = equity / (1 - ltv/100)
@@ -568,7 +600,7 @@ function calc() {
     <div class="result-item highlight">
       <div class="result-label">최대 대출</div>
       <div class="result-value">${fmtMan(Math.round(loan/100)*100)}</div>
-      <div class="result-sub">LTV ${actualLtvPct}%</div>
+      <div class="result-sub">LTV ${actualLtvPct}%${isMetro && loan >= METRO_LOAN_CAP - 1 ? ' · 수도권 6억 한도' : ''}</div>
     </div>
     <div class="result-item highlight">
       <div class="result-label">자기자본</div>
@@ -583,15 +615,16 @@ function calc() {
     <div class="result-item">
       <div class="result-label">월 상환액</div>
       <div class="result-value">${fmtMan(Math.round(monthlyPayment(loan,rate,term)/10)*10)}</div>
-      <div class="result-sub">30년 총 이자 ${fmtMan(Math.round(totalInterest/1000)*1000)}</div>
+      <div class="result-sub">총 이자 ${fmtMan(Math.round(totalInterest/1000)*1000)}${stressRate>0?` · 심사 ${(rate+stressRate).toFixed(1)}%`:''}</div>
     </div>
   `;
 
   // ── note ──
   document.getElementById('note').innerHTML =
-    `<span>가정:</span> 금리 ${rate}% · ${term}년 원리금균등 · LTV ${ltvPct}% · DSR ${dsrPct}% ` +
+    `<span>가정:</span> 실제금리 ${rate}%${stressRate>0?` + 스트레스 ${stressRate}% = 심사금리 ${(rate+stressRate).toFixed(1)}%`:''} · ${term}년 원리금균등 · LTV ${ltvPct}% · DSR ${dsrPct}% ` +
     (isJoint ? `· 합산소득 ${fmtMan(totalIncome)} · 합산자본 ${fmtMan(totalEquity)}` : `· 소득 ${fmtMan(totalIncome)} · 자본 ${fmtMan(totalEquity)}`) +
-    `<br><span>참고:</span> 취득세·중개보수 등 부대비용은 포함되지 않습니다. 실제 대출 한도는 금융기관별로 다를 수 있습니다.`;
+    `${isMetro ? ' · <span>수도권 최대 대출 6억 한도</span>' : ''}` +
+    `<br><span>참고:</span> 스트레스 DSR은 심사금리로 대출한도를 산정하나 실제 납입금리는 계약금리 기준입니다. 취득세·중개보수 등 부대비용은 미포함.`;
 }
 
 // init
