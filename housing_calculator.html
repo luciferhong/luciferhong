@@ -313,6 +313,18 @@
         <span class="slider-val" id="term-val">30년</span>
       </div>
     </div>
+
+    <div class="field">
+      <label>상환 방식</label>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:0;">
+          <input type="radio" name="repay" value="annuity" checked onchange="calc()" style="accent-color:var(--accent)"> 원리금균등
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:0;">
+          <input type="radio" name="repay" value="equal_principal" onchange="calc()" style="accent-color:var(--accent)"> 원금균등
+        </label>
+      </div>
+    </div>
   </div>
 
   <!-- 입력 카드 2 -->
@@ -434,6 +446,7 @@ function syncTerm(el)  { document.getElementById('term-val').textContent  = el.v
 function syncLtv(el)   { document.getElementById('ltv-val').textContent   = el.value + '%'; calc(); }
 function syncDsr(el)   { document.getElementById('dsr-val').textContent   = el.value + '%'; calc(); }
 
+
 function toggleJoint() {
   const on = document.querySelector('input[name=mode]:checked').value === 'joint';
   document.getElementById('joint-wrap').style.display    = on ? '' : 'none';
@@ -452,24 +465,35 @@ function fmtMan(n) {
   return n.toLocaleString() + '만원';
 }
 
-function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears, stressRate) {
+function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears, stressRate, method) {
   // 스트레스 DSR: 심사금리 = 실제금리 + 가산금리
   const evalRate = ratePct + (stressRate || 0);
-  const annualLimit = annualIncome * (dsrPct / 100);
-  const monthlyLimit = annualLimit / 12;
+  const monthlyLimit = annualIncome * (dsrPct / 100) / 12;
   const r = (evalRate / 100) / 12;
   const n = termYears * 12;
   if (r === 0) return monthlyLimit * n;
+  if (method === 'equal_principal') {
+    // 원금균등: DSR 심사 시 초기(최대) 납입액 기준
+    return monthlyLimit / (1/n + r);
+  }
+  // 원리금균등·혼합형·주기형: 원리금균등 공식
   const factor = (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1);
   return monthlyLimit / factor;
 }
 
-function monthlyPayment(principal, ratePct, termYears) {
+function monthlyPayment(principal, ratePct, termYears, method) {
   const r = (ratePct / 100) / 12;
   const n = termYears * 12;
   if (r === 0) return principal / n;
+  if (method === 'equal_principal') return principal * (1/n + r); // 초기 최대 납입액
   const factor = (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1);
   return principal * factor;
+}
+
+function monthlyPaymentFinal(principal, ratePct, termYears) {
+  const r = (ratePct / 100) / 12;
+  const n = termYears * 12;
+  return (principal / n) * (1 + r); // 원금균등 마지막 회차 납입액
 }
 
 function calc() {
@@ -480,6 +504,7 @@ function calc() {
   const ltvPct  = parseFloat(document.getElementById('ltv').value);
   const dsrPct  = parseFloat(document.getElementById('dsr').value);
   const stressRate = parseFloat(document.querySelector('input[name=stress]:checked').value) || 0;
+  const method  = document.querySelector('input[name=repay]:checked').value;
   const isMetro = document.querySelector('input[name=region]:checked').value === 'metro';
   // 수도권 매매가 구간별 대출 한도 (만원)
   function getMetroCap(priceMan) {
@@ -506,7 +531,7 @@ function calc() {
   document.getElementById('region-info').style.display = isMetro ? 'block' : 'none';
 
   // DSR / LTV 기준 최대 대출
-  const dsrLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate);
+  const dsrLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate, method);
   const ltvMaxLoan = ltvPct >= 100 ? Infinity : totalEquity * (ltvPct / 100) / (1 - ltvPct / 100);
 
   // 수도권 매매가 구간별 cap을 self-consistent하게 적용
@@ -553,9 +578,11 @@ function calc() {
   else                           binding = 'cap'; // 수도권 cap 또는 구간 경계
 
   const actualLtvPct = (loan / price * 100).toFixed(1);
-  const annualPayment = monthlyPayment(loan, rate, term) * 12;
+  const annualPayment = monthlyPayment(loan, rate, term, method) * 12;
   const actualDsrPct  = totalIncome > 0 ? (annualPayment / totalIncome * 100).toFixed(1) : 0;
-  const totalInterest = (monthlyPayment(loan, rate, term) * term * 12) - loan;
+  const totalInterest = method === 'equal_principal'
+    ? loan * (rate/100/12) * (term*12 + 1) / 2
+    : (monthlyPayment(loan, rate, term, 'annuity') * term * 12) - loan;
 
   // ── main price ──
   document.getElementById('main-price').textContent = fmtMan(Math.round(price / 100) * 100);
@@ -588,16 +615,32 @@ function calc() {
       <div class="result-value">${actualDsrPct}<span class="unit2">%</span></div>
       <div class="result-sub">한도 ${dsrPct}%</div>
     </div>
-    <div class="result-item">
-      <div class="result-label">월 상환액</div>
-      <div class="result-value">${fmtMan(Math.round(monthlyPayment(loan,rate,term)/10)*10)}</div>
-      <div class="result-sub">총 이자 ${fmtMan(Math.round(totalInterest/1000)*1000)}${stressRate>0?` · 심사 ${(rate+stressRate).toFixed(1)}%`:''}</div>
-    </div>
+    ${(()=>{
+      const mp = monthlyPayment(loan, rate, term, method);
+      const mpRound = Math.round(mp/10)*10;
+      const intStr  = fmtMan(Math.round(totalInterest/1000)*1000);
+      const stressStr = stressRate>0 ? ` · 심사 ${(rate+stressRate).toFixed(1)}%` : '';
+      if (method === 'equal_principal') {
+        const mpFinal = Math.round(monthlyPaymentFinal(loan, rate, term)/10)*10;
+        return `<div class="result-item">
+          <div class="result-label">초기 월 납입액</div>
+          <div class="result-value">${fmtMan(mpRound)}</div>
+          <div class="result-sub">최종 ${fmtMan(mpFinal)} · 총 이자 ${intStr}${stressStr}</div>
+        </div>`;
+      } else {
+        return `<div class="result-item">
+          <div class="result-label">월 상환액</div>
+          <div class="result-value">${fmtMan(mpRound)}</div>
+          <div class="result-sub">총 이자 ${intStr}${stressStr}</div>
+        </div>`;
+      }
+    })()}
   `;
 
   // ── note ──
+  const repayLabel = method === 'equal_principal' ? '원금균등' : '원리금균등';
   document.getElementById('note').innerHTML =
-    `<span>가정:</span> 실제금리 ${rate}%${stressRate>0?` + 스트레스 ${stressRate}% = 심사금리 ${(rate+stressRate).toFixed(1)}%`:''} · ${term}년 원리금균등 · LTV ${ltvPct}% · DSR ${dsrPct}% ` +
+    `<span>가정:</span> 실제금리 ${rate}%${stressRate>0?` + 스트레스 ${stressRate}% = 심사금리 ${(rate+stressRate).toFixed(1)}%`:''} · ${term}년 ${repayLabel} · LTV ${ltvPct}% · DSR ${dsrPct}% ` +
     (isJoint ? `· 합산소득 ${fmtMan(totalIncome)} · 합산자본 ${fmtMan(totalEquity)}` : `· 소득 ${fmtMan(totalIncome)} · 자본 ${fmtMan(totalEquity)}`) +
     `${isMetro ? ` · <span>수도권 최대 대출 ${fmtMan(appliedCap)} 한도</span>` : ''}` +
     `<br><span>참고:</span> 스트레스 DSR은 심사금리로 대출한도를 산정하나 실제 납입금리는 계약금리 기준입니다. 취득세·중개보수 등 부대비용은 미포함.`;
