@@ -10,6 +10,7 @@
     --bg: #0d0f14;
     --surface: #151820;
     --surface2: #1c2030;
+    --surface-header: #111520;
     --border: #252a3a;
     --accent: #4f8eff;
     --accent2: #ff6b4a;
@@ -21,6 +22,17 @@
     --radius: 14px;
     --mono: 'DM Mono', monospace;
     --sans: 'Noto Sans KR', sans-serif;
+  }
+
+  [data-theme="light"] {
+    --bg: #f5f7fb;
+    --surface: #ffffff;
+    --surface2: #eef0f7;
+    --surface-header: #e8eaf4;
+    --border: #d8dcec;
+    --text: #1a1f2e;
+    --text2: #525a72;
+    --text3: #8892a8;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -37,7 +49,7 @@
   header {
     padding: 36px 32px 28px;
     border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, #111520 0%, var(--bg) 100%);
+    background: linear-gradient(180deg, var(--surface-header) 0%, var(--bg) 100%);
   }
   header h1 {
     font-size: 22px;
@@ -267,13 +279,23 @@
     line-height: 1.7;
   }
   .note span { color: var(--text2); }
+
+  /* ── 기존 대출 내부 그리드 ── */
+  .existing-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 0 24px;
+    margin-top: 20px;
+  }
+  @media (max-width: 680px) { .existing-grid { grid-template-columns: 1fr 1fr; } }
 </style>
 </head>
 <body>
 
-<header>
+<header style="position:relative;">
   <h1>최대 매수가 계산기</h1>
   <p>자기자본 · LTV · DSR · 소득을 입력하면 최대 구매 가능 주택가격을 계산합니다</p>
+  <button id="theme-btn" onclick="toggleTheme()" style="position:absolute;top:50%;right:32px;transform:translateY(-50%);background:var(--surface2);border:1px solid var(--border);border-radius:20px;padding:6px 14px;font-size:12px;color:var(--text2);cursor:pointer;font-family:var(--sans);font-weight:500;transition:all .2s;">🌙 다크</button>
 </header>
 
 <div class="wrap">
@@ -411,6 +433,16 @@
     </div>
   </div>
 
+  <!-- 기존 대출 카드 -->
+  <div class="card" style="grid-column:1/-1;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+      <div class="card-title" style="margin-bottom:0;">기존 대출</div>
+      <button onclick="addExistingLoan()" style="font-size:12px;color:var(--accent);background:rgba(79,142,255,.1);border:1px solid rgba(79,142,255,.25);border-radius:7px;padding:5px 12px;cursor:pointer;font-weight:500;">+ 대출 추가</button>
+    </div>
+    <div id="existing-loans-list"></div>
+    <div id="existing-info" style="display:none;margin-top:10px;font-size:11px;color:var(--text3);padding:7px 10px;background:rgba(255,107,74,.07);border-radius:7px;border:1px solid rgba(255,107,74,.15);line-height:1.8;"></div>
+  </div>
+
   <!-- 결과 카드 -->
   <div class="result-card" id="result-card">
     <div class="card-title">계산 결과</div>
@@ -441,11 +473,153 @@
 </div>
 
 <script>
+(function() {
+  const saved = localStorage.getItem('hc-theme') || 'dark';
+  if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
+})();
+
+function toggleTheme() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  if (isLight) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('hc-theme', 'dark');
+    document.getElementById('theme-btn').textContent = '🌙 다크';
+  } else {
+    document.documentElement.setAttribute('data-theme', 'light');
+    localStorage.setItem('hc-theme', 'light');
+    document.getElementById('theme-btn').textContent = '☀️ 라이트';
+  }
+}
+
 function syncRate(el)  { document.getElementById('rate-val').textContent  = parseFloat(el.value).toFixed(1) + '%'; calc(); }
 function syncTerm(el)  { document.getElementById('term-val').textContent  = el.value + '년'; calc(); }
 function syncLtv(el)   { document.getElementById('ltv-val').textContent   = el.value + '%'; calc(); }
 function syncDsr(el)   { document.getElementById('dsr-val').textContent   = el.value + '%'; calc(); }
 
+
+// ── 기존 대출 다중 관리 ──
+let existingLoans = [];
+let _loanIdSeq = 0;
+
+// 대출 종류별 DSR 산정 방식
+// 주담대·자동차할부·기타: 실제 원리금 / 신용대출: 잔액÷5년+이자 / 비주택담보: 잔액÷8년+이자 / 전세대출: 이자만
+const LOAN_TYPES = ['주담대', '신용대출', '비주택담보대출', '전세대출', '자동차 할부', '기타'];
+
+function getLoanTypeConfig(type) {
+  switch (type) {
+    case '신용대출':       return { fixedTerm: 5,    note: '잔액÷5년+이자', needsTerm: false, needsMethod: false, footnote: '22.1.1. 이후 기준, 분할상환 외 신용대출은 실제 상환기간과 무관하게 대출총액을 5년으로 나누어 원금상환액을 추정합니다.' };
+    case '비주택담보대출': return { fixedTerm: 8,    note: '잔액÷8년+이자', needsTerm: false, needsMethod: false };
+    case '전세대출':       return { fixedTerm: null, note: '이자만',         needsTerm: false, needsMethod: false };
+    case '자동차 할부':    return { fixedTerm: null, note: '실제 원리금',     needsTerm: true,  needsMethod: false, fixedMethod: 'annuity' };
+    default:              return { fixedTerm: null, note: '실제 원리금',     needsTerm: true,  needsMethod: true  };
+  }
+}
+
+function addExistingLoan() {
+  existingLoans.push({ id: ++_loanIdSeq, type: '신용대출', mode: 'calc', balance: 5000, rate: 4.0, term: 5, method: 'annuity', directMonthly: 50 });
+  renderExistingLoans();
+  calc();
+}
+
+function removeExistingLoan(id) {
+  existingLoans = existingLoans.filter(l => l.id !== id);
+  renderExistingLoans();
+  calc();
+}
+
+function updateLoan(id, field, value) {
+  const loan = existingLoans.find(l => l.id === id);
+  if (!loan) return;
+  loan[field] = value;
+  if (field === 'mode' || field === 'type') renderExistingLoans();
+  calc();
+}
+
+function calcLoanMonthly(loan) {
+  if (loan.mode === 'direct') return loan.directMonthly || 0;
+  const balance = loan.balance || 0;
+  const rate    = loan.rate    || 0;
+  const monthlyInterest = balance * (rate / 100) / 12;
+  switch (loan.type) {
+    case '신용대출':       return balance / (5 * 12) + monthlyInterest;
+    case '비주택담보대출': return balance / (8 * 12) + monthlyInterest;
+    case '전세대출':       return monthlyInterest;
+    case '자동차 할부':
+      if (!balance || !rate || !loan.term) return 0;
+      return monthlyPayment(balance, rate, loan.term, 'annuity');
+    default:
+      if (!balance || !rate || !loan.term) return 0;
+      return monthlyPayment(balance, rate, loan.term, loan.method);
+  }
+}
+
+function calcTotalExistingMonthly() {
+  return existingLoans.reduce((sum, l) => sum + calcLoanMonthly(l), 0);
+}
+
+function renderExistingLoans() {
+  document.getElementById('existing-loans-list').innerHTML = existingLoans.map(renderLoanRow).join('');
+}
+
+function renderLoanRow(loan) {
+  const cfg     = getLoanTypeConfig(loan.type);
+  const monthly = calcLoanMonthly(loan);
+  const typeOpts = LOAN_TYPES.map(t => `<option value="${t}"${loan.type===t?' selected':''}>${t}</option>`).join('');
+  const selectStyle = `background:var(--surface);border:1px solid var(--border);border-radius:7px;padding:4px 8px;font-size:12px;color:var(--text2);outline:none;cursor:pointer;`;
+  const numStyle    = `width:100%;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 12px;font-size:14px;font-weight:500;color:var(--text);font-family:var(--mono);outline:none;-moz-appearance:textfield;`;
+
+  let calcFields = `
+    <div class="field" style="margin-bottom:0;">
+      <label>잔액 (만원)</label>
+      <input type="number" value="${loan.balance}" step="100" min="0" style="${numStyle}" oninput="updateLoan(${loan.id},'balance',+this.value)">
+    </div>
+    <div class="field" style="margin-bottom:0;">
+      <label>금리 (%)</label>
+      <input type="number" value="${loan.rate}" step="0.1" min="0.1" max="30" style="${numStyle}" oninput="updateLoan(${loan.id},'rate',+this.value)">
+    </div>`;
+  if (cfg.needsTerm) calcFields += `
+    <div class="field" style="margin-bottom:0;">
+      <label>남은 기간 (년)</label>
+      <input type="number" value="${loan.term}" step="1" min="1" max="50" style="${numStyle}" oninput="updateLoan(${loan.id},'term',+this.value)">
+    </div>`;
+  if (cfg.needsMethod) calcFields += `
+    <div class="field" style="margin-bottom:0;">
+      <label>상환 방식</label>
+      <select style="${selectStyle}width:100%;padding:9px 12px;font-size:13px;border-radius:9px;" onchange="updateLoan(${loan.id},'method',this.value)">
+        <option value="annuity"${loan.method==='annuity'?' selected':''}>원리금균등</option>
+        <option value="equal_principal"${loan.method==='equal_principal'?' selected':''}>원금균등</option>
+      </select>
+    </div>`;
+  else if (cfg.fixedMethod) calcFields += `
+    <div class="field" style="margin-bottom:0;">
+      <label>상환 방식</label>
+      <div style="${numStyle}padding:9px 12px;font-size:13px;border-radius:9px;color:var(--text3);">원리금균등 (고정)</div>
+    </div>`;
+
+  const showMethodCol = cfg.needsMethod || cfg.fixedMethod;
+  const cols = loan.mode === 'calc' ? (cfg.needsTerm && showMethodCol ? 4 : cfg.needsTerm || showMethodCol ? 3 : 2) : 1;
+  const directFields = `
+    <div class="field" style="margin-bottom:0;grid-column:1/-1;">
+      <label>월 납입액 (만원)</label>
+      <input type="number" value="${loan.directMonthly}" step="1" min="0" style="${numStyle}" oninput="updateLoan(${loan.id},'directMonthly',+this.value)">
+    </div>`;
+
+  return `<div style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-top:10px;background:var(--surface2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <select style="${selectStyle}" onchange="updateLoan(${loan.id},'type',this.value)">${typeOpts}</select>
+        <span style="font-size:11px;color:var(--text3);">DSR: ${cfg.note} · 월 <b style="color:var(--text2);">${fmtMan(Math.round(monthly))}</b></span>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button onclick="updateLoan(${loan.id},'mode','${loan.mode==='calc'?'direct':'calc'}')" style="font-size:10px;color:var(--text3);background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:3px 8px;cursor:pointer;">${loan.mode==='calc'?'직접입력':'상세입력'}</button>
+        <button onclick="removeExistingLoan(${loan.id})" style="font-size:11px;color:var(--accent2);background:rgba(255,107,74,.1);border:1px solid rgba(255,107,74,.2);border-radius:5px;padding:3px 8px;cursor:pointer;">삭제</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:0 16px;">
+      ${loan.mode === 'calc' ? calcFields : directFields}
+    </div>
+  </div>`;
+}
 
 function toggleJoint() {
   const on = document.querySelector('input[name=mode]:checked').value === 'joint';
@@ -465,10 +639,11 @@ function fmtMan(n) {
   return n.toLocaleString() + '만원';
 }
 
-function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears, stressRate, method) {
+function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears, stressRate, method, existingMonthly) {
   // 스트레스 DSR: 심사금리 = 실제금리 + 가산금리
   const evalRate = ratePct + (stressRate || 0);
-  const monthlyLimit = annualIncome * (dsrPct / 100) / 12;
+  const monthlyLimit = annualIncome * (dsrPct / 100) / 12 - (existingMonthly || 0);
+  if (monthlyLimit <= 0) return 0;
   const r = (evalRate / 100) / 12;
   const n = termYears * 12;
   if (r === 0) return monthlyLimit * n;
@@ -519,6 +694,8 @@ function calc() {
   const totalEquity = equity + equity2;
   const totalIncome = income + income2;
 
+  const existingMonthly = calcTotalExistingMonthly();
+
   // 스트레스 DSR 안내 박스
   const infoEl = document.getElementById('stress-info');
   if (stressRate > 0) {
@@ -530,8 +707,26 @@ function calc() {
   // 수도권 안내 박스
   document.getElementById('region-info').style.display = isMetro ? 'block' : 'none';
 
+  // 기존 대출 합산 안내
+  const existingInfoEl = document.getElementById('existing-info');
+  if (existingLoans.length > 0 && existingMonthly > 0) {
+    const exDsrPct = totalIncome > 0 ? (existingMonthly * 12 / totalIncome * 100).toFixed(2) : '0.00';
+    const breakdown = existingLoans.map(l => {
+      const m = calcLoanMonthly(l);
+      return `${l.type} ${fmtMan(Math.round(m))}`;
+    }).join(' · ');
+    existingInfoEl.style.display = '';
+    const hasCreditLoan = existingLoans.some(l => l.type === '신용대출');
+    const hasNonHousing = existingLoans.some(l => l.type === '비주택담보대출');
+    const creditNote = hasCreditLoan ? `<br>22.1.1. 이후 기준, 분할상환 외 신용대출은 실제 상환기간과 무관하게 대출총액을 5년으로 나누어 원금상환액을 추정하며, 이자는 실제 납부액을 적용합니다.` : '';
+    const nonHousingNote = hasNonHousing ? `<br>비주택담보대출은 실제 상환기간과 무관하게 대출총액을 8년으로 나누어 원금상환액을 추정하며, 이자는 실제 납부액을 적용합니다.` : '';
+    existingInfoEl.innerHTML = `합계 월납입 <b style="color:var(--text2)">${fmtMan(Math.round(existingMonthly))}</b> · DSR 소진 <b style="color:var(--accent2)">${exDsrPct}%</b> · 신규 가용 DSR <b style="color:var(--text2)">${Math.max(0, dsrPct - parseFloat(exDsrPct)).toFixed(2)}%</b><br><span style="color:var(--text3)">${breakdown}${creditNote}${nonHousingNote}</span>`;
+  } else {
+    existingInfoEl.style.display = 'none';
+  }
+
   // DSR / LTV 기준 최대 대출
-  const dsrLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate, method);
+  const dsrLoan = calcDsrLoan(totalIncome, dsrPct, rate, term, stressRate, method, existingMonthly);
   const ltvMaxLoan = ltvPct >= 100 ? Infinity : totalEquity * (ltvPct / 100) / (1 - ltvPct / 100);
 
   // 수도권 매매가 구간별 cap을 self-consistent하게 적용
@@ -578,9 +773,9 @@ function calc() {
   else                           binding = 'cap'; // 수도권 cap 또는 구간 경계
 
   const actualLtvPct = (loan / price * 100).toFixed(1);
-  const annualPayment = monthlyPayment(loan, rate, term, method) * 12;
+  const annualPayment = (monthlyPayment(loan, rate, term, method) + existingMonthly) * 12;
   const actualDsrPct  = totalIncome > 0 ? (annualPayment / totalIncome * 100).toFixed(2) : 0;
-  const stressAnnualPayment = stressRate > 0 ? monthlyPayment(loan, rate + stressRate, term, method) * 12 : 0;
+  const stressAnnualPayment = stressRate > 0 ? (monthlyPayment(loan, rate + stressRate, term, method) + existingMonthly) * 12 : 0;
   const stressDsrPct = stressRate > 0 && totalIncome > 0 ? (stressAnnualPayment / totalIncome * 100).toFixed(2) : null;
   const totalInterest = method === 'equal_principal'
     ? loan * (rate/100/12) * (term*12 + 1) / 2
@@ -650,6 +845,10 @@ function calc() {
 
 // init
 calc();
+(function() {
+  const btn = document.getElementById('theme-btn');
+  if (btn && document.documentElement.getAttribute('data-theme') === 'light') btn.textContent = '☀️ 라이트';
+})();
 </script>
 </body>
 </html>
