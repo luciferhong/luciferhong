@@ -300,7 +300,7 @@
 
   <!-- 조회 기간 -->
   <div class="card">
-    <div class="card-title">조회 기간 <span style="font-weight:400;color:#aaa;font-size:11px">· 읍면동 레벨은 전체 기간 합산</span></div>
+    <div class="card-title">조회 기간</div>
     <div class="period-row">
       <select id="sel-from" onchange="onPeriodChange()"></select>
       <span class="tilde">~</span>
@@ -344,7 +344,7 @@
   <div class="selected-area" id="selected-area">
     <span id="selected-label"></span>
     <span class="level-badge" id="selected-level"></span>
-    <span class="emd-notice" id="emd-notice">읍면동 레벨 · 전체 기간(2015~2025) 합산</span>
+    <span class="emd-notice" id="emd-notice">읍면동 레벨 · 선택 기간 합산</span>
   </div>
 
   <!-- 탭 + 그리드 -->
@@ -430,12 +430,20 @@ function getSggYearLabel(sgg5) {
 }
 
 // ── 초기 로드 ────────────────────────────────────────────────
+// 데이터 포맷 버전 — emd 파일이 연도별 배열로 바뀐 뒤 캐시 무효화용.
+const DATA_VER = 'y2';
+
 async function init() {
   setMsg('데이터 로딩 중...');
-  const res = await fetch('migration_data.json');
+  const res = await fetch(`migration_data.json?v=${DATA_VER}`);
   if (!res.ok) throw new Error('migration_data.json 로드 실패');
   setMsg('JSON 파싱 중...');
   DATA = await res.json();
+  if (!Array.isArray(DATA.emd_years) || DATA.emd_years.length === 0) {
+    console.warn('[migration] migration_data.json 에 emd_years 가 없음 — 읍면동 연도 필터가 동작하지 않습니다. 빌드 스크립트로 재생성하고 캐시를 비우세요.');
+  } else {
+    console.log('[migration] emd_years:', DATA.emd_years.join(', '));
+  }
   buildPeriodSelects();
   buildSidoOptions();
   onPeriodChange();
@@ -489,7 +497,7 @@ async function loadEmd(sgg5) {
   pendingEmdLoad = sgg5;
 
   try {
-    const res = await fetch(`emd/${sgg5}.json`);
+    const res = await fetch(`emd/${sgg5}.json?v=${DATA_VER}`);
     EMD_CACHE[sgg5] = res.ok ? await res.json() : {};
   } catch(e) {
     EMD_CACHE[sgg5] = {};
@@ -510,7 +518,7 @@ async function loadEmdOut(sgg5) {
   el.classList.add('visible');
 
   try {
-    const res = await fetch(`emd_out/${sgg5}.json`);
+    const res = await fetch(`emd_out/${sgg5}.json?v=${DATA_VER}`);
     EMD_OUT_CACHE[sgg5] = res.ok ? await res.json() : {};
   } catch(e) {
     EMD_OUT_CACHE[sgg5] = {};
@@ -674,8 +682,39 @@ function renderGrid() {
     if (!emdIn || !emdOut) return;
 
     level    = 'emd';
-    inFlows  = emdIn[emd10]  || {};
-    outFlows = emdOut[emd10] || {};
+
+    // emd 파일 포맷:
+    //  신: {in10: {out10: [c_year0, c_year1, ...]}}  (DATA.emd_years 와 동일 인덱스)
+    //  구: {in10: {out10: count}}                    (전체 기간 합산, 역호환용)
+    // 연도 셀렉터 범위로 슬라이싱 → 단일 정수로 환원.
+    const emdYears = DATA.emd_years || [];
+    const fromY = document.getElementById('sel-from').value;
+    const toY   = document.getElementById('sel-to').value;
+    let i0 = 0, i1 = emdYears.length - 1;
+    if (emdYears.length) {
+      i0 = emdYears.findIndex(y => y >= fromY);
+      i1 = emdYears.length - 1 - [...emdYears].reverse().findIndex(y => y <= toY);
+      if (i0 < 0 || i1 < 0 || i0 > i1) { i0 = 0; i1 = -1; }  // 선택 범위 밖
+    }
+    const sliceSum = (v) => {
+      if (typeof v === 'number') return v;          // 구 포맷
+      if (!Array.isArray(v))     return 0;
+      let s = 0;
+      const end = Math.min(i1, v.length - 1);
+      for (let k = i0; k <= end; k++) s += v[k] || 0;
+      return s;
+    };
+    const reduceFlows = (src) => {
+      const r = {};
+      for (const [k, v] of Object.entries(src)) {
+        const c = sliceSum(v);
+        if (c) r[k] = c;
+      }
+      return r;
+    };
+
+    inFlows  = reduceFlows(emdIn[emd10]  || {});
+    outFlows = reduceFlows(emdOut[emd10] || {});
 
     // 시군구로 보기: emd10 키를 sgg5로 집계
     if (groupBySgg) {
