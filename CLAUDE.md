@@ -67,6 +67,7 @@ Uses `@capacitor-community/text-to-speech` (v6). iOS: `UIBackgroundModes: audio`
 
 - **hongbu.html은 절대 수정하지 말 것.** 코드 작업은 항상 `hongbutest.html`.
 - **메모리 저장 요청 시 항상 CLAUDE.md에 저장한다.** (로컬 메모리는 다른 PC에서 미적용)
+- **서버 재기동이 필요하면 묻지 말고 자동으로 재시작한다.** PM2 앱명: `sise`(sise_server.py)·`sise_ask`·`sise_bot`·`shorts`·`myip`·`http`. 수정 파일에 해당하는 앱만 `pm2 restart <앱명>`. 예: `sise_ask_server.py` 수정 → `pm2 restart sise_ask`; `sise_server.py` 수정 → `pm2 restart sise`.
 - **모든 설명과 과정은 한글로 작성한다.**
 - **구글 시트 읽기:** WebFetch로 `https://docs.google.com/spreadsheets/d/{ID}/gviz/tq?tqx=out:csv` 사용.
 
@@ -130,7 +131,25 @@ Uses `@capacitor-community/text-to-speech` (v6). iOS: `UIBackgroundModes: audio`
 
 **실행:** `python sise_server.py` 또는 `pm2 start ecosystem.config.js`
 
-**DB:** `sise_history.db` (로컬 전용, Git 제외). 테이블: `전체`, `앞마당` — run_date별 시세 이력.
+**DB:** `sise_history.db` (로컬 전용, Git 제외). 테이블: `전체`, `앞마당`, `수도권` — run_date별 시세 이력. `complex_id` = 네이버부동산 단지번호(complexNo). `sale_price`/`rent_price` 단위는 만원, `area`는 전용 ㎡.
+
+## sise_ask — 시세 조회 텔레그램 봇
+
+**파일:** `sise_ask_server.py` (조회 API, 포트 7126, `127.0.0.1`, DB `mode=ro`) + `sise_bot.py` (텔레그램 long-polling) + `ecosystem.config.js` PM2 앱 `sise_ask`·`sise_bot`. **`sise_server.py`와 완전 분리.**
+
+**실행:** `pm2 start ecosystem.config.js --only sise_ask` / `--only sise_bot`.
+
+**기능:** 텔레그램에 "동작구 노빌리티 59 가격" / "강남구 20억대 아파트" 등을 보내면 규칙 기반 파서로 해석 → DB 조회 → 가격 + 네이버부동산 링크(`m.land.naver.com/complex/info/{id}`) 회신. 봇은 `/ask?q=&token=luciferhong2026` 호출만 하는 얇은 클라이언트.
+
+**API:** `GET /health`, `GET /ask?q=<질문>&table=<선택>&token=`. 질의 유형 — (A) 단지 특정, (B) 목록형(가격대/지역/면적 필터). 다중 지역(여러 시군구) OR 매칭, 가격 `N억대` = N억~N억9999만원([N, N+1)억), 기준일은 조건에 데이터가 존재하는 최신 `run_date`(전체 테이블 부분 크롤링 대응).
+
+**테이블 선택:** 질문에 `라니` 단어가 있으면 `앞마당라니` 테이블을 **맨 앞에 우선 탐색**(이후 통상 순서와 동일, 테이블 부재 시 통상 순서로 폴백). 질문에 `앞마당`/`전체` 단어가 있으면 그 테이블 강제(`수도권`은 테이블이 아니라 **서울+경기 지역 필터**로 처리). 없으면 `앞마당→앞마당라니→수도권→전체` 중 **질문 범위를 완전히 커버하는 테이블만** 시도(결과 나오는 첫 테이블, `전체`는 항상 마지막 보루). 즉 **앞마당라니에만 있는 지역(예: 김해)은 `전체`로 떨어지지 않고 `앞마당라니`에서 찾는다**(앞마당에도 있으면 앞마당 우선). 커버 판정 = 질문이 가리키는 시군구 집합(시군구 명시 시 그 집합, 시도만이면 그 시도의 전체 시군구)이 테이블에 빠짐없이 있는지. 예: `부산`(시도)→앞마당엔 일부 구만 있어 `전체`; `부산 남구`(앞마당에 있음)→`앞마당`; `부산 동래구`(앞마당라니에 있음)→`앞마당라니`. 지역 없는 질문은 앞마당부터.
+
+**지역 인식:** 공백 없는 단일 시/군은 접미사 생략 가능(`김해`=김해시, `구미`=구미시, `울주`=울주군). 다구 도시는 `부천`/`청주`처럼 시 단위 또는 `부천시 원미구`로 입력. 서울/광역시 구는 구 이름만(`강남구`).
+
+**면적:** 전용 ㎡(`59`→밴드 57.5~61.5) 또는 평대(`PYEONG_TO_AREA` 매핑, 예 20평대=전용 55~63). 가격 표시는 소수 2자리(`14.97억`, 정수면 `14억`).
+
+**봇 권한:** `ALLOWED_CHATS`(본인 chat_id)만 응답. 봇 토큰은 `_daily_schedule.py`와 동일. getUpdates 소비자는 `sise_bot` 하나만(중복 폴링 금지).
 
 ## sise_chart_race — 아파트 시세 Bar Chart Race
 

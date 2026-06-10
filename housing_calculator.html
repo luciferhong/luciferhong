@@ -384,6 +384,12 @@
         <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:0;">
           <input type="radio" name="stress" value="3.0" onchange="calc()" style="accent-color:var(--accent)"> 수도권 3.0%
         </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:0;">
+          <input type="radio" name="stress" value="custom" id="stress-custom-radio" onchange="calc()" style="accent-color:var(--accent)"> 직접입력
+          <input type="number" id="stress-custom" min="0" max="10" step="0.05" value="1.5"
+                 oninput="document.getElementById('stress-custom-radio').checked=true; calc()"
+                 style="width:58px;padding:3px 5px;font-size:12px;border:1px solid var(--border);border-radius:5px;background:var(--bg2,#fff);color:var(--text2);"> %
+        </label>
       </div>
       <div id="stress-info" style="margin-top:7px; font-size:11px; color:var(--text3); display:none; padding:7px 10px; background:rgba(79,142,255,.07); border-radius:7px; border:1px solid rgba(79,142,255,.15); line-height:1.6;"></div>
     </div>
@@ -549,7 +555,7 @@ function calcLoanMonthly(loan) {
       return monthlyPayment(balance, rate, loan.term, 'annuity');
     default:
       if (!balance || !rate || !loan.term) return 0;
-      return monthlyPayment(balance, rate, loan.term, loan.method);
+      return dsrMonthlyPayment(balance, rate, loan.term, loan.method); // 원금균등도 평잔 기준
   }
 }
 
@@ -648,8 +654,9 @@ function calcDsrLoan(annualIncome, dsrPct, ratePct, termYears, stressRate, metho
   const n = termYears * 12;
   if (r === 0) return monthlyLimit * n;
   if (method === 'equal_principal') {
-    // 원금균등: DSR 심사 시 초기(최대) 납입액 기준
-    return monthlyLimit / (1/n + r);
+    // 원금균등: DSR 산정은 만기 평잔(평균) 기준 — 연 원금(원금/기간) + 평균 이자(원금×금리÷2)
+    // 월평균 = 원금/n + r·원금·(n+1)/(2n)
+    return monthlyLimit / (1/n + r * (n + 1) / (2 * n));
   }
   // 원리금균등·혼합형·주기형: 원리금균등 공식
   const factor = (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1);
@@ -671,6 +678,17 @@ function monthlyPaymentFinal(principal, ratePct, termYears) {
   return (principal / n) * (1 + r); // 원금균등 마지막 회차 납입액
 }
 
+function dsrMonthlyPayment(principal, ratePct, termYears, method) {
+  // DSR 산정용 월 상환액. 원금균등은 만기 평잔(평균) 기준 (첫 회차 피크 아님).
+  const r = (ratePct / 100) / 12;
+  const n = termYears * 12;
+  if (method === 'equal_principal') {
+    if (r === 0) return principal / n;
+    return principal * (1/n + r * (n + 1) / (2 * n));
+  }
+  return monthlyPayment(principal, ratePct, termYears, method);
+}
+
 function calc() {
   const equity  = parseFloat(document.getElementById('equity').value)  || 0;
   const income  = parseFloat(document.getElementById('income').value)  || 0;
@@ -678,7 +696,10 @@ function calc() {
   const term    = parseFloat(document.getElementById('term').value);
   const ltvPct  = parseFloat(document.getElementById('ltv').value);
   const dsrPct  = parseFloat(document.getElementById('dsr').value);
-  const stressRate = parseFloat(document.querySelector('input[name=stress]:checked').value) || 0;
+  const stressSel = document.querySelector('input[name=stress]:checked').value;
+  const stressRate = (stressSel === 'custom')
+    ? (parseFloat(document.getElementById('stress-custom').value) || 0)
+    : (parseFloat(stressSel) || 0);
   const method  = document.querySelector('input[name=repay]:checked').value;
   const isMetro = document.querySelector('input[name=region]:checked').value === 'metro';
   // 수도권 매매가 구간별 대출 한도 (만원)
@@ -700,7 +721,7 @@ function calc() {
   const infoEl = document.getElementById('stress-info');
   if (stressRate > 0) {
     infoEl.style.display = 'block';
-    infoEl.innerHTML = `심사금리 <b style="color:var(--accent)">${(rate+stressRate).toFixed(1)}%</b> 적용 (실제금리 ${rate}% + 가산 ${stressRate}%) · 2025.7.1 스트레스DSR 3단계`;
+    infoEl.innerHTML = `심사금리 <b style="color:var(--accent)">${(rate+stressRate).toFixed(2)}%</b> 적용 (실제금리 ${rate}% + 가산 ${stressRate}%) · 2025.7.1 스트레스DSR 3단계`;
   } else {
     infoEl.style.display = 'none';
   }
@@ -773,9 +794,9 @@ function calc() {
   else                           binding = 'cap'; // 수도권 cap 또는 구간 경계
 
   const actualLtvPct = (loan / price * 100).toFixed(1);
-  const annualPayment = (monthlyPayment(loan, rate, term, method) + existingMonthly) * 12;
+  const annualPayment = (dsrMonthlyPayment(loan, rate, term, method) + existingMonthly) * 12;
   const actualDsrPct  = totalIncome > 0 ? (annualPayment / totalIncome * 100).toFixed(2) : 0;
-  const stressAnnualPayment = stressRate > 0 ? (monthlyPayment(loan, rate + stressRate, term, method) + existingMonthly) * 12 : 0;
+  const stressAnnualPayment = stressRate > 0 ? (dsrMonthlyPayment(loan, rate + stressRate, term, method) + existingMonthly) * 12 : 0;
   const stressDsrPct = stressRate > 0 && totalIncome > 0 ? (stressAnnualPayment / totalIncome * 100).toFixed(2) : null;
   const totalInterest = method === 'equal_principal'
     ? loan * (rate/100/12) * (term*12 + 1) / 2
