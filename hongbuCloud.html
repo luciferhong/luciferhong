@@ -4697,6 +4697,9 @@
       const HONGBU_DB_VERSION = 8;
       const HONGBU_MEMO_DB_VERSION = 6;
 
+      // 시세 조회 API (집 PC sise_server.py → Cloudflare Tunnel). 토큰 없는 공개 읽기 전용 엔드포인트만 사용.
+      const SISE_API_BASE = "https://sise.luciferhong.com";
+
       // ================================
       // ✅ Google Drive 백엔드 (hongbuCloud 전용)
       // - 포토메모/단지메모를 사용자 본인 Google Drive의 HongbuMemo 폴더에 저장
@@ -9628,10 +9631,16 @@
         let infoHtml = `
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <h3 style="margin: 0; text-align: left;">${apt.아파트명}</h3>
-      <button onclick="openNaverRealEstate(${apartmentId})" 
-        style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
-        네부 바로가기
-      </button>
+      <div style="display:flex; gap:6px;">
+        <button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
+          style="padding: 8px; background: #27AE60; color: white; border: none; border-radius: 4px; cursor: pointer;">
+          📈 시세보기
+        </button>
+        <button onclick="openNaverRealEstate(${apartmentId})"
+          style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
+          네부 바로가기
+        </button>
+      </div>
     </div>
 			${
         hasDetail
@@ -9701,7 +9710,8 @@
 		  <button onclick="deleteNote('${apartmentId}')" style="display: none;"></button>
 		</label>
       </div>
-    </div>`;
+    </div>
+    <div id="sisePriceBox" style="margin-top: 16px;"></div>`;
 
         const infoDiv = document.getElementById("apartmentInfo");
         if (!infoDiv.dataset.positioned) {
@@ -9738,6 +9748,58 @@
       function openNaverRealEstate(apartmentId) {
         let url = `https://new.land.naver.com/complexes/${apartmentId}`;
         window.open(url, "_blank");
+      }
+
+      // 만원 단위 가격 → "14.97억"/"14억" (저층이면 "(저)" 접두), 값 없으면 "-"
+      function __formatSisePrice(manwon, isLow) {
+        if (manwon == null || manwon === "" || isNaN(manwon)) return "-";
+        const eok = Number(manwon) / 10000;
+        const num = Number.isInteger(eok) ? String(eok) : eok.toFixed(2);
+        return `${isLow ? "(저)" : ""}${num}억`;
+      }
+
+      // 📈 시세보기: sise_server의 공개 엔드포인트에서 단지 최신 시세 조회 후 모달에 표시
+      async function showSisePrice(apartmentId) {
+        const box = document.getElementById("sisePriceBox");
+        if (!box) return;
+        box.innerHTML = `<div style="padding:6px; color:#666; font-size:13px;">시세 조회 중…</div>`;
+        try {
+          const res = await fetch(
+            `${SISE_API_BASE}/price_history?complex_id=${encodeURIComponent(apartmentId)}`
+          );
+          const data = await res.json();
+          if (!data || !data.count) {
+            box.innerHTML = `<div style="padding:6px; color:#888; font-size:13px;">시세 데이터 없음</div>`;
+            return;
+          }
+          const thStyle =
+            "background:transparent; border-bottom:1px solid #ccc; padding:4px 6px; text-align:center; color:#555; font-weight:600;";
+          const tdStyle =
+            "background:transparent; border-bottom:1px solid #eee; padding:4px 6px; text-align:center;";
+          let html = `
+            <div style="font-size:12px; color:#888; margin-bottom:4px;">
+              기준일 ${data.run_date} · 출처 ${data.table}
+            </div>
+            <table style="width:100%; border-collapse:collapse; font-size:13px; background:transparent;">
+              <tr>
+                <th style="${thStyle}">전용면적</th><th style="${thStyle}">구조</th><th style="${thStyle}">방</th><th style="${thStyle}">화장실</th><th style="${thStyle}">매매가</th><th style="${thStyle}">전세가</th>
+              </tr>`;
+          data.rows.forEach((r) => {
+            html += `
+              <tr>
+                <td style="${tdStyle}">${r.area != null ? r.area : "-"}</td>
+                <td style="${tdStyle}">${r.structure || "-"}</td>
+                <td style="${tdStyle}">${r.room != null ? r.room : "-"}</td>
+                <td style="${tdStyle}">${r.bathroom != null ? r.bathroom : "-"}</td>
+                <td style="${tdStyle}">${__formatSisePrice(r.sale_price, r.sale_is_low)}</td>
+                <td style="${tdStyle}">${__formatSisePrice(r.rent_price, r.rent_is_low)}</td>
+              </tr>`;
+          });
+          html += `</table>`;
+          box.innerHTML = html;
+        } catch (e) {
+          box.innerHTML = `<div style="padding:6px; color:#c0392b; font-size:13px;">시세 조회 실패 (서버 미가동일 수 있음)</div>`;
+        }
       }
 
       function __closeApartmentInfo() {
