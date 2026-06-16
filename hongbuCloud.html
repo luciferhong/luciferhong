@@ -4375,6 +4375,7 @@
           }));
 
           //console.log("✅ 아파트 데이터 fetch 완료");
+          __loadSiseAvailableIds(); // 시세 있는 단지 id 목록 백그라운드 로드
           updateMarkers(window.map.getBounds());
 
           buildRegionFiltersFromApartments();
@@ -4699,6 +4700,8 @@
 
       // 시세 조회 API (집 PC sise_server.py → Cloudflare Tunnel). 토큰 없는 공개 읽기 전용 엔드포인트만 사용.
       const SISE_API_BASE = "https://sise.luciferhong.com";
+      // 시세 데이터가 있는 단지 id 집합 (1회 로드 후 메모리 캐시). null이면 미로드/실패 → 버튼 노출(폴백).
+      let __siseAvailableIds = null;
 
       // ================================
       // ✅ Google Drive 백엔드 (hongbuCloud 전용)
@@ -9632,10 +9635,14 @@
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <h3 style="margin: 0; text-align: left;">${apt.아파트명}</h3>
       <div style="display:flex; gap:6px;">
-        <button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
+        ${
+          __hasSiseData(apartmentId)
+            ? `<button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
           style="padding: 8px; background: #27AE60; color: white; border: none; border-radius: 4px; cursor: pointer;">
           📈 시세보기
-        </button>
+        </button>`
+            : ""
+        }
         <button onclick="openNaverRealEstate(${apartmentId})"
           style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
           네부 바로가기
@@ -9748,6 +9755,25 @@
       function openNaverRealEstate(apartmentId) {
         let url = `https://new.land.naver.com/complexes/${apartmentId}`;
         window.open(url, "_blank");
+      }
+
+      // 시세 있는 단지 id 목록을 1회 로드해 Set으로 캐시 (시세보기 버튼 노출 판단용)
+      async function __loadSiseAvailableIds() {
+        if (__siseAvailableIds) return;
+        try {
+          const res = await fetch(`${SISE_API_BASE}/complex_ids`);
+          const data = await res.json();
+          if (data && Array.isArray(data.ids)) {
+            __siseAvailableIds = new Set(data.ids.map(String));
+          }
+        } catch (e) {
+          // 실패 시 null 유지 → 버튼은 폴백으로 노출(클릭 시 '데이터 없음' 처리)
+        }
+      }
+
+      // 해당 단지에 시세 데이터가 있는지 (목록 미로드면 true 폴백)
+      function __hasSiseData(apartmentId) {
+        return !__siseAvailableIds || __siseAvailableIds.has(String(apartmentId));
       }
 
       // 만원 단위 가격 → "14.97억"/"14억" (저층이면 "(저)" 접두), 값 없으면 "-"
