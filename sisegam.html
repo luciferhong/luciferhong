@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="Yeti" content="noindex, nofollow">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="gam.png" type="image/png" />
+
+  <title>가격감 잡기</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin-top: 50px;
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    .options {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .option {
+      padding: 10px;
+      border: 1px solid #ccc;
+      cursor: pointer;
+      width: 400px; /* 넉넉히 설정 */
+    }
+    .correct {
+      border: 2px solid green;
+    }
+	.wrong {
+	  border: 2px solid red;
+	  pointer-events: none;
+	}
+    #result {
+      margin-top: 20px;
+      font-size: 18px;
+    }
+	#nextButton {
+      margin-top: 20px;
+      padding: 10px 20px;
+	  margin: 20px auto; /* 가운데 정렬 */
+    }
+    #buttonContainer {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    button {
+      padding: 10px 20px;
+    }
+	.filters {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .filter-group label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .hidden {
+      display: none;
+    }
+    .area-filter {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 10px;
+    }
+    .area-filter label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+<h1>
+  <img src="gam.png" alt="" style="width: 50px; height: 50px; vertical-align: middle; margin-right: 10px;" />이 좀 잡히시나요?
+</h1>
+
+<p id="date">기준일자: -</p> <!-- 기준일자 표시 -->
+  <p>30초 안에 다른 금액대의 아파트를 찾아 클릭하세요!</p>
+  <div class="area-filter">
+    <label><input type="radio" name="areaFilter" value="20" checked/> 20평대</label>
+    <label><input type="radio" name="areaFilter" value="30" /> 30평대</label>
+    <label><input type="radio" name="areaFilter" value="all" /> 혼합</label>
+  </div>
+  <p id="timer">남은 시간: 30초</p>
+  <div class="filters" id="filters"></div>
+<div id="buttonContainer">
+	<button id="toggleFiltersButton" onclick="toggleFilters()">지역 보기/숨기기</button>
+    <button id="startButton" onclick="startGame()" disabled>시작</button>
+    <button id="pauseButton" onclick="pauseTimer()" style="display: none;">일시정지</button>
+    <button id="restartButton" onclick="startGame()" style="display: block;">처음부터</button>
+  </div>
+  <div class="options" id="options"></div>
+  <p id="result"></p>
+  <button id="nextButton" onclick="resetGame()" style="display: none;">다음</button>
+
+  <script>
+    const SISE_API_BASE = "https://sise.luciferhong.com";
+    let apartments = [];
+    let filteredApartments = [];
+    let timer = 30;
+    let attempts = 0;
+    const maxAttempts = 2;
+    const timerElement = document.getElementById("timer");
+    const optionsContainer = document.getElementById("options");
+    const resultElement = document.getElementById("result");
+    const nextButton = document.getElementById("nextButton");
+    const pauseButton = document.getElementById("pauseButton");
+    const startButton = document.getElementById("startButton");
+    const filtersContainer = document.getElementById("filters");
+    let interval;
+    let isPaused = false;
+    let gameStarted = false;
+
+// 기준일자를 표시할 요소
+const dateElement = document.getElementById("date");
+
+// 아파트 데이터 로드 함수 수정
+async function loadApartments() {
+  // 로딩 안내 (지역 목록이 빌 때 혼동 방지)
+  dateElement.textContent = "데이터를 불러오는 중...";
+  filtersContainer.innerHTML = '<p style="color:#888; padding:10px;">데이터를 불러오는 중입니다...</p>';
+  try {
+    const response = await fetch(`${SISE_API_BASE}/gam_data?v=${new Date().getTime()}`); // DB(sise_history) TSV, 타임스탬프 추가
+    const text = await response.text();
+    const lines = text.trim().split("\n");
+
+    // 첫 번째 줄에서 기준일자 추출
+    const firstLine = lines[1].split("\t");
+    const 기준일자 = firstLine[0]; // 첫 번째 열이 기준일자
+    dateElement.textContent = `네이버 부동산 호가 기준일자: ${기준일자}`; // 기준일자 표시
+
+    // 나머지 데이터 파싱
+    apartments = lines.slice(1).map(line => {
+      const [date, city, region, name, category, price] = line.split("\t");
+      const areaMatch = name.match(/(\d+)㎡/);
+      const area = areaMatch ? parseInt(areaMatch[1], 10) : null;
+      return {
+        date,
+        city,
+        region,
+        name,
+        price: parseFloat(price),
+        category: parseFloat(category),
+        area,
+      };
+    });
+
+    setupFilters();
+  } catch (error) {
+    console.error("Failed to load apartments data:", error);
+    dateElement.textContent = "데이터 로드 실패";
+    filtersContainer.innerHTML = '<p style="color:#c0392b; padding:10px;">데이터를 불러오지 못했습니다. 잠시 후 새로고침 해주세요.</p>';
+  }
+}
+
+
+function setupFilters() {
+  // 시도별 데이터 그룹화 (중복 제거)
+  const groupedByCity = apartments.reduce((acc, apt) => {
+    if (!acc[apt.city]) acc[apt.city] = new Set();
+    acc[apt.city].add(apt.region);
+    return acc;
+  }, {});
+
+  // 기존 필터 제거
+  filtersContainer.innerHTML = "";
+
+  // 시도 정렬 (서울 → 경기도 → 대구광역시 → 나머지)
+  const sortedCities = Object.keys(groupedByCity).sort((a, b) => {
+    const order = ["서울시", "경기도", "부산시", "대구시", "울산시"];
+    const indexA = order.indexOf(a);
+    const indexB = order.indexOf(b);
+    
+    if (indexA !== -1 && indexB !== -1) return indexA - indexB; // 지정된 순서에 맞춤
+    if (indexA !== -1) return -1; // 지정된 지역은 앞에 위치
+    if (indexB !== -1) return 1;  // 지정되지 않은 지역은 뒤로 정렬
+    return a.localeCompare(b, "ko"); // 나머지는 가나다순 정렬
+  });
+
+  // 각 시도별 필터 그룹 생성
+  sortedCities.forEach(city => {
+    const cityGroup = document.createElement("div");
+    cityGroup.classList.add("filter-group");
+
+    // 시도 헤더 추가
+    const cityHeader = document.createElement("h3");
+    cityHeader.textContent = city;
+    cityGroup.appendChild(cityHeader);
+
+    // 전체 선택/해제 체크박스 추가 (시도 이름 아래 최상단)
+    const selectAllLabel = document.createElement("label");
+    const selectAllCheckbox = document.createElement("input");
+    selectAllCheckbox.type = "checkbox";
+
+    // 시군구 체크박스 배열 관리
+    const regionCheckboxes = [];
+
+    // 시군구 체크박스 추가 (가나다 순 정렬)
+    const sortedRegions = [...groupedByCity[city]].sort((a, b) => a.localeCompare(b, "ko"));
+    sortedRegions.forEach(region => {
+	  const label = document.createElement("label");
+	  const checkbox = document.createElement("input");
+	  checkbox.type = "checkbox";
+	  checkbox.value = region;
+	  checkbox.dataset.city = city; // 시도 정보 저장!
+	  checkbox.checked = false;
+
+
+      // 개별 체크박스 이벤트
+      checkbox.addEventListener("change", () => {
+        const allChecked = regionCheckboxes.every(cb => cb.checked);
+        const noneChecked = regionCheckboxes.every(cb => !cb.checked);
+
+        // 전체 선택 상태 업데이트
+        selectAllCheckbox.checked = allChecked;
+        selectAllCheckbox.indeterminate = !allChecked && !noneChecked;
+
+        // 시작 버튼 활성화 여부 업데이트
+        startButton.disabled = !filtersContainer.querySelector("input:checked");
+      });
+
+      label.appendChild(checkbox);
+      label.appendChild(document.createTextNode(region));
+      regionCheckboxes.push(checkbox);
+    });
+
+    // 전체 선택/해제 이벤트
+    selectAllCheckbox.addEventListener("change", () => {
+      regionCheckboxes.forEach(checkbox => {
+        checkbox.checked = selectAllCheckbox.checked; // 상태 동기화
+      });
+
+      // 시작 버튼 활성화 여부 업데이트
+      startButton.disabled = !filtersContainer.querySelector("input:checked");
+    });
+
+    selectAllLabel.appendChild(selectAllCheckbox);
+    selectAllLabel.appendChild(document.createTextNode(" 전체 선택/해제"));
+
+    // 전체 선택/해제를 시도 이름 아래 첫 번째에 추가
+    cityGroup.appendChild(selectAllLabel);
+
+    // 시군구 체크박스 추가
+    regionCheckboxes.forEach(label => {
+      cityGroup.appendChild(label.parentNode);
+    });
+
+    filtersContainer.appendChild(cityGroup);
+  });
+
+  // 게임 시작 버튼 비활성화
+  startButton.disabled = true;
+}
+
+
+
+let categoryQueue = []; // 카테고리 큐 관리 변수
+
+// 카테고리 큐 준비 함수
+function prepareCategoryQueue() {
+  // 1. 카테고리 중복 제거 및 정렬
+  const uniqueCategories = Array.from(
+    new Set(filteredApartments.map(apt => apt.category))
+  ).sort((a, b) => a - b); // 카테고리 오름차순 정렬
+
+  console.log("유일한 카테고리 목록:", uniqueCategories);
+
+  // 2. 랜덤하게 섞기
+  categoryQueue = shuffle(uniqueCategories);
+  console.log("섞인 카테고리 큐:", categoryQueue);
+}
+
+// 옵션 생성 함수
+function generateOptions() {
+  // 큐가 비었으면 처음부터 다시 채움
+  if (categoryQueue.length === 0) {
+    prepareCategoryQueue();
+    console.log("카테고리 목록을 모두 사용했습니다. 처음부터 다시 진행합니다.");
+  }
+
+  while (categoryQueue.length > 0) {
+    // 1. 큐에서 기준 카테고리 하나 꺼내기
+    const baseCategory = categoryQueue.shift();
+	console.log(categoryQueue);
+    console.log("기준 카테고리:", baseCategory);
+
+    // 2. 기준 카테고리를 중심으로 옵션 필터링
+    const sameCategory = filteredApartments.filter(apt => apt.category === baseCategory);
+    const diffCategory = filteredApartments.filter(
+      apt => Math.abs(apt.category - baseCategory) >= 1.5 && Math.abs(apt.category - baseCategory) <= 2
+    );
+
+    console.log("같은 카테고리:", sameCategory);
+    console.log("다른 카테고리:", diffCategory);
+
+    // **데이터 부족 시 다음 카테고리로 이동 (무한 루프 방지)**
+    if (sameCategory.length < 3 || diffCategory.length < 1) {
+      console.warn(`데이터 부족으로 인해 카테고리 ${baseCategory}를 건너뜁니다.`);
+      
+      // 만약 categoryQueue가 비어 다시 채우면 처음부터 반복
+      if (categoryQueue.length === 0) {
+        prepareCategoryQueue();
+        console.log("모든 카테고리가 부족하여 다시 큐를 초기화합니다.");
+      }
+      continue; // 다음 카테고리로 이동
+    }
+
+    // 5. 랜덤하게 3개와 1개 선택
+    const options = [
+      ...shuffle(sameCategory).slice(0, 3),
+      shuffle(diffCategory)[0],
+    ];
+
+    // 6. 옵션 화면에 표시
+    optionsContainer.innerHTML = "";
+    shuffle(options).forEach(apt => {
+      const button = document.createElement("div");
+      button.classList.add("option");
+
+      const text = document.createElement("div");
+      text.textContent = `${apt.name}`;
+      button.appendChild(text);
+
+      button.dataset.price = apt.price;
+      button.dataset.category = apt.category;
+      button.onclick = () => checkAnswer(apt, button);
+      optionsContainer.appendChild(button);
+    });
+
+    return; // 성공적으로 문제 생성 → 함수 종료
+  }
+
+  // **모든 카테고리를 순환했음에도 문제가 생성되지 않은 경우**
+  console.warn("사용 가능한 데이터가 없습니다. 필터를 조정하세요.");
+  resultElement.innerHTML = "선택된 지역에 금액대에 맞는 충분한 아파트가 없습니다.<br>좀 더 선택하세요.";
+  startButton.style.display = "block"; // 다시 시작 버튼 표시
+  pauseButton.style.display = "none";
+  nextButton.style.display = "none";
+}
+
+
+
+// 게임 시작 함수
+function startGame() {
+  toggleFilters();
+  filterApartments(); // 필터링된 아파트 준비
+  prepareCategoryQueue(); // 카테고리 큐 초기화
+  startButton.style.display = "none";
+  pauseButton.style.display = "inline-block";
+  gameStarted = true;
+  resetGame();
+}
+
+
+function filterApartments() {
+  const selectedRegions = [...filtersContainer.querySelectorAll('input:checked')].map(input => ({
+    city: input.dataset.city,
+    region: input.value,
+  }));
+
+  const areaFilter = document.querySelector('input[name="areaFilter"]:checked')?.value || 'all';
+
+  filteredApartments = apartments.filter(apt => {
+    const regionMatch = selectedRegions.some(selected => selected.city === apt.city && selected.region === apt.region);
+    if (!regionMatch) return false;
+    if (areaFilter === 'all') return true;
+    // 20평대 = 전용 55~63, 30평대 = 전용 79~85
+    if (areaFilter === '20') return apt.area >= 55 && apt.area <= 63;
+    if (areaFilter === '30') return apt.area >= 79 && apt.area <= 85;
+    return true;
+  });
+}
+
+
+
+function shuffle(array) {
+  return array.sort(() => Math.random() - 0.5);
+}
+
+function checkAnswer(selected, button) {
+  const categories = [...optionsContainer.children].map(btn => parseFloat(btn.dataset.category));
+  const mainCategory = categories.sort((a, b) => 
+	categories.filter(v => v === a).length - categories.filter(v => v === b).length
+  ).pop();
+
+  if (selected.category !== mainCategory) {
+	button.classList.add("correct");
+	resultElement.innerHTML = `정답입니다! 가격: ${selected.price.toLocaleString()}만원`;
+	showAllPrices();
+	nextButton.style.display = "block";
+	clearInterval(interval);
+	disableAllOptions();
+  } else {
+	button.classList.add("wrong");
+	attempts++;
+	if (attempts >= maxAttempts) {
+	  resultElement.textContent = "실패했습니다. 다음 문제로 넘어갑니다.";
+	  showAllPrices();
+	  nextButton.style.display = "block";
+	  clearInterval(interval);
+	  disableAllOptions();
+	} else {
+	  resultElement.textContent = "오답입니다. 다시 시도하세요.";
+	}
+  }
+}
+
+function showAllPrices() {
+  const buttons = [...optionsContainer.children];
+  buttons.forEach(btn => {
+	if (!btn.querySelector('.price-display')) { // 가격이 이미 추가된 경우 중복 방지
+	  const price = parseFloat(btn.dataset.price);
+	  const priceDisplay = document.createElement('div');
+	  priceDisplay.textContent = `${price.toLocaleString()}만원`;
+	  priceDisplay.classList.add('price-display');
+	  btn.appendChild(priceDisplay);
+	}
+  });
+}
+
+function startTimer() {
+  clearInterval(interval);
+  interval = setInterval(() => {
+	if (!isPaused) {
+	  timer--;
+	  timerElement.textContent = `남은 시간: ${timer}초`;
+	  if (timer <= 0) {
+		clearInterval(interval);
+		resultElement.textContent = "시간 초과! 다시 시도하세요.";
+		resetGame();
+	  }
+	}
+  }, 1000);
+}
+
+function pauseTimer() {
+  isPaused = !isPaused;
+  pauseButton.textContent = isPaused ? "재시작" : "일시정지";
+}
+
+function resetGame() {
+  clearInterval(interval);
+  timer = 30;
+  attempts = 0;
+  isPaused = false;
+  pauseButton.textContent = "일시정지";
+  timerElement.textContent = `남은 시간: 30초`;
+  optionsContainer.innerHTML = "";
+  resultElement.textContent = "";
+  nextButton.style.display = "none";
+  generateOptions();
+  startTimer();
+}
+
+function toggleFilters() {
+  filtersContainer.classList.toggle('hidden');
+}
+
+function disableAllOptions() {
+  const buttons = [...optionsContainer.children];
+  buttons.forEach(btn => {
+	btn.style.pointerEvents = 'none';
+  });
+}
+loadApartments();
+  </script>
+</body>
+</html>
