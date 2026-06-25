@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>카톡 대화 필터링V1.0</title>
+<style>
+/* 화면의 절반 크기로 textarea 조정 */
+textarea {
+    width: 70vw; /* 화면의 절반 크기로 설정 */
+    height: 50vh; /* 화면의 절반 높이로 설정 */
+}
+
+/* 사용자 이름 스타일 */
+.username {
+    color: black;
+}
+
+/* 참가자별 색상 — JS에서 인라인 스타일로 적용 */
+.participant-name {
+    font-weight: bold;
+}
+</style>
+</head>
+<body>
+
+<!-- 대화 입력 폼 -->
+<label for="conversation">대화 입력: (텍스트 붙여넣기 또는 파일 드래그앤드롭)</label><br>
+<textarea id="conversation" rows="10" cols="50" ondragover="event.preventDefault()" ondrop="handleFileDrop(event)" onpaste="handlePaste(event)"></textarea>
+<br><br>
+
+<!-- 사용자 이름 입력 폼 -->
+<label for="username">사용자 이름:</label>
+<input type="text" id="username" placeholder="사용자 이름을 입력하세요" value="">
+<br><br>
+
+<button onclick="extractConversation()">대화 추출</button>
+<br><br>
+
+<!-- 로딩 오버레이 -->
+<div id="loadingOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:none;align-items:center;justify-content:center;">
+    <div style="background:#fff;padding:32px 48px;border-radius:12px;font-size:18px;font-weight:bold;box-shadow:0 4px 24px rgba(0,0,0,0.3);">
+        ⏳ 작업 중입니다...
+    </div>
+</div>
+
+<!-- 대화를 표시할 곳 -->
+<div id="extractedConversation"></div>
+
+<script>
+function showLoading() { document.getElementById('loadingOverlay').style.display = 'flex'; }
+function hideLoading() { document.getElementById('loadingOverlay').style.display = 'none'; }
+
+function handleFileDrop(event) {
+    event.preventDefault();
+    var file = event.dataTransfer.files[0];
+    if (!file) return;
+    showLoading();
+    var reader = new FileReader();
+    reader.onload = function(e) {
+        document.getElementById('conversation').value = e.target.result;
+        hideLoading();
+    };
+    reader.onerror = function() { hideLoading(); };
+    reader.readAsText(file, 'UTF-8');
+}
+
+function handlePaste(event) {
+    showLoading();
+    setTimeout(hideLoading, 300);
+}
+
+var COLORS = [
+    '#E53935','#E91E63','#FF5722','#AD1457','#D81B60',
+    '#C62828','#FF7043','#880E4F','#BF360C','#F50057',
+    '#B71C1C','#EC407A','#DD2C00','#FF1744','#EF5350'
+];
+
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildColorMap(lines) {
+    var map = {};
+    var idx = 0;
+    var linePattern = /^\[([^\]]+)\]\s*\[/;
+    for (var i = 0; i < lines.length; i++) {
+        var m = lines[i].match(linePattern);
+        if (m) {
+            var name = m[1];
+            if (!(name in map)) {
+                map[name] = COLORS[idx % COLORS.length];
+                idx++;
+            }
+        }
+    }
+    return map;
+}
+
+function extractConversation() {
+    showLoading();
+    setTimeout(function() { doExtract(); hideLoading(); }, 50);
+}
+
+function doExtract() {
+    var conversationInput = document.getElementById('conversation').value;
+    var username = document.getElementById('username').value;
+    if (!username.trim()) {
+        hideLoading();
+        alert('사용자 이름을 입력해주세요.');
+        return;
+    }
+    conversationInput = conversationInput.replace(/(\r\n|\r|\n)(?=[^\[])/g, "|");
+    var conversationLines = conversationInput.split('\n');
+    var extractedConversation = '';
+    var namePattern = new RegExp('\\[([^\\]]*' + escapeRegex(username) + '[^\\]]*?)\\]');
+    var colorMap = buildColorMap(conversationLines);
+
+    for (var i = 0; i < conversationLines.length; i++) {
+        if (!namePattern.test(conversationLines[i])) continue;
+        var bracketCount = (conversationLines[i].match(/\[/g) || []).length;
+        if (bracketCount <= 2) {
+            var line = conversationLines[i].replace(/\[(.*?)\]/g, function(_, inner) {
+                if (/^(오전|오후)\s*\d+:\d+$/.test(inner)) {
+                    return '<span style="color:#999;font-weight:bold">[' + inner + ']</span>';
+                }
+                var c = colorMap[inner] || '#333';
+                return '<span class="participant-name" style="color:' + c + '">[' + inner + ']</span>';
+            });
+            extractedConversation += line + '<br>';
+        } else {
+            extractedConversation += conversationLines[i] + '<br>';
+        }
+    }
+    extractedConversation = extractedConversation.replace(/\|/g, "<br>");
+    document.getElementById('extractedConversation').innerHTML = extractedConversation;
+}
+
+</script>
+
+</body>
+</html>
