@@ -11,7 +11,7 @@
       type="image/svg+xml"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23162033'/%3E%3Ctext x='32' y='39' text-anchor='middle' font-size='24' font-family='Malgun Gothic,Noto Sans KR,sans-serif' font-weight='700' fill='white'%3E%ED%99%8D%EB%B6%80%3C/text%3E%3C/svg%3E"
     />
-    <title>[루시퍼홍] 홍부가 기가막혀</title>
+    <title>[루시퍼홍] (시세)홍부가 기가막혀</title>
     <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8&submodules=drawing"></script>
     <script type="text/javascript" src="MarkerClustering.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -1776,8 +1776,9 @@
       <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기 보기</label>
       <label><input type="checkbox" id="toggleSchoolZoneKeep" />초등배정남기기</label>
  <label><input type="checkbox" id="toggleSiseDbPrice" />시세보기</label>
+      <span id="siseRunDate" style="display:none;font-size:11px;color:#888;"></span>
       <label id="siseAreaLabel" style="display:none;">전용:</label>
-      <span id="siseAreaSpan" style="display:none;font-size:11px;display:none;align-items:center;gap:2px;">
+      <span id="siseAreaSpan" style="display:none;font-size:11px;align-items:center;gap:2px;">
         <input type="number" id="siseAreaFrom" value="55" style="width:42px;font-size:11px;" title="전용면적 from(㎡)">~<input type="number" id="siseAreaTo" value="85" style="width:42px;font-size:11px;" title="전용면적 to(㎡)">㎡
       </span>
       <label id="sisePriceLabel" style="display:none;">매매가:</label>
@@ -4757,23 +4758,90 @@
       window.__siseSnapshotDate  = null;
       window.__siseSnapshotLoading = false;
 
+      function __showSiseLoading() {
+        let el = document.getElementById('__siseLoadingOverlay');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = '__siseLoadingOverlay';
+          el.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.7);color:#fff;padding:14px 28px;border-radius:8px;font-size:15px;z-index:99999;pointer-events:none;';
+          el.textContent = '처리 중…';
+          document.body.appendChild(el);
+        }
+        el.style.display = 'block';
+      }
+      function __hideSiseLoading() {
+        const el = document.getElementById('__siseLoadingOverlay');
+        if (el) el.style.display = 'none';
+      }
+
+      const SISE_LS_DATE_KEY = 'sise_snapshot_date';
+      const SISE_LS_DATA_KEY = 'sise_snapshot_data';
+
+      function __siseApplyData(data, runDate) {
+        window.__siseSnapshot = new Map(Object.entries(data));
+        window.__siseSnapshotDate = runDate;
+        const _dateEl = document.getElementById('siseRunDate');
+        if (_dateEl && runDate) _dateEl.textContent = `(데이터 기준일자 : ${runDate})`;
+        applyAllSisePrices();
+      }
+
       async function loadSisePriceSnapshot() {
         if (window.__siseSnapshot || window.__siseSnapshotLoading) return;
         window.__siseSnapshotLoading = true;
+        __showSiseLoading();
+        console.log('[시세] 시작');
+
+        // 오늘 날짜 (로컬 기준 yyyy-mm-dd)
+        const today = new Date().toLocaleDateString('sv-SE');
+        console.log('[시세] 오늘 날짜:', today);
+
+        // 로컬스토리지 캐시 확인
+        try {
+          const cachedDate = localStorage.getItem(SISE_LS_DATE_KEY);
+          console.log('[시세] 캐시 날짜:', cachedDate, '/ 일치:', cachedDate === today);
+          if (cachedDate === today) {
+            const raw = localStorage.getItem(SISE_LS_DATA_KEY);
+            console.log('[시세] 캐시 데이터 존재:', !!raw, raw ? `(${(raw.length/1024/1024).toFixed(1)}MB)` : '');
+            if (raw) {
+              console.log('[시세] JSON 파싱 시작');
+              const cached = JSON.parse(raw);
+              console.log('[시세] JSON 파싱 완료, run_date:', cached.run_date);
+              __siseApplyData(cached.data, cached.run_date);
+              window.__siseSnapshotLoading = false;
+              __hideSiseLoading();
+              console.log('[시세] 캐시 로드 완료');
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn('[시세] 캐시 읽기 실패, 서버 요청으로 fallback:', e);
+        }
+
+        console.log('[시세] 서버 fetch 시작');
         try {
           const SISE_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
             ? 'http://localhost:7123'
             : 'https://sise.luciferhong.com';
+          console.log('[시세] 요청 URL:', `${SISE_BASE}/price_snapshot`);
           const res = await fetch(`${SISE_BASE}/price_snapshot`);
+          console.log('[시세] fetch 응답:', res.status, res.ok);
           if (!res.ok) throw new Error(res.status);
+          console.log('[시세] JSON 파싱 시작 (서버)');
           const d = await res.json();
-          window.__siseSnapshot = new Map(Object.entries(d.data || {}));
-          window.__siseSnapshotDate = d.run_date;
-          applyAllSisePrices();
+          console.log('[시세] JSON 파싱 완료, run_date:', d.run_date, '단지 수:', Object.keys(d.data||{}).length);
+          __siseApplyData(d.data || {}, d.run_date);
+          console.log('[시세] applyData 완료, 로컬스토리지 저장 시작');
+          try {
+            localStorage.setItem(SISE_LS_DATE_KEY, today);
+            localStorage.setItem(SISE_LS_DATA_KEY, JSON.stringify({ run_date: d.run_date, data: d.data }));
+            console.log('[시세] 로컬스토리지 저장 완료');
+          } catch (e) { console.warn('[시세] 로컬스토리지 저장 실패 (용량 초과?):', e); }
         } catch (e) {
-          console.warn('[DB시세] 서버 미응답, 가격 표시 생략', e);
+          console.warn('[시세] 서버 미응답, 가격 표시 생략:', e);
         } finally {
           window.__siseSnapshotLoading = false;
+          __hideSiseLoading();
+          console.log('[시세] 완료, 팝업 숨김');
         }
       }
 
@@ -4817,8 +4885,10 @@
         const rows = window.__siseSnapshot.get(aptId);
         if (!rows?.length) return false;
 
-        const areaFrom  = parseFloat(document.getElementById('siseAreaFrom')?.value) || 55;
-        const areaTo    = parseFloat(document.getElementById('siseAreaTo')?.value)   || 85;
+        const areaFromVal = document.getElementById('siseAreaFrom')?.value;
+        const areaToVal   = document.getElementById('siseAreaTo')?.value;
+        const areaFrom = areaFromVal !== '' && areaFromVal != null ? parseFloat(areaFromVal) : 0;
+        const areaTo   = areaToVal   !== '' && areaToVal   != null ? parseFloat(areaToVal)   : Infinity;
         const priceFromVal = document.getElementById('sisePriceFrom')?.value;
         const priceToVal   = document.getElementById('sisePriceTo')?.value;
         const priceFrom = priceFromVal !== '' && priceFromVal != null ? parseFloat(priceFromVal) * 10000 : null;
@@ -9914,7 +9984,9 @@ const originalBase64 = event.target.result;
         });
       }
       ['siseAreaFrom', 'siseAreaTo', 'sisePriceFrom', 'sisePriceTo'].forEach(id => {
-        document.getElementById(id)?.addEventListener('change', applyAllSisePrices);
+        const el = document.getElementById(id);
+        el?.addEventListener('change', applyAllSisePrices);
+        el?.addEventListener('input', applyAllSisePrices);
       });
 
       function updateSiseDbPriceFiltersVisibility() {
@@ -9924,6 +9996,11 @@ const originalBase64 = event.target.result;
         document.getElementById('siseAreaSpan').style.display = d;
         document.getElementById('sisePriceLabel').style.display = on ? 'inline' : 'none';
         document.getElementById('sisePriceSpan').style.display = d;
+        const dateEl = document.getElementById('siseRunDate');
+        if (dateEl) {
+          dateEl.style.display = on ? 'inline' : 'none';
+          if (on && window.__siseSnapshotDate) dateEl.textContent = `(데이터 기준일자 : ${window.__siseSnapshotDate})`;
+        }
       }
       document.getElementById('toggleSiseDbPrice')?.addEventListener('change', updateSiseDbPriceFiltersVisibility);
       updateSiseDbPriceFiltersVisibility();
