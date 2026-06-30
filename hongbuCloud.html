@@ -1810,6 +1810,7 @@
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
       <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기 보기</label>
       <label><input type="checkbox" id="toggleSchoolZoneKeep" />초등배정남기기</label>
+      <button id="markerAdjustBtn" title="마커 겹침 자동 위치조정" style="font-size:11px;padding:1px 6px;cursor:pointer;">위치조정</button>
       <div
         id="locationPopup"
         style="
@@ -9254,6 +9255,117 @@
       const yearToFilterInput = document.getElementById("yearToFilter");
       let yearFilterTimer = null;
 
+      // ── 마커 겹침 위치조정 ───────────────────────────────────────────
+      let __markerAdjustActive = false;
+
+      function _getAllAdjustableMarkers() {
+        const markers = [];
+        Object.values(apartmentMarkers).forEach(m => markers.push(m));
+        window.__schoolMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__schoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        window.__middleSchoolMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__middleSchoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        window.__facilityMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__facilityMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        window.__starbucksMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__starbucksMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        return markers;
+      }
+
+      function resetMarkerOverlapTransforms() {
+        _getAllAdjustableMarkers().forEach(m => {
+          const el = m.getIcon?.()?.content;
+          if (el) el.style.transform = '';
+        });
+        __markerAdjustActive = false;
+        const btn = document.getElementById('markerAdjustBtn');
+        if (btn) btn.textContent = '위치조정';
+      }
+
+      function adjustMarkerOverlap() {
+        if (__markerAdjustActive) { resetMarkerOverlapTransforms(); return; }
+
+        const collectFromPoolAndCache = (pool, cache) => [
+          ...(pool?.map(({marker}) => marker) ?? []),
+          ...(cache ? [...cache.values()].map(({marker}) => marker) : [])
+        ];
+        const markerGroups = [
+          { priority: 0, markers: Object.values(apartmentMarkers) },
+          { priority: 1, markers: collectFromPoolAndCache(window.__schoolMarkerPool, window.__schoolMarkerCache) },
+          { priority: 2, markers: collectFromPoolAndCache(window.__middleSchoolMarkerPool, window.__middleSchoolMarkerCache) },
+          { priority: 3, markers: collectFromPoolAndCache(window.__facilityMarkerPool, window.__facilityMarkerCache) },
+          { priority: 4, markers: collectFromPoolAndCache(window.__starbucksMarkerPool, window.__starbucksMarkerCache) },
+        ];
+
+        markerGroups.forEach(({markers}) => markers.forEach(m => {
+          const el = m.getIcon?.()?.content;
+          if (el) el.style.transform = '';
+        }));
+
+        const items = [];
+        markerGroups.forEach(({priority, markers}) => {
+          markers.forEach(m => {
+            if (m.getMap?.() === null) return;
+            const el = m.getIcon?.()?.content;
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            items.push({
+              el, priority,
+              cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2,
+              w: rect.width, h: rect.height, dx: 0, dy: 0
+            });
+          });
+        });
+
+        const MAX_DISP = 60, GAP = 3;
+        for (let iter = 0; iter < 80; iter++) {
+          let anyOverlap = false;
+          for (let i = 0; i < items.length; i++) {
+            for (let j = i + 1; j < items.length; j++) {
+              const a = items[i], b = items[j];
+              const ax = a.cx + a.dx, ay = a.cy + a.dy;
+              const bx = b.cx + b.dx, by = b.cy + b.dy;
+              const ox = (a.w + b.w) / 2 + GAP - Math.abs(ax - bx);
+              const oy = (a.h + b.h) / 2 + GAP - Math.abs(ay - by);
+              if (ox > 0 && oy > 0) {
+                anyOverlap = true;
+                const clamp = v => Math.max(-MAX_DISP, Math.min(MAX_DISP, v));
+                const ddx = ax - bx, ddy = ay - by;
+                const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+                let nx, ny;
+                if (dist < 1) { nx = 0; ny = 1; }
+                else { nx = ddx / dist; ny = ddy / dist; }
+                const push = Math.min(ox, oy) / 2 + 0.5;
+                if (a.priority < b.priority) {
+                  b.dx = clamp(b.dx - nx * push * 2);
+                  b.dy = clamp(b.dy - ny * push * 2);
+                } else if (a.priority > b.priority) {
+                  a.dx = clamp(a.dx + nx * push * 2);
+                  a.dy = clamp(a.dy + ny * push * 2);
+                } else {
+                  a.dx = clamp(a.dx + nx * push);
+                  a.dy = clamp(a.dy + ny * push);
+                  b.dx = clamp(b.dx - nx * push);
+                  b.dy = clamp(b.dy - ny * push);
+                }
+              }
+            }
+          }
+          if (!anyOverlap) break;
+        }
+
+        items.forEach(item => {
+          if (Math.abs(item.dx) > 0.5 || Math.abs(item.dy) > 0.5)
+            item.el.style.transform = `translate(${item.dx.toFixed(1)}px, ${item.dy.toFixed(1)}px)`;
+        });
+
+        __markerAdjustActive = true;
+        const btn = document.getElementById('markerAdjustBtn');
+        if (btn) btn.textContent = '위치초기화';
+      }
+      // ────────────────────────────────────────────────────────────────
+
       function clearApartmentMarkersAndCluster() {
         // 1) 지도에서 마커 제거 (로컬 apartmentMarkers 캐시 사용)
         Object.values(apartmentMarkers).forEach((m) => {
@@ -12970,6 +13082,11 @@
           removeAllLines(window.map.getBounds());
         }
         updateMarkers(window.map.getBounds());
+      });
+
+      document.getElementById('markerAdjustBtn')?.addEventListener('click', adjustMarkerOverlap);
+      naver.maps.Event.addListener(window.map, 'idle', () => {
+        if (__markerAdjustActive) resetMarkerOverlapTransforms();
       });
 
       function renderSiseMapMarker(apartment) {
