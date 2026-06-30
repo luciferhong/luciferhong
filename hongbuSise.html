@@ -4779,8 +4779,31 @@
         if (el) el.style.display = 'none';
       }
 
-      const SISE_LS_DATE_KEY = 'sise_snapshot_date';
-      const SISE_LS_DATA_KEY = 'sise_snapshot_data';
+      const SISE_IDB_KEY = 'sise_snapshot';
+
+      async function __siseIdbGet() {
+        try {
+          const db = await getFileCacheDb();
+          return await new Promise((resolve) => {
+            const tx = db.transaction('settings', 'readonly');
+            const req = tx.objectStore('settings').get(SISE_IDB_KEY);
+            req.onsuccess = () => resolve(req.result ?? null);
+            req.onerror = () => resolve(null);
+          });
+        } catch (e) { return null; }
+      }
+
+      async function __siseIdbSet(value) {
+        try {
+          const db = await getFileCacheDb();
+          await new Promise((resolve, reject) => {
+            const tx = db.transaction('settings', 'readwrite');
+            tx.objectStore('settings').put(value, SISE_IDB_KEY);
+            tx.oncomplete = resolve;
+            tx.onerror = reject;
+          });
+        } catch (e) { console.warn('[시세] IndexedDB 저장 실패:', e); }
+      }
 
       function __siseApplyData(data, runDate) {
         window.__siseSnapshot = new Map(Object.entries(data));
@@ -4796,27 +4819,20 @@
         __showSiseLoading();
         console.log('[시세] 시작');
 
-        // 오늘 날짜 (로컬 기준 yyyy-mm-dd)
         const today = new Date().toLocaleDateString('sv-SE');
         console.log('[시세] 오늘 날짜:', today);
 
-        // 로컬스토리지 캐시 확인
+        // IndexedDB 캐시 확인 (JSON.parse 없이 객체 그대로 읽음)
         try {
-          const cachedDate = localStorage.getItem(SISE_LS_DATE_KEY);
-          console.log('[시세] 캐시 날짜:', cachedDate, '/ 일치:', cachedDate === today);
-          if (cachedDate === today) {
-            const raw = localStorage.getItem(SISE_LS_DATA_KEY);
-            console.log('[시세] 캐시 데이터 존재:', !!raw, raw ? `(${(raw.length/1024/1024).toFixed(1)}MB)` : '');
-            if (raw) {
-              console.log('[시세] JSON 파싱 시작');
-              const cached = JSON.parse(raw);
-              console.log('[시세] JSON 파싱 완료, run_date:', cached.run_date);
-              __siseApplyData(cached.data, cached.run_date);
-              window.__siseSnapshotLoading = false;
-              __hideSiseLoading();
-              console.log('[시세] 캐시 로드 완료');
-              return;
-            }
+          const cached = await __siseIdbGet();
+          console.log('[시세] IDB 캐시 날짜:', cached?.saved_date, '/ 일치:', cached?.saved_date === today);
+          if (cached?.saved_date === today && cached?.data) {
+            console.log('[시세] IndexedDB 캐시 히트, run_date:', cached.run_date);
+            __siseApplyData(cached.data, cached.run_date);
+            window.__siseSnapshotLoading = false;
+            __hideSiseLoading();
+            console.log('[시세] 캐시 로드 완료');
+            return;
           }
         } catch (e) {
           console.warn('[시세] 캐시 읽기 실패, 서버 요청으로 fallback:', e);
@@ -4831,19 +4847,14 @@
           const res = await fetch(`${SISE_BASE}/price_snapshot`);
           console.log('[시세] fetch 응답:', res.status, res.ok);
           if (!res.ok) throw new Error(res.status);
-          console.log('[시세] JSON 파싱 시작 (서버)');
           const d = await res.json();
-          console.log('[시세] JSON 파싱 완료, run_date:', d.run_date, '단지 수:', Object.keys(d.data||{}).length);
+          console.log('[시세] 파싱 완료, run_date:', d.run_date, '단지 수:', Object.keys(d.data||{}).length);
           __siseApplyData(d.data || {}, d.run_date);
-          console.log('[시세] applyData 완료, 로컬스토리지 저장 시작');
-          try {
-            localStorage.setItem(SISE_LS_DATE_KEY, today);
-            localStorage.setItem(SISE_LS_DATA_KEY, JSON.stringify({ run_date: d.run_date, data: d.data }));
-            console.log('[시세] 로컬스토리지 저장 완료');
-          } catch (e) { console.warn('[시세] 로컬스토리지 저장 실패 (용량 초과?):', e); }
+          // IndexedDB에 객체 그대로 저장 (JSON.stringify 없음)
+          __siseIdbSet({ saved_date: today, run_date: d.run_date, data: d.data || {} })
+            .then(() => console.log('[시세] IndexedDB 저장 완료'));
         } catch (e) {
           console.warn('[시세] 서버 미응답, 가격 표시 생략:', e);
-          // 연결 실패 알림 팝업
           const errEl = document.createElement('div');
           errEl.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.8);color:#fff;padding:16px 28px;border-radius:10px;font-size:15px;z-index:99999;pointer-events:none;text-align:center;';
           errEl.textContent = '지금은 시세보기를 사용할 수 없습니다';
