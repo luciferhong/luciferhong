@@ -642,9 +642,13 @@
       .apartment-marker-container {
         display: inline-block;
       }
+      .apartment-marker-container.expanded {
+        width: auto !important;
+        overflow: visible !important;
+      }
       .apartment-marker-container.expanded .apartment-name-marker {
         max-width: none !important;
-        white-space: normal !important;
+        white-space: nowrap !important;
         overflow: visible !important;
         text-overflow: clip !important;
       }
@@ -1785,6 +1789,7 @@
       <span id="sisePriceSpan" style="display:none;font-size:11px;align-items:center;gap:2px;">
         <input type="number" id="sisePriceFrom" step="0.1" style="width:42px;font-size:11px;" title="매매가 from(억)">~<input type="number" id="sisePriceTo" step="0.1" style="width:42px;font-size:11px;" title="매매가 to(억)">억
       </span>
+      <button id="markerAdjustBtn" title="마커 겹침 자동 위치조정" style="font-size:11px;padding:1px 6px;cursor:pointer;">위치조정</button>
 
       <div
         id="locationPopup"
@@ -4874,6 +4879,128 @@
         });
       }
 
+      // ── 마커 겹침 위치조정 ───────────────────────────────────────────
+      let __markerAdjustActive = false;
+
+      function _getAllAdjustableMarkers() {
+        const markers = [];
+        // 아파트 마커 (object)
+        Object.values(apartmentMarkers).forEach(m => markers.push(m));
+        // 초등학교
+        window.__schoolMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__schoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        // 중학교
+        window.__middleSchoolMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__middleSchoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        // 환경(시설)
+        window.__facilityMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__facilityMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        // 스타벅스
+        window.__starbucksMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__starbucksMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        return markers;
+      }
+
+      function resetMarkerOverlapTransforms() {
+        _getAllAdjustableMarkers().forEach(m => {
+          const el = m.getIcon?.()?.content;
+          if (el) el.style.transform = '';
+        });
+        __markerAdjustActive = false;
+        const btn = document.getElementById('markerAdjustBtn');
+        if (btn) btn.textContent = '위치조정';
+      }
+
+      function adjustMarkerOverlap() {
+        if (__markerAdjustActive) { resetMarkerOverlapTransforms(); return; }
+
+        // 우선순위별 마커 그룹 (숫자가 낮을수록 고정 우선: 아파트 > 초 > 중 > 환경 > 스벅)
+        const collectFromPoolAndCache = (pool, cache) => [
+          ...(pool?.map(({marker}) => marker) ?? []),
+          ...(cache ? [...cache.values()].map(({marker}) => marker) : [])
+        ];
+        const markerGroups = [
+          { priority: 0, markers: Object.values(apartmentMarkers) },
+          { priority: 1, markers: collectFromPoolAndCache(window.__schoolMarkerPool, window.__schoolMarkerCache) },
+          { priority: 2, markers: collectFromPoolAndCache(window.__middleSchoolMarkerPool, window.__middleSchoolMarkerCache) },
+          { priority: 3, markers: collectFromPoolAndCache(window.__facilityMarkerPool, window.__facilityMarkerCache) },
+          { priority: 4, markers: collectFromPoolAndCache(window.__starbucksMarkerPool, window.__starbucksMarkerCache) },
+        ];
+
+        // 모든 transform 초기화 후 rect 측정
+        markerGroups.forEach(({markers}) => markers.forEach(m => {
+          const el = m.getIcon?.()?.content;
+          if (el) el.style.transform = '';
+        }));
+
+        const items = [];
+        markerGroups.forEach(({priority, markers}) => {
+          markers.forEach(m => {
+            if (m.getMap?.() === null) return;
+            const el = m.getIcon?.()?.content;
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return;
+            items.push({
+              el, priority,
+              cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2,
+              w: rect.width, h: rect.height, dx: 0, dy: 0
+            });
+          });
+        });
+
+        const MAX_DISP = 60, GAP = 3;
+
+        for (let iter = 0; iter < 80; iter++) {
+          let anyOverlap = false;
+          for (let i = 0; i < items.length; i++) {
+            for (let j = i + 1; j < items.length; j++) {
+              const a = items[i], b = items[j];
+              const ax = a.cx + a.dx, ay = a.cy + a.dy;
+              const bx = b.cx + b.dx, by = b.cy + b.dy;
+              const ox = (a.w + b.w) / 2 + GAP - Math.abs(ax - bx);
+              const oy = (a.h + b.h) / 2 + GAP - Math.abs(ay - by);
+              if (ox > 0 && oy > 0) {
+                anyOverlap = true;
+                const clamp = v => Math.max(-MAX_DISP, Math.min(MAX_DISP, v));
+                const ddx = ax - bx, ddy = ay - by;
+                const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+                let nx, ny;
+                if (dist < 1) { nx = 0; ny = 1; }
+                else { nx = ddx / dist; ny = ddy / dist; }
+                const push = Math.min(ox, oy) / 2 + 0.5;
+                if (a.priority < b.priority) {
+                  // a가 더 중요 → b만 이동
+                  b.dx = clamp(b.dx - nx * push * 2);
+                  b.dy = clamp(b.dy - ny * push * 2);
+                } else if (a.priority > b.priority) {
+                  // b가 더 중요 → a만 이동
+                  a.dx = clamp(a.dx + nx * push * 2);
+                  a.dy = clamp(a.dy + ny * push * 2);
+                } else {
+                  // 동일 우선순위 → 반반 이동
+                  a.dx = clamp(a.dx + nx * push);
+                  a.dy = clamp(a.dy + ny * push);
+                  b.dx = clamp(b.dx - nx * push);
+                  b.dy = clamp(b.dy - ny * push);
+                }
+              }
+            }
+          }
+          if (!anyOverlap) break;
+        }
+
+        items.forEach(item => {
+          if (Math.abs(item.dx) > 0.5 || Math.abs(item.dy) > 0.5)
+            item.el.style.transform = `translate(${item.dx.toFixed(1)}px, ${item.dy.toFixed(1)}px)`;
+        });
+
+        __markerAdjustActive = true;
+        const btn = document.getElementById('markerAdjustBtn');
+        if (btn) btn.textContent = '위치초기화';
+      }
+      // ────────────────────────────────────────────────────────────────
+
       function formatSiseOk(manwon) {
         const ok = manwon / 10000;
         return (ok % 1 === 0 ? ok.toFixed(0) : ok.toFixed(1)) + '억';
@@ -4962,9 +5089,9 @@
           const rent    = r.rent_price  ? fmtNum(r.rent_price)  : '-';
           const tr = document.createElement('tr');
           tr.innerHTML =
-            `<td style="padding:1px 3px 1px 1px;text-align:right;">${area} ${typeTag}</td>` +
-            `<td style="padding:1px 3px;text-align:right;">${lowTag}${sale}</td>` +
-            `<td style="padding:0 1px 1px 3px;text-align:right;">${rent}</td>`;
+            `<td style="padding:1px 3px 1px 1px;text-align:right;vertical-align:middle;">${area} ${typeTag}</td>` +
+            `<td style="padding:1px 3px;text-align:right;vertical-align:middle;">${lowTag}${sale}</td>` +
+            `<td style="padding:1px 1px 1px 3px;text-align:right;vertical-align:middle;">${rent}</td>`;
           tbody.appendChild(tr);
         });
 
@@ -4976,13 +5103,15 @@
         const nameEl = el.querySelector('.apartment-name-marker');
         if (nameEl) {
           nameEl.style.borderRadius = '0';
+          nameEl.style.overflow = 'hidden';
+          nameEl.style.textOverflow = 'ellipsis';
           if (apt) {
             nameEl.textContent = apt.name;
             if (el.__hoverHandlers) {
               el.removeEventListener('mouseenter', el.__hoverHandlers.enter);
               el.removeEventListener('mouseleave', el.__hoverHandlers.leave);
-              const enterFn = () => { el.classList.add('expanded'); nameEl.textContent = apt.name; };
-              const leaveFn = () => { el.classList.remove('expanded'); nameEl.textContent = apt.name; };
+              const enterFn = () => el.classList.add('expanded');
+              const leaveFn = () => el.classList.remove('expanded');
               el.addEventListener('mouseenter', enterFn);
               el.addEventListener('mouseleave', leaveFn);
               el.__hoverHandlers = { enter: enterFn, leave: leaveFn };
@@ -5018,6 +5147,8 @@
 			box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
 			white-space: nowrap;
 			display: inline-block;
+			width: 130px;
+			overflow: hidden;
 		`;
 
         const nameElement = document.createElement("div");
@@ -5030,6 +5161,8 @@
 			display: block;
 			text-align: center;
 			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
 			padding: 2px 5px;
 			border-radius: 3px;
 		`;
@@ -5045,17 +5178,10 @@
 		`;
 
         /* ✅ 전체 마커에 호버 이벤트 (nameElement와 detailsElement 모두 확장) */
-        const shortName = apartment.name.length > 7 ? apartment.name.slice(0, 6) + "..." : apartment.name;
-        nameElement.textContent = shortName; /* 초기: 줄인 이름 */
+        nameElement.textContent = apartment.name; /* CSS text-overflow:ellipsis가 자동으로 자름 */
 
-        const handleMouseEnter = () => {
-          markerElement.classList.add("expanded");
-          nameElement.textContent = apartment.name; /* 호버: 전체 이름 */
-        };
-        const handleMouseLeave = () => {
-          markerElement.classList.remove("expanded");
-          nameElement.textContent = shortName; /* 호버 해제: 줄인 이름 */
-        };
+        const handleMouseEnter = () => markerElement.classList.add("expanded");
+        const handleMouseLeave = () => markerElement.classList.remove("expanded");
 
         markerElement.addEventListener("mouseenter", handleMouseEnter);
         markerElement.addEventListener("mouseleave", handleMouseLeave);
@@ -5319,7 +5445,10 @@
         const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
         const isSiseDbPrice   = document.getElementById("toggleSiseDbPrice")?.checked;
 
-        if (!showApartments || window.map.getZoom() < 13) return;
+        if (!showApartments || window.map.getZoom() < 13) {
+          clearApartmentMarkersAndCluster();
+          return;
+        }
 
         // ▼ 여기서 시도/시군구 필터까지 적용
         const filtered = apartmentData.filter((apartment) => {
@@ -10013,6 +10142,13 @@ const originalBase64 = event.target.result;
         updateMarkers(window.map.getBounds());
       });
       updateSiseDbPriceFiltersVisibility();
+
+      document.getElementById('markerAdjustBtn')?.addEventListener('click', adjustMarkerOverlap);
+
+      // 지도 이동/줌 시 위치조정 자동 초기화
+      naver.maps.Event.addListener(window.map, 'idle', () => {
+        if (__markerAdjustActive) resetMarkerOverlapTransforms();
+      });
 
       document.getElementById("toggleSiseMap").addEventListener("change", function () {
         const isChecked = this.checked;
