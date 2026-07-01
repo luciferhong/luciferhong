@@ -450,6 +450,9 @@ buttonContainer {
   <span id="markerScaleLabel" style="font-size:12px; color:#555; min-width:28px;">1.0x</span>
 </span>
 
+<button id="markerAdjustBtn" title="마커 겹침 자동 위치조정" style="font-size:11px;padding:4px 8px;cursor:pointer;margin-left:6px;">위치조정</button>
+<button id="markerResetBtn" title="마커 위치 초기화" style="font-size:11px;padding:4px 8px;cursor:pointer;">위치초기화</button>
+
 </div>
 
 
@@ -1549,7 +1552,7 @@ function removeAllLines() {
 			markerCluster.setMarkers(newMarkers);
 		}
 
-
+		if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 
 	}
 
@@ -1977,6 +1980,7 @@ function updateSchoolMarkers() {
           schoolMarkers.push(marker);
       });
 
+  if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
 
 
@@ -2257,6 +2261,7 @@ function updateMiddleSchoolMarkers() {
     middleSchoolMarkers.push(marker);
 });
 
+  if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
 
 
@@ -2357,6 +2362,7 @@ function updateFacilityMarkers() {
     facilityMarkers.push(marker);
 });
 
+  if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
 
 // ✅ 시설 체크박스 변경 시 마커 업데이트
@@ -2426,6 +2432,8 @@ function updateStarbucksMarkers() {
 
         starbucksMarkers.push(marker);
     });
+
+  if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
 
 // ✅ 스타벅스 체크박스 변경 시 마커 업데이트
@@ -5395,6 +5403,9 @@ function _applyMarkerScale() {
     const el = marker._contentWrapper || marker.getIcon?.()?.content;
     if (el) el.style.transform = `scale(${markerScale})`;
   });
+  if (typeof adjustMarkerOverlap === 'function' && __markerAdjustActive) {
+    adjustMarkerOverlap();
+  }
 }
 
 document.getElementById("markerScaleMinus").addEventListener("click", () => {
@@ -5577,6 +5588,139 @@ function getSettingFromHongSiseDB(key) {
 
 
 
+
+
+// ===== 마커 겹침 위치조정 =====
+let __markerAdjustActive = false;
+
+function _reapplyMarkerTransforms() {
+  if (markerScale === 1.0 && !__markerAdjustActive) return;
+  if (__markerAdjustActive) {
+    adjustMarkerOverlap();
+  } else {
+    const all = [
+      ...Object.values(apartmentMarkers || {}),
+      ...schoolMarkers,
+      ...middleSchoolMarkers,
+      ...facilityMarkers,
+      ...starbucksMarkers
+    ];
+    all.forEach(m => {
+      if (!m) return;
+      const el = m._contentWrapper || m.getIcon?.()?.content;
+      if (el) el.style.transform = `scale(${markerScale})`;
+    });
+  }
+}
+
+function _getAllAdjustableMarkers() {
+  return [
+    ...Object.values(apartmentMarkers || {}),
+    ...schoolMarkers,
+    ...middleSchoolMarkers,
+    ...facilityMarkers,
+    ...starbucksMarkers
+  ].filter(m => m && typeof m.getMap === 'function' && m.getMap());
+}
+
+function resetMarkerOverlapTransforms() {
+  const scaleStr = markerScale !== 1.0 ? `scale(${markerScale})` : '';
+  _getAllAdjustableMarkers().forEach(m => {
+    const el = m._contentWrapper || m.getIcon?.()?.content;
+    if (el) el.style.transform = scaleStr;
+  });
+  __markerAdjustActive = false;
+}
+
+function adjustMarkerOverlap() {
+  if (!window.map) return;
+  const proj = window.map.getProjection();
+
+  const groups = [
+    { priority: 0, markers: Object.values(apartmentMarkers || {}) },
+    { priority: 1, markers: schoolMarkers },
+    { priority: 2, markers: middleSchoolMarkers },
+    { priority: 3, markers: facilityMarkers },
+    { priority: 4, markers: starbucksMarkers },
+  ];
+
+  const items = [];
+  groups.forEach(({ priority, markers }) => {
+    markers.forEach(m => {
+      if (!m || !m.getPosition || !m.getMap || !m.getMap()) return;
+      const el = m._contentWrapper || m.getIcon?.()?.content;
+      if (!el) return;
+      const pos = proj.fromCoordToOffset(m.getPosition());
+      const icon = m.getIcon?.() || {};
+      const anchor = icon.anchor || { x: 0, y: 0 };
+      const anchorX = typeof anchor.x === 'number' ? anchor.x : 0;
+      const anchorY = typeof anchor.y === 'number' ? anchor.y : 0;
+      const rect = el.getBoundingClientRect();
+      const w = rect.width || 40;
+      const h = rect.height || 20;
+      // 앵커 오프셋 반영: 실제 요소 중심 = 좌상단 + w/2 = (앵커 - anchorX) + w/2
+      const cx = pos.x - anchorX + w / 2;
+      const cy = pos.y - anchorY + h / 2;
+      items.push({ el, x: cx, y: cy, w, h, dx: 0, dy: 0, priority });
+    });
+  });
+
+  const ITERS = 20;
+  const MAX_SHIFT = 250;
+  const clamp = v => Math.max(-MAX_SHIFT, Math.min(MAX_SHIFT, v));
+
+  for (let iter = 0; iter < ITERS; iter++) {
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const a = items[i], b = items[j];
+        const ax = a.x + a.dx, ay = a.y + a.dy;
+        const bx = b.x + b.dx, by = b.y + b.dy;
+        const overlapX = (a.w + b.w) / 2 - Math.abs(ax - bx);
+        const overlapY = (a.h + b.h) / 2 - Math.abs(ay - by);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+
+        // 최소 겹침 축으로만 밀어서 빠른 수렴 (SAT 방식)
+        let pdx = 0, pdy = 0;
+        if (overlapX <= overlapY) {
+          const push = overlapX / 2 + 1;
+          const dir = ax >= bx ? 1 : -1;
+          pdx = dir * push;
+        } else {
+          const push = overlapY / 2 + 1;
+          const dir = ay >= by ? 1 : -1;
+          pdy = dir * push;
+        }
+
+        if (a.priority < b.priority) {
+          b.dx = clamp(b.dx - pdx * 2);
+          b.dy = clamp(b.dy - pdy * 2);
+        } else if (a.priority > b.priority) {
+          a.dx = clamp(a.dx + pdx * 2);
+          a.dy = clamp(a.dy + pdy * 2);
+        } else {
+          a.dx = clamp(a.dx + pdx);
+          a.dy = clamp(a.dy + pdy);
+          b.dx = clamp(b.dx - pdx);
+          b.dy = clamp(b.dy - pdy);
+        }
+      }
+    }
+  }
+
+  const scaleStr = markerScale !== 1.0 ? ` scale(${markerScale})` : '';
+  items.forEach(({ el, dx, dy }) => {
+    el.style.transform = `translate(${dx}px,${dy}px)${scaleStr}`;
+  });
+
+  __markerAdjustActive = true;
+}
+
+document.getElementById('markerAdjustBtn')?.addEventListener('click', adjustMarkerOverlap);
+document.getElementById('markerResetBtn')?.addEventListener('click', resetMarkerOverlapTransforms);
+
+naver.maps.Event.addListener(window.map, 'idle', () => {
+  if (__markerAdjustActive) resetMarkerOverlapTransforms();
+});
 
 </script>
 

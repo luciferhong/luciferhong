@@ -1706,7 +1706,7 @@
         </span>
         <span class="h1-text">
           <span class="h1-label">루시퍼홍</span>
-          <span class="h1-title">홍부가 기가막혀</span>
+          <span class="h1-title">시세가 기가막혀</span>
         </span>
       </div>
 
@@ -4812,6 +4812,10 @@
         const _dateEl = document.getElementById('siseRunDate');
         if (_dateEl && runDate) _dateEl.textContent = `(데이터 기준일자 : ${runDate})`;
         applyAllSisePrices();
+        // 스냅샷 로드 완료 → updateMarkers 재호출해 정확한 필터 기반 마커 생성
+        if (document.getElementById('toggleSiseDbPrice')?.checked && window.map) {
+          updateMarkers(window.map.getBounds());
+        }
       }
 
       async function loadSisePriceSnapshot() {
@@ -4957,7 +4961,7 @@
           });
         });
 
-        const MAX_DISP = 60, GAP = 3;
+        const MAX_DISP = 80, GAP = 4;
 
         for (let iter = 0; iter < 80; iter++) {
           let anyOverlap = false;
@@ -4971,26 +4975,29 @@
               if (ox > 0 && oy > 0) {
                 anyOverlap = true;
                 const clamp = v => Math.max(-MAX_DISP, Math.min(MAX_DISP, v));
-                const ddx = ax - bx, ddy = ay - by;
-                const dist = Math.sqrt(ddx * ddx + ddy * ddy);
-                let nx, ny;
-                if (dist < 1) { nx = 0; ny = 1; }
-                else { nx = ddx / dist; ny = ddy / dist; }
-                const push = Math.min(ox, oy) / 2 + 0.5;
-                if (a.priority < b.priority) {
-                  // a가 더 중요 → b만 이동
-                  b.dx = clamp(b.dx - nx * push * 2);
-                  b.dy = clamp(b.dy - ny * push * 2);
-                } else if (a.priority > b.priority) {
-                  // b가 더 중요 → a만 이동
-                  a.dx = clamp(a.dx + nx * push * 2);
-                  a.dy = clamp(a.dy + ny * push * 2);
+                // 겹침이 적은 축으로 분리(axis-aligned MSV) → 방향벡터 방식보다 빠르게 수렴
+                if (ox <= oy) {
+                  const signX = ax >= bx ? 1 : -1;
+                  const half = ox / 2 + 1;
+                  if (a.priority < b.priority) {
+                    b.dx = clamp(b.dx - signX * half * 2);
+                  } else if (a.priority > b.priority) {
+                    a.dx = clamp(a.dx + signX * half * 2);
+                  } else {
+                    a.dx = clamp(a.dx + signX * half);
+                    b.dx = clamp(b.dx - signX * half);
+                  }
                 } else {
-                  // 동일 우선순위 → 반반 이동
-                  a.dx = clamp(a.dx + nx * push);
-                  a.dy = clamp(a.dy + ny * push);
-                  b.dx = clamp(b.dx - nx * push);
-                  b.dy = clamp(b.dy - ny * push);
+                  const signY = ay >= by ? 1 : -1;
+                  const half = oy / 2 + 1;
+                  if (a.priority < b.priority) {
+                    b.dy = clamp(b.dy - signY * half * 2);
+                  } else if (a.priority > b.priority) {
+                    a.dy = clamp(a.dy + signY * half * 2);
+                  } else {
+                    a.dy = clamp(a.dy + signY * half);
+                    b.dy = clamp(b.dy - signY * half);
+                  }
                 }
               }
             }
@@ -5103,7 +5110,7 @@
 
         tbl.appendChild(tbody);
         unified.appendChild(tbl);
-        el.style.width = '135px';
+        el.style.width = '150px';
         el.style.overflow = 'hidden';
         el.appendChild(unified);
 
@@ -5113,10 +5120,14 @@
           nameEl.style.minWidth = '';
           nameEl.style.maxWidth = '';
           nameEl.style.width = '100%';
+          nameEl.style.display = 'flex';
+          nameEl.style.justifyContent = 'center';
           nameEl.style.overflow = 'hidden';
-          nameEl.style.textOverflow = 'ellipsis';
+          nameEl.style.whiteSpace = '';
+          nameEl.style.textOverflow = '';
+          nameEl.style.textAlign = '';
           if (apt) {
-            nameEl.textContent = apt.name;
+            nameEl.innerHTML = `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:100%;">${apt.name}</span>`;
             if (el.__hoverHandlers) {
               el.removeEventListener('mouseenter', el.__hoverHandlers.enter);
               el.removeEventListener('mouseleave', el.__hoverHandlers.leave);
@@ -5498,6 +5509,49 @@
           }
           return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK;
         });
+
+        // 시세보기 활성 시 마커 개수 임계값 초과 → 조기 반환 + 안내
+        // (filtered에는 시도·시군구·최소세대수 이미 반영됨)
+        const MAX_SISE_MARKERS = 300;
+        if (isSiseDbPrice) {
+          if (!window.__siseSnapshot) {
+            // 스냅샷 미로드: 로드를 트리거하고 대기
+            // 로드 완료 후 __siseApplyData → updateMarkers 재호출로 정확한 카운트 재계산
+            if (!window.__siseSnapshotLoading) loadSisePriceSnapshot();
+            clearApartmentMarkersAndCluster();
+            return;
+          }
+
+          // 스냅샷 로드됨: 시도·시군구·최소세대수(filtered) + 전용면적·매매가(스냅샷) 전 필터 적용
+          const areaFromVal  = document.getElementById('siseAreaFrom')?.value;
+          const areaToVal    = document.getElementById('siseAreaTo')?.value;
+          const priceFromVal = document.getElementById('sisePriceFrom')?.value;
+          const priceToVal   = document.getElementById('sisePriceTo')?.value;
+          const areaFrom  = areaFromVal  ? parseFloat(areaFromVal)       : 0;
+          const areaTo    = areaToVal    ? parseFloat(areaToVal)         : Infinity;
+          const priceFrom = priceFromVal ? parseFloat(priceFromVal) * 10000 : null;
+          const priceTo   = priceToVal   ? parseFloat(priceToVal)   * 10000 : null;
+          const priceActive = priceFrom !== null || priceTo !== null;
+
+          const effectiveCount = filtered.filter(apt => {
+            if (apt.name.includes('도시형') || apt.name.includes('생활형')) return false;
+            const rows = window.__siseSnapshot.get(String(apt.id));
+            if (!rows?.length) return !priceActive;
+            return rows.some(r => {
+              if (r.area < areaFrom || r.area > areaTo) return false;
+              if (priceActive && !r.sale_price) return false;
+              if (priceFrom !== null && r.sale_price < priceFrom) return false;
+              if (priceTo   !== null && r.sale_price > priceTo)   return false;
+              return true;
+            });
+          }).length;
+
+          if (effectiveCount > MAX_SISE_MARKERS) {
+            clearApartmentMarkersAndCluster();
+            window.hongbuDebugToast?.(`시세보기: 범위 내 단지가 너무 많습니다(${effectiveCount}개). 전용면적이나 매매가 범위를 좁혀주세요.`, 4000);
+            return;
+          }
+        }
 
         // ✅ 필터 결과에 없는 기존 마커는 즉시 제거(연도/세대수/지역/범위 변경 시 즉시 반영)
         const keepIds = new Set(filtered.map((a) => String(a.id)));
