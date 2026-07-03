@@ -3206,6 +3206,9 @@
 
       let currentLocationMarker = null; // ✅ 현재 위치 마커 저장
 
+      const SISE_API_BASE = "https://sise-cloud.luciferhong.com";
+      let __siseAvailableIds = null;
+
       let apartmentData = []; // ✅ 전체 아파트 데이터 저장
       let apartmentMarkers = []; // ✅ 지도에 표시된 마커 저장
       let markerCluster = null; // ✅ 마커 클러스터링 객체
@@ -4313,6 +4316,7 @@
           attachRegionFilterEvents();
           restoreRegionFiltersFromUIState();
           initApartmentSearch(); // ✅ 검색 기능 초기화
+          __loadSiseAvailableIds();
         } catch (error) {
           console.error("❌ 아파트 데이터 불러오기 실패:", error);
         }
@@ -6190,6 +6194,74 @@
         });
       }
 
+      async function __loadSiseAvailableIds() {
+        try {
+          const res = await fetch(`${SISE_API_BASE}/complex_ids`);
+          const data = await res.json();
+          if (data && Array.isArray(data.ids)) {
+            __siseAvailableIds = new Set(data.ids.map(String));
+          }
+        } catch (e) {}
+      }
+
+      function __hasSiseData(apartmentId) {
+        return !__siseAvailableIds || __siseAvailableIds.has(String(apartmentId));
+      }
+
+      function __formatSisePrice(manwon, isLow) {
+        if (manwon == null || manwon === "" || isNaN(manwon)) return "-";
+        const eok = Number(manwon) / 10000;
+        const num = String(parseFloat(eok.toFixed(2)));
+        return `${isLow ? "(저)" : ""}${num}억`;
+      }
+
+      async function showSisePrice(apartmentId) {
+        const box = document.getElementById("sisePriceBox");
+        if (!box) return;
+        const __scrollSiseIntoView = () => {
+          try {
+            const panel = document.getElementById("apartmentInfo");
+            if (!panel) return;
+            requestAnimationFrame(() => { panel.scrollTo({ top: panel.scrollHeight, behavior: "smooth" }); });
+          } catch (_) {}
+        };
+        box.innerHTML = `<div style="padding:6px; color:#666; font-size:13px;">시세 조회 중…</div>`;
+        try {
+          const res = await fetch(`${SISE_API_BASE}/price_history?complex_id=${encodeURIComponent(apartmentId)}`);
+          const data = await res.json();
+          if (!data || !data.count) {
+            box.innerHTML = `<div style="padding:6px; color:#888; font-size:13px;">시세 데이터 없음</div>`;
+            __scrollSiseIntoView();
+            return;
+          }
+          const thStyle = "background:transparent; border-bottom:1px solid #ccc; padding:4px 6px; text-align:center; color:#555; font-weight:600;";
+          const tdStyle = "background:transparent; border-bottom:1px solid #eee; padding:4px 6px; text-align:center;";
+          let html = `<div style="font-size:12px; color:#888; margin-bottom:4px;">시세 기준일자 ${data.run_date}</div>
+            <table style="width:100%; border-collapse:collapse; font-size:13px; background:transparent;">
+              <tr>
+                <th style="${thStyle}">전용면적</th><th style="${thStyle}">구조</th>
+                <th style="${thStyle}">방</th><th style="${thStyle}">화장실</th>
+                <th style="${thStyle}">매매가</th><th style="${thStyle}">전세가</th>
+              </tr>`;
+          data.rows.forEach(r => {
+            html += `<tr>
+              <td style="${tdStyle}">${r.area ?? "-"}</td>
+              <td style="${tdStyle}">${r.structure || "-"}</td>
+              <td style="${tdStyle}">${r.room ?? "-"}</td>
+              <td style="${tdStyle}">${r.bathroom ?? "-"}</td>
+              <td style="${tdStyle}">${__formatSisePrice(r.sale_price, r.sale_is_low)}</td>
+              <td style="${tdStyle}">${__formatSisePrice(r.rent_price, r.rent_is_low)}</td>
+            </tr>`;
+          });
+          html += `</table>`;
+          box.innerHTML = html;
+          __scrollSiseIntoView();
+        } catch (e) {
+          box.innerHTML = `<div style="padding:6px; color:#c0392b; font-size:13px;">시세 조회 실패 (서버 미가동일 수 있음)</div>`;
+          __scrollSiseIntoView();
+        }
+      }
+
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
         if (document.getElementById("toggleSiseMap").checked) return;
@@ -6234,10 +6306,16 @@
         let infoHtml = `
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <h3 style="margin: 0; text-align: left;">${apt.아파트명}</h3>
-      <button onclick="openNaverRealEstate(${apartmentId})" 
-        style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
-        네부 바로가기
-      </button>
+      <div style="display: flex; gap: 6px;">
+        ${__hasSiseData(apartmentId) ? `<button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
+          style="padding: 8px; background: #27AE60; color: white; border: none; border-radius: 4px; cursor: pointer;">
+          📈 시세보기
+        </button>` : ""}
+        <button onclick="openNaverRealEstate(${apartmentId})"
+          style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
+          네부 바로가기
+        </button>
+      </div>
     </div>
 			${
         hasDetail
@@ -6307,7 +6385,8 @@
 		  <button onclick="deleteNote('${apartmentId}')" style="display: none;"></button>
 		</label>
       </div>
-    </div>`;
+    </div>
+    <div id="sisePriceBox" style="margin-top: 16px;"></div>`;
 
         const infoDiv = document.getElementById("apartmentInfo");
         if (!infoDiv.dataset.positioned) {
