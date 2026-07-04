@@ -6315,6 +6315,10 @@
           style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
           네부 바로가기
         </button>
+        <button onclick="openKakaoMapDirections(${apartmentId}); event.stopPropagation();"
+          style="padding: 8px; background: #FEE500; color: #191919; border: none; border-radius: 4px; cursor: pointer;">
+          🚗 길찾기
+        </button>
       </div>
     </div>
 			${
@@ -6538,6 +6542,52 @@ const originalBase64 = event.target.result;
       function openNaverRealEstate(apartmentId) {
         let url = `https://new.land.naver.com/complexes/${apartmentId}`;
         window.open(url, "_blank");
+      }
+
+      // ✅ 카카오맵 길찾기 웹 URL 생성 (출발지 좌표가 있으면 from/to, 없으면 to만)
+      function __kakaoMapWebUrl(name, lat, lng, startCoords) {
+        let dest = `${encodeURIComponent(name)},${lat},${lng}`;
+        if (startCoords) {
+          return `https://map.kakao.com/link/from/현재위치,${startCoords.lat},${startCoords.lng}/to/${dest}`;
+        }
+        return `https://map.kakao.com/link/to/${dest}`;
+      }
+
+      // ✅ 카카오맵 길찾기 (현재 위치 → 아파트) 열기
+      function openKakaoMapDirections(apartmentId) {
+        let aptInfo = apartmentData.find((apartment) => String(apartment.id) === String(apartmentId));
+        if (!aptInfo) return;
+        let name = apartmentDetailData[apartmentId]?.아파트명 || aptInfo.name || "아파트";
+        let lat = aptInfo.lat;
+        let lng = aptInfo.lng;
+        let isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+        const openWebWithLocation = () => {
+          if (!navigator.geolocation) {
+            window.open(__kakaoMapWebUrl(name, lat, lng, null), "_blank");
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              window.open(
+                __kakaoMapWebUrl(name, lat, lng, { lat: pos.coords.latitude, lng: pos.coords.longitude }),
+                "_blank",
+              );
+            },
+            () => window.open(__kakaoMapWebUrl(name, lat, lng, null), "_blank"),
+            { timeout: 3000, maximumAge: 60000 },
+          );
+        };
+
+        if (!isMobile) {
+          openWebWithLocation();
+          return;
+        }
+
+        let appUrl = `kakaomap://route?ep=${lat},${lng}&by=FOOT`;
+        let fallbackTimer = setTimeout(openWebWithLocation, 1500);
+        window.addEventListener("pagehide", () => clearTimeout(fallbackTimer), { once: true });
+        location.href = appUrl;
       }
 
       function __closeApartmentInfo() {
