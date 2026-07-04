@@ -6554,10 +6554,10 @@ const originalBase64 = event.target.result;
       }
 
       // ✅ 카카오맵 길찾기 (현재 위치 → 아파트, 도보 기본) 열기
-      // map.kakao.com은 카카오맵 앱의 유니버설 링크라, 같은 탭에서 직접 이동(location.href)시키면
-      // 앱이 설치된 경우 OS가 자동으로 앱을 열고 없으면 웹페이지가 그대로 뜬다.
-      // (window.open으로 새 창을 띄우면 iOS 팝업 차단에 걸리고 유니버설 링크 인식도 깨져
-      //  설치 유도 페이지로 빠지므로, 모바일에서는 반드시 location.href로 이동해야 한다)
+      // 모바일은 kakaomap:// 앱 스킴을 클릭 즉시(동기) 실행만 시도한다.
+      // iOS Safari는 비동기(geolocation 콜백 등)로 지연된 location.href 이동에는
+      // 유니버설 링크를 적용하지 않아, 자동 웹 폴백을 넣으면 오히려 카카오맵 설치
+      // 안내 페이지로 잘못 빠지는 문제가 있었다. 그래서 자동 폴백 없이 앱 실행만 시도한다.
       function openKakaoMapDirections(apartmentId) {
         let aptInfo = apartmentData.find((apartment) => String(apartment.id) === String(apartmentId));
         if (!aptInfo) return;
@@ -6566,45 +6566,26 @@ const originalBase64 = event.target.result;
         let lng = aptInfo.lng;
         let isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-        const openWeb = (startCoords) => {
-          let url = __kakaoMapWebUrl(name, lat, lng, startCoords);
-          if (isMobile) {
-            location.href = url;
-          } else {
-            window.open(url, "_blank");
-          }
-        };
-        const openWebWithLocation = () => {
-          if (!navigator.geolocation) {
-            openWeb(null);
-            return;
-          }
-          navigator.geolocation.getCurrentPosition(
-            (pos) => openWeb({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-            () => openWeb(null),
-            { timeout: 3000, maximumAge: 60000 },
-          );
-        };
-
         if (!isMobile) {
+          const openWebWithLocation = () => {
+            if (!navigator.geolocation) {
+              window.open(__kakaoMapWebUrl(name, lat, lng, null), "_blank");
+              return;
+            }
+            navigator.geolocation.getCurrentPosition(
+              (pos) => window.open(
+                __kakaoMapWebUrl(name, lat, lng, { lat: pos.coords.latitude, lng: pos.coords.longitude }),
+                "_blank",
+              ),
+              () => window.open(__kakaoMapWebUrl(name, lat, lng, null), "_blank"),
+              { timeout: 3000, maximumAge: 60000 },
+            );
+          };
           openWebWithLocation();
           return;
         }
 
-        // 모바일: 도보 모드로 앱 직접 실행 시도, 실패 시(미설치) 웹으로 폴백
-        let appUrl = `kakaomap://route?ep=${lat},${lng}&by=FOOT`;
-        let didHide = false;
-        const onVisibilityChange = () => {
-          if (document.visibilityState === "hidden") didHide = true;
-        };
-        document.addEventListener("visibilitychange", onVisibilityChange);
-        setTimeout(() => {
-          document.removeEventListener("visibilitychange", onVisibilityChange);
-          if (!didHide && document.visibilityState !== "hidden") {
-            openWebWithLocation();
-          }
-        }, 1500);
-        location.href = appUrl;
+        location.href = `kakaomap://route?ep=${lat},${lng}&by=FOOT`;
       }
 
       function __closeApartmentInfo() {
