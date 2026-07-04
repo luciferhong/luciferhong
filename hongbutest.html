@@ -6304,7 +6304,7 @@
         apartmentInfo.setAttribute("data-id", apartmentId);
 
         let infoHtml = `
-    <div style="display: flex; justify-content: space-between; align-items: center;">
+    <div style="display: flex; justify-content: space-between; align-items: center; position: relative;">
       <h3 style="margin: 0; text-align: left;">${apt.아파트명}</h3>
       <div style="display: flex; gap: 6px;">
         ${__hasSiseData(apartmentId) ? `<button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
@@ -6315,9 +6315,28 @@
           style="padding: 8px; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
           네부 바로가기
         </button>
-        <button onclick="openKakaoMapDirections(${apartmentId}); event.stopPropagation();"
-          style="padding: 8px; background: #FEE500; color: #191919; border: none; border-radius: 4px; cursor: pointer;">
+        <button id="naverRouteToggleBtn" onclick="toggleNaverRouteOptions(); event.stopPropagation();"
+          style="padding: 8px; background: #03C75A; color: white; border: none; border-radius: 4px; cursor: pointer;">
           🚗 길찾기
+        </button>
+      </div>
+      <div id="naverRouteOptions" onclick="closeNaverRouteOptions(); event.stopPropagation();"
+        style="display: none; position: absolute; top: 100%; left: 0; right: 0; gap: 6px; flex-wrap: nowrap; margin-top: 4px; padding: 6px; background: var(--clr-surface, #fff); border: 1px solid var(--clr-border, #ddd); border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18); z-index: 10;">
+        <button onclick="openNaverMapTransit(${apartmentId}, 37.497951, 127.027636, '강남역'); closeNaverRouteOptions(); event.stopPropagation();"
+          style="flex: 1; padding: 8px 4px; background: #F2F2F2; color: #191919; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;">
+          🚌 강남역
+        </button>
+        <button onclick="openNaverMapTransit(${apartmentId}, 37.564719, 126.977022, '시청역'); closeNaverRouteOptions(); event.stopPropagation();"
+          style="flex: 1; padding: 8px 4px; background: #F2F2F2; color: #191919; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;">
+          🚌 시청역
+        </button>
+        <button onclick="openNaverMapTransit(${apartmentId}, 37.521624, 126.924374, '여의도역'); closeNaverRouteOptions(); event.stopPropagation();"
+          style="flex: 1; padding: 8px 4px; background: #F2F2F2; color: #191919; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;">
+          🚌 여의도역
+        </button>
+        <button onclick="openNaverMapDirections(${apartmentId}); closeNaverRouteOptions(); event.stopPropagation();"
+          style="flex: 1; padding: 8px 4px; background: #F2F2F2; color: #191919; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;">
+          🚶 아파트
         </button>
       </div>
     </div>
@@ -6544,48 +6563,82 @@ const originalBase64 = event.target.result;
         window.open(url, "_blank");
       }
 
-      // ✅ 카카오맵 길찾기 웹 URL 생성 (출발지 좌표가 있으면 from/to, 없으면 to만)
-      function __kakaoMapWebUrl(name, lat, lng, startCoords) {
-        let dest = `${encodeURIComponent(name)},${lat},${lng}`;
-        if (startCoords) {
-          return `https://map.kakao.com/link/from/현재위치,${startCoords.lat},${startCoords.lng}/to/${dest}`;
-        }
-        return `https://map.kakao.com/link/to/${dest}`;
+      // ✅ 네이버지도 웹 길찾기 URL 생성 (public.html의 createUrl과 동일한 패턴)
+      function __naverMapWebUrl(mode, start, destName, destLat, destLng) {
+        return `https://map.naver.com/p/directions/${start.lng},${start.lat},${encodeURIComponent(start.name)}/${destLng},${destLat},${encodeURIComponent(destName)}/-/${mode}`;
       }
 
-      // ✅ 카카오맵 길찾기 (현재 위치 → 아파트, 도보 기본) 열기
-      // 모바일은 kakaomap:// 앱 스킴을 클릭 즉시(동기) 실행만 시도한다.
-      // iOS Safari는 비동기(geolocation 콜백 등)로 지연된 location.href 이동에는
-      // 유니버설 링크를 적용하지 않아, 자동 웹 폴백을 넣으면 오히려 카카오맵 설치
-      // 안내 페이지로 잘못 빠지는 문제가 있었다. 그래서 자동 폴백 없이 앱 실행만 시도한다.
-      function openKakaoMapDirections(apartmentId) {
+      // ✅ 네이버지도 앱 길찾기 URL 생성 (nmap:// 공식 스킴, mode: walk/car/public)
+      function __naverMapAppUrl(mode, start, destName, destLat, destLng) {
+        return `nmap://route/${mode}?slat=${start.lat}&slng=${start.lng}&sname=${encodeURIComponent(start.name)}&dlat=${destLat}&dlng=${destLng}&dname=${encodeURIComponent(destName)}&appname=com.luciferhong.hongbutest`;
+      }
+
+      function __goNaverMap(mode, start, destName, destLat, destLng) {
+        let isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        if (isMobile) {
+          location.href = __naverMapAppUrl(mode, start, destName, destLat, destLng);
+        } else {
+          window.open(__naverMapWebUrl(mode, start, destName, destLat, destLng), "_blank");
+        }
+      }
+
+      // ✅ 길찾기 버튼 클릭 시 하위 목적지 버튼(강남역/여의도역/시청역/아파트) 토글
+      function toggleNaverRouteOptions() {
+        const el = document.getElementById("naverRouteOptions");
+        if (!el) return;
+        el.style.display = el.style.display === "none" ? "flex" : "none";
+      }
+
+      // ✅ 하위 목적지 버튼 패널 닫기 (버튼 선택 또는 패널 빈 영역 클릭 시 호출)
+      function closeNaverRouteOptions() {
+        const el = document.getElementById("naverRouteOptions");
+        if (el) el.style.display = "none";
+      }
+
+      // ✅ 모달 안쪽이지만 패널(4개 버튼) 밖을 클릭하면 패널만 닫는다.
+      // (모달 자체를 닫는 기존 pointerdown 리스너와 별개로 동작)
+      document.addEventListener(
+        "pointerdown",
+        (event) => {
+          const panel = document.getElementById("naverRouteOptions");
+          if (!panel || panel.style.display !== "flex") return;
+          if (panel.contains(event.target)) return;
+          if (event.target.closest("#naverRouteToggleBtn")) return;
+          closeNaverRouteOptions();
+        },
+        true,
+      );
+
+      // ✅ 네이버지도 길찾기 (현재 위치 → 아파트, 도보) 열기
+      // 네이버지도 스킴은 출발지(slat/slng)를 항상 명시해야 하므로 현재 위치를 받아온다.
+      function openNaverMapDirections(apartmentId) {
         let aptInfo = apartmentData.find((apartment) => String(apartment.id) === String(apartmentId));
         if (!aptInfo) return;
         let name = apartmentDetailData[apartmentId]?.아파트명 || aptInfo.name || "아파트";
-        let lat = aptInfo.lat;
-        let lng = aptInfo.lng;
-        let isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-        if (!isMobile) {
-          const openWebWithLocation = () => {
-            if (!navigator.geolocation) {
-              window.open(__kakaoMapWebUrl(name, lat, lng, null), "_blank");
-              return;
-            }
-            navigator.geolocation.getCurrentPosition(
-              (pos) => window.open(
-                __kakaoMapWebUrl(name, lat, lng, { lat: pos.coords.latitude, lng: pos.coords.longitude }),
-                "_blank",
-              ),
-              () => window.open(__kakaoMapWebUrl(name, lat, lng, null), "_blank"),
-              { timeout: 3000, maximumAge: 60000 },
-            );
-          };
-          openWebWithLocation();
+        if (!navigator.geolocation) {
+          alert("현재 위치를 가져올 수 없습니다. 위치 권한을 확인해주세요.");
           return;
         }
+        navigator.geolocation.getCurrentPosition(
+          (pos) => __goNaverMap(
+            "walk",
+            { name: "현재위치", lat: pos.coords.latitude, lng: pos.coords.longitude },
+            name,
+            aptInfo.lat,
+            aptInfo.lng,
+          ),
+          () => alert("현재 위치를 가져올 수 없습니다. 위치 권한을 확인해주세요."),
+          { timeout: 3000, maximumAge: 60000 },
+        );
+      }
 
-        location.href = `kakaomap://route?ep=${lat},${lng}&by=FOOT`;
+      // ✅ 네이버지도 대중교통 길찾기 (아파트 → 지하철역) 열기
+      function openNaverMapTransit(apartmentId, destLat, destLng, destName) {
+        let aptInfo = apartmentData.find((apartment) => String(apartment.id) === String(apartmentId));
+        if (!aptInfo) return;
+        let aptName = apartmentDetailData[apartmentId]?.아파트명 || aptInfo.name || "아파트";
+        __goNaverMap("public", { name: aptName, lat: aptInfo.lat, lng: aptInfo.lng }, destName, destLat, destLng);
       }
 
       function __closeApartmentInfo() {
