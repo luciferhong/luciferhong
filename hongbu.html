@@ -6215,17 +6215,36 @@
         return `${isLow ? "(저)" : ""}${num}억`;
       }
 
+      function __scrollSiseIntoView() {
+        try {
+          const panel = document.getElementById("apartmentInfo");
+          if (!panel) return;
+          requestAnimationFrame(() => { panel.scrollTo({ top: panel.scrollHeight, behavior: "smooth" }); });
+        } catch (_) {}
+      }
+
+      // 급지 티어(1=최상위 강남권 ~ 5) — 매매가 동률일 때만 정렬에 영향
+      const SEOUL_TIER_MAP = {
+        '강남구': 1, '서초구': 1, '용산구': 1, '송파구': 1,
+        '양천구': 2, '성동구': 2, '광진구': 2, '마포구': 2,
+        '영등포구': 3, '종로구': 3, '강동구': 3, '중구': 3, '동작구': 3,
+        '서대문구': 4, '강서구': 4, '동대문구': 4, '성북구': 4, '관악구': 4,
+        '은평구': 5, '노원구': 5, '구로구': 5, '중랑구': 5, '금천구': 5, '강북구': 5, '도봉구': 5,
+      };
+      const PYEONG_AREA_BANDS = { '20': [55, 63, 59], '30': [79, 85, 84] };
+      function __getTier(sigungu) { return SEOUL_TIER_MAP[sigungu] ?? 6; }
+
       async function showSisePrice(apartmentId) {
         const box = document.getElementById("sisePriceBox");
         if (!box) return;
-        const __scrollSiseIntoView = () => {
-          try {
-            const panel = document.getElementById("apartmentInfo");
-            if (!panel) return;
-            requestAnimationFrame(() => { panel.scrollTo({ top: panel.scrollHeight, behavior: "smooth" }); });
-          } catch (_) {}
+        const similarBox = document.getElementById("similarPriceBox");
+        const similarResultBox = document.getElementById("similarPriceResultBox");
+        const __clearSimilarBoxes = () => {
+          if (similarBox) similarBox.innerHTML = "";
+          if (similarResultBox) similarResultBox.innerHTML = "";
         };
         box.innerHTML = `<div style="padding:6px; color:#666; font-size:13px;">시세 조회 중…</div>`;
+        __clearSimilarBoxes();
         try {
           const res = await fetch(`${SISE_API_BASE}/price_history?complex_id=${encodeURIComponent(apartmentId)}`);
           const data = await res.json();
@@ -6255,11 +6274,99 @@
           });
           html += `</table>`;
           box.innerHTML = html;
+          renderSimilarPriceButtons(data);
           __scrollSiseIntoView();
         } catch (e) {
           box.innerHTML = `<div style="padding:6px; color:#c0392b; font-size:13px;">시세 조회 실패 (서버 미가동일 수 있음)</div>`;
+          __clearSimilarBoxes();
           __scrollSiseIntoView();
         }
+      }
+
+      function renderSimilarPriceButtons(data) {
+        const similarBox = document.getElementById("similarPriceBox");
+        const resultBox = document.getElementById("similarPriceResultBox");
+        if (!similarBox) return;
+        similarBox.innerHTML = "";
+        if (resultBox) resultBox.innerHTML = "";
+
+        const sido = data.sido;
+        if (sido !== "서울시" && sido !== "경기도") return; // 서울/경기 외 → 버튼 없음
+
+        ["20", "30"].forEach(pyeong => {
+          const [lo, hi, center] = PYEONG_AREA_BANDS[pyeong];
+          const candidates = (data.rows || []).filter(r =>
+            r.area != null && r.area >= lo && r.area <= hi &&
+            r.sale_price != null && !isNaN(r.sale_price) && r.sale_price > 0
+          );
+          if (!candidates.length) return; // 해당 평형대 유효 매매가 없음 → 버튼 미노출
+          // 밴드 안에 면적이 여러 개면 기준 면적(center)에 가장 가까운 것을 채택
+          const row = candidates.reduce((best, r) =>
+            Math.abs(r.area - center) < Math.abs(best.area - center) ? r : best
+          );
+
+          const btn = document.createElement("button");
+          btn.textContent = `${pyeong}평대 같은 가격 단지 찾기`;
+          btn.style.cssText = "padding:8px 10px; margin:4px 6px 4px 0; background:#8E44AD; color:#fff; border:none; border-radius:4px; cursor:pointer; font-size:13px;";
+          btn.onclick = (e) => { e.stopPropagation(); showSimilarPriceComplexes(pyeong, row.sale_price, sido); };
+          similarBox.appendChild(btn);
+        });
+      }
+
+      const SIMILAR_PRICE_PAGE_SIZE = 20;
+
+      async function showSimilarPriceComplexes(pyeong, salePrice, sido) {
+        const resultBox = document.getElementById("similarPriceResultBox");
+        if (!resultBox) return;
+        resultBox.innerHTML = `<div style="padding:6px; color:#666; font-size:13px;">비교 단지 조회 중…</div>`;
+        try {
+          const url = `${SISE_API_BASE}/similar_price?pyeong=${pyeong}&sale_price=${encodeURIComponent(salePrice)}&sido=${encodeURIComponent(sido)}`;
+          const res = await fetch(url);
+          const data = await res.json();
+          if (!data || !data.count) {
+            resultBox.innerHTML = `<div style="padding:6px; color:#888; font-size:13px;">동일 가격대 단지 없음</div>`;
+            __scrollSiseIntoView();
+            return;
+          }
+          const rows = data.rows.slice().sort((a, b) => {
+            if (b.sale_price !== a.sale_price) return b.sale_price - a.sale_price;
+            return __getTier(a.sigungu) - __getTier(b.sigungu);
+          });
+          renderSimilarPriceTable(rows, data, pyeong, SIMILAR_PRICE_PAGE_SIZE);
+        } catch (e) {
+          resultBox.innerHTML = `<div style="padding:6px; color:#c0392b; font-size:13px;">조회 실패 (서버 미가동일 수 있음)</div>`;
+          __scrollSiseIntoView();
+        }
+      }
+
+      function renderSimilarPriceTable(rows, data, pyeong, limit) {
+        const resultBox = document.getElementById("similarPriceResultBox");
+        if (!resultBox) return;
+        const displayRows = limit ? rows.slice(0, limit) : rows;
+        const thStyle = "background:transparent; border-bottom:1px solid #ccc; padding:4px 6px; text-align:center; color:#555; font-weight:600;";
+        const tdStyle = "background:transparent; border-bottom:1px solid #eee; padding:4px 6px; text-align:center;";
+        let html = `<div style="font-size:12px; color:#888; margin:8px 0 4px;">${pyeong}평대 · ${__formatSisePrice(data.price_band[0])}대 매매가 동일 단지 (${data.run_date} 기준, 총 ${rows.length}개)</div>
+          <table style="width:100%; border-collapse:collapse; font-size:13px; background:transparent;">
+            <tr><th style="${thStyle}">단지명</th><th style="${thStyle}">시군구</th><th style="${thStyle}">전용면적</th><th style="${thStyle}">매매가</th></tr>`;
+        displayRows.forEach(r => {
+          html += `<tr>
+            <td style="${tdStyle}">${r.complex_name || "-"}</td>
+            <td style="${tdStyle}">${r.sigungu || "-"}</td>
+            <td style="${tdStyle}">${r.area ?? "-"}</td>
+            <td style="${tdStyle}">${__formatSisePrice(r.sale_price)}</td>
+          </tr>`;
+        });
+        html += `</table>`;
+        const remaining = rows.length - displayRows.length;
+        if (remaining > 0) {
+          html += `<button id="similarPriceMoreBtn" style="margin-top:6px; padding:6px 10px; background:#f0f0f0; color:#333; border:1px solid #ccc; border-radius:4px; cursor:pointer; font-size:13px; width:100%;">더보기 (${remaining}개 더)</button>`;
+        }
+        resultBox.innerHTML = html;
+        const moreBtn = document.getElementById("similarPriceMoreBtn");
+        if (moreBtn) {
+          moreBtn.onclick = (e) => { e.stopPropagation(); renderSimilarPriceTable(rows, data, pyeong, null); };
+        }
+        __scrollSiseIntoView();
       }
 
       function showApartmentInfo(apartmentId, markerPosition) {
@@ -6409,7 +6516,9 @@
 		</label>
       </div>
     </div>
-    <div id="sisePriceBox" style="margin-top: 16px;"></div>`;
+    <div id="sisePriceBox" style="margin-top: 16px;"></div>
+    <div id="similarPriceBox" style="margin-top: 10px;"></div>
+    <div id="similarPriceResultBox" style="margin-top: 8px;"></div>`;
 
         const infoDiv = document.getElementById("apartmentInfo");
         if (!infoDiv.dataset.positioned) {
