@@ -1888,8 +1888,14 @@
           <button onclick="__openDriveSyncUI()">🔄 동기화</button>
           <span id="driveSyncPanel" style="display:none;align-items:center;gap:4px;">
             <select id="driveSyncSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
-            <select id="driveSyncSigungu" style="height:26px;font-size:12px;" disabled><option value="">시군구 선택</option></select>
-            <button onclick="__sggSyncWithConfirm(document.getElementById('driveSyncSigungu').value)" style="font-size:12px;padding:3px 8px;">실행</button>
+            <span id="driveSyncSigunguWrapper" style="position:relative;">
+              <button id="driveSyncSigunguToggle" type="button" disabled
+                      style="height:26px;font-size:12px;" onclick="__toggleDriveSyncSigunguList()">시군구 선택 ▼</button>
+              <div id="driveSyncSigunguList"
+                   style="display:none;position:absolute;top:28px;left:0;z-index:50;background:#1e293b;border:1px solid #475569;
+                          border-radius:4px;padding:6px;max-height:180px;overflow-y:auto;min-width:160px;font-size:12px;color:#e2e8f0;"></div>
+            </span>
+            <button onclick="__driveSyncExecuteSelected()" style="font-size:12px;padding:3px 8px;">실행</button>
             <button onclick="document.getElementById('driveSyncPanel').style.display='none'" style="font-size:11px;padding:3px 5px;">✕</button>
           </span>
         </span>
@@ -5722,14 +5728,20 @@
       }
 
       // sgg 파일 읽기 (없으면 생성 후 반환) — schemaVersion 3 (텍스트 메타만, 이미지 참조 필드 없음)
+      // sgg 동기화 데이터 타입('notes'/'photos'/'polygons') → JSON 내 데이터 키
+      function __sggDataKey(type) {
+        return type === 'notes' ? 'notes' : type === 'photos' ? 'photos' : 'polygons';
+      }
+
       async function __driveGetSggData(sgg5, type) {
         const tStart = performance.now();
         if (!window.__driveSggFileIds) window.__driveSggFileIds = {};
         const cacheKey = `${sgg5}_${type}`;
         let fileId = window.__driveSggFileIds[cacheKey] || await __driveFindSggFile(sgg5, type);
-        const emptyData = type === 'notes'
-          ? { sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: null, notes: {} }
-          : { sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: null, photos: {} };
+        const emptyData = {
+          sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: null,
+          [__sggDataKey(type)]: {},
+        };
         if (!fileId) {
           fileId = await __driveCreateSggFile(sgg5, type, emptyData);
           window.__driveSggFileIds[cacheKey] = fileId;
@@ -5743,9 +5755,9 @@
         const data = await __driveReadSggFile(fileId);
         const normalized = (typeof __normalizeSggData === 'function') ? __normalizeSggData(data, type) : data;
         // 구조 보장 (정규화가 실패한 경우 대비)
-        if (type === 'notes' && !normalized.notes) normalized.notes = {};
-        if (type === 'photos' && !normalized.photos) normalized.photos = {};
-        const count = Object.keys(normalized[type === 'notes' ? 'notes' : 'photos'] || {}).length;
+        const dataKey = __sggDataKey(type);
+        if (!normalized[dataKey]) normalized[dataKey] = {};
+        const count = Object.keys(normalized[dataKey] || {}).length;
         const elapsed = Math.round(performance.now() - tStart);
         const msg = `sgg5=${sgg5} type=${type} status=found items=${count} elapsed=${elapsed}ms`;
         console.log('[sync:perf] getSggData', msg);
@@ -6376,7 +6388,7 @@
 
       // Drive sgg JSON 정규화 (schemaVersion 1 → 2)
       function __normalizeSggData(data, type) {
-        const key = type === 'notes' ? 'notes' : 'photos';
+        const key = __sggDataKey(type);
         if (!data || typeof data !== 'object') {
           return { sgg: '', schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: null, [key]: {} };
         }
@@ -6456,6 +6468,7 @@
       // 로컬 레코드에 이미지 원본 메타 부착 (DataURL-only 정책)
       function __syncAttachLocalExtras(L, kind) {
         if (kind === 'note') return { ...L, __localImages: L.images || [] };
+        if (kind === 'polygon') return { ...L };
         return {
           ...L,
           __localImageDataUrl: L.imageDataUrl || '',
@@ -6516,7 +6529,40 @@
           });
         }
 
-        return { localNotes, localPhotos };
+        // 면적그리기(폴리곤 메모): sgg5 필드가 없어 중심점 기준으로 지역 판정
+        const localPolygons = {};
+        if (db.objectStoreNames.contains('polygonMemos')) {
+          let hasAnyPolygon = false;
+          await new Promise((resolve) => {
+            const tx = db.transaction(['polygonMemos'], 'readonly');
+            const req = tx.objectStore('polygonMemos').openCursor();
+            req.onsuccess = (e) => { hasAnyPolygon = !!e.target.result; resolve(); };
+            req.onerror = () => resolve();
+          });
+
+          if (hasAnyPolygon) {
+            await __ensureSyncSigIndex();
+            await new Promise((resolve) => {
+              const tx = db.transaction(['polygonMemos'], 'readonly');
+              const req = tx.objectStore('polygonMemos').openCursor();
+              req.onsuccess = (e) => {
+                const c = e.target.result;
+                if (!c) { resolve(); return; }
+                const rec = c.value;
+                const id = String(rec?.id || '').trim();
+                if (id) {
+                  const centroid = __polygonMemoCentroid(rec.coords || []);
+                  const region = centroid ? __syncPhotoRegion(centroid) : null;
+                  if (region?.sgg5 === sgg5) localPolygons[id] = rec;
+                }
+                c.continue();
+              };
+              req.onerror = () => resolve();
+            });
+          }
+        }
+
+        return { localNotes, localPhotos, localPolygons };
       }
 
       // 로컬 IDB에서 데이터가 존재하는 sgg5 Set만 추출 (memoBackup 패턴)
@@ -6577,6 +6623,42 @@
               };
               req.onerror = () => resolve();
             });
+          }
+        }
+
+        // 면적그리기(폴리곤 메모): 중심점 기준 지역 판정 — 노트/포토가 없는 시군구도 목록에 잡히도록
+        if (db.objectStoreNames.contains('polygonMemos')) {
+          let hasAnyPolygon = false;
+          await new Promise((resolve) => {
+            const tx = db.transaction(['polygonMemos'], 'readonly');
+            const req = tx.objectStore('polygonMemos').openCursor();
+            req.onsuccess = (e) => { hasAnyPolygon = !!e.target.result; resolve(); };
+            req.onerror = () => resolve();
+          });
+
+          if (hasAnyPolygon) {
+            let sigOk = true;
+            try { await __ensureSyncSigIndex(); }
+            catch (e) {
+              sigOk = false;
+              window.hongbuDebugLog?.('ERR', '[sync] SIG 인덱스 로드 실패 → 면적그리기 지역 스킵', e?.message || e);
+            }
+            if (sigOk) {
+              await new Promise((resolve) => {
+                const tx = db.transaction(['polygonMemos'], 'readonly');
+                const req = tx.objectStore('polygonMemos').openCursor();
+                req.onsuccess = (e) => {
+                  const c = e.target.result;
+                  if (!c) { resolve(); return; }
+                  const rec = c.value;
+                  const centroid = __polygonMemoCentroid(rec.coords || []);
+                  const region = centroid ? __syncPhotoRegion(centroid) : null;
+                  if (region?.sgg5) sgg5Set.add(region.sgg5);
+                  c.continue();
+                };
+                req.onerror = () => resolve();
+              });
+            }
           }
         }
 
@@ -7009,19 +7091,22 @@
           );
 
           __syncProgressShow(`🔄 ${sName} Drive 스캔 중...`);
-          const [driveAptList, drivePhotoList, notesMeta, photosMeta] = await __perfStage('driveScan(list+json×4)', () =>
+          const [driveAptList, drivePhotoList, notesMeta, photosMeta, polygonsMeta] = await __perfStage('driveScan(list+json×5)', () =>
             Promise.all([
               __driveListFolderNameMap(aptSggFolderId),
               __driveListFolderNameMap(photoSggFolderId),
               __driveGetSggData(sgg5, 'notes'),
               __driveGetSggData(sgg5, 'photos'),
+              __driveGetSggData(sgg5, 'polygons'),
             ])
           );
 
           const { fileId: notesFileId, data: driveNotesData } = notesMeta;
           const { fileId: photosFileId, data: drivePhotosData } = photosMeta;
+          const { fileId: polygonsFileId, data: drivePolygonsData } = polygonsMeta;
           const driveNotes = driveNotesData.notes || {};
           const drivePhotos = drivePhotosData.photos || {};
+          const drivePolygons = drivePolygonsData.polygons || {};
           const driveAptNameMap = driveAptList.nameMap;   // filename → fileId
           const drivePhotoNameMap = drivePhotoList.nameMap;
 
@@ -7033,17 +7118,18 @@
           }
 
           // ── 2) 로컬 sgg5 타겟 스캔 ──
-          const { localNotes, localPhotos } = await __perfStage('loadLocalForSgg',
+          const { localNotes, localPhotos, localPolygons } = await __perfStage('loadLocalForSgg',
             () => __sggLoadLocalForSgg(db, sgg5));
           __perfMark('loadLocal:counts',
-            `localNotes=${Object.keys(localNotes).length} localPhotos=${Object.keys(localPhotos).length}`);
+            `localNotes=${Object.keys(localNotes).length} localPhotos=${Object.keys(localPhotos).length} localPolygons=${Object.keys(localPolygons).length}`);
 
           // ── 3) JSON 메타 머지 (LWW) ──
           const tMerge = performance.now();
           const noteResult = __syncMergeById(localNotes, driveNotes, 'note');
           const photoResult = __syncMergeById(localPhotos, drivePhotos, 'photo');
+          const polygonResult = __syncMergeById(localPolygons, drivePolygons, 'polygon');
           __perfMark('mergeById',
-            `notes(toDrive=${Object.keys(noteResult.toDriveMap).length} toLocal=${Object.keys(noteResult.toLocalMap).length}) photos(toDrive=${Object.keys(photoResult.toDriveMap).length} toLocal=${Object.keys(photoResult.toLocalMap).length}) in ${Math.round(performance.now() - tMerge)}ms`);
+            `notes(toDrive=${Object.keys(noteResult.toDriveMap).length} toLocal=${Object.keys(noteResult.toLocalMap).length}) photos(toDrive=${Object.keys(photoResult.toDriveMap).length} toLocal=${Object.keys(photoResult.toLocalMap).length}) polygons(toDrive=${Object.keys(polygonResult.toDriveMap).length} toLocal=${Object.keys(polygonResult.toLocalMap).length}) in ${Math.round(performance.now() - tMerge)}ms`);
 
           const now = Date.now();
           const gcCutoff = now - __SYNC_TOMBSTONE_TTL_MS;
@@ -7280,8 +7366,25 @@
             if (!(id in finalPhotosMap)) finalPhotosMap[id] = drivePhotos[id];
           }
 
+          // 면적그리기(폴리곤): 이미지가 없어 삭제 시에도 좌표/색을 지울 필요 없음 — 단일 빌더
+          const finalPolygonsMap = {};
+          const buildPolygonMeta = (id, src) => {
+            finalPolygonsMap[id] = {
+              id, coords: src.coords || [], color: src.color || '#00aa00',
+              alpha: src.alpha != null ? src.alpha : 0.25,
+              memoText: src.memoText || '', labelDisabled: !!src.labelDisabled,
+              createdAt: src.createdAt || 0, updatedAt: src.updatedAt,
+              deletedAt: src.deletedAt || null,
+            };
+          };
+          for (const [id, w] of Object.entries(polygonResult.toDriveMap)) buildPolygonMeta(id, w);
+          for (const [id, w] of Object.entries(polygonResult.toLocalMap)) buildPolygonMeta(id, w);
+          for (const id of Object.keys(drivePolygons)) {
+            if (!(id in finalPolygonsMap)) finalPolygonsMap[id] = drivePolygons[id];
+          }
+
           // tombstone GC
-          let gcNoteCount = 0, gcPhotoCount = 0;
+          let gcNoteCount = 0, gcPhotoCount = 0, gcPolygonCount = 0;
           for (const id of Object.keys(finalNotesMap)) {
             const it = finalNotesMap[id];
             if (it.deletedAt && it.deletedAt < gcCutoff) { delete finalNotesMap[id]; gcNoteCount++; }
@@ -7290,16 +7393,23 @@
             const it = finalPhotosMap[id];
             if (it.deletedAt && it.deletedAt < gcCutoff) { delete finalPhotosMap[id]; gcPhotoCount++; }
           }
+          for (const id of Object.keys(finalPolygonsMap)) {
+            const it = finalPolygonsMap[id];
+            if (it.deletedAt && it.deletedAt < gcCutoff) { delete finalPolygonsMap[id]; gcPolygonCount++; }
+          }
 
           __syncProgressShow(`🔄 ${sName} Drive 메타 저장 중...`);
           const nowIso = new Date().toISOString();
-          await __perfStage(`writeSggJson(notes=${Object.keys(finalNotesMap).length}, photos=${Object.keys(finalPhotosMap).length})`,
+          await __perfStage(`writeSggJson(notes=${Object.keys(finalNotesMap).length}, photos=${Object.keys(finalPhotosMap).length}, polygons=${Object.keys(finalPolygonsMap).length})`,
             () => Promise.all([
               __driveWriteSggFile(notesFileId, {
                 sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: nowIso, notes: finalNotesMap,
               }),
               __driveWriteSggFile(photosFileId, {
                 sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: nowIso, photos: finalPhotosMap,
+              }),
+              __driveWriteSggFile(polygonsFileId, {
+                sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: nowIso, polygons: finalPolygonsMap,
               }),
             ])
           );
@@ -7618,7 +7728,18 @@
             if (L.deletedAt && L.deletedAt < gcCutoff && !photoLocalDels.includes(id)) photoLocalDels.push(id);
           }
 
-          await __perfStage(`localIdbPuts(notes=${noteLocalPuts.length}/${noteLocalDels.length}del photos=${photoLocalPuts.length}/${photoLocalDels.length}del)`,
+          // 면적그리기(폴리곤): 이미지 재구성이 없어 winner를 거의 그대로 반영
+          const polygonLocalPuts = [];
+          const polygonLocalDels = [];
+          for (const [id, winner] of Object.entries(polygonResult.toLocalMap)) {
+            if (winner.deletedAt && winner.deletedAt < gcCutoff) { polygonLocalDels.push(id); continue; }
+            polygonLocalPuts.push({ ...winner, id });
+          }
+          for (const [id, L] of Object.entries(localPolygons)) {
+            if (L.deletedAt && L.deletedAt < gcCutoff && !polygonLocalDels.includes(id)) polygonLocalDels.push(id);
+          }
+
+          await __perfStage(`localIdbPuts(notes=${noteLocalPuts.length}/${noteLocalDels.length}del photos=${photoLocalPuts.length}/${photoLocalDels.length}del polygons=${polygonLocalPuts.length}/${polygonLocalDels.length}del)`,
             () => Promise.all([
               (noteLocalPuts.length || noteLocalDels.length) ? new Promise((res, rej) => {
                 const tx = db.transaction(['apartmentNotes'], 'readwrite');
@@ -7633,6 +7754,13 @@
                 const s = tx.objectStore('photoMemos');
                 for (const r of photoLocalPuts) s.put(r);
                 for (const id of photoLocalDels) s.delete(id);
+              }) : Promise.resolve(),
+              (polygonLocalPuts.length || polygonLocalDels.length) ? new Promise((res, rej) => {
+                const tx = db.transaction(['polygonMemos'], 'readwrite');
+                tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
+                const s = tx.objectStore('polygonMemos');
+                for (const r of polygonLocalPuts) s.put(r);
+                for (const id of polygonLocalDels) s.delete(id);
               }) : Promise.resolve(),
             ])
           );
@@ -7650,6 +7778,21 @@
               }
             });
           } catch (_) {}
+
+          // 면적그리기: Drive가 이긴(toLocalMap) 폴리곤만 지도에 다시 그림
+          try {
+            if (window.map && window.naver && naver.maps) {
+              const visible = document.getElementById('togglePolygonMemo')?.checked !== false;
+              for (const [id, winner] of Object.entries(polygonResult.toLocalMap)) {
+                if (window.__polygonMemos) {
+                  for (const [poly] of window.__polygonMemos) {
+                    if (poly && poly.__memoId === id) { _detachPolygonMemoFromMap(poly); break; }
+                  }
+                }
+                if (!winner.deletedAt) _attachRestoredPolygon({ ...winner, id }, window.map, visible);
+              }
+            }
+          } catch (e) { console.warn('[sync] 면적그리기 화면 갱신 실패', e); }
 
           // 마커 재구성: 2초 지연 (iOS 메모리 여유 확보)
           setTimeout(() => {
@@ -7676,6 +7819,7 @@
             title,
             `단지메모: 추가 ${noteResult.added} / 갱신 ${noteResult.updated} / 삭제 ${noteResult.deleted}`,
             `포토메모: 추가 ${photoResult.added} / 갱신 ${photoResult.updated} / 삭제 ${photoResult.deleted}`,
+            `면적그리기: 추가 ${polygonResult.added} / 갱신 ${polygonResult.updated} / 삭제 ${polygonResult.deleted}`,
           ];
           if (imgUpOk + imgUpFail > 0) {
             lines.push(`이미지 업로드 ${imgUpOk}/${imgUpOk + imgUpFail}` + (imgUpFail ? ` ⚠️ 실패 ${imgUpFail}` : ''));
@@ -7684,7 +7828,9 @@
             lines.push(`이미지 다운로드 ${imgDownOk}/${imgDownOk + imgDownFail}` + (imgDownFail ? ` ⚠️ 실패 ${imgDownFail}` : ''));
           }
           if (deleteTasks.length > 0) lines.push(`Drive 정리 ${deleteTasks.length}개`);
-          if (gcNoteCount + gcPhotoCount > 0) lines.push(`(30일 GC: 단지 ${gcNoteCount}, 포토 ${gcPhotoCount})`);
+          if (gcNoteCount + gcPhotoCount + gcPolygonCount > 0) {
+            lines.push(`(30일 GC: 단지 ${gcNoteCount}, 포토 ${gcPhotoCount}, 면적 ${gcPolygonCount})`);
+          }
           if (hasFail) {
             lines.push('화면 상단 디버그 로그에 실패 상세가 남습니다.');
             window.hongbuDebugLog?.('ERR', `[sync] ${sName} 일부 실패`, lines.slice(1).join('\n'));
@@ -7810,12 +7956,8 @@
         }
       }
 
-      // 사용자 확인 래퍼
-      async function __sggSyncWithConfirm(sgg5) {
-        if (!window.__gdriveReady) { __sggSync(sgg5); return; }
-        if (!sgg5) { alert('시군구를 선택하세요'); return; }
-
-        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+      // Drive/로컬 잔여 용량 HTML 조회 (동기화 확인 모달 공용)
+      async function __driveSyncGetQuotaHtml() {
         const parts = [];
         try {
           const [q, est] = await Promise.all([
@@ -7832,7 +7974,16 @@
           }
           if (est) parts.push(`로컬 잔여 <b style="color:#1976d2;">${__fmtBytes(est.free || 0)}</b>`);
         } catch (_) {}
-        const quotaHtml = parts.join('<br>') || '<span style="color:#999;">용량 조회 실패</span>';
+        return parts.join('<br>') || '<span style="color:#999;">용량 조회 실패</span>';
+      }
+
+      // 사용자 확인 래퍼
+      async function __sggSyncWithConfirm(sgg5) {
+        if (!window.__gdriveReady) { __sggSync(sgg5); return; }
+        if (!sgg5) { alert('시군구를 선택하세요'); return; }
+
+        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        const quotaHtml = await __driveSyncGetQuotaHtml();
 
         const ok = await __showConfirmModal(
           `🔄 ${sName} 동기화`,
@@ -7840,6 +7991,28 @@
           { okLabel: '동기화' }
         );
         if (ok) __sggSync(sgg5);
+      }
+
+      // ── 시군구 다중 선택 실행 (체크박스 목록에서 선택된 sgg5 순차 동기화) ──
+      async function __driveSyncExecuteSelected() {
+        const list = [...(window.__driveSyncSelectedSgg5 || [])];
+        if (list.length === 0) { alert('시군구를 선택하세요'); return; }
+        if (list.length === 1) { await __sggSyncWithConfirm(list[0]); return; }
+
+        if (!window.__gdriveReady) {
+          for (const sgg5 of list) await __sggSync(sgg5);
+          return;
+        }
+
+        const names = list.map(sgg5 => __syncSigunguNameByCode5.get(sgg5) || sgg5);
+        const quotaHtml = await __driveSyncGetQuotaHtml();
+        const ok = await __showConfirmModal(
+          `🔄 ${list.length}개 지역 동기화`,
+          `<div style="margin-bottom:10px;">아래 ${list.length}개 지역을 순서대로 동기화합니다.<br>${names.join(', ')}</div>${quotaHtml}`,
+          { okLabel: '동기화' }
+        );
+        if (!ok) return;
+        for (const sgg5 of list) await __sggSync(sgg5);
       }
 
       // ── Drive sgg 폴더에서 업로드된 sgg5 목록 조회 ──
@@ -7859,7 +8032,7 @@
         } while (pageToken);
         const sgg5Set = new Set();
         for (const f of files) {
-          const m = f.name.match(/^(\d{5})(?:_.*)?_(notes|photos)\.json$/);
+          const m = f.name.match(/^(\d{5})(?:_.*)?_(notes|photos|polygons)\.json$/);
           if (m) sgg5Set.add(m[1]);
         }
         return [...sgg5Set].sort();
@@ -7930,8 +8103,9 @@
         for (const sgg5 of sgg5DriveList) addSgg5(sgg5, { onDrive: true });
 
         const sidoSel = document.getElementById('driveSyncSido');
-        const sigunguSel = document.getElementById('driveSyncSigungu');
-        if (!sidoSel || !sigunguSel) return;
+        const sgList = document.getElementById('driveSyncSigunguList');
+        const sgToggle = document.getElementById('driveSyncSigunguToggle');
+        if (!sidoSel || !sgList || !sgToggle) return;
 
         sidoSel.innerHTML = '<option value="">시도 선택</option>';
         const sidoItems = [...sggBySido.keys()]
@@ -7943,14 +8117,18 @@
           sidoSel.appendChild(opt);
         }
 
-        sigunguSel.innerHTML = '<option value="">시군구 선택</option>';
-        sigunguSel.disabled = true;
+        window.__driveSyncSelectedSgg5 = new Set();
+        sgList.innerHTML = '';
+        sgList.style.display = 'none';
+        sgToggle.disabled = true;
+        _updateDriveSyncSigunguDisplay();
 
         sidoSel.onchange = function () {
           const sel = document.getElementById('driveSyncSido').value;
-          const sg = document.getElementById('driveSyncSigungu');
-          sg.innerHTML = '<option value="">시군구 선택</option>';
-          if (!sel || !sggBySido.has(sel)) { sg.disabled = true; return; }
+          window.__driveSyncSelectedSgg5 = new Set();
+          sgList.innerHTML = '';
+          sgList.style.display = 'none';
+          if (!sel || !sggBySido.has(sel)) { sgToggle.disabled = true; _updateDriveSyncSigunguDisplay(); return; }
           const items = Array.from(sggBySido.get(sel).entries())
             .map(([sgg5, o]) => ({
               value: sgg5,
@@ -7958,15 +8136,49 @@
             }))
             .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
           for (const item of items) {
-            const opt = document.createElement('option');
-            opt.value = item.value; opt.textContent = item.label;
-            sg.appendChild(opt);
+            const label = document.createElement('label');
+            label.style.cssText = 'display:block;white-space:nowrap;padding:2px 4px;cursor:pointer;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.value = item.value;
+            cb.style.marginRight = '4px';
+            cb.addEventListener('change', function () {
+              if (this.checked) window.__driveSyncSelectedSgg5.add(item.value);
+              else window.__driveSyncSelectedSgg5.delete(item.value);
+              _updateDriveSyncSigunguDisplay();
+            });
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(item.label));
+            sgList.appendChild(label);
           }
-          sg.disabled = false;
+          sgToggle.disabled = false;
+          _updateDriveSyncSigunguDisplay();
         };
 
         panel.style.display = 'inline-flex';
       }
+
+      // ── 시군구 체크박스 목록 토글/표시 ──
+      function __toggleDriveSyncSigunguList() {
+        const sgList = document.getElementById('driveSyncSigunguList');
+        if (!sgList) return;
+        sgList.style.display = sgList.style.display === 'none' ? 'block' : 'none';
+      }
+
+      function _updateDriveSyncSigunguDisplay() {
+        const sgToggle = document.getElementById('driveSyncSigunguToggle');
+        if (!sgToggle) return;
+        const n = window.__driveSyncSelectedSgg5?.size || 0;
+        sgToggle.textContent = (n > 0 ? `${n}개 선택` : '시군구 선택') + ' ▼';
+      }
+
+      document.addEventListener('click', function (e) {
+        const wrapper = document.getElementById('driveSyncSigunguWrapper');
+        if (!wrapper) return;
+        if (!wrapper.contains(e.target)) {
+          const sgList = document.getElementById('driveSyncSigunguList');
+          if (sgList) sgList.style.display = 'none';
+        }
+      });
 
       // ── Drive 동기화 패널 초기화 (로그인 시 호출 — 목록은 미리 로드하지 않음) ──
       function __initDriveSyncPanel() {
@@ -12399,7 +12611,8 @@
       }
 
       // 폴리곤과 라벨을 모두 제거한다.
-      function removePolygonMemo(polygon) {
+      // 지도/오버레이에서만 제거 (DB는 건드리지 않음) — 동기화 후 화면 갱신 시 재사용
+      function _detachPolygonMemoFromMap(polygon) {
         try {
           const iw = window.__polygonMemos && window.__polygonMemos.get(polygon);
           if (iw) {
@@ -12411,12 +12624,16 @@
           if (polygon && typeof polygon.setMap === "function") polygon.setMap(null);
         } catch (e) {}
         try {
-          if (polygon && polygon.__memoId) {
-            deletePolygonMemoFromDB(polygon.__memoId).catch(console.warn);
-          }
-        } catch (e) {}
-        try {
           if (window.__polygonMemos) window.__polygonMemos.delete(polygon);
+        } catch (e) {}
+      }
+
+      function removePolygonMemo(polygon) {
+        _detachPolygonMemoFromMap(polygon);
+        try {
+          if (polygon && polygon.__memoId) {
+            _softDeletePolygonRecord(polygon.__memoId).catch(console.warn);
+          }
         } catch (e) {}
       }
 
@@ -12470,7 +12687,8 @@
         });
       }
 
-      async function deletePolygonMemoFromDB(id) {
+      // 즉시 삭제 대신 tombstone(deletedAt) 기록 — Drive 동기화 시 삭제가 양방향으로 전파되도록 함
+      async function _softDeletePolygonRecord(id) {
         if (!id) return;
         await initMemoIndexedDB();
         return new Promise((resolve, reject) => {
@@ -12480,7 +12698,15 @@
             const db = e.target.result;
             try {
               const tx = db.transaction([POLYGON_STORE], "readwrite");
-              tx.objectStore(POLYGON_STORE).delete(id);
+              const store = tx.objectStore(POLYGON_STORE);
+              const getReq = store.get(id);
+              getReq.onsuccess = () => {
+                const rec = getReq.result;
+                if (rec) {
+                  const now = Date.now();
+                  store.put({ ...rec, updatedAt: now, deletedAt: now });
+                }
+              };
               tx.oncomplete = () => { db.close(); resolve(); };
               tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
             } catch (err) {
@@ -12546,7 +12772,7 @@
       async function restorePolygonMemos(map) {
         try {
           if (!map || !window.naver || !naver.maps) return;
-          const records = await loadAllPolygonMemos();
+          const records = (await loadAllPolygonMemos()).filter((r) => !r.deletedAt);
           if (!records.length) return;
           const visible = document.getElementById("togglePolygonMemo")?.checked !== false;
           records.forEach((rec) => _attachRestoredPolygon(rec, map, visible));
@@ -12555,10 +12781,10 @@
         }
       }
 
-      // 면적그리기 전체를 JSON 파일로 다운로드 (DB에 저장된 모든 폴리곤 메모)
+      // 면적그리기 전체를 JSON 파일로 다운로드 (DB에 저장된 모든 폴리곤 메모, 삭제된 것 제외)
       async function downloadPolygonMemos() {
         try {
-          const records = await loadAllPolygonMemos();
+          const records = (await loadAllPolygonMemos()).filter((r) => !r.deletedAt);
           if (!records.length) {
             alert("내보낼 면적그리기가 없습니다.");
             return;
@@ -12598,7 +12824,8 @@
               try { removePolygonMemo(p); } catch (_) {}
             });
           }
-          // 2) DB에 잔여 레코드가 있을 가능성 대비 store 전체 비우기
+          // 2) DB에 잔여 레코드가 있을 가능성 대비 전체 soft-delete
+          //    (store.clear()로 물리삭제하면 tombstone이 남지 않아 Drive 동기화 시 삭제가 전파되지 않음)
           await initMemoIndexedDB();
           await new Promise((resolve, reject) => {
             const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
@@ -12607,7 +12834,16 @@
               const db = e.target.result;
               try {
                 const tx = db.transaction([POLYGON_STORE], "readwrite");
-                tx.objectStore(POLYGON_STORE).clear();
+                const store = tx.objectStore(POLYGON_STORE);
+                const now = Date.now();
+                const cursorReq = store.openCursor();
+                cursorReq.onsuccess = (ev) => {
+                  const c = ev.target.result;
+                  if (!c) return;
+                  const rec = c.value;
+                  if (!rec.deletedAt) c.update({ ...rec, updatedAt: now, deletedAt: now });
+                  c.continue();
+                };
                 tx.oncomplete = () => { db.close(); resolve(); };
                 tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
               } catch (err) {
@@ -12642,7 +12878,7 @@
           let imported = 0;
           let skipped = 0;
           for (const rec of records) {
-            if (!rec || !Array.isArray(rec.coords) || rec.coords.length < 3) {
+            if (!rec || rec.deletedAt || !Array.isArray(rec.coords) || rec.coords.length < 3) {
               skipped++;
               continue;
             }
