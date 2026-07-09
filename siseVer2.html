@@ -400,6 +400,7 @@ buttonContainer {
     <label style="margin-left:4px;"><input type="checkbox" id="over85Filter" checked>대형포함</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleApartments" checked>아파트</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleSchools">초</label>
+    <label style="margin-left:4px;"><input type="checkbox" id="toggleSchoolZoneKeep">초등배정 남기기</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleMiddleSchools">중</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleFacilities">환경</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleStarbucks">스벅</label>
@@ -1570,6 +1571,60 @@ let activeSchoolInfoWindow = null;
 let activeSchoolDetailButtonEl = null;
 let activeSchoolDetailButtonId = null;
 
+let __schoolZoneKeepMap = new Map();
+const __SCHOOL_ZONE_COLORS = [
+  "#E63946", // 빨강   (0°)
+  "#2A9D8F", // 청록   (170°)
+  "#F4A261", // 주황   (28°)
+  "#9B5DE5", // 보라   (270°)
+  "#38B000", // 초록   (110°)
+  "#F72585", // 핑크   (320°)
+  "#00BCD4", // 시안   (187°)
+  "#FFBE0B", // 노랑   (47°)
+  "#82B300", // 연두   (77°)
+  "#3A86FF", // 파랑   (220°)
+  "#FB5607", // 주홍   (20°)
+  "#06D6A0", // 민트   (158°)
+  "#FF006E", // 자홍   (334°)
+  "#A0522D", // 갈색   (earth)
+  "#118AB2", // 하늘   (200°)
+  "#FF9F1C", // 진주황 (38°)
+  "#CCBB00", // 황록   (55°)
+  "#C77DFF", // 연보라 (276°)
+  "#457B9D", // 파랑2  (205°)
+  "#8B6914", // 황갈색 (42°, dark)
+];
+let __schoolZoneKeepColorIdx = 0;
+
+function __isSchoolZoneKeepMode() {
+  return document.getElementById("toggleSchoolZoneKeep")?.checked ?? false;
+}
+
+function __addSchoolZoneKeep(schoolId) {
+  const id = String(schoolId);
+  const vertexLists = window.schoolZoneMap?.get(id);
+  if (!vertexLists || !vertexLists.length) return;
+  const color = __SCHOOL_ZONE_COLORS[__schoolZoneKeepColorIdx % __SCHOOL_ZONE_COLORS.length];
+  __schoolZoneKeepColorIdx++;
+  const polygons = [];
+  vertexLists.forEach((ring) => {
+    const path = (ring || []).map(([lat, lng]) => new naver.maps.LatLng(lat, lng));
+    const poly = new naver.maps.Polygon({
+      map: window.map,
+      paths: path,
+      strokeColor: color,
+      strokeOpacity: 0.9,
+      strokeWeight: 2,
+      fillColor: color,
+      fillOpacity: 0.2,
+      clickable: false,
+      zIndex: 999999,
+    });
+    polygons.push(poly);
+  });
+  __schoolZoneKeepMap.set(id, polygons);
+}
+
 function clearActiveSchoolZone() {
     activeSchoolZonePolygons.forEach(p => { try { p.setMap(null); } catch (e) {} });
     activeSchoolZonePolygons = [];
@@ -1766,6 +1821,16 @@ function toggleSchoolZoneBySchool(school) {
     const id = _getSchoolZoneId(school);
     if (!id) return;
 
+    if (__isSchoolZoneKeepMode()) {
+        if (__schoolZoneKeepMap.has(id)) {
+            __schoolZoneKeepMap.get(id).forEach(p => { try { p.setMap(null); } catch (e) {} });
+            __schoolZoneKeepMap.delete(id);
+        } else {
+            __addSchoolZoneKeep(id);
+        }
+        return;
+    }
+
     // 같은 학교 다시 클릭하면 제거
     if (activeSchoolZoneId === id) {
         clearActiveSchoolZone();
@@ -1844,11 +1909,24 @@ async function loadSchools() {
       updateSchoolMarkers();
     });
 
-    // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거
+    // ✅ 지도 빈 곳 클릭하면 배정범위(폴리곤) 제거 (남기기 모드에서는 멀티존 유지)
     naver.maps.Event.addListener(window.map, "click", function () {
-      clearActiveSchoolZone();
+      if (!__isSchoolZoneKeepMode()) {
+        clearActiveSchoolZone();
+      }
       closeActiveSchoolInfoWindow();
       clearActiveSchoolDetailButton();
+    });
+
+    // ✅ 초등배정남기기 체크 해제 시 멀티존 전체 제거
+    document.getElementById("toggleSchoolZoneKeep")?.addEventListener("change", function () {
+      if (!this.checked) {
+        __schoolZoneKeepMap.forEach((polys) => {
+          polys.forEach((p) => { try { p.setMap(null); } catch (e) {} });
+        });
+        __schoolZoneKeepMap.clear();
+        __schoolZoneKeepColorIdx = 0;
+      }
     });
 
   } catch (error) {
