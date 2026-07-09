@@ -4832,7 +4832,26 @@
         if (window.__gdriveReady && window.__gdriveAccessToken) {
           __gdriveSignOut();
         } else {
-          __gdriveSignIn();
+          __gdriveShowAuthOverlay();
+        }
+      }
+
+      // 로그인 오버레이 표시 (사용자 제스처로만 호출 — 로드 시 자동 표시 금지)
+      function __gdriveShowAuthOverlay() {
+        const overlay = document.getElementById("gdriveAuthOverlay");
+        if (!overlay) return;
+        overlay.style.display = "flex";
+        const hasAutoLogin = (() => {
+          try { return localStorage.getItem("__hongbuDriveAutoLogin") === "1"; } catch (_) { return false; }
+        })();
+        if (hasAutoLogin) {
+          const hintP = overlay.querySelector('p');
+          if (hintP && !hintP.dataset.autoLoginHint) {
+            hintP.dataset.autoLoginHint = '1';
+            hintP.innerHTML = '✅ 자동 로그인 설정됨<br>'
+              + '<b style="color:#fbbf24;">로그인 버튼</b>을 한 번 클릭하면 바로 연결됩니다.<br>'
+              + '<span style="color:#64748b; font-size:12px;">(브라우저 정책상 첫 클릭은 필요합니다)</span>';
+          }
         }
       }
 
@@ -5113,9 +5132,7 @@
                     catch (e) {
                       console.warn("[gdrive] 복원 토큰 연결 실패 — 삭제:", e);
                       try { localStorage.removeItem("__hongbuDriveToken"); } catch (_) {}
-                      // 오버레이 다시 표시 (연결 실패 시 수동 로그인 유도)
-                      const overlay = document.getElementById("gdriveAuthOverlay");
-                      if (overlay) overlay.style.display = "flex";
+                      // 오버레이는 자동으로 띄우지 않음 — 사용자가 로그인 버튼을 눌렀을 때만 표시
                     }
                   })();
                 } else {
@@ -5126,40 +5143,7 @@
               }
             } catch (e) { console.warn("[gdrive] 토큰 복원 실패:", e); }
 
-            // ▼ 토큰 복원 실패 시에만: 오버레이 표시 + 자동 로그인 훅 세팅
-            // NOTE: 브라우저 정책상 사용자 제스처 없이 popup을 열 수 없어 완전 자동 로그인은 불가.
-            if (!__tokenRestored) try {
-              const hasAutoLogin = (() => {
-                try { return localStorage.getItem("__hongbuDriveAutoLogin") === "1"; } catch (_) { return false; }
-              })();
-              const overlay = document.getElementById("gdriveAuthOverlay");
-              if (overlay) overlay.style.display = "flex";
-
-              if (hasAutoLogin && overlay) {
-                // 안내 메시지 변경
-                const hintP = overlay.querySelector('p');
-                if (hintP && !hintP.dataset.autoLoginHint) {
-                  hintP.dataset.autoLoginHint = '1';
-                  hintP.innerHTML = '✅ 자동 로그인 설정됨<br>'
-                    + '<b style="color:#fbbf24;">로그인 버튼</b>을 한 번 클릭하면 바로 연결됩니다.<br>'
-                    + '<span style="color:#64748b; font-size:12px;">(브라우저 정책상 첫 클릭은 필요합니다)</span>';
-                }
-                // 오버레이 내 아무 곳이나 첫 클릭 → 자동 로그인 발화 (skip/체크박스 제외)
-                let triggered = false;
-                const autoHandler = (e) => {
-                  if (triggered) return;
-                  const t = e.target;
-                  if (t.closest && t.closest('#gdriveSkipBtn')) return; // skip만 예외
-                  triggered = true;
-                  overlay.removeEventListener('click', autoHandler, true);
-                  // 로그인 버튼 클릭 리스너가 이미 있으면 그쪽이 처리 — 그 외 영역이면 여기서 발화
-                  if (!t.closest || !t.closest('#gdriveSignInBtn')) {
-                    try { __gdriveSignIn(); } catch (err) { console.warn("자동 로그인 발화 실패:", err); }
-                  }
-                };
-                overlay.addEventListener('click', autoHandler, true);
-              }
-            } catch (e) { console.warn("로그인 오버레이 분기 실패:", e); }
+            // 오버레이는 자동으로 띄우지 않음 — 사용자가 "🔑 로그인" 버튼을 눌렀을 때만 __gdriveShowAuthOverlay()로 표시
 
             // ▼ 비정상 DB 손실 감지 모달 — Drive init 이후 호출해야 패널 열기가 동작
             // initMemoIndexedDB를 선제 호출해서 플래그 세팅 기회를 준 뒤 체크
