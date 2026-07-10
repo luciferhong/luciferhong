@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta name="robots" content="noindex, nofollow">
+  <meta charset="UTF-8">
+  <title>[루시퍼홍] 앞마당 지도</title>
+  <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { width: 100%; height: calc(100vh - 45px); }
+    h1 { font-size: 18px; font-weight: bold; margin: 10px; }
+
+    .sig-label {
+      font-weight: 800;
+      color: #111;
+      white-space: nowrap;
+      pointer-events: none;
+      text-shadow: 0 0 2px rgba(255,255,255,0.9), 0 0 6px rgba(255,255,255,0.7);
+    }
+
+    #panel {
+      position: absolute;
+      top: 55px;
+      left: 10px;
+      z-index: 1000;
+      width: 260px;
+      max-height: calc(100vh - 75px);
+      display: flex;
+      flex-direction: column;
+      background: rgba(255,255,255,0.96);
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+      font-size: 13px;
+      overflow: hidden;
+    }
+    .panel-section { padding: 10px 12px; }
+    .panel-section + .panel-section { border-top: 1px solid #e5e5e5; }
+    .panel-title { font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between; }
+    #sido-select { width: 100%; padding: 4px; font-size: 13px; box-sizing: border-box; }
+    #sigungu-list { margin-top: 8px; max-height: 220px; overflow-y: auto; }
+    #sigungu-list label { display: flex; align-items: center; gap: 6px; padding: 2px 0; cursor: pointer; }
+    #madang-list { max-height: 260px; overflow-y: auto; }
+    .madang-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+    .madang-swatch { width: 12px; height: 12px; border-radius: 2px; border: 1px solid; flex-shrink: 0; }
+    .madang-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .madang-del { border: none; background: #eee; color: #c00; border-radius: 3px; cursor: pointer; font-size: 12px; padding: 1px 6px; }
+    .madang-del:hover { background: #f5c6c6; }
+    .empty-hint { color: #999; font-size: 12px; }
+
+    /* 읽기/수정 모드 스위치 */
+    .mode-switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+    .mode-switch input { display: none; }
+    .mode-track { width: 42px; height: 22px; border-radius: 11px; background: #bbb; position: relative; transition: background .15s; flex-shrink: 0; }
+    .mode-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .15s; }
+    .mode-switch input:checked + .mode-track { background: #00ac42; }
+    .mode-switch input:checked + .mode-track .mode-knob { left: 22px; }
+    .mode-text { font-weight: 700; }
+    #panel.read-mode .mode-text { color: #555; }
+    #panel:not(.read-mode) .mode-text { color: #00863a; }
+    .all-boundary-toggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; cursor: pointer; }
+    .all-boundary-toggle.disabled { opacity: .45; cursor: not-allowed; }
+    /* 읽기 모드에서는 편집 조작 비활성화 */
+    #panel.read-mode #sigungu-list label { opacity: .5; }
+    #panel.read-mode #sigungu-list input { pointer-events: none; }
+    #panel.read-mode .madang-del { display: none; }
+    .clear-all-btn { border: none; background: #e74c3c; color: #fff; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 700; padding: 3px 8px; }
+    .clear-all-btn:hover { background: #c0392b; }
+    #panel.read-mode .clear-all-btn { display: none; } /* 수정모드에서만 표시 */
+
+    #tier-legend {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      z-index: 1000;
+      background: rgba(255,255,255,0.92);
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .tier-legend-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+    .tier-legend-swatch { width: 12px; height: 12px; border-radius: 2px; border: 1px solid; flex-shrink: 0; }
+
+    .backup-row { display: flex; gap: 8px; }
+    .backup-btn { flex: 1; border: 1px solid #ccc; background: #f5f5f5; border-radius: 4px; cursor: pointer; font-size: 12px; padding: 5px 8px; }
+    .backup-btn:hover { background: #eaeaea; }
+  </style>
+</head>
+<body>
+<h1>[루시퍼홍] 앞마당 지도</h1>
+<div id="map"></div>
+<div id="panel">
+  <div class="panel-section">
+    <label class="mode-switch">
+      <input type="checkbox" id="mode-toggle">
+      <span class="mode-track"><span class="mode-knob"></span></span>
+      <span class="mode-text" id="mode-text">읽기모드</span>
+    </label>
+    <label class="all-boundary-toggle" id="all-boundary-label"><input type="checkbox" id="all-boundary-cb"> 모든 경계 표시</label>
+  </div>
+  <div class="panel-section">
+    <div class="panel-title">시도 선택</div>
+    <select id="sido-select"><option value="">시도를 선택하세요</option></select>
+    <div id="sigungu-list"></div>
+  </div>
+  <div class="panel-section">
+    <div class="panel-title">현재 앞마당 (<span id="madang-count">0</span>)<button id="clear-all-btn" class="clear-all-btn">전체 삭제</button></div>
+    <div id="madang-list"></div>
+  </div>
+  <div class="panel-section">
+    <div class="backup-row">
+      <button id="export-btn" class="backup-btn">⬇ 앞마당 백업</button>
+      <button id="import-btn" class="backup-btn">⬆ 앞마당 복원</button>
+    </div>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>
+  </div>
+</div>
+
+<script>
+const map = new naver.maps.Map('map', {
+  center: new naver.maps.LatLng(36.4, 127.9),
+  zoom: 7
+});
+
+const SIG_GEOJSON_PARTS = [
+  "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson",
+  "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson"
+];
+
+// ✅ 시도 코드(sgg_cd 앞 2자리) → 이름
+const SIDO_NAMES = {
+  '11': '서울특별시', '26': '부산광역시', '27': '대구광역시', '28': '인천광역시',
+  '29': '광주광역시', '30': '대전광역시', '31': '울산광역시', '36': '세종특별자치시',
+  '41': '경기도', '43': '충청북도', '44': '충청남도', '46': '전라남도',
+  '47': '경상북도', '48': '경상남도', '50': '제주특별자치도', '51': '강원특별자치도',
+  '52': '전북특별자치도'
+};
+
+const MADANG_STORAGE_KEY = 'madang_sigungu_codes';
+
+// 현재 앞마당 집합 (5자리 코드) — 로컬스토리지에서 로드, 없으면 빈 목록(기본 앞마당 없음)
+function loadMadangSet() {
+  try {
+    const raw = localStorage.getItem(MADANG_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map(String));
+    }
+  } catch (e) { console.warn('앞마당 로드 실패:', e); }
+  return new Set();
+}
+const madangSet = loadMadangSet();
+
+// ✅ 급지별 색상 (화사하되 지도 위에서 잘 구분되게 살짝 짙은 파스텔, 6단계). 1급지 붉은 계열 → 6급지 보라.
+const TIER_STYLE = {
+  1: { fill: 'hsl(350, 88%, 70%)', stroke: 'hsl(350, 68%, 45%)', label: '1급지' },
+  2: { fill: 'hsl(28, 92%, 65%)',  stroke: 'hsl(28, 78%, 43%)',  label: '2급지' },
+  3: { fill: 'hsl(95, 58%, 58%)',  stroke: 'hsl(98, 50%, 36%)',  label: '3급지' },
+  4: { fill: 'hsl(178, 58%, 56%)', stroke: 'hsl(182, 52%, 34%)', label: '4급지' },
+  5: { fill: 'hsl(212, 90%, 70%)', stroke: 'hsl(214, 72%, 48%)', label: '5급지' },
+  6: { fill: 'hsl(280, 62%, 72%)', stroke: 'hsl(282, 48%, 50%)', label: '6급지(수도권 기타)' }
+};
+
+// ✅ 지방 분류: 광역시(부산·대구·광주·대전·울산) vs 도지역 → 2개 큰 색상 계열.
+//    같은 시의 인접 구는 같은 계열 hue에서 명도만 살짝 다르게(비슷한 색).
+const SUDOGWON_SIDO = new Set(['11', '28', '41']);          // 서울·인천·경기 = 수도권(급지 체계)
+const METRO_SIDO = new Set(['26', '27', '29', '30', '31']); // 지방 광역시
+const REGION_METRO = { hue: 250, sat: 48, label: '지방 광역시' }; // 청보라 계열
+const REGION_PROV  = { hue: 150, sat: 46, label: '지방(기타)' };    // 초록 계열
+
+function isRegional(code5) { return !SUDOGWON_SIDO.has(String(code5).slice(0, 2)); }
+// 같은 '시'로 묶는 키: 광역시는 시도(2자리), 도지역은 시(4자리)
+function cityKeyOf(code5) {
+  code5 = String(code5);
+  return METRO_SIDO.has(code5.slice(0, 2)) ? code5.slice(0, 2) : code5.slice(0, 4);
+}
+// 지방 색: 계열 hue 고정 + 같은 시의 앞마당 구들끼리 명도·채도를 크게 벌려 변별력 확보
+function regionalColor(code5) {
+  const isMetro = METRO_SIDO.has(String(code5).slice(0, 2));
+  const fam = isMetro ? REGION_METRO : REGION_PROV;
+  const key = cityKeyOf(code5);
+  const siblings = [...madangSet].filter(c => isRegional(c) && cityKeyOf(c) === key).sort();
+  const idx = Math.max(0, siblings.indexOf(String(code5)));
+  const n = siblings.length || 1;
+  const offset = idx - (n - 1) / 2;           // 중앙 기준 대칭 오프셋
+  let L = 62 - offset * 12;                    // 구마다 명도 12%씩 벌림(밝음↔어두움)
+  L = Math.max(42, Math.min(80, L));
+  let S = fam.sat + offset * 7;                // 어두운 구는 채도↑ 로 대비 강화
+  S = Math.max(32, Math.min(68, S));
+  return {
+    fill: `hsl(${fam.hue}, ${S}%, ${L}%)`,
+    stroke: `hsl(${fam.hue}, ${Math.min(72, S + 10)}%, ${Math.max(26, L - 28)}%)`,
+    label: fam.label,
+    sort: isMetro ? 7 : 8
+  };
+}
+
+// ✅ 시군구 5자리 → 급지. 서울 25구는 사용자 급지표, 경기 일부는 사용자 지정. 매핑에 없는 앞마당은 6급지.
+const TIER_BY_CODE5 = new Map([
+  // 서울 1급지
+  ['11680', 1], ['11650', 1], ['11170', 1], ['11710', 1], // 강남·서초·용산·송파
+  // 서울 2급지
+  ['11470', 2], ['11200', 2], ['11215', 2], ['11440', 2], // 양천·성동·광진·마포
+  // 서울 3급지
+  ['11560', 3], ['11110', 3], ['11740', 3], ['11140', 3], ['11590', 3], // 영등포·종로·강동·중구·동작
+  // 서울 4급지
+  ['11410', 4], ['11500', 4], ['11230', 4], ['11290', 4], ['11620', 4], // 서대문·강서·동대문·성북·관악
+  // 서울 5급지
+  ['11380', 5], ['11350', 5], ['11530', 5], ['11260', 5], ['11545', 5], ['11305', 5], ['11320', 5], // 은평·노원·구로·중랑·금천·강북·도봉
+  // 경기 2급지
+  ['41290', 2], ['41135', 2], // 과천·성남 분당
+  // 경기 4급지
+  ['41131', 4], ['41133', 4], ['41465', 4], ['41210', 4], ['41173', 4], ['41171', 4], ['41430', 4], ['41450', 4], ['41310', 4]
+  // 그 외(수원 팔달·군포·부천·인천 연수·지방 등)는 매핑에 없으므로 6급지로 폴백
+]);
+
+// 시군구 → {fill, stroke, label, sort}. 급지(1~5) → 지방(광역시/도) → 수도권 기타(6급지)
+function classify(code5) {
+  const tier = TIER_BY_CODE5.get(code5);
+  if (tier) return { ...TIER_STYLE[tier], sort: tier };
+  if (isRegional(code5)) return regionalColor(code5);
+  return { ...TIER_STYLE[6], sort: 6 }; // 수도권 기타(인천 연수·수원 팔달·군포·부천 등)
+}
+function getMadangColor(code5) { return classify(code5); }
+function getSortKey(code5) { return classify(code5).sort; }
+function getGroupLabel(code5) { return classify(code5).label; }
+
+// 이 줌 레벨 이상에서만 앞마당 외 지역의 경계를 그림 (그 아래에서는 앞마당만 표시해 초기 로드를 가볍게 유지)
+const OTHER_BOUNDARY_MIN_ZOOM = 11;
+
+let sigGeojsonRaw = null;
+let sigPrepared = null;
+let code5ToName = new Map();   // 5자리 → sgg_nm
+let code5ToFeature = new Map(); // 5자리 → prepared feature
+let madangPolygons = [];
+let madangLabels = [];
+let otherPolygons = [];
+let otherLabels = [];
+let sigRedrawTimer = null;
+let editMode = false; // false=읽기모드(편집 불가), true=수정모드(추가/해제 가능)
+let showAllBoundaries = false; // 읽기모드에서 "모든 경계 표시" 체크 시 true
+
+function bboxIntersects(bounds, bbox) {
+  const sw = bounds.getSW();
+  const ne = bounds.getNE();
+  const minLng = bbox[0], minLat = bbox[1], maxLng = bbox[2], maxLat = bbox[3];
+  if (maxLng < sw.lng()) return false;
+  if (minLng > ne.lng()) return false;
+  if (maxLat < sw.lat()) return false;
+  if (minLat > ne.lat()) return false;
+  return true;
+}
+
+function _prepareFeatureBBoxes(featureCollection) {
+  const feats = featureCollection?.features || [];
+  return feats.map(f => {
+    const geom = f.geometry;
+    const polys = (geom.type === "MultiPolygon") ? geom.coordinates : [geom.coordinates];
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    for (const poly of polys) {
+      const ring = poly[0];
+      for (const pt of ring) {
+        const lng = pt[0], lat = pt[1];
+        if (lng < minLng) minLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    return { geometry: geom, properties: f.properties || {}, bbox: [minLng, minLat, maxLng, maxLat] };
+  });
+}
+
+// ✅ polylabel 알고리즘 (metroHong.html에서 그대로 재사용)
+function _polyPointToPolygonDist(x, y, polygon) {
+  let inside = false;
+  let minDistSq = Infinity;
+  for (let k = 0; k < polygon.length; k++) {
+    const ring = polygon[k];
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const ax = ring[i][0], ay = ring[i][1];
+      const bx = ring[j][0], by = ring[j][1];
+      const intersect = ((ay > y) !== (by > y)) && (x < (bx - ax) * (y - ay) / (by - ay + 0.0) + ax);
+      if (intersect) inside = !inside;
+      const dx = bx - ax, dy = by - ay;
+      let t = ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy);
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + t * dx, py = ay + t * dy;
+      const distSq = (x - px) * (x - px) + (y - py) * (y - py);
+      if (distSq < minDistSq) minDistSq = distSq;
+    }
+  }
+  const dist = Math.sqrt(minDistSq);
+  return inside ? dist : -dist;
+}
+
+function _polyLabel(polygon, precision = 1e-5) {
+  const outer = polygon[0];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of outer) {
+    const x = p[0], y = p[1];
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  const width = maxX - minX;
+  const height = maxY - minY;
+  const cellSize = Math.min(width, height);
+  if (!isFinite(cellSize) || cellSize === 0) return outer[0];
+  function Cell(x, y, h, d) {
+    this.x = x; this.y = y; this.h = h;
+    this.d = d;
+    this.max = this.d + this.h * Math.SQRT2;
+  }
+  let h = cellSize / 2;
+  let cells = [];
+  for (let x = minX; x < maxX; x += cellSize) {
+    for (let y = minY; y < maxY; y += cellSize) {
+      const cx = x + h, cy = y + h;
+      const d = _polyPointToPolygonDist(cx, cy, polygon);
+      cells.push(new Cell(cx, cy, h, d));
+    }
+  }
+  let best = new Cell((minX + maxX) / 2, (minY + maxY) / 2, 0, _polyPointToPolygonDist((minX + maxX) / 2, (minY + maxY) / 2, polygon));
+  const fp = outer[0];
+  const fpCell = new Cell(fp[0], fp[1], 0, _polyPointToPolygonDist(fp[0], fp[1], polygon));
+  if (fpCell.d > best.d) best = fpCell;
+  cells.sort((a, b) => b.max - a.max);
+  while (cells.length) {
+    const cell = cells.shift();
+    if (cell.d > best.d) best = cell;
+    if (cell.max - best.d <= precision) continue;
+    const h2 = cell.h / 2;
+    const children = [[cell.x - h2, cell.y - h2], [cell.x + h2, cell.y - h2], [cell.x - h2, cell.y + h2], [cell.x + h2, cell.y + h2]];
+    for (const c of children) {
+      const cx = c[0], cy = c[1];
+      const d = _polyPointToPolygonDist(cx, cy, polygon);
+      const child = new Cell(cx, cy, h2, d);
+      let idx = 0;
+      while (idx < cells.length && cells[idx].max > child.max) idx++;
+      cells.splice(idx, 0, child);
+    }
+  }
+  return [best.x, best.y];
+}
+
+function _polyClamp(v, a, b) {
+  return Math.max(a, Math.min(b, v));
+}
+
+function _polyAspectFromBbox(bbox) {
+  const [minLng, minLat, maxLng, maxLat] = bbox;
+  const w = Math.max(1e-12, (maxLng - minLng));
+  const h = Math.max(1e-12, (maxLat - minLat));
+  return w > h ? (w / h) : (h / w);
+}
+
+function _polyLerp(a, b, t) {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
+function _polyRingCentroidLngLat(ring) {
+  let area = 0, cx = 0, cy = 0;
+  const n = ring.length;
+  if (n < 3) return null;
+  for (let i = 0; i < n; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % n];
+    const a = x1 * y2 - x2 * y1;
+    area += a;
+    cx += (x1 + x2) * a;
+    cy += (y1 + y2) * a;
+  }
+  area *= 0.5;
+  if (Math.abs(area) < 1e-12) return null;
+  return [cx / (6 * area), cy / (6 * area)];
+}
+
+function getLabelLatLngByPolylabel(geometry, bbox) {
+  const polys = (geometry.type === "MultiPolygon") ? geometry.coordinates : [geometry.coordinates];
+  let bestPoly = polys[0];
+  let bestArea = -1;
+  for (const p of polys) {
+    const ring = p[0];
+    let a = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const [x1, y1] = ring[i];
+      const [x2, y2] = ring[(i + 1) % ring.length];
+      a += (x1 * y2 - x2 * y1);
+    }
+    a = Math.abs(a * 0.5);
+    if (a > bestArea) {
+      bestArea = a;
+      bestPoly = p;
+    }
+  }
+  const pl = _polyLabel(bestPoly, 1e-5);
+  const ct = _polyRingCentroidLngLat(bestPoly[0]) || pl;
+  const ar = _polyAspectFromBbox(bbox);
+  const t = _polyClamp((ar - 1) / 3, 0.2, 0.8);
+  const blended = _polyLerp(pl, ct, t);
+  return new naver.maps.LatLng(blended[1], blended[0]);
+}
+
+function _label_getBboxPixelSize(bbox, map) {
+  try {
+    const proj = map && map.getProjection && map.getProjection();
+    if (!proj) return null;
+    const sw = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[1], bbox[0]));
+    const ne = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[3], bbox[2]));
+    return { width: Math.abs(ne.x - sw.x), height: Math.abs(ne.y - sw.y) };
+  } catch (e) {
+    return null;
+  }
+}
+
+function _label_measureTextPx(text, fontSizePx, fontWeight = 800, fontFamily = "sans-serif") {
+  const canvas = _label_measureTextPx._canvas || (_label_measureTextPx._canvas = document.createElement("canvas"));
+  const ctx = canvas.getContext("2d");
+  ctx.font = `${fontWeight} ${fontSizePx}px ${fontFamily}`;
+  const w = ctx.measureText(text).width;
+  const h = fontSizePx * 1.15;
+  return { w, h };
+}
+
+function _label_calcFitFontSize({ bbox, text, map, paddingPx = 8, min = 8, max = 40, fontWeight = 800, fontFamily = "sans-serif", hideIfTooSmall = true }) {
+  const px = _label_getBboxPixelSize(bbox, map);
+  if (!px) return min;
+  const availW = Math.max(0, px.width - paddingPx * 2);
+  const availH = Math.max(0, px.height - paddingPx * 2);
+  if (hideIfTooSmall && (availW < 10 || availH < 10)) return 0;
+  let lo = min, hi = max, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const m = _label_measureTextPx(text, mid, fontWeight, fontFamily);
+    if (m.w <= availW && m.h <= availH) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  if (best === 0) return hideIfTooSmall ? 0 : min;
+  return best;
+}
+
+// ✅ SIG 경계 로드 (전국, 2개 파트 병합)
+async function loadSigBoundaryOnce() {
+  if (sigGeojsonRaw) return;
+  const results = await Promise.all(SIG_GEOJSON_PARTS.map(p => fetch(p).then(r => {
+    if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
+    return r.json();
+  })));
+  const merged = { type: "FeatureCollection", features: [] };
+  for (const fc of results) {
+    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
+      merged.features.push(...fc.features);
+    }
+  }
+  sigGeojsonRaw = merged;
+  sigPrepared = _prepareFeatureBBoxes(sigGeojsonRaw);
+}
+
+// ✅ 일반시 하위 구인데 원본 sgg_nm에 시 이름이 빠진 경우(청주 서원구 등) 시명을 앞에 붙인다.
+// (수원/성남/천안 등은 원본에 이미 시명이 포함돼 있어 대상 아님)
+const CITY_PREFIX_NAME = {
+  '4119': '부천시', // 원미·소사·오정구
+  '4128': '고양시', // 덕양·일산동·일산서구
+  '4146': '용인시', // 처인·기흥·수지구
+  '4311': '청주시'  // 상당·서원·흥덕·청원구
+};
+function sigDisplayName(code5, rawName) {
+  const name = rawName || code5;
+  const cityName = CITY_PREFIX_NAME[String(code5).slice(0, 4)];
+  if (cityName && !name.startsWith(cityName)) return `${cityName} ${name}`;
+  return name;
+}
+
+// ✅ 앞마당 리스트용 이름: 특별시/광역시/특별자치시는 자치구 이름이 서로 겹치므로(중구·남구 등)
+// 짧은 시도명을 앞에 붙여 어느 시인지 구분한다. (도지역은 이름에 시/군이 있어 대상 아님)
+const SIDO_SHORT = {
+  '11': '서울', '26': '부산', '27': '대구', '28': '인천',
+  '29': '광주', '30': '대전', '31': '울산', '36': '세종'
+};
+function listDisplayName(code5) {
+  const base = code5ToName.get(code5) || code5;
+  const short = SIDO_SHORT[String(code5).slice(0, 2)];
+  if (short && !base.startsWith(short)) return `${short} ${base}`;
+  return base;
+}
+
+// ✅ 로드된 시군구 feature로 조회 맵 구성 (5자리 → 이름/feature)
+function buildCode5Indexes() {
+  code5ToName = new Map();
+  code5ToFeature = new Map();
+  for (const f of sigPrepared) {
+    const code5 = String(f.properties?.sgg_cd ?? "");
+    if (!code5) continue;
+    code5ToName.set(code5, sigDisplayName(code5, f.properties?.sgg_nm));
+    code5ToFeature.set(code5, f);
+  }
+}
+
+// 마우스 호버 시 강조할 테두리 스타일
+const HL_STROKE = '#ff2d55';
+const HL_WEIGHT = 3.5;
+
+function drawSigFeaturePolygons(f, color, targetArray) {
+  const code5 = String(f.properties?.sgg_cd ?? "");
+  const base = {
+    strokeColor: color ? color.stroke : "#666666",
+    strokeOpacity: 0.9,
+    strokeWeight: 1.5
+  };
+  const polys = (f.geometry.type === "MultiPolygon") ? f.geometry.coordinates : [f.geometry.coordinates];
+  polys.forEach(poly => {
+    const ring = poly[0];
+    const path = ring.map(c => new naver.maps.LatLng(c[1], c[0]));
+    const polygon = new naver.maps.Polygon({
+      map,
+      paths: path,
+      strokeColor: base.strokeColor,
+      strokeOpacity: base.strokeOpacity,
+      strokeWeight: base.strokeWeight,
+      fillColor: color ? color.fill : "#000000",
+      fillOpacity: color ? 0.5 : 0.02, // 앞마당 외는 거의 투명하되 0이 아니어야 호버/클릭 감지됨
+      clickable: true
+    });
+    polygon.__code5 = code5;
+    polygon.__base = base;
+    attachSigPolygonEvents(polygon);
+    targetArray.push(polygon);
+  });
+}
+
+// 같은 시군구(code5)의 모든 링에 강조 테두리 on/off
+function setCode5Highlight(code5, on) {
+  if (!code5) return;
+  for (const p of madangPolygons) if (p.__code5 === code5) applyHl(p, on);
+  for (const p of otherPolygons) if (p.__code5 === code5) applyHl(p, on);
+}
+function applyHl(p, on) {
+  if (on) p.setStyles({ strokeColor: HL_STROKE, strokeWeight: HL_WEIGHT, strokeOpacity: 1, zIndex: 1000 });
+  else p.setStyles({ strokeColor: p.__base.strokeColor, strokeWeight: p.__base.strokeWeight, strokeOpacity: p.__base.strokeOpacity, zIndex: 0 });
+}
+
+// 클릭 → 앞마당 등록/해제 토글
+function toggleMadang(code5) {
+  if (!editMode) return; // 읽기모드에서는 추가/해제 불가 (호버 강조는 유지)
+  if (!code5) return;
+  if (madangSet.has(code5)) madangSet.delete(code5);
+  else madangSet.add(code5);
+  applyMadangChange();
+}
+
+function attachSigPolygonEvents(polygon) {
+  naver.maps.Event.addListener(polygon, 'mouseover', () => setCode5Highlight(polygon.__code5, true));
+  naver.maps.Event.addListener(polygon, 'mouseout', () => setCode5Highlight(polygon.__code5, false));
+  naver.maps.Event.addListener(polygon, 'click', () => toggleMadang(polygon.__code5));
+}
+
+function addSigLabelForFeature(f, isMadang, targetArray) {
+  const code5 = String(f.properties?.sgg_cd ?? "");
+  const name = sigDisplayName(code5, f.properties?.sgg_nm);
+  if (!name) return;
+  const fs = _label_calcFitFontSize({
+    bbox: f.bbox,
+    text: name,
+    map,
+    paddingPx: 6,
+    min: 9,
+    max: 18,
+    hideIfTooSmall: true
+  });
+  if (fs <= 0) return;
+
+  const latlng = getLabelLatLngByPolylabel(f.geometry, f.bbox);
+  const color = isMadang ? "#111" : "#333";
+  const marker = new naver.maps.Marker({
+    position: latlng,
+    map,
+    clickable: false,
+    zIndex: 999998,
+    icon: {
+      content: `<div class="sig-label" style="font-size:${fs}px; color:${color};">${name}</div>`,
+      anchor: new naver.maps.Point(0, 0)
+    }
+  });
+  targetArray.push(marker);
+}
+
+// ✅ 앞마당 폴리곤: 좌표(paths)는 지도가 줌/팬에 맞춰 그려주므로 앞마당 집합이 바뀔 때만 다시 그림.
+function redrawMadangPolygons() {
+  madangPolygons.forEach(p => { try { p.setMap(null); } catch (e) {} });
+  madangPolygons = [];
+  for (const code5 of madangSet) {
+    const f = code5ToFeature.get(code5);
+    if (!f) continue;
+    drawSigFeaturePolygons(f, getMadangColor(code5), madangPolygons);
+  }
+}
+
+// 앞마당 라벨은 줌에 따라 폰트 크기가 바뀌므로 idle/zoom마다 다시 계산
+function redrawMadangLabels() {
+  madangLabels.forEach(m => { try { m.setMap(null); } catch (e) {} });
+  madangLabels = [];
+  if (!map) return;
+  const bounds = map.getBounds();
+  for (const code5 of madangSet) {
+    const f = code5ToFeature.get(code5);
+    if (!f) continue;
+    if (bounds && !bboxIntersects(bounds, f.bbox)) continue;
+    addSigLabelForFeature(f, true, madangLabels);
+  }
+}
+
+// ✅ 앞마당 외 지역: OTHER_BOUNDARY_MIN_ZOOM 이상으로 확대했을 때만, 뷰포트에 걸치는 것만 그림
+function redrawOtherSig() {
+  otherPolygons.forEach(p => { try { p.setMap(null); } catch (e) {} });
+  otherPolygons = [];
+  otherLabels.forEach(m => { try { m.setMap(null); } catch (e) {} });
+  otherLabels = [];
+  if (!map || !sigPrepared) return;
+  // 읽기모드는 기본적으로 앞마당만, 단 "모든 경계 표시" 체크 시 전체 표시. 수정모드는 항상 전체.
+  if (!editMode && !showAllBoundaries) return;
+  if (map.getZoom() < OTHER_BOUNDARY_MIN_ZOOM) return;
+
+  const bounds = map.getBounds();
+  if (!bounds) return;
+
+  for (const f of sigPrepared) {
+    const code5 = String(f.properties?.sgg_cd ?? "");
+    if (madangSet.has(code5)) continue; // 앞마당은 별도 처리
+    if (!bboxIntersects(bounds, f.bbox)) continue;
+    drawSigFeaturePolygons(f, null, otherPolygons);
+    addSigLabelForFeature(f, false, otherLabels);
+  }
+}
+
+function scheduleSigRedraw() {
+  if (sigRedrawTimer) clearTimeout(sigRedrawTimer);
+  sigRedrawTimer = setTimeout(() => {
+    try {
+      redrawMadangLabels();
+      redrawOtherSig();
+    } catch (e) { console.error("시군구 갱신 실패:", e); }
+  }, 120);
+}
+
+// ✅ 앞마당 집합이 바뀔 때 호출: 지도/라벨/리스트 갱신 + 로컬스토리지에 즉시 저장
+function applyMadangChange() {
+  redrawMadangPolygons();
+  redrawMadangLabels();
+  redrawOtherSig();
+  renderMadangList();
+  refreshSigunguChecks();
+  saveMadang(); // 선택/해제 즉시 저장
+}
+
+function saveMadang() {
+  try {
+    localStorage.setItem(MADANG_STORAGE_KEY, JSON.stringify([...madangSet]));
+    return true;
+  } catch (e) { console.error('앞마당 저장 실패:', e); return false; }
+}
+
+// ✅ 앞마당 전체가 한눈에 보이도록 초기 뷰를 bbox 합집합에 맞춤
+function fitBoundsToMadang() {
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  for (const code5 of madangSet) {
+    const f = code5ToFeature.get(code5);
+    if (!f) continue;
+    const [bMinLng, bMinLat, bMaxLng, bMaxLat] = f.bbox;
+    if (bMinLng < minLng) minLng = bMinLng;
+    if (bMinLat < minLat) minLat = bMinLat;
+    if (bMaxLng > maxLng) maxLng = bMaxLng;
+    if (bMaxLat > maxLat) maxLat = bMaxLat;
+  }
+  if (!isFinite(minLng)) return;
+  const bounds = new naver.maps.LatLngBounds(
+    new naver.maps.LatLng(minLat, minLng),
+    new naver.maps.LatLng(maxLat, maxLng)
+  );
+  map.fitBounds(bounds);
+}
+
+// ================= UI (시도/시군구 선택 + 앞마당 리스트) =================
+
+function setupModeSwitch() {
+  const cb = document.getElementById('mode-toggle');
+  const text = document.getElementById('mode-text');
+  const panel = document.getElementById('panel');
+  const allCb = document.getElementById('all-boundary-cb');
+  const allLabel = document.getElementById('all-boundary-label');
+  const apply = () => {
+    editMode = cb.checked;
+    text.textContent = editMode ? '수정모드' : '읽기모드';
+    panel.classList.toggle('read-mode', !editMode);
+    // "모든 경계 표시"는 읽기모드에서만 활성화 (수정모드는 이미 전체 표시)
+    allCb.disabled = editMode;
+    allLabel.classList.toggle('disabled', editMode);
+    redrawOtherSig(); // 모드 전환 시 앞마당 외 경계 표시/숨김 반영
+  };
+  cb.addEventListener('change', apply);
+  apply(); // 초기 상태(읽기모드) 반영
+}
+
+function setupAllBoundaryToggle() {
+  const cb = document.getElementById('all-boundary-cb');
+  cb.addEventListener('change', () => {
+    showAllBoundaries = cb.checked;
+    redrawOtherSig();
+  });
+}
+
+// ✅ 백업: 현재 앞마당을 JSON 파일로 내려받기
+function exportMadang() {
+  const data = { type: 'madang-backup', version: 1, exportedAt: new Date().toISOString(), codes: [...madangSet] };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const p2 = n => String(n).padStart(2, '0');
+  const d = new Date();
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `[루시퍼홍]앞마당지도_백업_${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// ✅ 복원: 업로드한 JSON 파일 → 앞마당 교체 → 로컬스토리지 저장
+function importMadangFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(reader.result);
+      const codes = Array.isArray(parsed) ? parsed
+        : (parsed && Array.isArray(parsed.codes) ? parsed.codes : null);
+      if (!codes) throw new Error('형식 오류: 코드 배열(codes)을 찾을 수 없습니다.');
+      // 유효한 5자리 코드 & 로드된 시군구에 존재하는 것만 채택
+      const valid = [...new Set(codes.map(String))].filter(c => /^\d{5}$/.test(c) && code5ToFeature.has(c));
+      if (!confirm(`백업 파일에서 ${valid.length}개 시군구를 불러옵니다.\n현재 앞마당을 이 내용으로 교체할까요?`)) return;
+      madangSet.clear();
+      valid.forEach(c => madangSet.add(c));
+      applyMadangChange(); // 지도/라벨/리스트 갱신 + 로컬스토리지 저장
+      fitBoundsToMadang();
+      alert(`복원 완료: 앞마당 ${valid.length}개`);
+    } catch (e) {
+      alert('복원 실패: ' + (e && e.message || e));
+    }
+  };
+  reader.readAsText(file);
+}
+
+function setupBackupButtons() {
+  document.getElementById('export-btn').addEventListener('click', exportMadang);
+  const fileInput = document.getElementById('import-file');
+  document.getElementById('import-btn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files[0]) importMadangFromFile(fileInput.files[0]);
+    fileInput.value = ''; // 같은 파일 다시 선택 가능하도록 초기화
+  });
+}
+
+// ✅ 앞마당 전체 삭제 (수정모드에서만 버튼 표시)
+function setupClearAllButton() {
+  document.getElementById('clear-all-btn').addEventListener('click', () => {
+    if (!editMode) return;
+    if (madangSet.size === 0) return;
+    if (!confirm(`현재 앞마당 ${madangSet.size}개를 모두 삭제할까요?`)) return;
+    madangSet.clear();
+    applyMadangChange(); // 지도/리스트 갱신 + 로컬스토리지 저장
+  });
+}
+
+function populateSidoSelect() {
+  const sel = document.getElementById('sido-select');
+  const present = new Set();
+  for (const code5 of code5ToFeature.keys()) present.add(code5.slice(0, 2));
+  const sorted = [...present].sort();
+  for (const sido of sorted) {
+    const opt = document.createElement('option');
+    opt.value = sido;
+    opt.textContent = SIDO_NAMES[sido] || sido;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => renderSigunguChecks(sel.value));
+}
+
+// 선택한 시도의 시군구 체크박스 목록
+function renderSigunguChecks(sido) {
+  const box = document.getElementById('sigungu-list');
+  box.innerHTML = '';
+  if (!sido) return;
+  const items = [];
+  for (const [code5, name] of code5ToName) {
+    if (code5.slice(0, 2) === sido) items.push({ code5, name });
+  }
+  items.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
+  for (const { code5, name } of items) {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.dataset.code = code5;
+    cb.checked = madangSet.has(code5);
+    cb.addEventListener('change', () => {
+      if (!editMode) { cb.checked = madangSet.has(code5); return; } // 읽기모드: 편집 불가
+      if (cb.checked) madangSet.add(code5);
+      else madangSet.delete(code5);
+      applyMadangChange();
+    });
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(' ' + name));
+    box.appendChild(label);
+  }
+}
+
+// 시군구 목록의 체크 상태를 현재 앞마당 집합과 동기화 (리스트에서 삭제했을 때 반영)
+function refreshSigunguChecks() {
+  document.querySelectorAll('#sigungu-list input[type=checkbox]').forEach(cb => {
+    cb.checked = madangSet.has(cb.dataset.code);
+  });
+}
+
+// 현재 앞마당 리스트 (급지 순 → 이름 순, 색 스와치 + 이름(급지) + 삭제)
+function renderMadangList() {
+  const box = document.getElementById('madang-list');
+  const countEl = document.getElementById('madang-count');
+  box.innerHTML = '';
+  const codes = [...madangSet].sort((a, b) => {
+    const ta = getSortKey(a), tb = getSortKey(b);
+    if (ta !== tb) return ta - tb;
+    return (code5ToName.get(a) || a).localeCompare(code5ToName.get(b) || b, 'ko');
+  });
+  countEl.textContent = String(codes.length);
+  if (codes.length === 0) {
+    box.innerHTML = '<div class="empty-hint">선택된 앞마당이 없습니다.</div>';
+    return;
+  }
+  for (const code5 of codes) {
+    const color = getMadangColor(code5);
+    const row = document.createElement('div');
+    row.className = 'madang-row';
+    const sw = document.createElement('span');
+    sw.className = 'madang-swatch';
+    if (color) { sw.style.background = color.fill; sw.style.borderColor = color.stroke; }
+    const nm = document.createElement('span');
+    nm.className = 'madang-name';
+    nm.textContent = `${listDisplayName(code5)} (${getGroupLabel(code5)})`;
+    const del = document.createElement('button');
+    del.className = 'madang-del';
+    del.textContent = '삭제';
+    del.addEventListener('click', () => {
+      if (!editMode) return; // 읽기모드: 삭제 불가 (버튼도 숨김)
+      madangSet.delete(code5);
+      applyMadangChange();
+    });
+    row.append(sw, nm, del);
+    box.appendChild(row);
+  }
+}
+
+// ✅ 범례 (급지 6단계 + 지방 2계열)
+function buildLegend() {
+  const legend = document.createElement('div');
+  legend.id = 'tier-legend';
+  const items = [1, 2, 3, 4, 5, 6].map(t => TIER_STYLE[t]);
+  items.push({ fill: `hsl(${REGION_METRO.hue}, ${REGION_METRO.sat}%, 62%)`, stroke: `hsl(${REGION_METRO.hue}, ${REGION_METRO.sat}%, 36%)`, label: REGION_METRO.label });
+  items.push({ fill: `hsl(${REGION_PROV.hue}, ${REGION_PROV.sat}%, 62%)`,  stroke: `hsl(${REGION_PROV.hue}, ${REGION_PROV.sat}%, 36%)`,  label: REGION_PROV.label });
+  legend.innerHTML = items.map(s =>
+    `<div class="tier-legend-row"><span class="tier-legend-swatch" style="background:${s.fill};border-color:${s.stroke}"></span>${s.label}</div>`
+  ).join('');
+  document.body.appendChild(legend);
+}
+
+(async function init() {
+  await loadSigBoundaryOnce();
+  buildCode5Indexes();
+  populateSidoSelect();
+  setupModeSwitch();
+  setupAllBoundaryToggle();
+  setupBackupButtons();
+  setupClearAllButton();
+  buildLegend();
+  renderMadangList();
+  redrawMadangPolygons();
+  naver.maps.Event.addListener(map, "idle", scheduleSigRedraw);
+  naver.maps.Event.addListener(map, "zoom_changed", scheduleSigRedraw);
+  fitBoundsToMadang();
+  redrawMadangLabels();
+  redrawOtherSig();
+})();
+</script>
+</body>
+</html>
