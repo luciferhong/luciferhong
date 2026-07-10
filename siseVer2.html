@@ -1572,40 +1572,86 @@ let activeSchoolDetailButtonEl = null;
 let activeSchoolDetailButtonId = null;
 
 let __schoolZoneKeepMap = new Map();
-const __SCHOOL_ZONE_COLORS = [
-  "#E63946", // 빨강   (0°)
-  "#2A9D8F", // 청록   (170°)
-  "#F4A261", // 주황   (28°)
-  "#9B5DE5", // 보라   (270°)
-  "#38B000", // 초록   (110°)
-  "#F72585", // 핑크   (320°)
-  "#00BCD4", // 시안   (187°)
-  "#FFBE0B", // 노랑   (47°)
-  "#82B300", // 연두   (77°)
-  "#3A86FF", // 파랑   (220°)
-  "#FB5607", // 주홍   (20°)
-  "#06D6A0", // 민트   (158°)
-  "#FF006E", // 자홍   (334°)
-  "#A0522D", // 갈색   (earth)
-  "#118AB2", // 하늘   (200°)
-  "#FF9F1C", // 진주황 (38°)
-  "#CCBB00", // 황록   (55°)
-  "#C77DFF", // 연보라 (276°)
-  "#457B9D", // 파랑2  (205°)
-  "#8B6914", // 황갈색 (42°, dark)
-];
-let __schoolZoneKeepColorIdx = 0;
-
+let __schoolZoneKeepColors = new Map();
 function __isSchoolZoneKeepMode() {
   return document.getElementById("toggleSchoolZoneKeep")?.checked ?? false;
+}
+
+// FNV-1a + murmur3 fmix32 avalanche: 인접한 숫자 id라도 완전히 다른 해시값으로 퍼뜨려서
+// 지리적으로 가까운(id가 연속인) 학교끼리 시작 색상이 몰리지 않도록 함
+function __hashStringToUint32(str) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
+function __hslToHex(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else { r = c; g = 0; b = x; }
+  const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function __hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return [parseInt(h.substring(0, 2), 16), parseInt(h.substring(2, 4), 16), parseInt(h.substring(4, 6), 16)];
+}
+
+function __colorDistance(hexA, hexB) {
+  const [r1, g1, b1] = __hexToRgb(hexA);
+  const [r2, g2, b2] = __hexToRgb(hexB);
+  return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2);
+}
+
+const __SCHOOL_ZONE_SAT = 0.68;
+const __SCHOOL_ZONE_LIGHT = 0.48;
+const __SCHOOL_ZONE_HUE_STEP = 5; // 색상환 탐색 해상도(도)
+
+// 20색 팔레트로 제한하지 않고 색상환(hue) 전체에서 탐색한다.
+// 현재 화면에 떠 있는 색들과 가장 멀리 떨어진(육안 구분이 잘 되는) hue를 고르며,
+// 아직 떠 있는 구역이 없으면 학교별 고정 해시 hue로 시작하고, 동점일 때는 그 hue부터
+// 시작하는 순환 탐색을 써서 같은 활성 색 조합이면 항상 같은 색이 나오도록 결정성을 유지한다.
+function __pickSchoolZoneColor(schoolId) {
+  const baseHue = __hashStringToUint32(String(schoolId)) % 360;
+  const activeColors = Array.from(__schoolZoneKeepColors.values());
+  if (activeColors.length === 0) return __hslToHex(baseHue, __SCHOOL_ZONE_SAT, __SCHOOL_ZONE_LIGHT);
+
+  let bestHue = baseHue;
+  let bestMinDist = -1;
+  for (let i = 0; i < 360; i += __SCHOOL_ZONE_HUE_STEP) {
+    const hue = (baseHue + i) % 360;
+    const candidate = __hslToHex(hue, __SCHOOL_ZONE_SAT, __SCHOOL_ZONE_LIGHT);
+    const minDist = Math.min(...activeColors.map((c) => __colorDistance(candidate, c)));
+    if (minDist > bestMinDist) {
+      bestMinDist = minDist;
+      bestHue = hue;
+    }
+  }
+  return __hslToHex(bestHue, __SCHOOL_ZONE_SAT, __SCHOOL_ZONE_LIGHT);
 }
 
 function __addSchoolZoneKeep(schoolId) {
   const id = String(schoolId);
   const vertexLists = window.schoolZoneMap?.get(id);
   if (!vertexLists || !vertexLists.length) return;
-  const color = __SCHOOL_ZONE_COLORS[__schoolZoneKeepColorIdx % __SCHOOL_ZONE_COLORS.length];
-  __schoolZoneKeepColorIdx++;
+  const color = __pickSchoolZoneColor(id);
   const polygons = [];
   vertexLists.forEach((ring) => {
     const path = (ring || []).map(([lat, lng]) => new naver.maps.LatLng(lat, lng));
@@ -1623,6 +1669,7 @@ function __addSchoolZoneKeep(schoolId) {
     polygons.push(poly);
   });
   __schoolZoneKeepMap.set(id, polygons);
+  __schoolZoneKeepColors.set(id, color);
 }
 
 function clearActiveSchoolZone() {
@@ -1825,6 +1872,7 @@ function toggleSchoolZoneBySchool(school) {
         if (__schoolZoneKeepMap.has(id)) {
             __schoolZoneKeepMap.get(id).forEach(p => { try { p.setMap(null); } catch (e) {} });
             __schoolZoneKeepMap.delete(id);
+            __schoolZoneKeepColors.delete(id);
         } else {
             __addSchoolZoneKeep(id);
         }
@@ -1925,7 +1973,7 @@ async function loadSchools() {
           polys.forEach((p) => { try { p.setMap(null); } catch (e) {} });
         });
         __schoolZoneKeepMap.clear();
-        __schoolZoneKeepColorIdx = 0;
+        __schoolZoneKeepColors.clear();
       }
     });
 
