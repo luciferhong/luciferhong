@@ -1890,6 +1890,19 @@
         <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
         <button onclick="deleteMemoDB()">🗑️ 단지메모 일괄 삭제</button>
         <button onclick="deletePhotoMemoDB()">📸 포토메모 일괄 삭제</button>
+        <button onclick="__openDriveDeleteUI()">☁️🗑️ 구글드라이브 데이터 삭제</button>
+        <span id="driveDeletePanel" style="display:none;align-items:center;gap:4px;">
+          <select id="driveDeleteSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
+          <span id="driveDeleteSigunguWrapper" style="position:relative;">
+            <button id="driveDeleteSigunguToggle" type="button" disabled
+                    style="height:26px;font-size:12px;" onclick="__toggleDriveDeleteSigunguList()">시군구 선택 ▲</button>
+            <div id="driveDeleteSigunguList"
+                 style="display:none;position:absolute;bottom:28px;left:0;z-index:50;background:#fff;border:1px solid #cbd5e1;
+                        border-radius:8px;padding:10px;max-height:70vh;overflow-y:auto;min-width:260px;font-size:16px;color:#1e293b;
+                        box-shadow:0 6px 18px rgba(0,0,0,0.18);"></div>
+          </span>
+          <button onclick="document.getElementById('driveDeletePanel').style.display='none'" style="font-size:11px;padding:3px 5px;">닫기</button>
+        </span>
 
         <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
         <input type="file" id="photoMemoCameraInput" accept="image/*" capture="environment" style="display: none" />
@@ -1930,9 +1943,7 @@
     <div id="stopTrackingButton" style="display: none" title="위치 추적 중지">🛑</div>
     <!-- ✅ 위치 추적 중지 버튼 -->
     <span id="routeDrawHelp" style="font-size: 14px; color: gray">
-      백스페이스 : 직전 취소<br />
-      ESC, 마우스 우클릭, [경로 그리기 완료] 버튼 클릭 : 그리기 종료<br />
-      모바일에서도 경로그리기, 다운로드 가능합니다
+    
     </span>
 
     <div id="apartmentInfo" style="border: 1px solid black; padding: 10px; display: none">
@@ -10951,6 +10962,38 @@ const originalBase64 = event.target.result;
         return null;
       }
 
+      // ── Drive 파일/폴더 삭제 (404 = 이미 없음 → 성공 취급, 폴더 삭제 시 하위 파일 포함) ──
+      async function __driveDeleteFile(fileId) {
+        if (!fileId) return false;
+        try {
+          await gapi.client.drive.files.delete({ fileId });
+          return true;
+        } catch (e) {
+          const code = e?.status ?? e?.result?.error?.code;
+          if (code === 404) return true;
+          throw e;
+        }
+      }
+
+      // ── 특정 parent 하위에서 sgg5 prefix 하위 폴더 찾기 (생성하지 않음 — 삭제용) ──
+      async function __driveFindSggFolder(parentId, sgg5) {
+        if (!parentId) return null;
+        let pageToken = null;
+        do {
+          const resp = await gapi.client.drive.files.list({
+            q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+            fields: 'nextPageToken,files(id,name)',
+            pageSize: 1000,
+            pageToken: pageToken || undefined,
+          });
+          for (const f of (resp.result.files || [])) {
+            if (__parseSgg5Prefix(f.name) === String(sgg5)) return f.id;
+          }
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        return null;
+      }
+
       // ── Drive storageQuota 조회 ──
       async function __driveGetStorageQuota() {
         const resp = await gapi.client.drive.about.get({ fields: 'storageQuota' });
@@ -12505,7 +12548,7 @@ const originalBase64 = event.target.result;
             const tDel = performance.now();
             for (const t of deleteTasks) {
               try {
-                await gapi.client.drive.files.delete({ fileId: t.fid });
+                await __driveDeleteFile(t.fid);
                 if (t.kind === 'apt') driveAptNameMap.delete(t.fname);
                 else if (t.kind === 'photo') drivePhotoNameMap.delete(t.fname);
               }
@@ -13119,6 +13162,74 @@ const originalBase64 = event.target.result;
         return [...sgg5Set].sort();
       }
 
+      // ── Drive sgg 폴더의 sgg5별 JSON 파일 상세 목록 (삭제 UI용) ──
+      // 반환: Map(sgg5 → {name, jsonFiles:[{id,name}]}) — 동명 중복 파일도 전부 수집
+      // 표시명: apt 인덱스 → 파일명 한글 토큰 → sgg5 코드 순 폴백
+      async function __getDriveSggEntries() {
+        const entries = new Map();
+        if (!window.__gdriveSggFolderId) return entries;
+        let pageToken = null;
+        do {
+          const params = {
+            q: `'${window.__gdriveSggFolderId}' in parents and trashed=false`,
+            fields: 'nextPageToken,files(id,name)',
+            pageSize: 1000,
+          };
+          if (pageToken) params.pageToken = pageToken;
+          const resp = await gapi.client.drive.files.list(params);
+          for (const f of (resp.result.files || [])) {
+            const m = f.name.match(/^(\d{5})(?:_(.*))?_(notes|photos|polygons)\.json$/);
+            if (!m) continue;
+            const sgg5 = m[1];
+            if (!entries.has(sgg5)) {
+              const name = __syncSigunguNameByCode5.get(sgg5)
+                || (m[2] ? m[2].split('_').pop() : '')
+                || sgg5;
+              entries.set(sgg5, { name, jsonFiles: [] });
+            }
+            entries.get(sgg5).jsonFiles.push({ id: f.id, name: f.name });
+          }
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        return entries;
+      }
+
+      // ── sgg5 하나의 Drive 데이터 전체 삭제 (3종 JSON + 이미지 폴더 2개) ──
+      // 드라이브 정리 전용 — 로컬 IDB는 건드리지 않으므로, 로컬 데이터를 가진 기기가
+      // 이후 이 지역을 동기화하면 다시 업로드된다 (실행 전 확인창에서 안내)
+      async function __driveDeleteSggData(sgg5, entry) {
+        const sName = entry?.name || __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        const parts = [];
+        // 이미지 폴더 먼저 삭제 — 중간에 끊겨도 sgg JSON이 남아 목록에서 재시도 가능
+        for (const [parentId, label] of [
+          [window.__gdriveAptImagesFolderId, '단지 이미지'],
+          [window.__gdrivePhotosFolderId, '포토 이미지'],
+        ]) {
+          const folderId = await __driveFindSggFolder(parentId, sgg5);
+          if (folderId) {
+            await __driveDeleteFile(folderId);
+            parts.push(`${label} 폴더`);
+          }
+        }
+        let jsonFiles = (entry?.jsonFiles || []).slice();
+        if (!jsonFiles.length) {
+          // 패널 오픈 시점 스냅샷이 비어 있으면 재조회 폴백
+          for (const type of ['notes', 'photos', 'polygons']) {
+            const fid = await __driveFindSggFileByPrefix(window.__gdriveSggFolderId, sgg5, type);
+            if (fid) jsonFiles.push({ id: fid, name: `${sgg5}_${type}.json` });
+          }
+        }
+        for (const f of jsonFiles) await __driveDeleteFile(f.id);
+        if (jsonFiles.length) parts.push(`메타 JSON ${jsonFiles.length}개`);
+        // 캐시 무효화 — stale fileId 참조 방지
+        for (const type of ['notes', 'photos', 'polygons']) {
+          if (window.__driveSggFileIds) delete window.__driveSggFileIds[`${sgg5}_${type}`];
+        }
+        window.__driveNameCacheMap?.delete(`${window.__gdriveAptImagesFolderId}:${sgg5}`);
+        window.__driveNameCacheMap?.delete(`${window.__gdrivePhotosFolderId}:${sgg5}`);
+        return { ok: true, name: sName, lines: [`✅ ${sName}: ${parts.length ? parts.join(', ') + ' 삭제' : '삭제할 데이터 없음'}`] };
+      }
+
       // ── 동기화 UI 열기 (데이터가 있는 sgg5만 표시 — memoBackup 패턴) ──
       // - 단지메모: aptId → __syncAptIndex로 sgg5 추출 (SIG 불필요, 가벼움)
       // - 포토메모: SIG 인덱스 필요 (포토 0개면 스킵, 로드 실패 시 단지만 사용)
@@ -13285,13 +13396,217 @@ const originalBase64 = event.target.result;
       }
 
       document.addEventListener('click', function (e) {
-        const wrapper = document.getElementById('driveSyncSigunguWrapper');
-        if (!wrapper) return;
-        if (!wrapper.contains(e.target)) {
-          const sgList = document.getElementById('driveSyncSigunguList');
+        for (const [wId, lId] of [
+          ['driveSyncSigunguWrapper', 'driveSyncSigunguList'],
+          ['driveDeleteSigunguWrapper', 'driveDeleteSigunguList'],
+        ]) {
+          const wrapper = document.getElementById(wId);
+          if (!wrapper || wrapper.contains(e.target)) continue;
+          const sgList = document.getElementById(lId);
           if (sgList) sgList.style.display = 'none';
         }
       });
+
+      // ── ☁️🗑️ 구글드라이브 데이터 삭제 UI — Drive에 저장된 지역만 표시 ──
+      async function __openDriveDeleteUI() {
+        const panel = document.getElementById('driveDeletePanel');
+        if (!panel) return;
+        if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+        if (!window.__gdriveReady) {
+          const overlay = document.getElementById('gdriveAuthOverlay');
+          if (overlay) overlay.style.display = 'flex';
+          __gdriveSignIn();
+          return;
+        }
+        if (window.__sggSyncBusy) {
+          alert(`⚠️ 다른 작업이 진행 중입니다 (${window.__sggSyncBusySgg || '?'}). 끝날 때까지 기다려주세요.`);
+          return;
+        }
+
+        __syncProgressShow('🗑️ Drive 지역 목록 불러오는 중...');
+        let entries = new Map();
+        try {
+          await __ensureDriveStructure();
+          try { await __loadAptIndexForSync(); } catch (_) {} // 표시명용 — 실패해도 파일명 폴백으로 진행
+          entries = await __getDriveSggEntries();
+        } catch (e) {
+          __syncProgressHide();
+          if (__isAuthError(e)) {
+            __handleAuthExpired({ silent: true });
+          } else {
+            window.hongbuDebugLog?.('ERR', '[driveDelete] 목록 조회 실패', e?.message || e);
+            alert(`❌ Drive 지역 목록 조회 실패: ${e?.message || e}`);
+          }
+          return;
+        }
+        __syncProgressHide();
+
+        if (entries.size === 0) { alert('드라이브에 저장된 지역이 없습니다.'); return; }
+
+        const sidoNameMap = new Map(Object.entries(__SYNC_SIDO_CODE_NAME_MAP));
+        const sggBySido = new Map(); // sidoCode2 → Map(sgg5 → entry)
+        for (const [sgg5, entry] of entries) {
+          const sc = sgg5.substring(0, 2);
+          if (!sggBySido.has(sc)) sggBySido.set(sc, new Map());
+          sggBySido.get(sc).set(sgg5, entry);
+        }
+
+        const sidoSel = document.getElementById('driveDeleteSido');
+        const sgList = document.getElementById('driveDeleteSigunguList');
+        const sgToggle = document.getElementById('driveDeleteSigunguToggle');
+        if (!sidoSel || !sgList || !sgToggle) return;
+
+        sidoSel.innerHTML = '<option value="">시도 선택</option>';
+        const sidoItems = [...sggBySido.keys()]
+          .map(sc => ({ value: sc, label: sidoNameMap.get(sc) || sc }))
+          .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+        for (const item of sidoItems) {
+          const opt = document.createElement('option');
+          opt.value = item.value; opt.textContent = item.label;
+          sidoSel.appendChild(opt);
+        }
+
+        window.__driveDeleteSelectedSgg5 = new Set();
+        window.__driveDeleteEntries = entries;
+        sgList.innerHTML = '';
+        sgList.style.display = 'none';
+        sgToggle.disabled = true;
+        _updateDriveDeleteSigunguDisplay();
+
+        sidoSel.onchange = function () {
+          const sel = sidoSel.value;
+          window.__driveDeleteSelectedSgg5 = new Set();
+          sgList.innerHTML = '';
+          sgList.style.display = 'none';
+          if (!sel || !sggBySido.has(sel)) { sgToggle.disabled = true; _updateDriveDeleteSigunguDisplay(); return; }
+          const items = Array.from(sggBySido.get(sel).entries())
+            .map(([sgg5, o]) => ({ value: sgg5, label: o.name }))
+            .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+
+          // "전체" 행 + 오른쪽 삭제 버튼
+          const itemCbs = [];
+          const allLabel = document.createElement('label');
+          allLabel.style.cssText = 'display:flex;align-items:center;white-space:nowrap;padding:8px 6px;cursor:pointer;border-bottom:1px solid #cbd5e1;margin-bottom:4px;font-weight:600;';
+          const allCb = document.createElement('input');
+          allCb.type = 'checkbox';
+          allCb.style.cssText = 'margin-right:8px;width:18px;height:18px;flex-shrink:0;';
+          allCb.addEventListener('change', function () {
+            const on = this.checked;
+            itemCbs.forEach((cb) => {
+              cb.checked = on;
+              if (on) window.__driveDeleteSelectedSgg5.add(cb.value);
+              else window.__driveDeleteSelectedSgg5.delete(cb.value);
+            });
+            _updateDriveDeleteSigunguDisplay();
+          });
+          allLabel.appendChild(allCb);
+          allLabel.appendChild(document.createTextNode(`전체 (${items.length})`));
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.textContent = '🗑️ 삭제';
+          delBtn.style.cssText = 'margin-left:auto;padding:3px 10px;font-size:13px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;flex-shrink:0;';
+          delBtn.onclick = function (e) {
+            // label 기본 동작(체크박스 토글)으로 번지지 않게 차단
+            e.preventDefault();
+            e.stopPropagation();
+            __driveDeleteExecuteSelected();
+          };
+          allLabel.appendChild(delBtn);
+          sgList.appendChild(allLabel);
+
+          for (const item of items) {
+            const label = document.createElement('label');
+            label.style.cssText = 'display:flex;align-items:center;white-space:nowrap;padding:8px 6px;cursor:pointer;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.value = item.value;
+            cb.style.cssText = 'margin-right:8px;width:18px;height:18px;flex-shrink:0;';
+            cb.addEventListener('change', function () {
+              if (this.checked) window.__driveDeleteSelectedSgg5.add(item.value);
+              else window.__driveDeleteSelectedSgg5.delete(item.value);
+              allCb.checked = itemCbs.every((c) => c.checked);
+              _updateDriveDeleteSigunguDisplay();
+            });
+            itemCbs.push(cb);
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(item.label));
+            sgList.appendChild(label);
+          }
+          sgToggle.disabled = false;
+          _updateDriveDeleteSigunguDisplay();
+        };
+
+        panel.style.display = 'inline-flex';
+      }
+
+      function __toggleDriveDeleteSigunguList() {
+        const sgList = document.getElementById('driveDeleteSigunguList');
+        if (!sgList) return;
+        sgList.style.display = sgList.style.display === 'none' ? 'block' : 'none';
+      }
+
+      function _updateDriveDeleteSigunguDisplay() {
+        const sgToggle = document.getElementById('driveDeleteSigunguToggle');
+        if (!sgToggle) return;
+        const n = window.__driveDeleteSelectedSgg5?.size || 0;
+        sgToggle.textContent = (n > 0 ? `${n}개 선택` : '시군구 선택') + ' ▲';
+      }
+
+      // ── 선택 시군구 Drive 데이터 순차 삭제 ──
+      async function __driveDeleteExecuteSelected() {
+        const list = [...(window.__driveDeleteSelectedSgg5 || [])];
+        if (list.length === 0) { alert('시군구를 선택하세요'); return; }
+        if (window.__sggSyncBusy) {
+          alert(`⚠️ 다른 작업이 진행 중입니다 (${window.__sggSyncBusySgg || '?'}). 끝날 때까지 기다려주세요.`);
+          return;
+        }
+        const entries = window.__driveDeleteEntries || new Map();
+        const names = list.map(sgg5 => entries.get(sgg5)?.name || sgg5);
+        const ok = await __showConfirmModal(
+          `🗑️ ${list.length}개 지역 Drive 데이터 삭제`,
+          `<div style="margin-bottom:10px;">아래 지역의 <b>드라이브 데이터 전체</b>(단지메모·포토메모·영역 JSON + 이미지 폴더)를 삭제합니다.<br>${names.join(', ')}</div>
+           <div style="color:#dc2626;font-weight:600;">⚠️ 구글드라이브에서만 삭제됩니다.<br>현재 기기의 데이터는 그대로 남아 있으며,<br>이후 해당 지역을 동기화하면 다시 업로드될 수 있습니다.</div>`,
+          { okLabel: '삭제', cancelLabel: '취소' }
+        );
+        if (!ok) return;
+
+        // 동기화와 동일한 busy 플래그 재사용 → 삭제↔동기화 상호 배제
+        window.__sggSyncBusy = true;
+        window.__sggSyncBusySgg = 'Drive 삭제';
+        const results = [];
+        try {
+          for (let i = 0; i < list.length; i++) {
+            __syncProgressShow(`🗑️ ${names[i]} Drive 데이터 삭제 중... (${i + 1}/${list.length})`);
+            try {
+              results.push(await __driveDeleteSggData(list[i], entries.get(list[i])));
+            } catch (e) {
+              if (__isAuthError(e)) {
+                __handleAuthExpired({ silent: true });
+                results.push({ ok: false, name: names[i], lines: [`❌ ${names[i]} 실패: 로그인 만료`] });
+                break;
+              }
+              results.push({ ok: false, name: names[i], lines: [`❌ ${names[i]} 실패: ${__formatSyncErr(e)}`] });
+            }
+          }
+        } finally {
+          window.__sggSyncBusy = false;
+          window.__sggSyncBusySgg = null;
+          __syncProgressHide();
+        }
+
+        const okCount = results.filter(r => r.ok).length;
+        const failCount = results.length - okCount;
+        const summary = [
+          failCount === 0 ? `✅ ${results.length}개 지역 Drive 삭제 완료` : `⚠️ ${results.length}개 지역 중 ${failCount}개 실패`,
+          '',
+          ...results.map(r => r.lines.join('\n')),
+        ];
+        alert(summary.join('\n\n'));
+
+        // 목록 갱신 — 닫고 재오픈하면 live 재조회로 삭제된 시군구/빈 시도가 자동 제외됨
+        const panel = document.getElementById('driveDeletePanel');
+        if (panel) panel.style.display = 'none';
+        await __openDriveDeleteUI();
+      }
 
       // ── Drive 동기화 패널 초기화 (로그인 시 호출 — 목록은 미리 로드하지 않음) ──
       function __initDriveSyncPanel() {
@@ -14581,6 +14896,20 @@ const originalBase64 = event.target.result;
               }
             }
 
+            // 백업 원본의 동기화 메타(updatedAt/deletedAt/sgg5) 보존.
+            // 유실되면 드라이브 LWW 병합에서 updatedAt=0으로 취급되어 복원본이 항상 밀림.
+            function toNoteRecord(r) {
+              const rec = {
+                id: String(r.id),
+                memo: r.memo ? String(r.memo) : "",
+                images: Array.isArray(r.images) ? r.images : [],
+                updatedAt: Number(r.updatedAt) || Number(r.createdAt) || Date.now(),
+                deletedAt: typeof r.deletedAt === "number" ? r.deletedAt : null,
+              };
+              if (r.sgg5) rec.sgg5 = String(r.sgg5);
+              return rec;
+            }
+
             // fetch() 기반 변환 - atob 방식 대비 메모리 복사 없음
             async function dataUrlToBlob(dataUrl) {
               try {
@@ -14623,8 +14952,13 @@ const originalBase64 = event.target.result;
                 id: String(r.id),
                 lat,
                 lng,
+                sgg5: r.sgg5 ? String(r.sgg5) : "",
                 createdAt: Number(r.createdAt) || Date.now(),
+                addedAt: Number(r.addedAt) || Number(r.createdAt) || Date.now(),
                 note: r.note ? String(r.note) : "",
+                // 백업 원본의 동기화 메타 보존 — 유실되면 LWW 병합에서 updatedAt=0으로 항상 밀림
+                updatedAt: Number(r.updatedAt) || Number(r.createdAt) || Date.now(),
+                deletedAt: typeof r.deletedAt === "number" ? r.deletedAt : null,
                 imageBlob: imageBlob instanceof Blob ? imageBlob : thumbBlob,
                 thumbBlob: thumbBlob instanceof Blob ? thumbBlob : imageBlob,
               };
@@ -14683,11 +15017,7 @@ const originalBase64 = event.target.result;
                 // 구형 포맷: 단지 메모 배열
                 const notes = parsed
                   .filter((r) => r && typeof r === "object" && r.id != null)
-                  .map((r) => ({
-                    id: String(r.id),
-                    memo: r.memo ? String(r.memo) : "",
-                    images: Array.isArray(r.images) ? r.images : [],
-                  }));
+                  .map(toNoteRecord);
                 await saveNotesBatch(notes);
                 if (notes.length) hasAnyData = true;
               } else if (parsed && typeof parsed === "object") {
@@ -14696,11 +15026,7 @@ const originalBase64 = event.target.result;
                     hongbuDebugLog("INFO", `🗃️ 단지 메모 ${parsed.apartmentNotes.length}개 즉시 저장`);
                     const notes = parsed.apartmentNotes
                       .filter((r) => r && typeof r === "object" && r.id != null)
-                      .map((r) => ({
-                        id: String(r.id),
-                        memo: r.memo ? String(r.memo) : "",
-                        images: Array.isArray(r.images) ? r.images : [],
-                      }));
+                      .map(toNoteRecord);
                     await saveNotesBatch(notes);
                     parsed.apartmentNotes = null; // base64 즉시 해제
                     if (notes.length) hasAnyData = true;
@@ -14716,13 +15042,7 @@ const originalBase64 = event.target.result;
                 } else {
                   // 단일 레코드
                   if (parsed.id != null) {
-                    await saveNotesBatch([
-                      {
-                        id: String(parsed.id),
-                        memo: parsed.memo ? String(parsed.memo) : "",
-                        images: Array.isArray(parsed.images) ? parsed.images : [],
-                      },
-                    ]);
+                    await saveNotesBatch([toNoteRecord(parsed)]);
                     hasAnyData = true;
                   }
                 }
