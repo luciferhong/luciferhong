@@ -2312,6 +2312,15 @@
           });
 
           naver.maps.Event.addListener(this.map, "rightclick", () => {
+            // ✅ 면적 그리기 모드 중 우클릭은 "면적 그리기 종료" 전용 —
+            //    경로 완료(completePolyline: 출발/도착/1km 마커 생성)를 함께 실행하지 않는다
+            const drawBtn = document.getElementById("drawPolygonBtn");
+            if (drawBtn && drawBtn.classList.contains("is-drawing")) return;
+            // 같은 우클릭 이벤트에서 뒤이어 실행되는 다른 핸들러(길찾기 등)가
+            // "방금 경로 완료 우클릭"임을 알 수 있도록 시각 기록 (completePolyline이 currentPolyline을 비우기 때문)
+            if (this.currentPolyline && this.currentPath.length > 1) {
+              window.__pathJustCompletedAt = Date.now();
+            }
             this.completePolyline();
           });
         }
@@ -7457,6 +7466,11 @@ const originalBase64 = event.target.result;
         naver.maps.Event.addListener(window.map, "mousedown", function (e) {
           if (e.domEvent.button !== 2) return; // ✅ 우클릭이 아닐 경우 무시
 
+          // ✅ 경로/면적 그리기 중 우클릭은 "그리기 종료" 전용 — 반경 원 생성/제거 어느 쪽도 하지 않는다
+          const __drawBtn = document.getElementById("drawPolygonBtn");
+          if (__drawBtn && __drawBtn.classList.contains("is-drawing")) return;
+          if (window.mapHandler && window.mapHandler.currentPolyline) return;
+
           let clickedPosition = e.coord; // ✅ 우클릭한 위치의 좌표
           //console.log("📍 우클릭 위치:", clickedPosition);
 
@@ -9053,9 +9067,10 @@ const originalBase64 = event.target.result;
             const ownVerts = (window.__polyOwnVertices || []).slice();
             if (ownVerts.length >= 3) {
               try {
-                const polyVisible = document.getElementById("togglePolygonMemo")?.checked !== false;
+                // ✅ 그리기 완료 시 "면적그리기 보기"가 꺼져 있어도 강제로 켜서 바로 보여준다
+                __forcePolygonMemoVisible();
                 const polygon = new naver.maps.Polygon({
-                  map: polyVisible ? map : null,
+                  map: map,
                   paths: [ownVerts],
                   fillColor: "#00aa00",
                   fillOpacity: 0.25,
@@ -9185,10 +9200,10 @@ const originalBase64 = event.target.result;
 
           if (coords.length < 3) return;
 
-          // 표시 체크박스가 꺼져 있으면 신규 폴리곤도 즉시 숨긴다 (데이터는 저장)
-          const polyVisible = document.getElementById("togglePolygonMemo")?.checked !== false;
+          // ✅ 그리기 완료 시 "면적그리기 보기"가 꺼져 있어도 강제로 켜서 바로 보여준다
+          __forcePolygonMemoVisible();
           const polygon = new naver.maps.Polygon({
-            map: polyVisible ? map : null,
+            map: map,
             paths: [coords],
             fillColor: "#00aa00",
             fillOpacity: 0.25,
@@ -9208,6 +9223,18 @@ const originalBase64 = event.target.result;
         // 'drawing_added'(공식)와 'drawingComplete'(구버전 별칭) 둘 다 바인딩하고 중복은 플래그로 방지.
         try { naver.maps.Event.addListener(drawingManager, "drawing_added", onDrawingAdded); } catch (e) {}
         try { naver.maps.Event.addListener(drawingManager, "drawingComplete", onDrawingAdded); } catch (e) {}
+      }
+
+      // 그리기 완료 시 "면적그리기 보기"가 꺼져 있으면 강제로 켠다.
+      // change 이벤트를 발화시켜 기존 폴리곤/라벨 표시 + UI 상태 저장까지 기존 핸들러가 처리하게 한다.
+      function __forcePolygonMemoVisible() {
+        try {
+          const el = document.getElementById("togglePolygonMemo");
+          if (el && !el.checked) {
+            el.checked = true;
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        } catch (_) {}
       }
 
       function __polygonMemoCentroid(coords) {
@@ -16444,6 +16471,20 @@ min-height: 24px;
           if (!document.getElementById("toggleFindWay")?.checked) {
             return;
           }
+          // ✅ 면적 그리기 모드 중 우클릭은 "그리기 종료" 동작 — 길찾기 팝업을 띄우지 않는다
+          const __drawBtn = document.getElementById("drawPolygonBtn");
+          if (__drawBtn && __drawBtn.classList.contains("is-drawing")) {
+            return;
+          }
+          // ✅ 경로 그리기 중 우클릭은 "경로 완료" 동작 — 길찾기 팝업을 띄우지 않는다
+          if (window.mapHandler && window.mapHandler.currentPolyline) {
+            return;
+          }
+          // ✅ 같은 우클릭에서 MapHandler가 먼저 경로를 완료하면 currentPolyline이 이미 비워져
+          //    위 가드가 통과되므로, "방금 완료" 플래그로 한 번 더 차단
+          if (window.__pathJustCompletedAt && Date.now() - window.__pathJustCompletedAt < 500) {
+            return;
+          }
           var latlng = e.coord; // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
           var startX = latlng.lng(); // 우클릭한 위치의 경도
           var startY = latlng.lat(); // 우클릭한 위치의 위도
@@ -16490,11 +16531,18 @@ min-height: 24px;
           };
         });
 
-        // 지도 클릭 시 "길찾기" 버튼 숨기기
-        window.map.getElement().addEventListener("click", function () {
-          routeButton.style.display = "none";
-          checkboxContainer.style.display = "none";
-        });
+        // 좌클릭 시 "길찾기" 버튼 숨기기 — 지도 element가 아닌 document 캡처 단계에 바인딩.
+        // (지도 위 다른 레이어/드로잉이 클릭을 소비(stopPropagation)해도 확실히 닫히고,
+        //  지도 재생성 시 옛 element에 리스너가 남는 문제도 없음. 버튼·체크박스 자체 클릭은 제외)
+        document.addEventListener(
+          "click",
+          function (ev) {
+            if (routeButton.contains(ev.target) || checkboxContainer.contains(ev.target)) return;
+            routeButton.style.display = "none";
+            checkboxContainer.style.display = "none";
+          },
+          true,
+        );
       }
 
       // ▼ 필터 셀렉트 참조
