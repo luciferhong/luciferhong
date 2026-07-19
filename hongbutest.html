@@ -1392,6 +1392,31 @@
       </div>
     </div>
 
+    <!-- ✅ 공지사항 팝업 (notice.json) -->
+    <div id="noticeOverlay" style="display:none; position:fixed; inset:0; z-index:99998;
+         background:rgba(15,23,42,0.7); backdrop-filter:blur(3px);
+         justify-content:center; align-items:center;">
+      <div style="background:#fff; border-radius:16px; padding:22px 20px 16px;
+           max-width:420px; width:92%; max-height:80vh; display:flex; flex-direction:column;
+           box-shadow:0 20px 60px rgba(0,0,0,0.4); font-family:'Malgun Gothic','Noto Sans KR',sans-serif;">
+        <h2 id="noticeTitle" style="margin:0 0 4px; font-size:17px; color:#1e293b;">📢 공지사항</h2>
+        <div id="noticeDate" style="font-size:11px; color:#94a3b8; margin-bottom:12px;"></div>
+        <div id="noticeBody" style="flex:1; overflow-y:auto; font-size:14px; line-height:1.7; color:#334155;
+             white-space:pre-line; padding-bottom:8px;"></div>
+        <button id="noticeLinkBtn" style="display:none; margin-top:10px; padding:11px 0; width:100%;
+                background:#27AE60; color:#fff; border:none; border-radius:8px;
+                font-size:14px; font-weight:700; cursor:pointer;">자세히 보기</button>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <button id="noticeDismissBtn" style="flex:1; padding:10px 0; background:#f1f5f9; color:#64748b;
+                  border:none; border-radius:8px; font-size:12px; cursor:pointer;">다시 표시하지 않음</button>
+          <button id="noticeLaterBtn" style="flex:1; padding:10px 0; background:#e2e8f0; color:#334155;
+                  border:none; border-radius:8px; font-size:12px; cursor:pointer;">24시간 표시 안하기</button>
+          <button id="noticeCloseBtn" style="flex:0.6; padding:10px 0; background:#334155; color:#fff;
+                  border:none; border-radius:8px; font-size:12px; font-weight:600; cursor:pointer;">닫기</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ✅ 포토메모 메모 입력 모달 -->
     <div id="photoMemoNoteModal">
       <div id="photoMemoNoteModalInner">
@@ -6027,6 +6052,11 @@
             //console.log("📌 마커 이동됨:", newPosition.toString());
           }
         });
+
+        // 📢 공지사항 확인 — 지도/데이터 초기화를 막지 않도록 지연 후 비동기 실행
+        setTimeout(() => {
+          __checkAndShowNotice().catch((e) => console.warn("공지 확인 실패:", e));
+        }, 1500);
       });
 
       document.getElementById("toggleApartments").addEventListener("change", () => {
@@ -7645,6 +7675,80 @@ const originalBase64 = event.target.result;
         }).catch((e) => console.warn(`⚠️ [캐시 저장 실패] ${url}:`, e));
 
         return data;
+      }
+
+      // ================================
+      // 📢 공지사항 팝업 (notice.json)
+      // - 게시: 레포 루트 notice.json 커밋+푸시. id를 새 값으로 바꾸면 "다시 표시하지 않음" 사용자에게도 재표시.
+      // - 내리기: 파일 삭제(404) 또는 id 제거.
+      // - 해제 상태: localStorage — hongbuNoticeDismissed(영구, id 기준) / hongbuNoticeLater(24시간)
+      // ================================
+      async function __checkAndShowNotice() {
+        let notice = null;
+        try {
+          notice = await fetchWithETagCache("notice.json");
+        } catch (_) {
+          return; // 404/네트워크 실패 → 공지 없음 (조용히)
+        }
+        const id = String(notice?.id || "").trim();
+        if (!id || !notice.title) return;
+
+        try {
+          if (localStorage.getItem("hongbuNoticeDismissed") === id) return;
+          const later = JSON.parse(localStorage.getItem("hongbuNoticeLater") || "null");
+          if (later && later.id === id && Date.now() < Number(later.until)) return;
+        } catch (_) {}
+
+        const overlay = document.getElementById("noticeOverlay");
+        const titleEl = document.getElementById("noticeTitle");
+        const dateEl = document.getElementById("noticeDate");
+        const bodyEl = document.getElementById("noticeBody");
+        const linkBtn = document.getElementById("noticeLinkBtn");
+        if (!overlay || !titleEl || !bodyEl) return;
+
+        // textContent + CSS white-space:pre-line → XSS 원천 차단 + \n 줄바꿈 렌더
+        titleEl.textContent = "📢 " + String(notice.title);
+        if (dateEl) dateEl.textContent = notice.date ? String(notice.date) : "";
+        bodyEl.textContent = String(notice.body || "");
+
+        const link = String(notice.link || "").trim();
+        if (linkBtn) {
+          if (/^https?:\/\//.test(link)) {
+            linkBtn.textContent = String(notice.linkLabel || "자세히 보기");
+            linkBtn.style.display = "block";
+            linkBtn.onclick = () => {
+              try { window.open(link, "_blank", "noopener"); } catch (_) {}
+            };
+          } else {
+            linkBtn.style.display = "none";
+          }
+        }
+
+        const dismissBtn = document.getElementById("noticeDismissBtn");
+        if (dismissBtn) {
+          dismissBtn.onclick = () => {
+            try { localStorage.setItem("hongbuNoticeDismissed", id); } catch (_) {}
+            overlay.style.display = "none";
+          };
+        }
+        const laterBtn = document.getElementById("noticeLaterBtn");
+        if (laterBtn) {
+          laterBtn.onclick = () => {
+            try {
+              localStorage.setItem("hongbuNoticeLater", JSON.stringify({ id, until: Date.now() + 24 * 60 * 60 * 1000 }));
+            } catch (_) {}
+            overlay.style.display = "none";
+          };
+        }
+        // 닫기: 아무 상태도 저장하지 않고 이번만 닫음 (다음 접속 시 다시 표시)
+        const closeBtn = document.getElementById("noticeCloseBtn");
+        if (closeBtn) {
+          closeBtn.onclick = () => {
+            overlay.style.display = "none";
+          };
+        }
+
+        overlay.style.display = "flex";
       }
 
       // hongbuMemo DB의 3개 스토어를 멱등 생성 (open/재오픈 공통 사용)
