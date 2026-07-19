@@ -15,6 +15,9 @@
     <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8&submodules=drawing"></script>
     <script type="text/javascript" src="MarkerClustering.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- Google Drive API (Drive 백업/동기화) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js"></script>
 
     <style>
       :root {
@@ -1355,6 +1358,40 @@
     </style>
   </head>
   <body>
+    <!-- ✅ Google Drive 로그인 오버레이 -->
+    <div id="gdriveAuthOverlay" style="display:none; position:fixed; inset:0; z-index:99999;
+         background:rgba(15,23,42,0.88); backdrop-filter:blur(4px);
+         justify-content:center; align-items:center;">
+      <div style="background:#1e293b; border-radius:16px; padding:32px 28px;
+           max-width:360px; width:90%; text-align:center; color:#f1f5f9;
+           box-shadow:0 20px 60px rgba(0,0,0,0.5); font-family:'Malgun Gothic','Noto Sans KR',sans-serif;">
+        <div style="font-size:40px; margin-bottom:8px;">📍</div>
+        <h2 style="margin:0 0 10px; font-size:19px;">홍부가 기가막혀</h2>
+        <p style="margin:0 0 22px; color:#94a3b8; font-size:13px; line-height:1.5;">
+          로그인하면 메모가 본인 Google Drive의<br>
+          <b style="color:#f1f5f9;">HongbuMemo</b> 폴더에 자동 동기화됩니다.<br>
+          <span style="color:#64748b; font-size:12px;">로그인 없이도 로컬에 메모는 저장됩니다.</span>
+        </p>
+        <button id="gdriveSignInBtn" style="display:flex; align-items:center; gap:10px;
+                margin:0 auto; padding:12px 22px; background:#fff; color:#1e293b; border:none;
+                border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;
+                box-shadow:0 2px 8px rgba(0,0,0,0.25);">
+          <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg"
+               width="20" height="20" alt="Google" />
+          Google로 로그인
+        </button>
+        <p id="gdriveAuthError" style="color:#f87171; font-size:12px; margin-top:14px; display:none;"></p>
+        <p style="margin-top:20px; color:#64748b; font-size:11px; line-height:1.5;">
+          앱이 만든 파일에만 접근합니다.<br>
+          기존 다른 드라이브 파일은 볼 수 없습니다.
+        </p>
+        <button id="gdriveSkipBtn" style="margin-top:14px; background:none; border:none;
+                color:#94a3b8; font-size:15px; font-weight:700; cursor:pointer; text-decoration:underline;">
+          로그인 없이 로컬에만 저장
+        </button>
+      </div>
+    </div>
+
     <!-- ✅ 포토메모 메모 입력 모달 -->
     <div id="photoMemoNoteModal">
       <div id="photoMemoNoteModalInner">
@@ -1367,6 +1404,7 @@
       </div>
     </div>
 
+    <div id="gdriveProgress" style="display:none;position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:100000;background:#fffbe9;color:#1e293b;padding:10px 22px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.13);font-size:15px;font-weight:600;letter-spacing:-0.5px;"></div>
     <div id="hongbuDebugToast"></div>
     <div id="retrieverPopup">🦮</div>
     <div id="sweetMsg">
@@ -1841,6 +1879,26 @@
       <div style="flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0">
         <button id="siseVer2ImportBtn" style="display: block">시세지도Ver2에서 가져오기</button>
         <button id="siseVer2ResetBtn" style="display: block">시세지도Ver2데이터 초기화</button>
+      </div>
+      <!-- ☁️ Google Drive 연동 버튼 -->
+      <div style="margin-top: 4px; padding: 4px 0; border-top: 1px dashed #444;">
+        <span style="font-size: 11px; color: #94a3b8; margin-right: 6px;">☁️ Drive:</span>
+        <button id="gdriveAuthToggleBtn" onclick="__gdriveAuthToggle()">🔑 로그인</button>
+        <span id="driveSyncControls" style="display:none; align-items:center; gap:4px; flex-wrap:wrap;">
+          <button onclick="__openDriveSyncUI()">🔄 동기화</button>
+          <span id="driveSyncPanel" style="display:none;align-items:center;gap:4px;">
+            <select id="driveSyncSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
+            <span id="driveSyncSigunguWrapper" style="position:relative;">
+              <button id="driveSyncSigunguToggle" type="button" disabled
+                      style="height:26px;font-size:12px;" onclick="__toggleDriveSyncSigunguList()">시군구 선택 ▼</button>
+              <div id="driveSyncSigunguList"
+                   style="display:none;position:absolute;top:28px;left:0;z-index:50;background:#1e293b;border:1px solid #475569;
+                          border-radius:4px;padding:6px;max-height:180px;overflow-y:auto;min-width:160px;font-size:12px;color:#e2e8f0;"></div>
+            </span>
+            <button onclick="__driveSyncExecuteSelected()" style="font-size:12px;padding:3px 8px;">실행</button>
+            <button onclick="document.getElementById('driveSyncPanel').style.display='none'" style="font-size:11px;padding:3px 5px;">✕</button>
+          </span>
+        </span>
       </div>
 
     </div>
@@ -4664,16 +4722,21 @@
                   const tx = db.transaction(["apartmentNotes"], "readonly");
                   const store = tx.objectStore("apartmentNotes");
 
-                  const getReq = store.getKey ? store.getKey(id) : store.get(id);
+                  // ⚠️ tombstone 레코드({deletedAt:<ts>, memo:'', images:[]}) 를 "메모 있음" 으로 오판하면
+                  //    다른 기기에서 삭제한 단지에 아이콘만 남고 내용은 빈 상태가 된다.
+                  //    getKey 대신 get 으로 레코드를 받아 deletedAt / 실제 내용 존재 여부를 체크한다.
+                  const getReq = store.get(id);
                   getReq.onsuccess = () => {
-                    const exists = store.getKey
-                      ? getReq.result !== undefined && getReq.result !== null
-                      : !!getReq.result;
-                    window.__memoPresenceCache.set(id, exists);
+                    const rec = getReq.result;
+                    const hasContent = !!rec && !rec.deletedAt && (
+                      (typeof rec.memo === 'string' && rec.memo.trim().length > 0) ||
+                      (Array.isArray(rec.images) && rec.images.length > 0)
+                    );
+                    window.__memoPresenceCache.set(id, hasContent);
                     try {
                       db.close();
                     } catch (e) {} // ✅ 새로운 DB 연결 닫기
-                    resolve(exists);
+                    resolve(hasContent);
                   };
                   getReq.onerror = () => {
                     // 에러는 일시적일 수 있으므로 false를 "캐시"하지 않는다(stale 아이콘 방지). 표기만 없음 처리.
@@ -7846,173 +7909,191 @@ const originalBase64 = event.target.result;
         });
       }
 
+      // 하이브리드: IndexedDB 저장(항상) + Drive 비동기 동기화(로그인 시)
       async function __photoMemoPut(rec) {
-        await initMemoIndexedDB();
-        const db = await __openHongbuMemoDb();
-        return new Promise((resolve, reject) => {
-          try {
-            const tx = db.transaction(["photoMemos"], "readwrite");
-            const store = tx.objectStore("photoMemos");
-            const normalizedRec = {
-              ...(rec || {}),
-              id: String(rec?.id || ""),
-            };
-            if (!normalizedRec.id) {
-              try {
-                db.close();
-              } catch (_) {}
-              reject(new Error("photoMemo id is required"));
-              return;
-            }
-            tx.oncomplete = () => {
-              try {
-                db.close();
-              } catch (e) {}
-              resolve(true);
-            };
-            tx.onerror = (e) => {
-              try {
-                db.close();
-              } catch (_) {}
-              reject(e?.target?.error || tx.error);
-            };
-            tx.onabort = (e) => {
-              try {
-                db.close();
-              } catch (_) {}
-              reject(e?.target?.error || tx.error || new Error("photoMemo tx aborted"));
-            };
-            const req = store.put(normalizedRec);
-            req.onerror = (e) => {
-              try {
-                db.close();
-              } catch (_) {}
-              reject(e.target.error);
-            };
-          } catch (e) {
-            try {
-              db.close();
-            } catch (_) {}
-            reject(e);
-          }
-        });
+        const id = String(rec?.id || "");
+        if (!id) throw new Error("photoMemo id is required");
+
+        // 1) IndexedDB에 항상 저장 (Drive 없이도 동작, 오프라인 지원)
+        //    사용자 편집 경로이므로 updatedAt을 명시적으로 bump (putLocal은 호출자 값을 보존)
+        await __photoMemoPutLocal({ ...rec, id, updatedAt: Date.now() });
+
+        // 2) 인메모리 인덱스 동기화 (즉시 마커 표시용)
+        window.__photoMemoIndex = window.__photoMemoIndex || [];
+        const liveIdx = window.__photoMemoIndex.findIndex((m) => String(m.id) === id);
+        const localRec = {
+          id, lat: rec.lat, lng: rec.lng,
+          sgg5: rec.sgg5 || '',
+          createdAt: rec.createdAt || Date.now(),
+          addedAt: rec.addedAt || rec.createdAt || Date.now(),
+          note: rec.note || "",
+          thumbDataUrl: rec.thumbDataUrl || "",
+        };
+        if (liveIdx >= 0) window.__photoMemoIndex[liveIdx] = { ...window.__photoMemoIndex[liveIdx], ...localRec };
+        else window.__photoMemoIndex.push(localRec);
+
+        // ▼ 자동 동기화 훅 (저장 경로): rec.sgg5 우선, 없으면 lat/lng로 추론
+        try { __scheduleAutoSync(rec.sgg5 || localRec.sgg5, { lat: rec.lat, lng: rec.lng }); } catch (_) {}
+        // 캐시 무효화 (다음 업로드 시 재빌드)
+        __syncRegionCache.built = false;
+        return true;
       }
 
       async function __photoMemoDelete(id) {
-        await initMemoIndexedDB();
-        const db = await __openHongbuMemoDb();
-        return new Promise((resolve, reject) => {
-          try {
-            const tx = db.transaction(["photoMemos"], "readwrite");
-            const store = tx.objectStore("photoMemos");
-            const keyStr = String(id);
-            const req = store.delete(keyStr);
-            req.onsuccess = () => {
-              const numeric = Number.parseInt(keyStr, 10);
-              if (!Number.isFinite(numeric) || String(numeric) !== keyStr) {
-                try {
-                  db.close();
-                } catch (e) {}
-                resolve(true);
-                return;
-              }
-              try {
-                const req2 = store.delete(numeric);
-                req2.onsuccess = () => {
-                  try {
-                    db.close();
-                  } catch (e) {}
-                  resolve(true);
-                };
-                req2.onerror = () => {
-                  try {
-                    db.close();
-                  } catch (e) {}
-                  resolve(true);
-                };
-              } catch (_) {
-                try {
-                  db.close();
-                } catch (e) {}
-                resolve(true);
-              }
-            };
-            req.onerror = (e) => {
-              try {
-                db.close();
-              } catch (_) {}
-              reject(e.target.error);
-            };
-          } catch (e) {
-            try {
-              db.close();
-            } catch (_) {}
-            reject(e);
-          }
-        });
+        const idStr = String(id);
+
+        // ▼ 삭제 전 sgg5/좌표 확보 (삭제 후에는 복구 불가) — 인메모리 인덱스 우선
+        let sgg5ForSync = '';
+        let latForSync, lngForSync;
+        try {
+          const meta = (window.__photoMemoIndex || []).find((m) => String(m.id) === idStr);
+          sgg5ForSync = meta?.sgg5 || '';
+          latForSync = meta?.lat;
+          lngForSync = meta?.lng;
+        } catch (_) {}
+
+        // 1) IndexedDB에서 삭제
+        try {
+          await __photoMemoDeleteLocal(idStr);
+        } catch (e) {
+          console.warn("IndexedDB 포토메모 삭제 실패:", e);
+        }
+
+        // 2) 인메모리 상태 정리
+        window.__photoMemoIndex = (window.__photoMemoIndex || []).filter((m) => String(m.id) !== idStr);
+        window.__photoMemoImageCache?.delete?.(idStr);
+
+        // ▼ 자동 동기화 훅 (삭제 경로): sgg5 우선, 없으면 lat/lng로 추론
+        try { __scheduleAutoSync(sgg5ForSync, { lat: latForSync, lng: lngForSync }); } catch (_) {}
+        __syncRegionCache.built = false;
+        return true;
       }
 
       async function __photoMemoGetById(id) {
-        await initMemoIndexedDB();
-        const db = await __openHongbuMemoDb();
-        return new Promise((resolve) => {
-          try {
+        const idStr = String(id);
+
+        // IndexedDB에서 직접 읽기 — 이미지 포함 전체 레코드, Drive 참조 없음
+        let localRec = null;
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          localRec = await new Promise((resolve) => {
             const tx = db.transaction(["photoMemos"], "readonly");
             const store = tx.objectStore("photoMemos");
-            const keyStr = String(id);
-            const req = store.get(keyStr);
+            const req = store.get(idStr);
             req.onsuccess = () => {
-              if (req.result) {
-                try {
-                  db.close();
-                } catch (e) {}
-                resolve(req.result || null);
-                return;
-              }
-
-              const numeric = Number.parseInt(keyStr, 10);
-              if (!Number.isFinite(numeric) || String(numeric) !== keyStr) {
-                try {
-                  db.close();
-                } catch (e) {}
-                resolve(null);
-                return;
-              }
-
-              try {
-                const req2 = store.get(numeric);
-                req2.onsuccess = () => {
-                  try {
-                    db.close();
-                  } catch (e) {}
-                  resolve(req2.result || null);
-                };
-                req2.onerror = () => {
-                  try {
-                    db.close();
-                  } catch (e) {}
-                  resolve(null);
-                };
-              } catch (_) {
-                try {
-                  db.close();
-                } catch (e) {}
-                resolve(null);
-              }
-            };
-            req.onerror = () => {
-              try {
-                db.close();
-              } catch (e) {}
-              resolve(null);
-            };
-          } catch (e) {
-            try {
+              const result = req.result || null;
               db.close();
+              if (result) { resolve(result); return; }
+              // 구버전 호환: 숫자 키로 재시도
+              const numId = Number(id);
+              if (!Number.isNaN(numId) && numId !== 0) {
+                const db2 = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                db2.onsuccess = (e) => {
+                  const d = e.target.result;
+                  const r = d.transaction(["photoMemos"], "readonly").objectStore("photoMemos").get(numId);
+                  r.onsuccess = () => { d.close(); resolve(r.result || null); };
+                  r.onerror = () => { d.close(); resolve(null); };
+                };
+                db2.onerror = () => resolve(null);
+              } else {
+                resolve(null);
+              }
+            };
+            req.onerror = () => { db.close(); resolve(null); };
+          });
+        } catch (_) {}
+
+        if (localRec) {
+          // 레거시 업그레이드: thumbBlob / imageBlob이 남아있으면 DataURL로 변환 + 재저장 (fire-and-forget)
+          let blobMigrated = false;
+          if (localRec.thumbBlob instanceof Blob && !localRec.thumbDataUrl) {
+            try {
+              const converted = await __blobToDataUrl(localRec.thumbBlob);
+              if (converted) { localRec.thumbDataUrl = converted; blobMigrated = true; }
             } catch (_) {}
-            resolve(null);
           }
-        });
+          if (localRec.imageBlob instanceof Blob && !localRec.imageDataUrl) {
+            try {
+              const converted = await __blobToDataUrl(localRec.imageBlob);
+              if (converted) { localRec.imageDataUrl = converted; blobMigrated = true; }
+            } catch (_) {}
+          }
+          // 썸네일이 없고 원본만 있으면 원본에서 재생성
+          if (!localRec.thumbDataUrl && localRec.imageDataUrl && localRec.imageDataUrl.startsWith('data:')) {
+            try {
+              const srcBlob = __dataUrlToBlob(localRec.imageDataUrl);
+              if (srcBlob) {
+                const tBlob = await __fileToThumbBlob(srcBlob, 96, 0.82);
+                const tUrl = await __blobToDataUrl(tBlob);
+                if (tUrl) { localRec.thumbDataUrl = tUrl; blobMigrated = true; }
+              }
+            } catch (_) {}
+          }
+          if (blobMigrated) {
+            __photoMemoPutLocal({ ...localRec, thumbBlob: undefined, imageBlob: undefined })
+              .catch((e) => console.warn("[legacy upgrade] blob→dataUrl 재저장 실패:", e));
+          }
+          // [파일명 기반] lazy 복구: imageDataUrl 비었고 sgg5/addedAt 있으면 filename 유도 → Drive fetch
+          if (!localRec.imageDataUrl && localRec.sgg5 && window.__gdriveReady
+              && window.__gdrivePhotosFolderId) {
+            try {
+              const filename = __photoImgFilename(localRec);
+              const nameMap = await __driveGetNameMapForSgg(window.__gdrivePhotosFolderId, localRec.sgg5);
+              const fid = nameMap?.get?.(filename);
+              if (fid) {
+                const dataUrl = await __driveDownloadImageAsDataUrl(fid);
+                if (dataUrl) {
+                  localRec.imageDataUrl = dataUrl;
+                  if (!localRec.thumbDataUrl) {
+                    try {
+                      const blob = __dataUrlToBlob(dataUrl);
+                      if (blob) {
+                        const thumbBlob = await __fileToThumbBlob(blob, 96, 0.82);
+                        const thumbUrl = await __blobToDataUrl(thumbBlob);
+                        if (thumbUrl) localRec.thumbDataUrl = thumbUrl;
+                      }
+                    } catch (_) {}
+                  }
+                  __photoMemoPutLocal({ ...localRec, thumbBlob: undefined, imageBlob: undefined })
+                    .catch((e) => console.warn('[lazy] write-back 실패:', e));
+                }
+              } else {
+                console.warn('[lazy] 포토 이미지 Drive에 없음:', filename);
+              }
+            } catch (e) {
+              console.warn('[lazy] 포토 이미지 Drive 로드 실패:', idStr, e);
+            }
+          }
+          if (localRec.imageDataUrl) {
+            window.__photoMemoImageCache.set(idStr, localRec.imageDataUrl);
+          }
+          return {
+            id: localRec.id,
+            lat: Number(localRec.lat),
+            lng: Number(localRec.lng),
+            sgg5: localRec.sgg5 || '',
+            createdAt: localRec.createdAt || 0,
+            addedAt: localRec.addedAt || localRec.createdAt || 0,
+            note: localRec.note || "",
+            thumbDataUrl: localRec.thumbDataUrl || "",
+            imageDataUrl: localRec.imageDataUrl || window.__photoMemoImageCache.get(idStr) || "",
+            // DataURL-only 정책: Blob 필드는 반환하지 않음
+          };
+        }
+
+        // DB에 없으면 인메모리 인덱스(메타데이터만)로 폴백
+        const entry = (window.__photoMemoIndex || []).find((m) => String(m.id) === idStr);
+        if (!entry) return null;
+        return {
+          id: entry.id,
+          lat: Number(entry.lat),
+          lng: Number(entry.lng),
+          createdAt: entry.createdAt || 0,
+          note: entry.note || "",
+          thumbDataUrl: entry.thumbDataUrl || "",
+          imageDataUrl: window.__photoMemoImageCache.get(idStr) || "",
+        };
       }
 
       async function __blobToDataUrl(blob) {
@@ -8503,56 +8584,29 @@ const originalBase64 = event.target.result;
       // 경량 인덱스만 로드 (Blob 없음) — 화면 로드 시 전체 Blob 로드 대신 좌표/ID만
       async function loadPhotoMemoIndexOnce() {
         if (window.__photoMemoIndexLoaded) return window.__photoMemoIndex;
+
+        // 1) IndexedDB에서 우선 로드 (로그인 여부 무관, 오프라인 지원)
         try {
-          await initMemoIndexedDB();
-          const db = await __openHongbuMemoDb();
-          const index = await new Promise((resolve) => {
-            const results = [];
-            try {
-              const tx = db.transaction(["photoMemos"], "readonly");
-              const store = tx.objectStore("photoMemos");
-              const req = store.openCursor();
-              req.onsuccess = (e) => {
-                const cursor = e.target.result;
-                if (cursor) {
-                  const v = cursor.value;
-                  // Blob 필드를 제외한 경량 항목만 추출
-                  results.push({
-                    id: v.id,
-                    lat: Number(v.lat),
-                    lng: Number(v.lng),
-                    createdAt: v.createdAt || 0,
-                    note: v.note || "",
-                  });
-                  cursor.continue();
-                } else {
-                  try {
-                    db.close();
-                  } catch (_) {}
-                  resolve(results);
-                }
-              };
-              req.onerror = () => {
-                try {
-                  db.close();
-                } catch (_) {}
-                resolve([]);
-              };
-            } catch (e) {
-              try {
-                db.close();
-              } catch (_) {}
-              resolve([]);
-            }
-          });
-          window.__photoMemoIndex = index;
-          window.__photoMemoIndexLoaded = true;
-          return window.__photoMemoIndex;
+          const localMemos = await __loadPhotoMemoIndexFromLocal();
+          window.__photoMemoIndex = localMemos
+            .filter((v) => !v.deletedAt) // tombstone(삭제 마킹)은 마커 인덱스에서 제외
+            .map((v) => ({
+              id: String(v.id || ""),
+              lat: Number(v.lat),
+              lng: Number(v.lng),
+              sgg5: v.sgg5 || "",
+              createdAt: v.createdAt || 0,
+              addedAt: v.addedAt || v.createdAt || 0,
+              note: v.note || "",
+              thumbDataUrl: v.thumbDataUrl || "",
+            }));
         } catch (e) {
+          console.error("IndexedDB 포토메모 로드 실패:", e);
           window.__photoMemoIndex = [];
-          window.__photoMemoIndexLoaded = true;
-          return window.__photoMemoIndex;
         }
+        window.__photoMemoIndexLoaded = true;
+        // Drive 동기화는 __gdriveOnSignedIn에서 단지메모와 함께 순서대로 제어
+        return window.__photoMemoIndex;
       }
 
       // 하위 호환 — 기존 호출 코드가 있는 경우를 대비
@@ -9729,7 +9783,7 @@ const originalBase64 = event.target.result;
         } catch (e) {}
         try {
           if (polygon && polygon.__memoId) {
-            deletePolygonMemoFromDB(polygon.__memoId).catch(console.warn);
+            _softDeletePolygonRecord(polygon.__memoId).catch(console.warn);
           }
         } catch (e) {}
         try {
@@ -9766,9 +9820,3454 @@ const originalBase64 = event.target.result;
         };
       }
 
+      // ================================
+      // ✅ Google Drive 백엔드 (hongbuCloud 전용)
+      // - 포토메모/단지메모를 사용자 본인 Google Drive의 HongbuMemo 폴더에 저장
+      // - 운영자 서버 비용 0원, 각 사용자가 자기 드라이브 용량 사용
+      // ================================
+      const __GOOGLE_CLIENT_ID = "674891465698-lb3898i1qj4enuh36tie0h1qugnp27gr.apps.googleusercontent.com"; // TODO: 운영자가 Google Cloud Console에서 발급 후 교체
+      const __GOOGLE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+      const __DRIVE_ROOT_NAME = "HongbuMemo";
+
+      window.__gdriveTokenClient = window.__gdriveTokenClient || null;
+      window.__gdriveAccessToken = window.__gdriveAccessToken || null;
+      window.__gdriveRootFolderId = window.__gdriveRootFolderId || null;
+      window.__gdrivePhotosFolderId = window.__gdrivePhotosFolderId || null;
+      window.__gdriveAptImagesFolderId = window.__gdriveAptImagesFolderId || null;
+      window.__gdriveReady = false;
+      window.__gdriveInitPromise = null;
+      window.__photoMemoImageCache = window.__photoMemoImageCache || new Map();
+
+      // gapi + GIS 로드 대기
+      function __gdriveWaitForScripts() {
+        return new Promise((resolve) => {
+          const check = () => {
+            if (window.gapi && window.google?.accounts?.oauth2) {
+              resolve();
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+        });
+      }
+
+      // gapi client 로드 및 Drive discovery doc 초기화
+      async function __gdriveInit() {
+        if (window.__gdriveInitPromise) return window.__gdriveInitPromise;
+        window.__gdriveInitPromise = (async () => {
+          await __gdriveWaitForScripts();
+          await new Promise((resolve) => gapi.load("client", resolve));
+          await gapi.client.init({
+            discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"],
+          });
+          window.__gdriveTokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: __GOOGLE_CLIENT_ID,
+            scope: __GOOGLE_SCOPE,
+            callback: async (resp) => {
+              const overlay = document.getElementById("gdriveAuthOverlay");
+              if (resp.error) {
+                // OAuth 에러 → 오버레이 표시 (자동 로그인 실패 포함).
+                console.warn("OAuth 로그인 실패:", resp.error, resp.error_description || "");
+                if (overlay) overlay.style.display = "flex";
+                return;
+              }
+              // 로그인 성공 → 오버레이 닫기
+              if (overlay) overlay.style.display = "none";
+              window.__gdriveAccessToken = resp.access_token;
+              gapi.client.setToken({ access_token: resp.access_token });
+              // 자동 로그인 플래그 + access_token 저장 (항상)
+              let expires_at = 0;
+              try {
+                localStorage.setItem("__hongbuDriveAutoLogin", "1");
+                const expiresIn = Number(resp.expires_in) || 3600; // 초
+                expires_at = Date.now() + (expiresIn * 1000 - 60000); // 1분 여유
+                localStorage.setItem("__hongbuDriveToken", JSON.stringify({
+                  access_token: resp.access_token,
+                  expires_at,
+                }));
+              } catch (_) {}
+              try {
+                await __gdriveOnSignedIn();
+              } catch (e) {
+                console.error("로그인 후 초기화 실패:", e);
+              }
+            },
+          });
+        })();
+        return window.__gdriveInitPromise;
+      }
+
+      function __gdriveSignIn() {
+        const doSignIn = () => {
+          if (!window.__gdriveTokenClient) {
+            const errEl = document.getElementById("gdriveAuthError");
+            if (errEl) { errEl.textContent = "초기화 실패. 페이지를 새로고침하세요."; errEl.style.display = "block"; }
+            return;
+          }
+          window.__gdriveTokenClient.requestAccessToken({ prompt: "" });
+        };
+        if (window.__gdriveInitPromise) {
+          window.__gdriveInitPromise.then(doSignIn).catch((e) => {
+            const errEl = document.getElementById("gdriveAuthError");
+            if (errEl) { errEl.textContent = "초기화 오류: " + (e?.message || e); errEl.style.display = "block"; }
+          });
+        } else {
+          doSignIn();
+        }
+      }
+
+      function __gdriveUpdateAuthBtn() {
+        const btn = document.getElementById("gdriveAuthToggleBtn");
+        const loggedIn = window.__gdriveReady && window.__gdriveAccessToken;
+        if (btn) btn.textContent = loggedIn ? "🚪 로그아웃" : "🔑 로그인";
+        // 로그아웃 시 동기화 패널 숨김
+        const syncPanel = document.getElementById("driveSyncControls");
+        if (syncPanel && !loggedIn) syncPanel.style.display = "none";
+      }
+
+      function __gdriveAuthToggle() {
+        if (window.__gdriveReady && window.__gdriveAccessToken) {
+          __gdriveSignOut();
+        } else {
+          __gdriveShowAuthOverlay();
+        }
+      }
+
+      // 로그인 오버레이 표시 (사용자 제스처로만 호출 — 로드 시 자동 표시 금지)
+      function __gdriveShowAuthOverlay() {
+        const overlay = document.getElementById("gdriveAuthOverlay");
+        if (!overlay) return;
+        overlay.style.display = "flex";
+        const hasAutoLogin = (() => {
+          try { return localStorage.getItem("__hongbuDriveAutoLogin") === "1"; } catch (_) { return false; }
+        })();
+        if (hasAutoLogin) {
+          const hintP = overlay.querySelector('p');
+          if (hintP && !hintP.dataset.autoLoginHint) {
+            hintP.dataset.autoLoginHint = '1';
+            hintP.innerHTML = '✅ 자동 로그인 설정됨<br>'
+              + '<b style="color:#fbbf24;">로그인 버튼</b>을 한 번 클릭하면 바로 연결됩니다.<br>'
+              + '<span style="color:#64748b; font-size:12px;">(브라우저 정책상 첫 클릭은 필요합니다)</span>';
+          }
+        }
+      }
+
+      function __gdriveSignOut() {
+        localStorage.removeItem("__hongbuDriveAutoLogin"); // 자동 로그인 플래그 제거
+        try { localStorage.removeItem("__hongbuDriveToken"); } catch (_) {} // 저장된 access_token 제거
+        // ⚠️ revoke는 하지 않는다 — revoke하면 앱에 부여된 권한 승인 자체가 취소되어
+        //    다음 로그인 때마다 Google 액세스 동의 창이 다시 뜬다. 토큰만 버리면
+        //    재로그인 시 동의창 없이 바로 연결된다. (권한 취소가 필요하면
+        //    myaccount.google.com/permissions 에서 직접 해제)
+        window.__gdriveAccessToken = null;
+        window.__gdriveReady = false;
+        window.__gdriveRootFolderId = null;
+        window.__gdrivePhotosFolderId = null;
+        try {
+          (window.__photoMemoMarkers || new Map()).forEach((_, id) => __removePhotoMemoMarker(id));
+        } catch (_) {}
+        window.__photoMemoIndex = [];
+        window.__photoMemoIndexLoaded = false;
+        window.__photoMemoImageCache?.clear?.();
+        // 로그아웃 시 로그인 오버레이를 자동으로 띄우지 않음 — 다시 로그인하려면 "🔑 로그인" 버튼 클릭
+        __gdriveUpdateAuthBtn();
+      }
+
+      function __syncProgressShow(msg) {
+        if (window.__syncProgressSuppress) {
+          // 자동 동기화 경로: 상단 UI 대신 디버그 로그만 남김.
+          // 기존 UI가 켜져 있으면 hide (이전 메시지가 "멈춘 것처럼" 남는 걸 방지).
+          // 단, 완료 배너가 표시 중(__syncCompletionBannerUntil 타임락)이면 건드리지 않는다.
+          const el = document.getElementById("gdriveProgress");
+          const bannerLocked = window.__syncCompletionBannerUntil && Date.now() < window.__syncCompletionBannerUntil;
+          if (el && el.style.display !== "none" && !bannerLocked) {
+            el.style.display = "none";
+            el.textContent = "";
+          }
+          try { window.hongbuDebugLog?.('INFO', '[sync:auto]', msg); } catch (_) {}
+          return;
+        }
+        const el = document.getElementById("gdriveProgress");
+        if (el) { el.textContent = msg; el.style.display = "block"; }
+      }
+      function __syncProgressHide() {
+        if (window.__syncProgressSuppress) return;
+        const el = document.getElementById("gdriveProgress");
+        if (el) { el.style.display = "none"; el.textContent = ""; }
+      }
+
+      async function __gdriveOnSignedIn() {
+        const overlay = document.getElementById("gdriveAuthOverlay");
+        if (overlay) overlay.style.display = "none";
+
+        __syncProgressShow("☁️ Drive 연결 중...");
+        await __ensureDriveStructure();
+        try { await __ensureUpdatedAtMigration(); } catch (_) {}
+        window.__gdriveReady = true;
+        __gdriveUpdateAuthBtn();
+        // (로그인 직후 "마지막 수정 지역" 변동 체크/동기화 확인창 제거됨 — 모든 동기화는 🔄 동기화 버튼으로 수동 실행)
+        window.__photoMemoIndexLoaded = false;
+        window.__photoMemoIndex = [];
+
+        try {
+          __syncProgressShow("☁️ 포토메모 로드 중...");
+          await loadPhotoMemoIndexOnce();
+        } catch (e) {
+          console.error("인덱스 로드 실패:", e);
+        }
+
+        try {
+          if (window.__photoMemoVisible) updatePhotoMemoMarkersByBounds();
+        } catch (_) {}
+
+        // 자동 동기화 없음 — 시군구 단위 수동 업로드/다운로드 방식으로 전환
+        __syncProgressShow("✅ Drive 연결 완료");
+        setTimeout(() => __syncProgressHide(), 1500);
+
+        // 동기화 UI 패널 초기화 (백그라운드)
+        __initDriveSyncPanel();
+      }
+
+      // 드라이브 루트/하위 폴더 존재 확인 → 없으면 생성 (index.json 제거됨)
+      async function __ensureDriveStructure() {
+        window.__gdriveRootFolderId = await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null);
+        window.__gdrivePhotosFolderId = await __driveFindOrCreateFolder("photos", window.__gdriveRootFolderId);
+        window.__gdriveAptImagesFolderId = await __driveFindOrCreateFolder("aptImages", window.__gdriveRootFolderId);
+        window.__gdriveSggFolderId = await __driveFindOrCreateFolder("sgg", window.__gdriveRootFolderId);
+      }
+
+      // 이미지 항목에서 base64 data URL 추출 (구형 string 또는 신형 {data, addedAt} 모두 지원)
+      function __getImgData(item) {
+        return typeof item === "string" ? item : (item?.data || "");
+      }
+      // 빈/손상된 이미지 항목 제거 — {} 같은 garbage entries 자가 치유
+      // 파일명 기반 스키마에서는 data(url)가 없으면서 addedAt조차 없는 항목은 복원 불가로 드롭
+      function __sanitizeImages(imgs) {
+        if (!Array.isArray(imgs)) return [];
+        return imgs.filter((it) => {
+          const data = __getImgData(it);
+          if (typeof data === "string" && data.startsWith("data:")) return true;
+          // data 없고 addedAt만 있는 placeholder → 유지 (lazy load 대상)
+          return it && typeof it === "object" && typeof it.addedAt === "number";
+        });
+      }
+
+      // ── [파일명 기반 동기화] 결정론적 파일명 유도 헬퍼 ──
+      // note.sgg5, image.addedAt 는 생성·마이그레이션 시점에 고정 저장됨을 전제
+      function __aptImgFilename(note, addedAt) {
+        const sgg5 = String(note?.sgg5 || '').trim() || '00000';
+        const aptId = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+        return `apt_${sgg5}_${aptId}_${addedAt}.jpg`;
+      }
+      function __photoImgFilename(photo) {
+        const sgg5 = String(photo?.sgg5 || '').trim() || '00000';
+        const lat6 = Number(photo?.lat).toFixed(6);
+        const lng6 = Number(photo?.lng).toFixed(6);
+        const ts = photo?.addedAt || photo?.createdAt || 0;
+        return `photo_${sgg5}_${lat6}_${lng6}_${ts}.jpg`;
+      }
+      // Drive 폴더명 / sgg 파일명 유틸
+      function __sggFolderName(sgg5, sidoName, sigunguName) {
+        const parts = [String(sgg5 || '').trim() || '00000'];
+        const sd = String(sidoName || '').trim();
+        const sg = String(sigunguName || '').trim();
+        if (sd) parts.push(sd);
+        if (sg) parts.push(sg);
+        return parts.join('_');
+      }
+      function __sggJsonFilename(sgg5, sidoName, sigunguName, type) {
+        return `${__sggFolderName(sgg5, sidoName, sigunguName)}_${type}.json`;
+      }
+      // 폴더명/파일명 맨 앞 5자리 숫자(sgg5) 파싱
+      function __parseSgg5Prefix(name) {
+        const m = String(name || '').match(/^(\d{5})(?:_|\.|$)/);
+        return m ? m[1] : '';
+      }
+
+      async function __driveFindOrCreateFolder(name, parentId) {
+        const q = [
+          `name='${name.replace(/'/g, "\\'")}'`,
+          `mimeType='application/vnd.google-apps.folder'`,
+          `trashed=false`,
+          parentId ? `'${parentId}' in parents` : `'root' in parents`,
+        ].join(" and ");
+        const resp = await gapi.client.drive.files.list({
+          q,
+          fields: "files(id,name)",
+          spaces: "drive",
+          pageSize: 10,
+        });
+        if (resp.result.files && resp.result.files.length > 0) return resp.result.files[0].id;
+        const createResp = await gapi.client.drive.files.create({
+          resource: {
+            name,
+            mimeType: "application/vnd.google-apps.folder",
+            parents: parentId ? [parentId] : [],
+          },
+          fields: "id",
+        });
+        return createResp.result.id;
+      }
+
+      // multipart 업로드 헬퍼 (새 파일 생성)
+      async function __driveUploadMultipart(metadata, bodyBytes, contentType) {
+        const tBuildStart = performance.now();
+        const boundary = "-------HongbuBoundary" + Date.now() + Math.random().toString(36).slice(2);
+        const delimiter = `\r\n--${boundary}\r\n`;
+        const closeDelim = `\r\n--${boundary}--`;
+        const metadataStr = delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata);
+        const mediaHeader = delimiter + `Content-Type: ${contentType}\r\n\r\n`;
+        const encoder = new TextEncoder();
+        const blob = new Blob([
+          encoder.encode(metadataStr + mediaHeader),
+          bodyBytes instanceof Blob ? bodyBytes : encoder.encode(bodyBytes),
+          encoder.encode(closeDelim),
+        ]);
+        // AbortController로 60초 타임아웃 — hang 방지
+        const ctrl = new AbortController();
+        const timeoutId = setTimeout(() => ctrl.abort(), 60000);
+        const tFetchStart = performance.now();
+        let resp;
+        try {
+          resp = await fetch(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${window.__gdriveAccessToken}`,
+                "Content-Type": `multipart/related; boundary=${boundary}`,
+              },
+              body: blob,
+              signal: ctrl.signal,
+            }
+          );
+        } catch (e) {
+          clearTimeout(timeoutId);
+          if (e.name === 'AbortError') throw new Error('Drive 업로드 타임아웃 (60s 초과)');
+          throw e;
+        }
+        clearTimeout(timeoutId);
+        const tDone = performance.now();
+        if (!resp.ok) throw new Error("Drive 업로드 실패: " + resp.status);
+        const json = await resp.json();
+        // [perf] 진단용 — 호출측은 .id 만 사용하므로 비파괴 확장
+        json.__perf = {
+          tBuildMs: Math.round(tFetchStart - tBuildStart),
+          tFetchMs: Math.round(tDone - tFetchStart),
+          size: blob.size,
+          status: resp.status,
+        };
+        return json;
+      }
+
+      // 페이지 로드 시 Drive 초기화 (오버레이 자동 표시 없음 — 업로드/다운로드 클릭 시 로그인)
+      window.addEventListener("load", () => {
+        const btn = document.getElementById("gdriveSignInBtn");
+        const skipBtn = document.getElementById("gdriveSkipBtn");
+
+        // 스킵 버튼: 오버레이 닫기
+        if (skipBtn) {
+          skipBtn.addEventListener("click", () => {
+            const overlay = document.getElementById("gdriveAuthOverlay");
+            if (overlay) overlay.style.display = "none";
+          });
+        }
+
+        if (btn) btn.disabled = true;
+
+        // updatedAt/deletedAt 마이그레이션 (로그인 여부 무관, 1회만 실행)
+        if (typeof __ensureUpdatedAtMigration === 'function') {
+          __ensureUpdatedAtMigration().catch(e => console.warn('[migration] 실패(무시):', e));
+        }
+
+        // 이미지 중복 제거 마이그레이션 — 초기 로드 블로킹 방지 위해 idle 시점에 지연 실행 (1회만)
+        setTimeout(() => {
+          if (typeof __dedupeApartmentImagesMigration === 'function') {
+            __dedupeApartmentImagesMigration().catch(e => console.warn('[migration:aptImgDedup] 실패(무시):', e));
+          }
+        }, 20000);
+        setTimeout(() => {
+          if (typeof __dedupePhotoMemosMigration === 'function') {
+            __dedupePhotoMemosMigration().catch(e => console.warn('[migration:photoDedup] 실패(무시):', e));
+          }
+        }, 45000);
+
+        // ▼ 자동 동기화 sgg5 추론을 위해 apt.json 인덱스 선제 로드
+        if (typeof __loadAptIndexForSync === 'function') {
+          __loadAptIndexForSync().catch(e => console.warn('[autoSync] apt 인덱스 로드 실패:', e));
+        }
+
+        __gdriveInit()
+          .catch((e) => console.warn("gdrive init 실패:", e))
+          .finally(() => {
+            if (btn) {
+              btn.disabled = false;
+              btn.addEventListener("click", () => __gdriveSignIn());
+            }
+            // ▼ 저장된 access_token 복원 시도 — 새로고침 시 popup 없이 즉시 연결 (토큰 유효기간 내)
+            let __tokenRestored = false;
+            try {
+              const raw = localStorage.getItem("__hongbuDriveToken");
+              if (raw) {
+                const tok = JSON.parse(raw);
+                if (tok && tok.access_token && Number(tok.expires_at) > Date.now()) {
+                  window.__gdriveAccessToken = tok.access_token;
+                  try { gapi.client.setToken({ access_token: tok.access_token }); } catch (_) {}
+                  const minsLeft = Math.round((tok.expires_at - Date.now()) / 60000);
+                  console.log(`[gdrive] 저장된 토큰 복원 — 만료까지 ${minsLeft}분`);
+                  __tokenRestored = true;
+                  (async () => {
+                    try { await __gdriveOnSignedIn(); }
+                    catch (e) {
+                      console.warn("[gdrive] 복원 토큰 연결 실패 — 삭제:", e);
+                      try { localStorage.removeItem("__hongbuDriveToken"); } catch (_) {}
+                      // 오버레이는 자동으로 띄우지 않음 — 사용자가 로그인 버튼을 눌렀을 때만 표시
+                    }
+                  })();
+                } else {
+                  // 만료됨 → 삭제
+                  try { localStorage.removeItem("__hongbuDriveToken"); } catch (_) {}
+                  console.log("[gdrive] 저장된 토큰 만료 — 삭제");
+                }
+              }
+            } catch (e) { console.warn("[gdrive] 토큰 복원 실패:", e); }
+
+            // 오버레이는 자동으로 띄우지 않음 — 사용자가 "🔑 로그인" 버튼을 눌렀을 때만 __gdriveShowAuthOverlay()로 표시
+
+            // ▼ 비정상 DB 손실 감지 모달 — Drive init 이후 호출해야 패널 열기가 동작
+            // initMemoIndexedDB를 선제 호출해서 플래그 세팅 기회를 준 뒤 체크
+            setTimeout(async () => {
+              try { await initMemoIndexedDB(); } catch (_) {}
+              try { await __checkAbnormalDbLoss(); } catch (e) { console.warn('[abnormalDbLoss] 체크 실패:', e); }
+            }, 1500);
+          });
+      });
+
+      // ================================
+      // 하이브리드 저장 헬퍼 함수 (IndexedDB ↔ Drive)
+      // ================================
+
+      // IndexedDB에 포토메모 저장 (Drive 없이도 동작)
+      async function __photoMemoPutLocal(rec) {
+        await initMemoIndexedDB();
+        // 쓰기 정규화: Blob만 있으면 DataURL로 변환해 통일 (DataURL-only 정책)
+        let thumbDataUrl = rec.thumbDataUrl || "";
+        if (!thumbDataUrl && rec.thumbBlob instanceof Blob) {
+          thumbDataUrl = await __blobToDataUrl(rec.thumbBlob);
+        }
+        let imageDataUrl = rec.imageDataUrl || "";
+        if (!imageDataUrl && rec.imageBlob instanceof Blob) {
+          imageDataUrl = await __blobToDataUrl(rec.imageBlob);
+        }
+        // 썸네일이 여전히 비었고 원본만 있으면 원본에서 재생성
+        if (!thumbDataUrl && imageDataUrl && imageDataUrl.startsWith("data:")) {
+          try {
+            const srcBlob = __dataUrlToBlob(imageDataUrl);
+            if (srcBlob) {
+              const tBlob = await __fileToThumbBlob(srcBlob, 96, 0.82);
+              thumbDataUrl = await __blobToDataUrl(tBlob);
+            }
+          } catch (_) {}
+        }
+        const db = await __openHongbuMemoDb();
+        // [파일명 기반] sgg5 고정 저장. SIG 인덱스 준비됐으면 현재 좌표로 계산, 아니면 '00000' placeholder
+        // (마이그레이션이 후에 SIG 로드 후 보정함)
+        let sgg5 = String(rec.sgg5 || '').trim();
+        if (!sgg5) {
+          try {
+            const region = (typeof __syncPhotoRegion === 'function' && __syncSigIndex?.loaded)
+              ? __syncPhotoRegion({ lat: rec.lat, lng: rec.lng })
+              : null;
+            sgg5 = region?.sgg5 || '00000';
+          } catch (_) { sgg5 = '00000'; }
+        }
+        const createdAt = rec.createdAt || Date.now();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(["photoMemos"], "readwrite");
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = (e) => { db.close(); reject(e.target.error); };
+          const entry = {
+            id: String(rec.id),
+            lat: rec.lat,
+            lng: rec.lng,
+            sgg5,
+            createdAt,
+            addedAt: rec.addedAt || createdAt,
+            note: rec.note || "",
+            thumbDataUrl,
+            imageDataUrl,
+            // ⚠️ updatedAt은 호출자가 명시한 값을 보존한다. 무조건 Date.now()로 bump하면
+            //    "수정이 아닌" write-back(Drive lazy 이미지 복구, blob→dataUrl 마이그레이션)마저
+            //    최신 수정으로 오판되어 기기 간 불필요한 동기화(업↔다운 핑퐁)가 발생한다.
+            //    사용자 편집 경로는 __photoMemoPut이 updatedAt: Date.now()를 명시해 정상 bump된다.
+            updatedAt: Number(rec.updatedAt) || Date.now(),
+            deletedAt: null,
+          };
+          // DataURL-only 정책: imageBlob/thumbBlob 필드는 저장하지 않음
+          tx.objectStore("photoMemos").put(entry);
+        });
+      }
+
+      // IndexedDB에서 포토메모 삭제 (개별 삭제 → tombstone 생성, 동기화 시 Drive로 전파)
+      async function __photoMemoDeleteLocal(id) {
+        await __softDeletePhoto(id);
+      }
+
+      // IndexedDB에서 포토메모 인덱스 전체 로드
+      async function __loadPhotoMemoIndexFromLocal() {
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        return await new Promise((resolve) => {
+          const results = [];
+          const tx = db.transaction(["photoMemos"], "readonly");
+          const req = tx.objectStore("photoMemos").openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (c) { results.push(c.value); c.continue(); }
+            else { db.close(); resolve(results); }
+          };
+          req.onerror = () => { db.close(); resolve([]); };
+        });
+      }
+
+      // ================================================================
+      // SGG 단위 수동 동기화 (시군구별 업로드/다운로드)
+      // ================================================================
+
+      // ── SIDO/시군구 코드 정규화 유틸 ──
+      const __SYNC_SIDO_CODE_NAME_MAP = {
+        '11': '서울특별시', '26': '부산광역시', '27': '대구광역시',
+        '28': '인천광역시', '29': '광주광역시', '30': '대전광역시',
+        '31': '울산광역시', '36': '세종특별자치시', '41': '경기도',
+        '42': '강원특별자치도', '43': '충청북도', '44': '충청남도',
+        '45': '전북특별자치도', '46': '전라남도', '47': '경상북도',
+        '48': '경상남도', '50': '제주특별자치도', '51': '강원특별자치도', '52': '전북특별자치도',
+      };
+      let __SYNC_SIDO_NAME_CODE_MAP = {};
+      function __syncRebuildSidoMap() {
+        const next = {};
+        for (const [code, name] of Object.entries(__SYNC_SIDO_CODE_NAME_MAP)) {
+          const nm = String(name || '').trim();
+          if (!nm) continue;
+          next[nm] = code;
+          if (nm.endsWith('특별시')) next[nm.replace('특별시', '시')] = code;
+          if (nm.endsWith('광역시')) next[nm.replace('광역시', '시')] = code;
+          if (nm.endsWith('특별자치도')) next[nm.replace('특별자치도', '도')] = code;
+        }
+        __SYNC_SIDO_NAME_CODE_MAP = next;
+      }
+      __syncRebuildSidoMap();
+
+      function __syncNormSido(raw) {
+        const s = String(raw ?? '').trim();
+        if (!s) return '';
+        if (/^\d{2}$/.test(s)) return s;
+        if (/^\d{5,10}$/.test(s)) return s.slice(0, 2);
+        return __SYNC_SIDO_NAME_CODE_MAP[s] || '';
+      }
+      function __syncNormSigungu(raw) {
+        const s = String(raw ?? '').trim();
+        if (!s) return '';
+        if (/^\d{5}$/.test(s)) return s;
+        const m = s.match(/\d{5}/);
+        return m ? m[0] : '';
+      }
+
+      const __syncAptIndex = new Map(); // aptId -> {sgg5, sidoCode, sidoName, sigunguName}
+      const __syncSigunguNameByCode = new Map();
+      const __syncSigunguNameByCode5 = new Map();
+
+      function __syncRegApt(sidoCodeRaw, sigunguCodeRaw, sigunguNameRaw) {
+        const sidoCode = __syncNormSido(sidoCodeRaw);
+        const sigunguCode = __syncNormSigungu(sigunguCodeRaw);
+        const sigunguName = String(sigunguNameRaw ?? '').trim();
+        if (!sidoCode || !sigunguCode || !sigunguName) return;
+        const key = `${sidoCode}:${sigunguCode}`;
+        const prev = __syncSigunguNameByCode.get(key);
+        if (!prev || sigunguName.length > prev.length) __syncSigunguNameByCode.set(key, sigunguName);
+        const prev5 = __syncSigunguNameByCode5.get(sigunguCode);
+        if (!prev5 || sigunguName.length > prev5.length) __syncSigunguNameByCode5.set(sigunguCode, sigunguName);
+      }
+
+      function __syncNormSigunguName(sidoCode, sigunguCode, name) {
+        const sc = __syncNormSido(sidoCode);
+        const gc = __syncNormSigungu(sigunguCode) || String(sigunguCode ?? '').trim();
+        if (/^\d{2}$/.test(sc) && /^\d{5}$/.test(gc)) {
+          const c = __syncSigunguNameByCode.get(`${sc}:${gc}`);
+          if (c) return c;
+        }
+        if (/^\d{5}$/.test(gc)) {
+          const c = __syncSigunguNameByCode5.get(gc);
+          if (c) return c;
+        }
+        return String(name ?? '').trim() || gc;
+      }
+
+      // ── apt.json 로드 ──
+      async function __loadAptIndexForSync() {
+        if (__syncAptIndex.size > 0) return;
+        try {
+          const res = await fetch('apt.json', { cache: 'no-store' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const data = await res.json();
+          const arr = Array.isArray(data) ? data :
+            (Array.isArray(data?.apartments) ? data.apartments :
+             Array.isArray(data?.data) ? data.data : []);
+          for (const a of arr) {
+            const rawSidoCode = String(a.sido ?? a.sidoCode ?? '').trim();
+            const rawSidoName = String(a.sidoNm ?? a.sidoName ?? '').trim();
+            const sc = __syncNormSido(rawSidoCode);
+            if (sc && rawSidoName) {
+              __SYNC_SIDO_CODE_NAME_MAP[sc] = rawSidoName;
+              __syncRebuildSidoMap();
+            }
+            __syncRegApt(rawSidoCode, String(a.sigungu ?? a.sigunguCode ?? '').trim(), String(a.sigunguNm ?? a.sigunguName ?? '').trim());
+          }
+          for (const a of arr) {
+            const id = String(a.id ?? a.apartmentId ?? a.aptId ?? '').trim();
+            if (!id) continue;
+            const sidoCode = __syncNormSido(String(a.sido ?? a.sidoCode ?? '').trim());
+            const sigunguCode = __syncNormSigungu(String(a.sigungu ?? a.sigunguCode ?? '').trim());
+            __syncAptIndex.set(id, {
+              sgg5: sigunguCode,
+              sidoCode,
+              sidoName: __SYNC_SIDO_CODE_NAME_MAP[sidoCode] || sidoCode,
+              sigunguName: __syncNormSigunguName(sidoCode, sigunguCode, String(a.sigunguNm ?? a.sigunguName ?? '').trim()),
+            });
+          }
+          console.log(`[CloudSync] apt.json 로드: ${__syncAptIndex.size}건`);
+        } catch (e) {
+          console.warn('[CloudSync] apt.json 로드 실패:', e);
+        }
+      }
+
+      function __syncNoteRegion(note) {
+        const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+        if (!id) return null;
+        return __syncAptIndex.get(id) || null;
+      }
+
+      // ── SIG 경계 기반 포토메모 지역 판별 ──
+      const __syncSigIndex = { prepared: null, grid: null, loaded: false };
+      const __SYNC_SIG_STEP = 0.1;
+
+      function __syncBuildSigGrid(prepared) {
+        const grid = new Map();
+        for (const f of prepared) {
+          const [minLng, minLat, maxLng, maxLat] = f.bbox;
+          for (let x = Math.floor(minLng / __SYNC_SIG_STEP); x <= Math.floor(maxLng / __SYNC_SIG_STEP); x++) {
+            for (let y = Math.floor(minLat / __SYNC_SIG_STEP); y <= Math.floor(maxLat / __SYNC_SIG_STEP); y++) {
+              const key = `${x},${y}`;
+              if (!grid.has(key)) grid.set(key, []);
+              grid.get(key).push(f);
+            }
+          }
+        }
+        return grid;
+      }
+
+      function __syncBbox(geom) {
+        let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+        const walk = (arr) => {
+          for (const it of arr || []) {
+            if (Array.isArray(it) && typeof it[0] === 'number') {
+              if (it[0] < minLng) minLng = it[0]; if (it[0] > maxLng) maxLng = it[0];
+              if (it[1] < minLat) minLat = it[1]; if (it[1] > maxLat) maxLat = it[1];
+            } else if (Array.isArray(it)) walk(it);
+          }
+        };
+        walk(geom?.coordinates || []);
+        return isFinite(minLng) ? [minLng, minLat, maxLng, maxLat] : null;
+      }
+
+      function __syncPointInRing(ptLng, ptLat, ring) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+          if (((yi > ptLat) !== (yj > ptLat)) && (ptLng < (xj - xi) * (ptLat - yi) / ((yj - yi) || 1e-12) + xi))
+            inside = !inside;
+        }
+        return inside;
+      }
+
+      function __syncPointInPoly(ptLng, ptLat, coords) {
+        if (!coords?.length) return false;
+        if (!__syncPointInRing(ptLng, ptLat, coords[0])) return false;
+        for (let i = 1; i < coords.length; i++) if (__syncPointInRing(ptLng, ptLat, coords[i])) return false;
+        return true;
+      }
+
+      function __syncGeomContains(geom, lng, lat) {
+        if (!geom) return false;
+        if (geom.type === 'Polygon') return __syncPointInPoly(lng, lat, geom.coordinates);
+        if (geom.type === 'MultiPolygon') return (geom.coordinates || []).some(p => __syncPointInPoly(lng, lat, p));
+        return false;
+      }
+
+      function __syncPickSigRegion(props = {}) {
+        const sgCode = String(props.sgg_cd ?? props.sig_cd ?? props.SIG_CD ?? props.sggCode ?? '').trim();
+        const sgName = String(props.sgg_nm ?? props.sig_kor_nm ?? props.SIG_KOR_NM ?? props.NAME ?? props.name ?? '').trim();
+        const sdCode = String(props.sido_cd ?? props.sd_cd ?? props.SIDO_CD ?? '').trim();
+        const sdName = String(props.sido_nm ?? props.sdo_nm ?? props.sd_nm ?? '').trim();
+        const sigunguCode = __syncNormSigungu(sgCode) || sgCode;
+        let sidoCode = __syncNormSido(sdCode);
+        if (!sidoCode && /^\d{5}$/.test(sigunguCode)) sidoCode = sigunguCode.slice(0, 2);
+        if (!sidoCode) return null;
+        return {
+          sgg5: sigunguCode,
+          sidoCode,
+          sidoName: __SYNC_SIDO_CODE_NAME_MAP[sidoCode] || sdName || sidoCode,
+          sigunguName: __syncNormSigunguName(sidoCode, sigunguCode, sgName),
+        };
+      }
+
+      async function __ensureSyncSigIndex() {
+        if (__syncSigIndex.loaded) return;
+        const parts = [
+          'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson',
+          'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson',
+        ];
+        const prepared = [];
+        try {
+          // 순차 로드 + 즉시 features 추출/raw GC — 모바일 OOM 방지
+          for (const p of parts) {
+            const r = await fetch(p, { cache: 'no-store' });
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            let fc = await r.json();
+            for (const f of (fc?.features || [])) {
+              const geom = f?.geometry;
+              if (!geom) continue;
+              const bbox = __syncBbox(geom);
+              if (!bbox) continue;
+              const region = __syncPickSigRegion(f?.properties || {});
+              if (!region) continue;
+              prepared.push({ bbox, geometry: geom, region });
+            }
+            fc = null;
+            // 다음 fetch 전 한 박자 쉬어 GC 기회 부여
+            await new Promise(r => setTimeout(r, 0));
+          }
+          __syncSigIndex.prepared = prepared;
+          __syncSigIndex.grid = __syncBuildSigGrid(prepared);
+          console.log(`[CloudSync] SIG 인덱스: ${prepared.length}건`);
+        } catch (e) {
+          __syncSigIndex.prepared = [];
+          __syncSigIndex.grid = new Map();
+          console.warn('[CloudSync] SIG GeoJSON 로드 실패:', e);
+        }
+        __syncSigIndex.loaded = true;
+      }
+
+      // 로컬에 포토메모가 1개라도 있는지 빠르게 확인 (SIG 인덱스 필요 여부 판단용)
+      async function __syncHasAnyPhotoMemo() {
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          if (!db.objectStoreNames.contains('photoMemos')) { db.close(); return false; }
+          const result = await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => resolve(!!e.target.result);
+            req.onerror = () => resolve(false);
+          });
+          db.close();
+          return result;
+        } catch (_) { return false; }
+      }
+
+      function __syncPhotoRegion(photo) {
+        const lat = parseFloat(String(photo?.lat ?? '').replace(',', '.'));
+        const lng = parseFloat(String(photo?.lng ?? '').replace(',', '.'));
+        if (!isFinite(lat) || !isFinite(lng)) return null;
+        if (!__syncSigIndex.grid) return null;
+        const gx = Math.floor(lng / __SYNC_SIG_STEP);
+        const gy = Math.floor(lat / __SYNC_SIG_STEP);
+        const candidates = __syncSigIndex.grid.get(`${gx},${gy}`) || [];
+        for (const f of candidates) {
+          const b = f.bbox;
+          if (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3]) continue;
+          if (__syncGeomContains(f.geometry, lng, lat)) return f.region;
+        }
+        const EPS = 0.00015, seen = new Set();
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            if (!dx && !dy) continue;
+            for (const f of (__syncSigIndex.grid.get(`${gx + dx},${gy + dy}`) || [])) {
+              if (seen.has(f)) continue;
+              seen.add(f);
+              const b = f.bbox;
+              if (!b || lng < b[0] - EPS || lng > b[2] + EPS || lat < b[1] - EPS || lat > b[3] + EPS) continue;
+              if (__syncGeomContains(f.geometry, lng, lat)) return f.region;
+            }
+          }
+        }
+        return null;
+      }
+
+      // ── 지역 캐시 (드롭다운 구성 + 업로드/다운로드 시 사용) ──
+      const __syncRegionCache = {
+        bySido: new Map(),
+        notesBySgg: new Map(),
+        photosBySgg: new Map(),
+        built: false,
+      };
+
+      async function __buildSyncRegionCache() {
+        __syncRegionCache.bySido.clear();
+        __syncRegionCache.notesBySgg.clear();
+        __syncRegionCache.photosBySgg.clear();
+        __syncRegionCache.built = false;
+
+        await __loadAptIndexForSync();
+        // 포토메모가 있을 때만 SIG 인덱스 로드 (29MB GeoJSON — 모바일 OOM 방지)
+        // 단지메모는 aptId로 매칭하므로 SIG 불필요
+        if (await __syncHasAnyPhotoMemo()) {
+          await __ensureSyncSigIndex();
+        }
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+
+        // 메모리 절감: 캐시에는 summary({id, updatedAt, deletedAt})만 저장
+        // 전체 레코드(base64 이미지 포함)는 __sggSync에서 선택된 sgg5에 대해서만 IDB.get()으로 재조회
+        await new Promise((resolve) => {
+          const tx = db.transaction(['apartmentNotes'], 'readonly');
+          const req = tx.objectStore('apartmentNotes').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const note = c.value;
+            const isTombstone = !!note?.deletedAt;
+            const memoText = String(note?.memo ?? '').replace(/<[^>]*>/g, '').trim();
+            const hasContent = memoText.length > 0 || (Array.isArray(note?.images) && note.images.length > 0);
+            if (hasContent || isTombstone) {
+              const region = __syncNoteRegion(note);
+              if (region?.sgg5) {
+                if (!__syncRegionCache.notesBySgg.has(region.sgg5))
+                  __syncRegionCache.notesBySgg.set(region.sgg5, []);
+                __syncRegionCache.notesBySgg.get(region.sgg5).push({
+                  id: note.id ?? note.aptId ?? note.apartmentId,
+                  updatedAt: note.updatedAt,
+                  deletedAt: note.deletedAt,
+                });
+                __addToSyncSidoCache(region);
+              }
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
+        });
+
+        await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const photo = c.value;
+            const isTombstone = !!photo?.deletedAt;
+            const hasImage = (typeof photo?.imageDataUrl === 'string' && photo.imageDataUrl.startsWith('data:'))
+              || (photo?.imageBlob instanceof Blob);
+            if (hasImage || photo?.id || isTombstone) {
+              const region = __syncPhotoRegion(photo);
+              if (region?.sgg5) {
+                if (!__syncRegionCache.photosBySgg.has(region.sgg5))
+                  __syncRegionCache.photosBySgg.set(region.sgg5, []);
+                __syncRegionCache.photosBySgg.get(region.sgg5).push({
+                  id: photo.id,
+                  updatedAt: photo.updatedAt,
+                  deletedAt: photo.deletedAt,
+                });
+                __addToSyncSidoCache(region);
+              }
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
+        });
+
+        db.close();
+        __syncRegionCache.built = true;
+      }
+
+      function __addToSyncSidoCache(region) {
+        const sc = region.sidoCode, gc = region.sgg5;
+        if (!sc || !gc) return;
+        if (!__syncRegionCache.bySido.has(sc))
+          __syncRegionCache.bySido.set(sc, { name: region.sidoName || sc, sigungu: new Map() });
+        const sido = __syncRegionCache.bySido.get(sc);
+        if (!sido.sigungu.has(gc))
+          sido.sigungu.set(gc, { name: region.sigunguName || gc });
+      }
+
+      // ── Drive sgg 파일 I/O ── (파일명 prefix 매칭: `{sgg5}_..._{type}.json`)
+      async function __driveFindSggFile(sgg5, type) {
+        if (!window.__gdriveSggFolderId) return null;
+        return __driveFindSggFileByPrefix(window.__gdriveSggFolderId, sgg5, type);
+      }
+
+      async function __driveReadSggFile(fileId) {
+        const resp = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+          { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` } }
+        );
+        if (!resp.ok) throw new Error(`sgg 파일 읽기 실패: ${resp.status}`);
+        // parse 실패 시 throw — 빈 객체 fallback은 데이터 손실 위험 (S1)
+        // 빈 응답("")은 새로 만든 파일일 수 있으므로 빈 객체 반환
+        const text = await resp.text();
+        if (!text || !text.trim()) return {};
+        try { return JSON.parse(text); }
+        catch (e) {
+          throw Object.assign(
+            new Error(`sgg 파일 JSON parse 실패 (fileId=${fileId}, ${text.length}바이트): ${e.message}`),
+            { code: 'SGG_PARSE_FAIL', fileId, bodySnippet: text.slice(0, 200) }
+          );
+        }
+      }
+
+      async function __driveWriteSggFile(fileId, data) {
+        const resp = await fetch(
+          `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${window.__gdriveAccessToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(data),
+          }
+        );
+        if (!resp.ok) throw new Error(`sgg 파일 저장 실패: ${resp.status}`);
+      }
+
+      // Drive 이미지 파일(fileId) → Blob (base64 변환 없음, 메모리 절감용)
+      // cache:'no-store' — iOS Safari 내부 HTTP 캐시 누적 차단
+      async function __driveDownloadImageAsBlob(fileId) {
+        const doFetch = async () => {
+          const resp = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+            {
+              headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` },
+              cache: 'no-store',
+            }
+          );
+          if (!resp.ok) throw new Error(`Drive 이미지 다운로드 실패: ${resp.status}`);
+          return await resp.blob();
+        };
+        try { return await doFetch(); }
+        catch (e1) {
+          await new Promise((r) => setTimeout(r, 400));
+          return await doFetch(); // 1회 재시도
+        }
+      }
+
+      // dataUrl → Blob (복원 패턴 dataUrlToBlob와 동일 — fetch native 디코딩)
+      async function __syncDataUrlToBlob(dataUrl) {
+        try {
+          if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return null;
+          const res = await fetch(dataUrl);
+          return await res.blob();
+        } catch (_) { return null; }
+      }
+
+      // Drive 이미지 파일(fileId) → dataUrl. 일시 실패 시 1회 재시도.
+      async function __driveDownloadImageAsDataUrl(fileId) {
+        const doFetch = async () => {
+          const resp = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+            { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` } }
+          );
+          if (!resp.ok) throw new Error(`Drive 이미지 다운로드 실패: ${resp.status}`);
+          const blob = await resp.blob();
+          return await __blobToDataUrl(blob);
+        };
+        try {
+          return await doFetch();
+        } catch (e1) {
+          // 일시 실패 방어 — 400ms 후 1회 재시도
+          await new Promise((r) => setTimeout(r, 400));
+          try {
+            return await doFetch();
+          } catch (e2) {
+            console.warn(`[drive] 이미지 다운로드 재시도도 실패 fileId=${fileId}:`, e2?.message || e2);
+            throw e2;
+          }
+        }
+      }
+
+      async function __driveCreateSggFile(sgg5, type, data) {
+        if (!window.__gdriveSggFolderId) throw new Error('sgg 폴더 미초기화');
+        const sidoName = __SYNC_SIDO_CODE_NAME_MAP[sgg5.slice(0, 2)] || '';
+        const sigunguName = __syncSigunguNameByCode5.get(sgg5) || '';
+        const name = __sggJsonFilename(sgg5, sidoName, sigunguName, type);
+        const metadata = { name, parents: [window.__gdriveSggFolderId], mimeType: 'application/json' };
+        const created = await __driveUploadMultipart(metadata, JSON.stringify(data), 'application/json');
+        return created.id;
+      }
+
+      // sgg 파일 읽기 (없으면 생성 후 반환) — schemaVersion 3 (텍스트 메타만, 이미지 참조 필드 없음)
+      // sgg 동기화 데이터 타입('notes'/'photos'/'polygons') → JSON 내 데이터 키
+      function __sggDataKey(type) {
+        return type === 'notes' ? 'notes' : type === 'photos' ? 'photos' : 'polygons';
+      }
+
+      async function __driveGetSggData(sgg5, type) {
+        const tStart = performance.now();
+        if (!window.__driveSggFileIds) window.__driveSggFileIds = {};
+        const cacheKey = `${sgg5}_${type}`;
+        let fileId = window.__driveSggFileIds[cacheKey] || await __driveFindSggFile(sgg5, type);
+        const emptyData = {
+          sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: null,
+          [__sggDataKey(type)]: {},
+        };
+        if (!fileId) {
+          fileId = await __driveCreateSggFile(sgg5, type, emptyData);
+          window.__driveSggFileIds[cacheKey] = fileId;
+          const elapsed = Math.round(performance.now() - tStart);
+          const msg = `sgg5=${sgg5} type=${type} status=created elapsed=${elapsed}ms`;
+          console.log('[sync:perf] getSggData', msg);
+          try { window.hongbuDebugLog?.('INFO', '[sync:perf] getSggData', msg); } catch (_) {}
+          return { fileId, data: emptyData };
+        }
+        window.__driveSggFileIds[cacheKey] = fileId;
+        const data = await __driveReadSggFile(fileId);
+        const normalized = (typeof __normalizeSggData === 'function') ? __normalizeSggData(data, type) : data;
+        // 구조 보장 (정규화가 실패한 경우 대비)
+        const dataKey = __sggDataKey(type);
+        if (!normalized[dataKey]) normalized[dataKey] = {};
+        const count = Object.keys(normalized[dataKey] || {}).length;
+        const elapsed = Math.round(performance.now() - tStart);
+        const msg = `sgg5=${sgg5} type=${type} status=found items=${count} elapsed=${elapsed}ms`;
+        console.log('[sync:perf] getSggData', msg);
+        try { window.hongbuDebugLog?.('INFO', '[sync:perf] getSggData', msg); } catch (_) {}
+        return { fileId, data: normalized };
+      }
+
+      // ── Drive 폴더 내 fileId Set 조회 (무결성 검증용) ──
+      async function __driveListFolderFileIds(folderId) {
+        const ids = new Set();
+        if (!folderId) return ids;
+        let pageToken = null;
+        do {
+          const params = {
+            q: `'${folderId}' in parents and trashed=false`,
+            fields: 'nextPageToken,files(id)',
+            pageSize: 1000,
+          };
+          if (pageToken) params.pageToken = pageToken;
+          const resp = await gapi.client.drive.files.list(params);
+          for (const f of (resp.result.files || [])) ids.add(f.id);
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        return ids;
+      }
+
+      // ── Drive 폴더 내 {name → fileId} Map 조회 (파일명 기반 동기화용) ──
+      // 같은 이름 중복 파일이 있을 경우 첫 번째만 기록, 나머지는 dupFileIds 에 수집
+      async function __driveListFolderNameMap(folderId) {
+        const nameMap = new Map();
+        const dupFileIds = [];
+        if (!folderId) return { nameMap, dupFileIds };
+        const tStart = performance.now();
+        let pageToken = null;
+        let pages = 0;
+        do {
+          const params = {
+            q: `'${folderId}' in parents and trashed=false`,
+            fields: 'nextPageToken,files(id,name,createdTime)',
+            pageSize: 1000,
+          };
+          if (pageToken) params.pageToken = pageToken;
+          const resp = await gapi.client.drive.files.list(params);
+          pages++;
+          for (const f of (resp.result.files || [])) {
+            if (nameMap.has(f.name)) dupFileIds.push(f.id);
+            else nameMap.set(f.name, f.id);
+          }
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        const elapsed = Math.round(performance.now() - tStart);
+        const msg = `folderId=${(folderId || '').slice(-6)} pages=${pages} files=${nameMap.size} dup=${dupFileIds.length} elapsed=${elapsed}ms`;
+        console.log('[sync:perf] listFolder', msg);
+        try { window.hongbuDebugLog?.('INFO', '[sync:perf] listFolder', msg); } catch (_) {}
+        return { nameMap, dupFileIds };
+      }
+
+      // ── 특정 parent 하위에서 sgg5 prefix로 하위 폴더 찾거나 생성 ──
+      // 폴더명은 `{sgg5}_{sidoName}_{sigunguName}` 규칙. 한글 접미는 유저가 편집해도 OK
+      // (앞 5자리 숫자 prefix만 일치하면 재사용)
+      async function __driveEnsureSggFolder(parentId, sgg5, sidoName, sigunguName) {
+        if (!parentId) throw new Error('__driveEnsureSggFolder: parentId 없음');
+        if (!/^\d{5}$/.test(String(sgg5))) throw new Error(`__driveEnsureSggFolder: 잘못된 sgg5 "${sgg5}"`);
+        const tStart = performance.now();
+        // 1) prefix 매칭 — parent 하위 전체 폴더 나열 (sgg5 수만큼이라 bounded)
+        let pageToken = null;
+        do {
+          const resp = await gapi.client.drive.files.list({
+            q: `'${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+            fields: 'nextPageToken,files(id,name,createdTime)',
+            pageSize: 1000,
+            pageToken: pageToken || undefined,
+          });
+          for (const f of (resp.result.files || [])) {
+            if (__parseSgg5Prefix(f.name) === String(sgg5)) {
+              const elapsed = Math.round(performance.now() - tStart);
+              const msg = `sgg5=${sgg5} parent=${(parentId||'').slice(-6)} status=found elapsed=${elapsed}ms`;
+              console.log('[sync:perf] ensureSggFolder', msg);
+              try { window.hongbuDebugLog?.('INFO', '[sync:perf] ensureSggFolder', msg); } catch (_) {}
+              return f.id;
+            }
+          }
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        // 2) 없으면 생성
+        const name = __sggFolderName(sgg5, sidoName, sigunguName);
+        const created = await gapi.client.drive.files.create({
+          resource: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+          fields: 'id',
+        });
+        const elapsed = Math.round(performance.now() - tStart);
+        const msg = `sgg5=${sgg5} parent=${(parentId||'').slice(-6)} status=created name="${name}" elapsed=${elapsed}ms`;
+        console.log('[sync:perf] ensureSggFolder', msg);
+        try { window.hongbuDebugLog?.('INFO', '[sync:perf] ensureSggFolder', msg); } catch (_) {}
+        return created.result.id;
+      }
+
+      // ── filename → fileId 캐시 (lazy load 용) ──
+      // key = `${parentFolderId}:${sgg5}`, value = {nameMap, expire}
+      window.__driveNameCacheMap = window.__driveNameCacheMap || new Map();
+      const __DRIVE_NAME_CACHE_TTL = 10 * 60 * 1000; // 10분
+      async function __driveGetNameMapForSgg(parentId, sgg5) {
+        if (!parentId || !sgg5) return null;
+        const key = `${parentId}:${sgg5}`;
+        const cached = window.__driveNameCacheMap.get(key);
+        if (cached && cached.expire > Date.now()) return cached.nameMap;
+        const sidoName = __SYNC_SIDO_CODE_NAME_MAP[sgg5.slice(0, 2)] || '';
+        const sigunguName = __syncSigunguNameByCode5.get(sgg5) || '';
+        const folderId = await __driveEnsureSggFolder(parentId, sgg5, sidoName, sigunguName);
+        const { nameMap } = await __driveListFolderNameMap(folderId);
+        window.__driveNameCacheMap.set(key, { nameMap, expire: Date.now() + __DRIVE_NAME_CACHE_TTL });
+        return nameMap;
+      }
+      function __driveInvalidateNameCache() {
+        window.__driveNameCacheMap?.clear();
+      }
+
+      // ── sgg parent 폴더에서 sgg5 prefix 파일 찾기 ({sgg5}_..._notes.json 등) ──
+      async function __driveFindSggFileByPrefix(parentId, sgg5, type) {
+        if (!parentId) return null;
+        const suffix = `_${type}.json`;
+        let pageToken = null;
+        do {
+          const resp = await gapi.client.drive.files.list({
+            q: `'${parentId}' in parents and trashed=false`,
+            fields: 'nextPageToken,files(id,name)',
+            pageSize: 1000,
+            pageToken: pageToken || undefined,
+          });
+          for (const f of (resp.result.files || [])) {
+            if (__parseSgg5Prefix(f.name) !== String(sgg5)) continue;
+            if (!f.name.endsWith(suffix)) continue;
+            return f.id;
+          }
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        return null;
+      }
+
+      // ── Drive storageQuota 조회 ──
+      async function __driveGetStorageQuota() {
+        const resp = await gapi.client.drive.about.get({ fields: 'storageQuota' });
+        const q = resp.result.storageQuota || {};
+        return {
+          limit: Number(q.limit || 0),
+          usage: Number(q.usage || 0),
+          usageInDrive: Number(q.usageInDrive || 0),
+        };
+      }
+
+      // ── 로컬(브라우저/IndexedDB) 용량 조회 ──
+      async function __getLocalStorageEstimate() {
+        if (!navigator.storage?.estimate) return null;
+        const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+        return { usage, quota, free: Math.max(0, quota - usage) };
+      }
+
+      // ── 바이트 단위 포매터 ──
+      function __fmtBytes(n) {
+        if (!n || n <= 0) return '0 B';
+        const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.min(u.length - 1, Math.floor(Math.log10(n) / 3));
+        return (n / Math.pow(1000, i)).toFixed(i ? 2 : 0) + ' ' + u[i];
+      }
+
+      // ── 중앙 컨펌 모달 (Promise<boolean>) ──
+      function __showConfirmModal(title, bodyHtml, { okLabel = '확인', cancelLabel = '취소' } = {}) {
+        return new Promise((resolve) => {
+          const bg = document.createElement('div');
+          bg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+          const box = document.createElement('div');
+          box.style.cssText = 'background:#fff;border-radius:10px;padding:20px 24px;min-width:280px;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.3);font-family:inherit;';
+          box.innerHTML = `
+            <div style="font-size:16px;font-weight:600;margin-bottom:12px;">${title}</div>
+            <div style="font-size:13px;line-height:1.6;margin-bottom:16px;">${bodyHtml}</div>
+            <div style="display:flex;gap:8px;justify-content:flex-end;">
+              <button id="__cfm_cancel" style="padding:6px 14px;font-size:13px;">${cancelLabel}</button>
+              <button id="__cfm_ok" style="padding:6px 14px;font-size:13px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;">${okLabel}</button>
+            </div>`;
+          bg.appendChild(box);
+          document.body.appendChild(bg);
+          const done = (v) => { bg.remove(); resolve(v); };
+          box.querySelector('#__cfm_ok').onclick = () => done(true);
+          box.querySelector('#__cfm_cancel').onclick = () => done(false);
+          bg.onclick = (e) => { if (e.target === bg) done(false); };
+        });
+      }
+
+      // [제거됨] 낡은 업로드/다운로드 경로 — __sggSync 로 대체
+      // 기존 __sggUploadWithConfirm/__sggUpload/__sggDownloadWithConfirm/__sggDownload 는
+      // 양방향 머지 방식(__sggSync)으로 통합되어 아래 stub 만 남김
+      async function __sggUploadWithConfirm(sgg5) { return __sggSyncWithConfirm(sgg5); }
+      async function __sggDownloadWithConfirm(sgg5) { return __sggSyncWithConfirm(sgg5); }
+
+
+      // ── 제한된 동시성으로 비동기 작업 실행 ──
+      async function __runConcurrent(tasks, concurrency = 8) {
+        const results = new Array(tasks.length);
+        let idx = 0;
+        async function worker() {
+          while (idx < tasks.length) {
+            const i = idx++;
+            try { results[i] = await tasks[i](); } catch (e) { results[i] = e; }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+        return results;
+      }
+
+      // ================================================================
+      // ☁️ sgg5 양방향 머지 동기화 — updatedAt/deletedAt 기반 LWW (git-style)
+      // ================================================================
+      const __SYNC_SCHEMA_VERSION = 3;
+      const __SYNC_TOMBSTONE_TTL_MS = 30 * 86400 * 1000;
+      const __SYNC_MIG_FLAG = 'hongbu_updatedAt_mig_v1';
+
+      // 개별 삭제: tombstone 레코드로 교체 — 다음 동기화에서 Drive로 전파됨
+      async function __softDeleteNote(id) {
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        const now = Date.now();
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(['apartmentNotes'], 'readwrite');
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = (e) => { db.close(); reject(e.target.error); };
+          tx.objectStore('apartmentNotes').put({
+            id: String(id), memo: '', images: [],
+            updatedAt: now, deletedAt: now,
+          });
+        });
+        try { window.__memoPresenceCache?.set(String(id), false); } catch (_) {}
+        __syncRegionCache.built = false;
+      }
+
+      async function __softDeletePhoto(id) {
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        const now = Date.now();
+        // 기존 lat/lng 보존 (지역 매칭용) — tombstone이 어느 sgg5에 속하는지 알려면 필요
+        const existing = await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').get(String(id));
+          req.onsuccess = () => resolve(req.result || null);
+          req.onerror = () => resolve(null);
+        });
+        const lat = Number(existing?.lat) || 0;
+        const lng = Number(existing?.lng) || 0;
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction(['photoMemos'], 'readwrite');
+          tx.oncomplete = () => { db.close(); resolve(); };
+          tx.onerror = (e) => { db.close(); reject(e.target.error); };
+          tx.objectStore('photoMemos').put({
+            id: String(id), lat, lng, createdAt: 0, note: '',
+            thumbDataUrl: '', imageDataUrl: '',
+            updatedAt: now, deletedAt: now,
+          });
+        });
+        try {
+          const arr = window.__photoMemoIndex || [];
+          const i = arr.findIndex(m => String(m.id) === String(id));
+          if (i >= 0) arr.splice(i, 1);
+          if (typeof __removePhotoMemoMarker === 'function') __removePhotoMemoMarker(String(id));
+        } catch (_) {}
+        __syncRegionCache.built = false;
+      }
+
+      // 마이그레이션: updatedAt/deletedAt 없는 기존 레코드 백필 (1회만 실행)
+      // 청크 단위(30개)로 트랜잭션 분할 — 모바일 OOM 방지 (base64 이미지 포함 레코드)
+      async function __ensureUpdatedAtMigration() {
+        if (localStorage.getItem(__SYNC_MIG_FLAG) === '1') return;
+        const CHUNK = 30;
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          for (const storeName of ['apartmentNotes', 'photoMemos']) {
+            if (!db.objectStoreNames.contains(storeName)) continue;
+            let lastKey = null;
+            // 청크별로 트랜잭션을 새로 열어 메모리 누적 방지
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const processed = await new Promise((resolve) => {
+                const tx = db.transaction([storeName], 'readwrite');
+                let count = 0, nextKey = lastKey;
+                tx.oncomplete = () => resolve({ count, nextKey });
+                tx.onerror = () => resolve({ count, nextKey });
+                const store = tx.objectStore(storeName);
+                const range = lastKey == null ? null : IDBKeyRange.lowerBound(lastKey, true);
+                const req = range ? store.openCursor(range) : store.openCursor();
+                req.onsuccess = (e) => {
+                  const c = e.target.result;
+                  if (!c) return;
+                  const v = c.value;
+                  let changed = false;
+                  if (typeof v.updatedAt !== 'number') {
+                    v.updatedAt = Number(v.createdAt) || Date.now();
+                    changed = true;
+                  }
+                  if (!('deletedAt' in v)) { v.deletedAt = null; changed = true; }
+                  if (changed) c.update(v);
+                  nextKey = c.key;
+                  count++;
+                  if (count >= CHUNK) return; // 청크 종료 → 트랜잭션 commit
+                  c.continue();
+                };
+                req.onerror = () => resolve({ count, nextKey });
+              });
+              lastKey = processed.nextKey;
+              if (processed.count < CHUNK) break;
+              // GC 기회 부여
+              await new Promise(r => setTimeout(r, 0));
+            }
+          }
+          db.close();
+          localStorage.setItem(__SYNC_MIG_FLAG, '1');
+          console.log('[migration] updatedAt/deletedAt 백필 완료');
+        } catch (e) {
+          console.warn('[migration] 실패 (무시):', e);
+        }
+      }
+
+      // ── [파일명 기반 동기화] 로컬 IDB 레거시 레코드를 신 규칙으로 변환 ──
+      // apartmentNotes: note.sgg5 / images[].addedAt 백필, fileId 제거
+      // photoMemos: photo.sgg5 / photo.addedAt 백필, imageFileId 제거
+      // 한 번만 실행 (localStorage 플래그로 멱등성 보장)
+      const __SYNC_FILENAME_MIG_FLAG = 'hongbu_filenameScheme_mig_v2';
+      async function __ensureFilenameSchemeMigration() {
+        if (localStorage.getItem(__SYNC_FILENAME_MIG_FLAG) === '1') return;
+        const CHUNK = 30;
+        let noteChanged = 0, photoChanged = 0, imgDropped = 0;
+        try {
+          await __loadAptIndexForSync();
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+
+          // 1) apartmentNotes 변환
+          if (db.objectStoreNames.contains('apartmentNotes')) {
+            let lastKey = null;
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const processed = await new Promise((resolve) => {
+                const tx = db.transaction(['apartmentNotes'], 'readwrite');
+                let count = 0, nextKey = lastKey;
+                tx.oncomplete = () => resolve({ count, nextKey });
+                tx.onerror = () => resolve({ count, nextKey });
+                const store = tx.objectStore('apartmentNotes');
+                const range = lastKey == null ? null : IDBKeyRange.lowerBound(lastKey, true);
+                const req = range ? store.openCursor(range) : store.openCursor();
+                req.onsuccess = (e) => {
+                  const c = e.target.result;
+                  if (!c) return;
+                  const v = c.value;
+                  let changed = false;
+                  // sgg5 백필
+                  if (!v.sgg5) {
+                    const id = String(v?.id ?? v?.aptId ?? v?.apartmentId ?? '').trim();
+                    const region = id ? __syncAptIndex.get(id) : null;
+                    if (region?.sgg5) { v.sgg5 = region.sgg5; changed = true; }
+                  }
+                  // images[] 변환: {data, fileId} → {data, addedAt}
+                  if (Array.isArray(v.images) && v.images.length > 0) {
+                    const needs = v.images.some((img) => {
+                      if (typeof img === 'string') return true;
+                      return !('addedAt' in (img || {}));
+                    });
+                    if (needs) {
+                      const base = Number(v.updatedAt) || Number(v.createdAt) || Date.now();
+                      const next = [];
+                      v.images.forEach((img, i) => {
+                        const data = __getImgData(img);
+                        if (!data) { imgDropped++; return; }
+                        const addedAt = (img && typeof img === 'object' && img.addedAt) || (base + i);
+                        next.push({ data, addedAt });
+                      });
+                      v.images = next;
+                      changed = true;
+                    }
+                  }
+                  if ('_driveIndexed' in v) { delete v._driveIndexed; changed = true; }
+                  if (changed) { c.update(v); noteChanged++; }
+                  nextKey = c.key;
+                  count++;
+                  if (count >= CHUNK) return;
+                  c.continue();
+                };
+                req.onerror = () => resolve({ count, nextKey });
+              });
+              lastKey = processed.nextKey;
+              if (processed.count < CHUNK) break;
+              await new Promise((r) => setTimeout(r, 0));
+            }
+          }
+
+          // 2) photoMemos 변환 — SIG 인덱스 필요 시 로드
+          if (db.objectStoreNames.contains('photoMemos')) {
+            // 레코드가 하나라도 sgg5 없으면 SIG 인덱스 로드
+            let needSig = false;
+            await new Promise((resolve) => {
+              const tx = db.transaction(['photoMemos'], 'readonly');
+              const req = tx.objectStore('photoMemos').openCursor();
+              req.onsuccess = (e) => {
+                const c = e.target.result;
+                if (!c) { resolve(); return; }
+                if (!c.value?.sgg5) { needSig = true; resolve(); return; }
+                c.continue();
+              };
+              req.onerror = () => resolve();
+            });
+            if (needSig) {
+              try { await __ensureSyncSigIndex(); } catch (_) {}
+            }
+            let lastKey = null;
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const processed = await new Promise((resolve) => {
+                const tx = db.transaction(['photoMemos'], 'readwrite');
+                let count = 0, nextKey = lastKey;
+                tx.oncomplete = () => resolve({ count, nextKey });
+                tx.onerror = () => resolve({ count, nextKey });
+                const store = tx.objectStore('photoMemos');
+                const range = lastKey == null ? null : IDBKeyRange.lowerBound(lastKey, true);
+                const req = range ? store.openCursor(range) : store.openCursor();
+                req.onsuccess = (e) => {
+                  const c = e.target.result;
+                  if (!c) return;
+                  const v = c.value;
+                  let changed = false;
+                  if (!v.sgg5) {
+                    const region = __syncPhotoRegion(v);
+                    v.sgg5 = region?.sgg5 || '00000';
+                    changed = true;
+                  }
+                  if (!v.addedAt) {
+                    v.addedAt = Number(v.createdAt) || Number(v.updatedAt) || Date.now();
+                    changed = true;
+                  }
+                  if ('imageFileId' in v) { delete v.imageFileId; changed = true; }
+                  if (changed) { c.update(v); photoChanged++; }
+                  nextKey = c.key;
+                  count++;
+                  if (count >= CHUNK) return;
+                  c.continue();
+                };
+                req.onerror = () => resolve({ count, nextKey });
+              });
+              lastKey = processed.nextKey;
+              if (processed.count < CHUNK) break;
+              await new Promise((r) => setTimeout(r, 0));
+            }
+          }
+
+          db.close();
+          localStorage.setItem(__SYNC_FILENAME_MIG_FLAG, '1');
+          const msg = `notes=${noteChanged}, photos=${photoChanged}, droppedImg=${imgDropped}`;
+          console.log('[migration:filename] 완료', msg);
+          window.hongbuDebugLog?.('INFO', '[migration:filename]', msg);
+        } catch (e) {
+          console.warn('[migration:filename] 실패 (무시):', e);
+          window.hongbuDebugLog?.('ERR', '[migration:filename] 실패', e?.message || e);
+        }
+      }
+
+      // apartmentNotes 의 images[] 에 DataURL 중복이 있으면 가장 작은 addedAt 만 남기고 제거.
+      // 변경된 sgg5 는 __scheduleAutoSync 로 트리거 → Drive orphan jpg 는 __sggSync 가 자동 정리.
+      const __APT_IMG_DEDUP_FLAG = '__hongbuAptImgDedupDone';
+      async function __dedupeApartmentImagesMigration() {
+        if (localStorage.getItem(__APT_IMG_DEDUP_FLAG) === 'v2') return;
+        let changedNotes = 0;
+        let droppedImgs = 0;
+        const dirtySgg5 = new Map(); // sgg5 → aptId (대표)
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          if (!db.objectStoreNames.contains('apartmentNotes')) {
+            db.close();
+            localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v2');
+            return;
+          }
+          await new Promise((resolve) => {
+            const tx = db.transaction(['apartmentNotes'], 'readwrite');
+            tx.oncomplete = resolve;
+            tx.onerror = resolve;
+            tx.onabort = resolve;
+            const store = tx.objectStore('apartmentNotes');
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) return;
+              const v = c.value;
+              if (Array.isArray(v.images) && v.images.length > 1) {
+                const best = new Map(); // data → { addedAt, img }
+                for (const img of v.images) {
+                  const data = __getImgData(img);
+                  if (!data) continue;
+                  const addedAt = (img && typeof img === 'object' && img.addedAt) ? img.addedAt : 0;
+                  const existing = best.get(data);
+                  if (!existing || addedAt < existing.addedAt) {
+                    best.set(data, { addedAt, img });
+                  }
+                }
+                const deduped = [...best.values()]
+                  .map((x) => x.img)
+                  .sort((a, b) => (a?.addedAt || 0) - (b?.addedAt || 0));
+                if (deduped.length < v.images.length) {
+                  droppedImgs += (v.images.length - deduped.length);
+                  v.images = deduped;
+                  v.updatedAt = Date.now();
+                  c.update(v);
+                  changedNotes++;
+                  const sgg5 = String(v.sgg5 || '').trim();
+                  const aptId = String(v.id || '').trim();
+                  if (sgg5 && !dirtySgg5.has(sgg5)) dirtySgg5.set(sgg5, aptId);
+                }
+              }
+              c.continue();
+            };
+          });
+          db.close();
+          localStorage.setItem(__APT_IMG_DEDUP_FLAG, 'v2');
+          const msg = `changedNotes=${changedNotes}, droppedImgs=${droppedImgs}`;
+          console.log('[migration:aptImgDedup] 완료', msg);
+          window.hongbuDebugLog?.('INFO', '[migration:aptImgDedup]', msg);
+          // Drive orphan 정리 트리거 (로그인 여부와 무관 — scheduleAutoSync 가 내부 확인)
+          for (const [sgg5, aptId] of dirtySgg5) {
+            try { __scheduleAutoSync(sgg5, { aptId }); } catch (_) {}
+          }
+        } catch (e) {
+          console.warn('[migration:aptImgDedup] 실패 (무시):', e);
+          window.hongbuDebugLog?.('ERR', '[migration:aptImgDedup] 실패', e?.message || e);
+        }
+      }
+
+      // photoMemos 중 (lat6, lng6, note, imageDataUrl) 시그니처 동일 레코드 중복 제거.
+      // 가장 오래된 createdAt 만 남기고 나머지는 __photoMemoDelete 로 제거 (scheduleAutoSync 자동).
+      // 메모리 절약: 1차 패스는 커서로 경량 시그니처(앞 256자)만 수집, 2차로 후보 id 만 다시 조회.
+      const __PHOTO_DEDUP_FLAG = '__hongbuPhotoDedupDone';
+      async function __dedupePhotoMemosMigration() {
+        if (localStorage.getItem(__PHOTO_DEDUP_FLAG) === 'v2') return;
+        let removedCount = 0;
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          if (!db.objectStoreNames.contains('photoMemos')) {
+            db.close();
+            localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v2');
+            return;
+          }
+
+          // 1차: 커서로 경량 시그니처만 수집 (DataURL 은 앞 256자 + length 만)
+          const lightBuckets = new Map(); // sig → [{id, createdAt}]
+          await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            tx.oncomplete = resolve;
+            tx.onerror = resolve;
+            tx.onabort = resolve;
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) return;
+              const v = c.value;
+              const id = String(v?.id || '').trim();
+              const data = v?.imageDataUrl || '';
+              if (id && typeof v.lat === 'number' && typeof v.lng === 'number' && data) {
+                const lat6 = v.lat.toFixed(6);
+                const lng6 = v.lng.toFixed(6);
+                const note = String(v.note || '');
+                const sig = `${lat6}|${lng6}|${note}|${data.length}|${data.substring(0, 256)}`;
+                if (!lightBuckets.has(sig)) lightBuckets.set(sig, []);
+                lightBuckets.get(sig).push({ id, createdAt: v.createdAt || 0 });
+              }
+              c.continue();
+            };
+          });
+
+          // 후보 id 수집 (중복 가능성 있는 그룹만)
+          const candidateIds = [];
+          for (const group of lightBuckets.values()) {
+            if (group.length < 2) continue;
+            for (const it of group) candidateIds.push(it.id);
+          }
+
+          // 2차: 후보 id 만 store.get 으로 조회하여 DataURL 전체 비교
+          const dataMap = new Map(); // id → DataURL
+          if (candidateIds.length > 0) {
+            await new Promise((resolve) => {
+              const tx = db.transaction(['photoMemos'], 'readonly');
+              tx.oncomplete = resolve;
+              tx.onerror = resolve;
+              tx.onabort = resolve;
+              const store = tx.objectStore('photoMemos');
+              for (const id of candidateIds) {
+                const r = store.get(id);
+                r.onsuccess = () => {
+                  const rec = r.result;
+                  if (rec) dataMap.set(id, rec.imageDataUrl || '');
+                };
+              }
+            });
+          }
+          db.close();
+
+          const toDelete = [];
+          for (const group of lightBuckets.values()) {
+            if (group.length < 2) continue;
+            const exact = new Map();
+            for (const it of group) {
+              const data = dataMap.get(it.id) || '';
+              if (!exact.has(data)) exact.set(data, []);
+              exact.get(data).push(it);
+            }
+            for (const exGroup of exact.values()) {
+              if (exGroup.length < 2) continue;
+              exGroup.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+              for (let i = 1; i < exGroup.length; i++) toDelete.push(exGroup[i].id);
+            }
+          }
+          for (const id of toDelete) {
+            try { await __photoMemoDelete(id); removedCount++; } catch (_) {}
+          }
+          localStorage.setItem(__PHOTO_DEDUP_FLAG, 'v2');
+          const msg = `removed=${removedCount}, candidates=${candidateIds.length}`;
+          console.log('[migration:photoDedup] 완료', msg);
+          window.hongbuDebugLog?.('INFO', '[migration:photoDedup]', msg);
+        } catch (e) {
+          console.warn('[migration:photoDedup] 실패 (무시):', e);
+          window.hongbuDebugLog?.('ERR', '[migration:photoDedup] 실패', e?.message || e);
+        }
+      }
+
+      // Drive sgg JSON 정규화 (schemaVersion 1 → 2)
+      function __normalizeSggData(data, type) {
+        const key = __sggDataKey(type);
+        if (!data || typeof data !== 'object') {
+          return { sgg: '', schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: null, [key]: {} };
+        }
+        data.schemaVersion = __SYNC_SCHEMA_VERSION;
+        if (!data[key] || typeof data[key] !== 'object') data[key] = {};
+        const fileTs = (() => {
+          const u = data.updatedAt;
+          if (typeof u === 'number') return u;
+          if (typeof u === 'string') { const t = Date.parse(u); return Number.isFinite(t) ? t : 0; }
+          return 0;
+        })();
+        for (const id of Object.keys(data[key])) {
+          const item = data[key][id];
+          if (!item || typeof item !== 'object') { delete data[key][id]; continue; }
+          if (typeof item.updatedAt !== 'number') item.updatedAt = fileTs;
+          // S5: deletedAt 타입 정규화 — string ISO 또는 falsy → number | null
+          // GC 비교(`it.deletedAt < gcCutoff`)가 number 기준이므로 string은 NaN 비교로 GC 누락됨
+          if (!('deletedAt' in item)) {
+            item.deletedAt = null;
+          } else if (typeof item.deletedAt === 'string') {
+            const t = Date.parse(item.deletedAt);
+            item.deletedAt = Number.isFinite(t) ? t : null;
+          } else if (typeof item.deletedAt !== 'number' || !Number.isFinite(item.deletedAt)) {
+            item.deletedAt = item.deletedAt ? Number(item.deletedAt) || null : null;
+          }
+          // [파일명 기반 동기화] 레거시 이미지 참조 필드 제거
+          if ('imageFileIds' in item) delete item.imageFileIds;
+          if ('imageFileId' in item) delete item.imageFileId;
+          if ('imageFiles' in item) delete item.imageFiles;
+          if ('imageFile' in item) delete item.imageFile;
+          if ('driveImageFileIds' in item) delete item.driveImageFileIds;
+        }
+        return data;
+      }
+
+      // 머지 헬퍼: updatedAt 기준 LWW, 동률은 로컬 우선
+      function __syncMergeById(local, drive, kind) {
+        const ids = new Set([...Object.keys(local), ...Object.keys(drive)]);
+        const toDriveMap = {};
+        const toLocalMap = {};
+        let added = 0, updated = 0, deleted = 0;
+
+        for (const id of ids) {
+          const L = local[id];
+          const D = drive[id];
+          const lDel = L && L.deletedAt;
+          const dDel = D && D.deletedAt;
+
+          if (L && !D) {
+            toDriveMap[id] = __syncAttachLocalExtras(L, kind);
+            // 한쪽에만 tombstone이 있고 반대편엔 레코드 자체가 없으면
+            // 기존 tombstone의 단방향 복제일 뿐이므로 deleted/added 카운트에서 제외.
+            if (!lDel) added++;
+            continue;
+          }
+          if (!L && D) {
+            toLocalMap[id] = D;
+            if (!dDel) added++;
+            continue;
+          }
+          const lts = Number(L.updatedAt) || 0;
+          const dts = Number(D.updatedAt) || 0;
+          if (lts === dts) continue; // 완전 동일 시각 → 스킵
+          if (lts > dts) {
+            toDriveMap[id] = __syncAttachLocalExtras(L, kind);
+            if (lDel && !dDel) deleted++;
+            else updated++;
+          } else {
+            toLocalMap[id] = D;
+            if (dDel && !lDel) deleted++;
+            else updated++;
+          }
+        }
+        return { toDriveMap, toLocalMap, added, updated, deleted };
+      }
+
+      // 로컬 레코드에 이미지 원본 메타 부착 (DataURL-only 정책)
+      function __syncAttachLocalExtras(L, kind) {
+        if (kind === 'note') return { ...L, __localImages: L.images || [] };
+        if (kind === 'polygon') return { ...L };
+        return {
+          ...L,
+          __localImageDataUrl: L.imageDataUrl || '',
+        };
+      }
+
+      // 선택된 sgg5의 로컬 레코드만 타겟 스캔 (memoBackup 패턴)
+      // - 커서 visitor가 sgg5 일치 시에만 레코드 보관 → 메모리 누적 최소화
+      // - 포토메모는 0개면 SIG 인덱스 로드 자체를 스킵
+      async function __sggLoadLocalForSgg(db, sgg5) {
+        const localNotes = {};
+        const localPhotos = {};
+
+        // 단지메모: __syncAptIndex(aptId→sgg5)로 매칭, SIG 불필요
+        await new Promise((resolve) => {
+          const tx = db.transaction(['apartmentNotes'], 'readonly');
+          const req = tx.objectStore('apartmentNotes').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const note = c.value;
+            const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+            if (id) {
+              const region = __syncAptIndex.get(id);
+              if (region?.sgg5 === sgg5) localNotes[id] = note;
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
+        });
+
+        // 포토메모 존재 여부 cheap check (cursor 1회)
+        let hasAnyPhoto = false;
+        await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').openCursor();
+          req.onsuccess = (e) => { hasAnyPhoto = !!e.target.result; resolve(); };
+          req.onerror = () => resolve();
+        });
+
+        if (hasAnyPhoto) {
+          await __ensureSyncSigIndex();
+          await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) { resolve(); return; }
+              const photo = c.value;
+              const id = String(photo?.id || '').trim();
+              if (id) {
+                const region = __syncPhotoRegion(photo);
+                if (region?.sgg5 === sgg5) localPhotos[id] = photo;
+              }
+              c.continue();
+            };
+            req.onerror = () => resolve();
+          });
+        }
+
+        // 면적그리기(폴리곤 메모): sgg5 필드가 없어 중심점 기준으로 지역 판정
+        const localPolygons = {};
+        if (db.objectStoreNames.contains('polygonMemos')) {
+          let hasAnyPolygon = false;
+          await new Promise((resolve) => {
+            const tx = db.transaction(['polygonMemos'], 'readonly');
+            const req = tx.objectStore('polygonMemos').openCursor();
+            req.onsuccess = (e) => { hasAnyPolygon = !!e.target.result; resolve(); };
+            req.onerror = () => resolve();
+          });
+
+          if (hasAnyPolygon) {
+            await __ensureSyncSigIndex();
+            await new Promise((resolve) => {
+              const tx = db.transaction(['polygonMemos'], 'readonly');
+              const req = tx.objectStore('polygonMemos').openCursor();
+              req.onsuccess = (e) => {
+                const c = e.target.result;
+                if (!c) { resolve(); return; }
+                const rec = c.value;
+                const id = String(rec?.id || '').trim();
+                if (id) {
+                  const centroid = __polygonMemoCentroid(rec.coords || []);
+                  const region = centroid ? __syncPhotoRegion(centroid) : null;
+                  if (region?.sgg5 === sgg5) localPolygons[id] = rec;
+                }
+                c.continue();
+              };
+              req.onerror = () => resolve();
+            });
+          }
+        }
+
+        return { localNotes, localPhotos, localPolygons };
+      }
+
+      // 로컬 IDB에서 데이터가 존재하는 sgg5 Set만 추출 (memoBackup 패턴)
+      // - 커서 visitor가 sgg5만 추출 → 풀 레코드는 즉시 GC
+      // - 포토메모 0개면 SIG 로드 스킵
+      // - SIG 로드 실패 시 단지메모 sgg5만 반환 (안전 fallback)
+      async function __collectLocalSgg5Set() {
+        const sgg5Set = new Set();
+        await __loadAptIndexForSync();
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+
+        // 단지메모: aptId → __syncAptIndex에서 sgg5 조회 (SIG 불필요)
+        await new Promise((resolve) => {
+          const tx = db.transaction(['apartmentNotes'], 'readonly');
+          const req = tx.objectStore('apartmentNotes').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const note = c.value;
+            const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
+            if (id) {
+              const region = __syncAptIndex.get(id);
+              if (region?.sgg5) sgg5Set.add(region.sgg5);
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
+        });
+
+        // 포토메모 존재 여부 cheap check
+        let hasAnyPhoto = false;
+        await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').openCursor();
+          req.onsuccess = (e) => { hasAnyPhoto = !!e.target.result; resolve(); };
+          req.onerror = () => resolve();
+        });
+
+        if (hasAnyPhoto) {
+          let sigOk = true;
+          try { await __ensureSyncSigIndex(); }
+          catch (e) {
+            sigOk = false;
+            window.hongbuDebugLog?.('ERR', '[sync] SIG 인덱스 로드 실패 → 포토메모 지역 스킵', e?.message || e);
+          }
+          if (sigOk) {
+            await new Promise((resolve) => {
+              const tx = db.transaction(['photoMemos'], 'readonly');
+              const req = tx.objectStore('photoMemos').openCursor();
+              req.onsuccess = (e) => {
+                const c = e.target.result;
+                if (!c) { resolve(); return; }
+                const photo = c.value;
+                const region = __syncPhotoRegion(photo);
+                if (region?.sgg5) sgg5Set.add(region.sgg5);
+                c.continue();
+              };
+              req.onerror = () => resolve();
+            });
+          }
+        }
+
+        // 면적그리기(폴리곤 메모): 중심점 기준 지역 판정 — 노트/포토가 없는 시군구도 목록에 잡히도록
+        if (db.objectStoreNames.contains('polygonMemos')) {
+          let hasAnyPolygon = false;
+          await new Promise((resolve) => {
+            const tx = db.transaction(['polygonMemos'], 'readonly');
+            const req = tx.objectStore('polygonMemos').openCursor();
+            req.onsuccess = (e) => { hasAnyPolygon = !!e.target.result; resolve(); };
+            req.onerror = () => resolve();
+          });
+
+          if (hasAnyPolygon) {
+            let sigOk = true;
+            try { await __ensureSyncSigIndex(); }
+            catch (e) {
+              sigOk = false;
+              window.hongbuDebugLog?.('ERR', '[sync] SIG 인덱스 로드 실패 → 면적그리기 지역 스킵', e?.message || e);
+            }
+            if (sigOk) {
+              await new Promise((resolve) => {
+                const tx = db.transaction(['polygonMemos'], 'readonly');
+                const req = tx.objectStore('polygonMemos').openCursor();
+                req.onsuccess = (e) => {
+                  const c = e.target.result;
+                  if (!c) { resolve(); return; }
+                  const rec = c.value;
+                  const centroid = __polygonMemoCentroid(rec.coords || []);
+                  const region = centroid ? __syncPhotoRegion(centroid) : null;
+                  if (region?.sgg5) sgg5Set.add(region.sgg5);
+                  c.continue();
+                };
+                req.onerror = () => resolve();
+              });
+            }
+          }
+        }
+
+        db.close();
+        return sgg5Set;
+      }
+
+      // ================================
+      // 마지막 수정 지역 기록 (__scheduleAutoSync)
+      // 자동/주기 동기화는 제거됨. 쓰기 훅은 "마지막 수정 지역(sgg5)"만 localStorage에 기록하고,
+      // 실제 업로드/다운로드는 수동(🔄 동기화) 또는 로그인 직후 변동 체크(__postLoginSyncCheck)에서만 수행.
+      // ================================
+
+      // sgg5 추론: aptId 또는 {lat,lng}에서 sgg5를 얻음. 인덱스가 비어있으면 apt.json 로드 후 재시도.
+      async function __resolveSgg5(ctx) {
+        if (!ctx) return '';
+        try {
+          if (ctx.aptId) {
+            if (typeof __syncAptIndex !== 'undefined' && __syncAptIndex.size === 0) {
+              try { await __loadAptIndexForSync(); } catch (_) {}
+            }
+            const region = typeof __syncAptIndex !== 'undefined' ? __syncAptIndex.get(String(ctx.aptId)) : null;
+            if (region?.sgg5) return region.sgg5;
+          }
+          if (Number.isFinite(ctx.lat) && Number.isFinite(ctx.lng)) {
+            if (typeof __syncPhotoRegion === 'function') {
+              const region = __syncPhotoRegion({ lat: ctx.lat, lng: ctx.lng });
+              if (region?.sgg5) return region.sgg5;
+            }
+          }
+        } catch (e) { console.warn('[autoSync] sgg5 추론 실패:', e); }
+        return '';
+      }
+
+      // 공개 API: 쓰기 이벤트 훅에서 호출. 자동 업로드는 하지 않고, "마지막 수정 지역(sgg5)"만 기록한다.
+      // 이 캐시는 로그인 직후 __postLoginSyncCheck(로드 시 변동 체크)와 __findMostRecentlyEditedSgg5에서 사용.
+      // sgg5 없으면 ctx({aptId} 또는 {lat,lng})로 추론.
+      function __scheduleAutoSync(sgg5, ctx) {
+        const record = (s) => {
+          if (!s) return;
+          // 캐시: __findMostRecentlyEditedSgg5의 IDB 전수 스캔 회피
+          try {
+            localStorage.setItem('__hongbuLastEditedSgg5', JSON.stringify({ sgg5: String(s), ts: Date.now() }));
+          } catch (_) {}
+        };
+        if (sgg5) { record(sgg5); return; }
+        // sgg5 없음 → ctx에서 비동기 추론
+        __resolveSgg5(ctx).then(record).catch(() => {});
+      }
+
+      // ================================
+      // 로그인 후 최근 수정 지역 dry-run diff + 사용자 확인 동기화
+      // ================================
+
+      // 로컬 IDB에서 updatedAt 최댓값을 가진 레코드의 sgg5 찾기
+      async function __findMostRecentlyEditedSgg5() {
+        // localStorage 캐시 우선 — IDB 전수 스캔 회피 (쓰기 훅에서 매번 갱신됨)
+        try {
+          const raw = localStorage.getItem('__hongbuLastEditedSgg5');
+          if (raw) {
+            const cached = JSON.parse(raw);
+            if (cached && cached.sgg5) {
+              return { sgg5: String(cached.sgg5), ts: Number(cached.ts) || 0 };
+            }
+          }
+        } catch (_) {}
+        // 캐시 미스 (최초 실행 또는 localStorage 삭제됨) — IDB 전수 스캔 fallback
+        try { await __loadAptIndexForSync(); } catch (_) {}
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        let bestTs = 0, bestSgg5 = '';
+
+        await new Promise((resolve) => {
+          const tx = db.transaction(['apartmentNotes'], 'readonly');
+          const req = tx.objectStore('apartmentNotes').openCursor();
+          req.onsuccess = (e) => {
+            const c = e.target.result;
+            if (!c) { resolve(); return; }
+            const rec = c.value;
+            const ts = Number(rec?.updatedAt) || 0;
+            if (ts > bestTs) {
+              let sgg5 = rec?.sgg5 || '';
+              if (!sgg5) {
+                const id = String(rec?.id ?? '').trim();
+                sgg5 = id ? (__syncAptIndex.get(id)?.sgg5 || '') : '';
+              }
+              if (sgg5) { bestTs = ts; bestSgg5 = sgg5; }
+            }
+            c.continue();
+          };
+          req.onerror = () => resolve();
+        });
+
+        let hasAnyPhoto = false;
+        await new Promise((resolve) => {
+          const tx = db.transaction(['photoMemos'], 'readonly');
+          const req = tx.objectStore('photoMemos').openCursor();
+          req.onsuccess = (e) => { hasAnyPhoto = !!e.target.result; resolve(); };
+          req.onerror = () => resolve();
+        });
+        if (hasAnyPhoto) {
+          try { if (typeof __ensureSyncSigIndex === 'function') await __ensureSyncSigIndex(); } catch (_) {}
+          await new Promise((resolve) => {
+            const tx = db.transaction(['photoMemos'], 'readonly');
+            const req = tx.objectStore('photoMemos').openCursor();
+            req.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) { resolve(); return; }
+              const rec = c.value;
+              const ts = Number(rec?.updatedAt) || 0;
+              if (ts > bestTs) {
+                let sgg5 = rec?.sgg5 || '';
+                if (!sgg5 && typeof __syncPhotoRegion === 'function') {
+                  sgg5 = __syncPhotoRegion(rec)?.sgg5 || '';
+                }
+                if (sgg5) { bestTs = ts; bestSgg5 = sgg5; }
+              }
+              c.continue();
+            };
+            req.onerror = () => resolve();
+          });
+        }
+
+        db.close();
+        return { sgg5: bestSgg5, ts: bestTs };
+      }
+
+      // 로컬과 드라이브 diff 계산 (실제 업로드/다운로드 X)
+      async function __sggDryRunDiff(sgg5) {
+        try { await __loadAptIndexForSync(); } catch (_) {}
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        const { localNotes, localPhotos } = await __sggLoadLocalForSgg(db, sgg5);
+        db.close();
+
+        // Drive 폴더 구조 확인 (없으면 read 실패)
+        try { await __ensureDriveStructure(); } catch (_) {}
+
+        const [notesRes, photosRes] = await Promise.all([
+          __driveGetSggData(sgg5, 'notes').catch(() => ({ data: { notes: {} } })),
+          __driveGetSggData(sgg5, 'photos').catch(() => ({ data: { photos: {} } })),
+        ]);
+        const driveNotes = notesRes?.data?.notes || {};
+        const drivePhotos = photosRes?.data?.photos || {};
+
+        const notesDiff = __syncMergeById(localNotes, driveNotes, 'note');
+        const photosDiff = __syncMergeById(localPhotos, drivePhotos, 'photo');
+
+        const upNote = Object.keys(notesDiff.toDriveMap).length;
+        const upPhoto = Object.keys(photosDiff.toDriveMap).length;
+        const dnNote = Object.keys(notesDiff.toLocalMap).length;
+        const dnPhoto = Object.keys(photosDiff.toLocalMap).length;
+
+        return {
+          sgg5,
+          uploadCount: upNote + upPhoto,
+          downloadCount: dnNote + dnPhoto,
+          upNote, upPhoto, dnNote, dnPhoto,
+          hasChanges: (upNote + upPhoto + dnNote + dnPhoto) > 0,
+        };
+      }
+
+      // sggSyncBusy 플래그가 false 가 될 때까지 폴링. maxMs 초과 시 false 반환.
+      async function __waitForSyncIdle(maxMs) {
+        const pollMs = 500;
+        const start = Date.now();
+        while (window.__sggSyncBusy) {
+          if (Date.now() - start > maxMs) return false;
+          await new Promise(r => setTimeout(r, pollMs));
+        }
+        return true;
+      }
+
+      // 로그인 직후: 최근 수정 지역 dry-run → 변경 있으면 사용자 확인 모달 → 확인 시 동기화
+      // 다른 sync 가 진행 중이면 최대 2분 대기 후 dry-run 을 다시 돌려, 그래도 할 일이 남아 있을 때만 팝업을 띄움.
+      // 사용자 확인 후 race 로 다시 busy 가 되면 한 번 더 기다린 뒤 재검증한다.
+      async function __postLoginSyncCheck() {
+        try {
+          const idle = await __waitForSyncIdle(120000);
+          if (!idle) {
+            console.warn('[autoSync:postLogin] sync busy 2분 초과 — 이번 주기 skip, 다음 flush 에서 처리');
+            return;
+          }
+
+          const { sgg5, ts } = await __findMostRecentlyEditedSgg5();
+          if (!sgg5) { console.log('[autoSync:postLogin] 수정 이력 없음'); return; }
+          console.log(`[autoSync:postLogin] 최근 수정 지역 sgg5=${sgg5}, ts=${ts ? new Date(ts).toLocaleString() : 'N/A'}`);
+
+          const diff = await __sggDryRunDiff(sgg5);
+          if (!diff.hasChanges) {
+            console.log('[autoSync:postLogin] 드라이브와 동일 — 동기화 불필요 (팝업 미표시)');
+            return;
+          }
+
+          const sidoName = __SYNC_SIDO_CODE_NAME_MAP[sgg5.slice(0, 2)] || '';
+          const sigunguName = __syncSigunguNameByCode5.get(sgg5) || '';
+          const loc = `${sidoName} ${sigunguName}`.trim() || sgg5;
+          const when = ts ? new Date(ts).toLocaleString() : '';
+
+          const msg =
+            `☁️ 마지막 수정 지역 — ${loc}\n` +
+            (when ? `마지막 수정: ${when}\n` : '') +
+            `\n변경 감지:\n` +
+            `• 드라이브로 업로드 대기 ${diff.uploadCount}건 (단지메모 ${diff.upNote} / 포토메모 ${diff.upPhoto})\n` +
+            `• 드라이브에서 다운로드 대기 ${diff.downloadCount}건 (단지메모 ${diff.dnNote} / 포토메모 ${diff.dnPhoto})\n` +
+            `\n지금 동기화하시겠습니까?`;
+
+          let go = false;
+          try { go = window.confirm(msg); } catch (_) {}
+          if (!go) {
+            console.log('[autoSync:postLogin] 사용자 취소');
+            return;
+          }
+
+          // 사용자 OK — confirm 읽는 동안 다른 sync 가 시작됐을 수 있으므로 idle 재대기
+          if (window.__sggSyncBusy) {
+            console.log('[autoSync:postLogin] confirm 후 busy 재발생 — idle 대기 (최대 2분)');
+            const idle2 = await __waitForSyncIdle(120000);
+            if (!idle2) {
+              console.warn('[autoSync:postLogin] confirm 후 busy 2분 초과 — 수동 동기화 안내');
+              try { showToast('☁️ 다른 동기화가 진행 중입니다. 끝난 뒤 🔄 동기화 버튼으로 다시 시도해주세요.', 5000); } catch (_) {}
+              return;
+            }
+            // idle 된 뒤 변경이 이미 해소됐을 수 있으므로 재확인
+            const diff2 = await __sggDryRunDiff(sgg5);
+            if (!diff2.hasChanges) {
+              console.log('[autoSync:postLogin] busy 해제 후 재확인 — 동기화 불필요');
+              return;
+            }
+          }
+
+          console.log('[autoSync:postLogin] 사용자 확인 → 수동 경로로 __sggSync 실행');
+          await __sggSync(sgg5);
+        } catch (e) {
+          console.warn('[autoSync:postLogin] 실패:', e);
+        }
+      }
+
+      // 디버그 상태 조회 (DevTools Console에서 확인 용)
+      window.__autoSyncDbg = {
+        gdriveReady: () => window.__gdriveReady,
+        sggSyncBusy: () => window.__sggSyncBusy,
+        aptIndexSize: () => (typeof __syncAptIndex !== 'undefined' ? __syncAptIndex.size : -1),
+        lastEditedSgg5: () => { try { return JSON.parse(localStorage.getItem('__hongbuLastEditedSgg5') || 'null'); } catch { return null; } },
+        abnormalFlag: () => { try { return localStorage.getItem('__hongbuAbnormalDbLoss'); } catch { return null; } },
+        findRecentSgg5: () => __findMostRecentlyEditedSgg5(),
+        dryRun: (sgg5) => __sggDryRunDiff(sgg5),
+        postLoginCheck: () => __postLoginSyncCheck(),
+      };
+
+      // (자동/주기 동기화 제거됨 — online 복귀 시 재시도·30초 주기 flush 없음. 동기화는 수동 또는 로그인 직후 변동 체크에서만.)
+
+      // ================================
+      // 비정상 DB 손실 감지 플래그 + 부팅 모달
+      // ================================
+      const __HONGBU_ABNORMAL_DB_LOSS_KEY = '__hongbuAbnormalDbLoss';
+      function __markAbnormalDbLoss(reason, extra) {
+        try {
+          localStorage.setItem(__HONGBU_ABNORMAL_DB_LOSS_KEY, JSON.stringify({
+            at: Date.now(), reason: reason || 'unknown', ...(extra || {})
+          }));
+        } catch (_) {}
+      }
+      async function __checkAbnormalDbLoss() {
+        let raw;
+        try { raw = localStorage.getItem(__HONGBU_ABNORMAL_DB_LOSS_KEY); } catch (_) { return; }
+        if (!raw) return;
+        let info;
+        try { info = JSON.parse(raw); } catch (_) { info = { reason: 'unknown' }; }
+
+        const reasonText = info.reason === 'store-missing'
+          ? '스토어 누락 (DB가 재생성되었습니다)'
+          : info.reason === 'open-error'
+            ? 'DB 열기 실패 (손상 또는 저장공간 부족)'
+            : '원인 불명';
+        const missing = Array.isArray(info.missing) && info.missing.length
+          ? `\n누락 스토어: ${info.missing.join(', ')}` : '';
+
+        const msg = `⚠️ 데이터 초기화 감지\n\n포토메모/단지메모 데이터베이스가 예상치 못하게 초기화되었습니다.\n사유: ${reasonText}${missing}\n\n구글드라이브에서 복구하려면 확인을 눌러 동기화 패널을 여세요.\n취소하면 다음 부팅 때 다시 묻습니다.`;
+
+        let go = false;
+        try { go = window.confirm(msg); } catch (_) {}
+        if (go) {
+          try { localStorage.removeItem(__HONGBU_ABNORMAL_DB_LOSS_KEY); } catch (_) {}
+          try { if (typeof __openDriveSyncUI === 'function') __openDriveSyncUI(); }
+          catch (e) { console.warn('동기화 패널 열기 실패:', e); }
+        }
+      }
+
+      // 동기화 오류 메시지 추출 — gapi / fetch / 일반 Error 대응
+      function __formatSyncErr(e) {
+        if (e == null) return '(unknown)';
+        if (typeof e === 'string') return e;
+        const gapiMsg = e?.result?.error?.message || e?.error?.message;
+        if (gapiMsg) {
+          const code = e?.result?.error?.code || e?.status || e?.code;
+          return code ? `${gapiMsg} (code=${code})` : gapiMsg;
+        }
+        if (e.message) return e.code ? `${e.message} (code=${e.code})` : e.message;
+        if (typeof e.body === 'string' && e.body) return e.body.slice(0, 300);
+        if (typeof e.status === 'number') return `HTTP ${e.status} ${e.statusText || ''}`.trim();
+        try { return JSON.stringify(e).slice(0, 500); } catch (_) {}
+        return String(e);
+      }
+
+      // 네트워크 에러(fetch 실패) 감지 — 브라우저별 메시지 변이 + gapi.client 포맷 모두 커버
+      // Safari/WebKit: "Load failed" / Chrome: "Failed to fetch" / Firefox: "NetworkError..."
+      // gapi: { result: { error: { code: -1, message: "A network error occurred..." } } }
+      function __isNetworkError(e) {
+        if (!e) return false;
+        const code = e?.result?.error?.code ?? e?.status ?? e?.code;
+        if (code === -1) return true;
+        const parts = [
+          e.message,
+          e?.result?.error?.message,
+          e?.error?.message,
+          typeof e?.body === 'string' ? e.body : '',
+          String(e),
+        ];
+        const joined = parts.map((s) => String(s || '')).join(' | ').toLowerCase();
+        if (e?.name === 'TypeError' && /load failed|failed to fetch|network/.test(joined)) return true;
+        if (/load failed|failed to fetch|network\s*error|network error occurred/.test(joined)) return true;
+        return false;
+      }
+
+      // 인증 실패(401) 감지. 403은 메시지가 토큰/인증 관련일 때만 포함.
+      function __isAuthError(e) {
+        const code = e?.result?.error?.code || e?.status;
+        if (code === 401) return true;
+        if (code === 403) {
+          const msg = e?.result?.error?.message || '';
+          return /authError|invalid|expired|token/i.test(msg);
+        }
+        return false;
+      }
+
+      // 저장된 토큰 폐기 + 재로그인 오버레이 노출
+      // opts.silent=true: 토스트만 생략. silent 재발급은 popup 차단 경고를 유발하므로 사용하지 않는다.
+      function __handleAuthExpired(opts) {
+        const silent = !!(opts && opts.silent);
+        try { localStorage.removeItem('__hongbuDriveToken'); } catch (_) {}
+        window.__gdriveAccessToken = null;
+        window.__gdriveReady = false;
+        try { gapi.client.setToken(null); } catch (_) {}
+        try { __gdriveUpdateAuthBtn(); } catch (_) {}
+        // 자동경로: 제스처 없는 상태에서 prompt:'none' 호출은 GSI popup 차단 에러([GSI_LOGGER])를 유발하므로 호출하지 않는다.
+        // 토큰만 폐기하고 오버레이를 띄워, 다음 사용자 제스처에서 수동 재로그인하도록 유도한다.
+        const overlay = document.getElementById('gdriveAuthOverlay');
+        if (overlay) overlay.style.display = 'flex';
+        if (!silent) {
+          try { showToast('🔑 Drive 로그인이 만료되었습니다. 다시 로그인해주세요.', 6000); } catch (_) {}
+        }
+      }
+
+      // sgg5 단위 단일 동기화 — 파일명 기반 (filename prefix 매칭)
+      // 규칙: apt_{sgg5}_{aptId}_{addedAt}.jpg / photo_{sgg5}_{lat6}_{lng6}_{addedAt}.jpg
+      // opts.silent=true: 성공/경고 alert 생략(자동 동기화 경로). 오류만 토스트로 표시.
+      async function __sggSync(sgg5, opts) {
+        const silent = !!(opts && opts.silent);
+        if (!window.__gdriveReady) {
+          if (silent) { console.warn('[sync] __gdriveReady=false 자동경로 — 무시'); return; }
+          const overlay = document.getElementById('gdriveAuthOverlay');
+          if (overlay) overlay.style.display = 'flex';
+          __gdriveSignIn();
+          return;
+        }
+        if (!sgg5) {
+          if (silent) { console.warn('[sync] sgg5 없음 자동경로 — 무시'); return; }
+          alert('시군구를 선택하세요'); return;
+        }
+
+        // S3a: 단일 탭 sync 중복 호출 방지
+        if (window.__sggSyncBusy) {
+          const busySgg = window.__sggSyncBusySgg || '?';
+          const msg = `⚠️ 다른 sync가 진행 중입니다 (${busySgg}). 끝날 때까지 기다려주세요.`;
+          window.hongbuDebugLog?.('INFO', '[sync] 중복 실행 차단', `요청 sgg5=${sgg5} / 진행 중=${busySgg}`);
+          if (!silent) alert(msg);
+          return;
+        }
+        window.__sggSyncBusy = true;
+        window.__sggSyncBusySgg = sgg5;
+        // silent 모드: 상단 진행 UI 표시 억제 (디버그 로그로만 남김)
+        const __prevSuppress = window.__syncProgressSuppress;
+        if (silent) window.__syncProgressSuppress = true;
+
+        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        __syncProgressShow(`🔄 ${sName} 동기화 준비 중...`);
+
+        // [perf] 단계별 타이머 헬퍼 — console + 디버그 오버레이 동시 출력
+        const __tSyncStart = performance.now();
+        const __perfMark = (label, extra = '') => {
+          const ms = Math.round(performance.now() - __tSyncStart);
+          const msg = `${label} +${ms}ms${extra ? ' ' + extra : ''}`;
+          console.log('[sync:perf]', msg);
+          try { window.hongbuDebugLog?.('INFO', '[sync:perf]', msg); } catch (_) {}
+        };
+        const __perfStage = async (label, fn) => {
+          const s = performance.now();
+          const r = await fn();
+          const ms = Math.round(performance.now() - s);
+          const msg = `${label} ${ms}ms`;
+          console.log('[sync:perf]', msg);
+          try { window.hongbuDebugLog?.('INFO', '[sync:perf]', msg); } catch (_) {}
+          return r;
+        };
+        __perfMark('SYNC_START', `sgg5=${sgg5} (${sName})`);
+
+        try {
+          await __perfStage('ensureDriveStructure', () => __ensureDriveStructure());
+          if (!window.__gdriveSggFolderId || !window.__gdriveAptImagesFolderId || !window.__gdrivePhotosFolderId) {
+            throw new Error('Drive 폴더 초기화 실패 — 재로그인 필요');
+          }
+
+          await __perfStage('migration:updatedAt', () => __ensureUpdatedAtMigration());
+          await __perfStage('loadAptIndexForSync', () => __loadAptIndexForSync());
+          await __perfStage('migration:filenameScheme', () => __ensureFilenameSchemeMigration());
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+
+          const sidoName = __SYNC_SIDO_CODE_NAME_MAP[sgg5.slice(0, 2)] || '';
+          const sigunguName = __syncSigunguNameByCode5.get(sgg5) || '';
+
+          // ── 1) Drive 폴더 ensure + listing + JSON 읽기 병렬 ──
+          __syncProgressShow(`🔄 ${sName} Drive 폴더 준비 중...`);
+          const [aptSggFolderId, photoSggFolderId] = await __perfStage('ensureSggFolders(apt+photo)', () =>
+            Promise.all([
+              __driveEnsureSggFolder(window.__gdriveAptImagesFolderId, sgg5, sidoName, sigunguName),
+              __driveEnsureSggFolder(window.__gdrivePhotosFolderId, sgg5, sidoName, sigunguName),
+            ])
+          );
+
+          __syncProgressShow(`🔄 ${sName} Drive 스캔 중...`);
+          const [driveAptList, drivePhotoList, notesMeta, photosMeta, polygonsMeta] = await __perfStage('driveScan(list+json×5)', () =>
+            Promise.all([
+              __driveListFolderNameMap(aptSggFolderId),
+              __driveListFolderNameMap(photoSggFolderId),
+              __driveGetSggData(sgg5, 'notes'),
+              __driveGetSggData(sgg5, 'photos'),
+              __driveGetSggData(sgg5, 'polygons'),
+            ])
+          );
+
+          const { fileId: notesFileId, data: driveNotesData } = notesMeta;
+          const { fileId: photosFileId, data: drivePhotosData } = photosMeta;
+          const { fileId: polygonsFileId, data: drivePolygonsData } = polygonsMeta;
+          const driveNotes = driveNotesData.notes || {};
+          const drivePhotos = drivePhotosData.photos || {};
+          const drivePolygons = drivePolygonsData.polygons || {};
+          const driveAptNameMap = driveAptList.nameMap;   // filename → fileId
+          const drivePhotoNameMap = drivePhotoList.nameMap;
+
+          // 같은 이름 중복 파일 경고 (수동 정리 필요)
+          const allDupCount = driveAptList.dupFileIds.length + drivePhotoList.dupFileIds.length;
+          if (allDupCount > 0) {
+            window.hongbuDebugLog?.('ERR', '[sync] 동명 중복 파일',
+              `aptImages ${driveAptList.dupFileIds.length}개 / photos ${drivePhotoList.dupFileIds.length}개 — 첫 파일을 정본으로 사용`);
+          }
+
+          // ── 2) 로컬 sgg5 타겟 스캔 ──
+          const { localNotes, localPhotos, localPolygons } = await __perfStage('loadLocalForSgg',
+            () => __sggLoadLocalForSgg(db, sgg5));
+          __perfMark('loadLocal:counts',
+            `localNotes=${Object.keys(localNotes).length} localPhotos=${Object.keys(localPhotos).length} localPolygons=${Object.keys(localPolygons).length}`);
+
+          // ── 3) JSON 메타 머지 (LWW) ──
+          const tMerge = performance.now();
+          const noteResult = __syncMergeById(localNotes, driveNotes, 'note');
+          const photoResult = __syncMergeById(localPhotos, drivePhotos, 'photo');
+          const polygonResult = __syncMergeById(localPolygons, drivePolygons, 'polygon');
+          __perfMark('mergeById',
+            `notes(toDrive=${Object.keys(noteResult.toDriveMap).length} toLocal=${Object.keys(noteResult.toLocalMap).length}) photos(toDrive=${Object.keys(photoResult.toDriveMap).length} toLocal=${Object.keys(photoResult.toLocalMap).length}) polygons(toDrive=${Object.keys(polygonResult.toDriveMap).length} toLocal=${Object.keys(polygonResult.toLocalMap).length}) in ${Math.round(performance.now() - tMerge)}ms`);
+
+          const now = Date.now();
+          const gcCutoff = now - __SYNC_TOMBSTONE_TTL_MS;
+
+          // ── 4) 이미지 업로드 — 로컬에 data 있지만 Drive 폴더에 이름 없는 것 ──
+          // localWinner(toDriveMap) + 양쪽 모두 있지만 로컬 이미지가 Drive에 없는 것도 포함
+          const uploadTasks = []; // {kind:'note'|'photo', filename, blobSource, parentId}
+
+          // localNotes/localPhotos는 __sggLoadLocalForSgg에서 이미 sgg5 필터된 레코드.
+          // 레코드의 sgg5/addedAt 필드가 비어있어도(마이그레이션 누락/과거 저장 경로) 현장 백필.
+          const skipDiag = { noImages: 0, imgNoAddedAt: 0, imgNoData: 0, imgExists: 0, photoNoData: 0, photoExists: 0 };
+          const pendingNoteFixes = []; // {id, record} — 백필된 단지 레코드를 IDB에 write-back
+          let autoBackfillCount = 0;
+
+          const addNoteUploads = (id, note) => {
+            if (!note || note.deletedAt) return;
+            const effectiveSgg5 = note.sgg5 || sgg5;
+            const imgs = Array.isArray(note.images) ? note.images : [];
+            if (imgs.length === 0) { skipDiag.noImages++; return; }
+
+            // [자동 백필] addedAt 없는 이미지는 note.updatedAt/createdAt 기반으로 생성
+            const baseTs = Number(note.updatedAt) || Number(note.createdAt) || Date.now();
+            let mutated = !note.sgg5;
+            const normalized = [];
+            imgs.forEach((img, i) => {
+              const data = __getImgData(img);
+              if (!data?.startsWith('data:')) { skipDiag.imgNoData++; return; }
+              const existingAddedAt = (img && typeof img === 'object' && img.addedAt) ? img.addedAt : 0;
+              if (!existingAddedAt) { mutated = true; skipDiag.imgNoAddedAt++; }
+              normalized.push({ data, addedAt: existingAddedAt || (baseTs + i) });
+            });
+            if (normalized.length === 0) return;
+
+            if (mutated) {
+              autoBackfillCount++;
+              const fixed = { ...note, sgg5: effectiveSgg5, images: normalized };
+              pendingNoteFixes.push({ id, record: fixed });
+              // [중요] 메모리에도 즉시 반영 — 뒤따르는 deleteTasks/download 로직이
+              // winner.images.addedAt 과 localNotes[id].images 를 동시에 참조하므로
+              // 여기서 동기화하지 않으면 업로드 직후 방금 올린 파일을 삭제 대상으로 오판함.
+              try {
+                if (noteResult?.toDriveMap && noteResult.toDriveMap[id]) {
+                  noteResult.toDriveMap[id] = {
+                    ...noteResult.toDriveMap[id],
+                    sgg5: effectiveSgg5,
+                    images: normalized,
+                  };
+                }
+                if (localNotes[id]) {
+                  localNotes[id] = { ...localNotes[id], sgg5: effectiveSgg5, images: normalized };
+                }
+              } catch (_) {}
+            }
+
+            for (const img of normalized) {
+              const filename = __aptImgFilename({ sgg5: effectiveSgg5, id }, img.addedAt);
+              if (driveAptNameMap.has(filename)) { skipDiag.imgExists++; continue; }
+              uploadTasks.push({ kind: 'note', filename, data: img.data, parentId: aptSggFolderId, noteId: id });
+            }
+          };
+
+          const addPhotoUploads = (id, photo) => {
+            if (!photo || photo.deletedAt) return;
+            const effectiveSgg5 = photo.sgg5 || sgg5;
+            // DataURL-only 정책: imageDataUrl만 검사
+            let dataUrl = (typeof photo.imageDataUrl === 'string' && photo.imageDataUrl.startsWith('data:'))
+              ? photo.imageDataUrl : '';
+            // 레거시 Blob 지원: DataURL이 없고 Blob만 있으면 변환 시점은 업로드 루프로 미룸
+            if (!dataUrl && photo.imageBlob instanceof Blob) {
+              // 업로드 루프는 t.data(DataURL) 또는 t.blob(Blob) 어느 쪽이든 허용함
+              // 여기선 DataURL 변환을 강제하지 않고 참조만 전달
+            } else if (!dataUrl) {
+              skipDiag.photoNoData++; return;
+            }
+            const filename = __photoImgFilename({ ...photo, sgg5: effectiveSgg5 });
+            if (drivePhotoNameMap.has(filename)) { skipDiag.photoExists++; return; }
+            uploadTasks.push({
+              kind: 'photo', filename, parentId: photoSggFolderId, photoId: id,
+              data: dataUrl,
+              blob: !dataUrl && photo.imageBlob instanceof Blob ? photo.imageBlob : null,
+            });
+          };
+
+          // [diag] 단지메모 레코드 구조 덤프 — 최초 5건. 이미지 업로드 누락 원인 식별용.
+          {
+            let diagCount = 0;
+            for (const [id, L] of Object.entries(localNotes)) {
+              if (diagCount++ >= 5) break;
+              const imgs = Array.isArray(L.images) ? L.images : [];
+              const summary = imgs.length === 0
+                ? '(이미지 없음)'
+                : imgs.slice(0, 3).map((img, i) => {
+                    const data = __getImgData(img);
+                    const hasData = typeof data === 'string' && data.startsWith('data:');
+                    const addedAt = (img && typeof img === 'object') ? img.addedAt : null;
+                    const fileId = (img && typeof img === 'object') ? img.fileId : null;
+                    return `[${i}]data=${hasData ? 'Y' : 'N'}(${data ? data.length : 0}) addedAt=${addedAt || '∅'}${fileId ? ' fileId=Y' : ''}`;
+                  }).join(' | ');
+              const msg = `id=${id} sgg5=${L.sgg5 || '∅'} memo=${(L.memo || '').length}chars imgs=${imgs.length} ${summary}`;
+              console.log('[sync:diag] note', msg);
+              try { window.hongbuDebugLog?.('INFO', '[sync:diag] note', msg); } catch (_) {}
+            }
+          }
+
+          // 로컬 승자 + 양쪽 공통의 로컬 레코드에 있는 이미지 체크 (Drive에 없는 이름만 업로드)
+          // D가 winner(toLocalMap)인 노트는 스킵 — 다른 기기가 삭제한 사진을 재업로드하지 않도록
+          const tCollect = performance.now();
+          for (const [id, L] of Object.entries(localNotes)) {
+            if (noteResult.toLocalMap[id]) continue;
+            addNoteUploads(id, L);
+          }
+          for (const [id, L] of Object.entries(localPhotos)) {
+            if (photoResult.toLocalMap[id]) continue;
+            addPhotoUploads(id, L);
+          }
+          __perfMark('collectUploadTasks',
+            `uploadTasks=${uploadTasks.length} (note=${uploadTasks.filter(t => t.kind === 'note').length} photo=${uploadTasks.filter(t => t.kind === 'photo').length}) in ${Math.round(performance.now() - tCollect)}ms`);
+          // 스킵 이유 진단 — 로컬 레코드가 있는데 skip된 게 하나라도 있으면 출력
+          const skipTotal = skipDiag.noImages + skipDiag.imgNoAddedAt + skipDiag.imgNoData + skipDiag.imgExists + skipDiag.photoNoData + skipDiag.photoExists;
+          if (skipTotal > 0) {
+            const diagMsg = `noImages=${skipDiag.noImages} imgNoAddedAt=${skipDiag.imgNoAddedAt} imgNoData=${skipDiag.imgNoData} imgExists=${skipDiag.imgExists} photoNoData=${skipDiag.photoNoData} photoExists=${skipDiag.photoExists}`;
+            console.warn('[sync:perf] skip 진단', diagMsg);
+            try { window.hongbuDebugLog?.('INFO', '[sync:perf] skip', diagMsg); } catch (_) {}
+          }
+
+          // [자동 백필] 단지 레코드의 누락된 sgg5/addedAt을 IDB에 반영
+          if (pendingNoteFixes.length > 0) {
+            const tFix = performance.now();
+            await new Promise((res, rej) => {
+              const tx = db.transaction(['apartmentNotes'], 'readwrite');
+              tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
+              const s = tx.objectStore('apartmentNotes');
+              for (const { record } of pendingNoteFixes) s.put(record);
+            }).catch((e) => {
+              window.hongbuDebugLog?.('ERR', '[sync] 단지 자동 백필 실패', e?.message || e);
+            });
+            const msg = `count=${pendingNoteFixes.length} autoBackfilled(imgNoAddedAt items)=${autoBackfillCount} in ${Math.round(performance.now() - tFix)}ms`;
+            console.log('[sync:perf] noteBackfill', msg);
+            try { window.hongbuDebugLog?.('INFO', '[sync:perf] noteBackfill', msg); } catch (_) {}
+          }
+
+          let imgUpOk = 0, imgUpFail = 0;
+          const tUploadAll = performance.now();
+          // 병렬 너무 크게 잡으면 사용자 업로드 대역폭(≈2-3Mbps) 공유로 개별 요청 hang 발생.
+          // 5가 대역폭 기반 최적점 (3→8 테스트 결과 8은 HANG 발생, 5는 안정).
+          const UPLOAD_CHUNK = 5;
+          for (let i = 0; i < uploadTasks.length; i += UPLOAD_CHUNK) {
+            const slice = uploadTasks.slice(i, i + UPLOAD_CHUNK);
+            const failTxt = imgUpFail > 0 ? ` ⚠️${imgUpFail}` : '';
+            __syncProgressShow(`🔄 ${sName} 이미지 업로드 ${i + slice.length}/${uploadTasks.length} (✓${imgUpOk}${failTxt})`);
+            const tSlice = performance.now();
+            await Promise.all(slice.map(async (t) => {
+              let blob = null;
+              const tTask = performance.now();
+              try {
+                const tBlobStart = performance.now();
+                if (t.kind === 'photo' && t.blob) blob = t.blob;
+                else if (t.data?.startsWith('data:')) blob = __dataUrlToBlob(t.data);
+                const tBlobMs = Math.round(performance.now() - tBlobStart);
+                if (!blob) { imgUpFail++; return; }
+                const created = await __driveUploadMultipart(
+                  { name: t.filename, parents: [t.parentId] },
+                  blob, 'image/jpeg'
+                );
+                if (t.kind === 'note') driveAptNameMap.set(t.filename, created.id);
+                else drivePhotoNameMap.set(t.filename, created.id);
+                imgUpOk++;
+                const totalMs = Math.round(performance.now() - tTask);
+                const p = created.__perf || {};
+                const kB = Math.round((p.size || blob.size || 0) / 1024);
+                const perfMsg = `${t.kind} ${t.filename} size=${kB}kB blob=${tBlobMs}ms build=${p.tBuildMs||0}ms fetch=${p.tFetchMs||0}ms status=${p.status||'?'} total=${totalMs}ms`;
+                console.log('[sync:perf] upload', perfMsg);
+              } catch (e) {
+                imgUpFail++;
+                const totalMs = Math.round(performance.now() - tTask);
+                window.hongbuDebugLog?.('ERR', '[sync] 이미지 업로드 실패',
+                  `${t.kind} ${t.filename} total=${totalMs}ms ${e?.message || e}`);
+              } finally {
+                blob = null;
+              }
+            }));
+            const sliceMs = Math.round(performance.now() - tSlice);
+            const sliceMsg = `slice ${Math.floor(i / UPLOAD_CHUNK) + 1}/${Math.ceil(uploadTasks.length / UPLOAD_CHUNK)} items=${slice.length} sliceMs=${sliceMs} cumOk=${imgUpOk} cumFail=${imgUpFail}`;
+            console.log('[sync:perf] upload', sliceMsg);
+            try { window.hongbuDebugLog?.('INFO', '[sync:perf] upload', sliceMsg); } catch (_) {}
+            await new Promise(r => setTimeout(r, 5));
+          }
+          __perfMark('uploadLoop',
+            `total=${Math.round(performance.now() - tUploadAll)}ms ok=${imgUpOk} fail=${imgUpFail} / ${uploadTasks.length}`);
+
+          // ── 5) Drive JSON 업데이트 — 텍스트 메타만 (imageFiles/imageFileId 없음) ──
+          const finalNotesMap = {};
+          const buildNoteMeta = (id, src) => {
+            if (src.deletedAt) {
+              finalNotesMap[id] = {
+                id, memo: '', sgg5: src.sgg5 || sgg5,
+                updatedAt: src.updatedAt, deletedAt: src.deletedAt,
+              };
+              return;
+            }
+            finalNotesMap[id] = {
+              id, memo: src.memo || '', sgg5: src.sgg5 || sgg5,
+              updatedAt: src.updatedAt, deletedAt: null,
+            };
+          };
+          for (const [id, w] of Object.entries(noteResult.toDriveMap)) buildNoteMeta(id, w);
+          for (const [id, w] of Object.entries(noteResult.toLocalMap)) buildNoteMeta(id, w);
+          for (const id of Object.keys(driveNotes)) {
+            if (!(id in finalNotesMap)) finalNotesMap[id] = driveNotes[id];
+          }
+
+          const finalPhotosMap = {};
+          const buildPhotoMeta = (id, src) => {
+            if (src.deletedAt) {
+              finalPhotosMap[id] = {
+                id, lat: Number(src.lat) || 0, lng: Number(src.lng) || 0,
+                createdAt: src.createdAt || 0, addedAt: src.addedAt || src.createdAt || 0,
+                note: '', thumbDataUrl: '', sgg5: src.sgg5 || sgg5,
+                updatedAt: src.updatedAt, deletedAt: src.deletedAt,
+              };
+              return;
+            }
+            finalPhotosMap[id] = {
+              id, lat: Number(src.lat), lng: Number(src.lng),
+              createdAt: src.createdAt || 0, addedAt: src.addedAt || src.createdAt || 0,
+              note: src.note || '', thumbDataUrl: src.thumbDataUrl || '',
+              sgg5: src.sgg5 || sgg5,
+              updatedAt: src.updatedAt, deletedAt: null,
+            };
+          };
+          for (const [id, w] of Object.entries(photoResult.toDriveMap)) buildPhotoMeta(id, w);
+          for (const [id, w] of Object.entries(photoResult.toLocalMap)) buildPhotoMeta(id, w);
+          for (const id of Object.keys(drivePhotos)) {
+            if (!(id in finalPhotosMap)) finalPhotosMap[id] = drivePhotos[id];
+          }
+
+          // 면적그리기(폴리곤): 이미지가 없어 삭제 시에도 좌표/색을 지울 필요 없음 — 단일 빌더
+          const finalPolygonsMap = {};
+          const buildPolygonMeta = (id, src) => {
+            finalPolygonsMap[id] = {
+              id, coords: src.coords || [], color: src.color || '#00aa00',
+              alpha: src.alpha != null ? src.alpha : 0.25,
+              memoText: src.memoText || '', labelDisabled: !!src.labelDisabled,
+              createdAt: src.createdAt || 0, updatedAt: src.updatedAt,
+              deletedAt: src.deletedAt || null,
+            };
+          };
+          for (const [id, w] of Object.entries(polygonResult.toDriveMap)) buildPolygonMeta(id, w);
+          for (const [id, w] of Object.entries(polygonResult.toLocalMap)) buildPolygonMeta(id, w);
+          for (const id of Object.keys(drivePolygons)) {
+            if (!(id in finalPolygonsMap)) finalPolygonsMap[id] = drivePolygons[id];
+          }
+
+          // tombstone GC
+          let gcNoteCount = 0, gcPhotoCount = 0, gcPolygonCount = 0;
+          for (const id of Object.keys(finalNotesMap)) {
+            const it = finalNotesMap[id];
+            if (it.deletedAt && it.deletedAt < gcCutoff) { delete finalNotesMap[id]; gcNoteCount++; }
+          }
+          for (const id of Object.keys(finalPhotosMap)) {
+            const it = finalPhotosMap[id];
+            if (it.deletedAt && it.deletedAt < gcCutoff) { delete finalPhotosMap[id]; gcPhotoCount++; }
+          }
+          for (const id of Object.keys(finalPolygonsMap)) {
+            const it = finalPolygonsMap[id];
+            if (it.deletedAt && it.deletedAt < gcCutoff) { delete finalPolygonsMap[id]; gcPolygonCount++; }
+          }
+
+          __syncProgressShow(`🔄 ${sName} Drive 메타 저장 중...`);
+          const nowIso = new Date().toISOString();
+          await __perfStage(`writeSggJson(notes=${Object.keys(finalNotesMap).length}, photos=${Object.keys(finalPhotosMap).length}, polygons=${Object.keys(finalPolygonsMap).length})`,
+            () => Promise.all([
+              __driveWriteSggFile(notesFileId, {
+                sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: nowIso, notes: finalNotesMap,
+              }),
+              __driveWriteSggFile(photosFileId, {
+                sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: nowIso, photos: finalPhotosMap,
+              }),
+              __driveWriteSggFile(polygonsFileId, {
+                sgg: sgg5, schemaVersion: __SYNC_SCHEMA_VERSION, updatedAt: nowIso, polygons: finalPolygonsMap,
+              }),
+            ])
+          );
+
+          // ── 6) Drive 폴더에서 삭제된/변경된 로컬 이미지 반영 ──
+          // 로컬이 승자인데 이전에 Drive에 있었으나 지금 로컬에서 빠진 이미지 → Drive 파일 삭제
+          const deleteTasks = [];
+          for (const [id, winner] of Object.entries(noteResult.toDriveMap)) {
+            if (winner.deletedAt) {
+              // tombstone → 해당 aptId prefix 모든 Drive 파일 삭제
+              const prefix = `apt_${sgg5}_${id}_`;
+              for (const [fname, fid] of driveAptNameMap) {
+                if (fname.startsWith(prefix)) deleteTasks.push({ fid, fname, kind: 'apt' });
+              }
+              continue;
+            }
+            const localFiles = new Set((Array.isArray(winner.images) ? winner.images : [])
+              .filter((it) => it?.addedAt)
+              .map((it) => __aptImgFilename(winner, it.addedAt)));
+            const prefix = `apt_${sgg5}_${id}_`;
+            for (const [fname, fid] of driveAptNameMap) {
+              if (!fname.startsWith(prefix)) continue;
+              if (!localFiles.has(fname)) deleteTasks.push({ fid, fname, kind: 'apt' });
+            }
+          }
+          for (const [id, winner] of Object.entries(photoResult.toDriveMap)) {
+            if (winner.deletedAt) {
+              const fname = __photoImgFilename(winner);
+              const fid = drivePhotoNameMap.get(fname);
+              if (fid) deleteTasks.push({ fid, fname, kind: 'photo' });
+              continue;
+            }
+            // 좌표 변경 등으로 과거 파일명이 다르면 옛 파일은 사용자가 Drive에서 직접 정리
+          }
+          if (deleteTasks.length > 0) {
+            __syncProgressShow(`🔄 ${sName} Drive 정리 중... (${deleteTasks.length}개)`);
+            const tDel = performance.now();
+            for (const t of deleteTasks) {
+              try {
+                await gapi.client.drive.files.delete({ fileId: t.fid });
+                if (t.kind === 'apt') driveAptNameMap.delete(t.fname);
+                else if (t.kind === 'photo') drivePhotoNameMap.delete(t.fname);
+              }
+              catch (e) {
+                window.hongbuDebugLog?.('ERR', '[sync] Drive 파일 삭제 실패', `${t.fname} ${e?.message || e}`);
+              }
+            }
+            __perfMark('deleteTasks', `count=${deleteTasks.length} in ${Math.round(performance.now() - tDel)}ms`);
+          }
+
+          // ── 7) 이미지 다운로드 — Drive 폴더에 있지만 로컬 data 없는 것 ──
+          const noteImgDl = []; // {noteId, filename, fid, addedAt}
+          const photoImgDl = []; // {photoId, filename, fid}
+
+          for (const [id, meta] of Object.entries(finalNotesMap)) {
+            if (meta.deletedAt) continue;
+            const L = localNotes[id];
+            const haveAddedAt = new Set((L?.images || [])
+              .filter((it) => it?.addedAt && (__getImgData(it) || '').startsWith('data:'))
+              .map((it) => it.addedAt));
+            const prefix = `apt_${sgg5}_${id}_`;
+            for (const [fname, fid] of driveAptNameMap) {
+              if (!fname.startsWith(prefix)) continue;
+              // filename에서 addedAt 추출
+              const m = fname.match(/_(\d+)\.jpg$/);
+              if (!m) continue;
+              const addedAt = Number(m[1]);
+              if (haveAddedAt.has(addedAt)) continue;
+              noteImgDl.push({ noteId: id, filename: fname, fid, addedAt });
+            }
+          }
+          for (const [id, meta] of Object.entries(finalPhotosMap)) {
+            if (meta.deletedAt) continue;
+            const L = localPhotos[id];
+            // DataURL-only 정책: imageDataUrl이 없으면 Drive에서 다운로드
+            const hasLocal = typeof L?.imageDataUrl === 'string' && L.imageDataUrl.startsWith('data:');
+            if (hasLocal) continue;
+            const expected = __photoImgFilename(meta);
+            const fid = drivePhotoNameMap.get(expected);
+            if (fid) photoImgDl.push({ photoId: id, filename: expected, fid });
+          }
+
+          // 다운로드: 노트별 sequential, 포토 병렬 (기존 패턴)
+          let imgDownOk = 0, imgDownFail = 0;
+          const streamedNoteIds = new Set();
+          const streamedPhotoIds = new Set();
+          const is404 = (e) => String(e?.message || e).includes('404');
+
+          // 노트: noteId로 그룹화 → 그룹별 청크 3 병렬
+          const tDownAll = performance.now();
+          __perfMark('downloadTasks:collected', `noteImgDl=${noteImgDl.length} photoImgDl=${photoImgDl.length}`);
+          const noteGroups = new Map();
+          for (const t of noteImgDl) {
+            if (!noteGroups.has(t.noteId)) noteGroups.set(t.noteId, []);
+            noteGroups.get(t.noteId).push(t);
+          }
+          const NOTE_IMG_CHUNK = 5;
+          let noteGroupIdx = 0;
+          for (const [noteId, tasks] of noteGroups) {
+            noteGroupIdx++;
+            const newImageEntries = [];
+            for (let k = 0; k < tasks.length; k += NOTE_IMG_CHUNK) {
+              const slice = tasks.slice(k, k + NOTE_IMG_CHUNK);
+              const failTxt = imgDownFail > 0 ? ` ⚠️${imgDownFail}` : '';
+              __syncProgressShow(`🔄 ${sName} 단지 ${noteGroupIdx}/${noteGroups.size} 이미지 ${k + slice.length}/${tasks.length} (✓${imgDownOk}${failTxt})`);
+              await Promise.all(slice.map(async (t) => {
+                let blob = null, dataUrl = null;
+                try {
+                  blob = await __driveDownloadImageAsBlob(t.fid);
+                  if (blob && blob.size > 0) dataUrl = await __blobToDataUrl(blob);
+                  blob = null;
+                } catch (e) {
+                  imgDownFail++;
+                  window.hongbuDebugLog?.('ERR', '[sync] 단지 이미지 다운로드 실패',
+                    `${t.filename} ${e?.message || e}`);
+                  return;
+                }
+                if (!dataUrl) { imgDownFail++; return; }
+                imgDownOk++;
+                newImageEntries.push({ data: dataUrl, addedAt: t.addedAt });
+              }));
+              await new Promise(r => setTimeout(r, 5));
+            }
+            if (newImageEntries.length > 0) {
+              streamedNoteIds.add(noteId);
+              const meta = finalNotesMap[noteId];
+              const L = localNotes[noteId];
+              const existingImgs = (L?.images || [])
+                .filter((it) => it?.addedAt && (__getImgData(it) || '').startsWith('data:'))
+                .map((it) => ({ data: __getImgData(it), addedAt: it.addedAt }));
+              const byAddedAt = new Map(existingImgs.map((x) => [x.addedAt, x]));
+              for (const entry of newImageEntries) byAddedAt.set(entry.addedAt, entry);
+              // 같은 사진이 서로 다른 addedAt 으로 중복 저장되는 것 차단 (data 기준 dedup)
+              const seenData = new Set();
+              const finalImages = Array.from(byAddedAt.values())
+                .sort((a, b) => a.addedAt - b.addedAt)
+                .filter((it) => it?.data && !seenData.has(it.data) && seenData.add(it.data));
+              const record = {
+                id: noteId,
+                sgg5: meta.sgg5 || sgg5,
+                memo: meta.memo || L?.memo || '',
+                images: finalImages,
+                updatedAt: meta.updatedAt || L?.updatedAt || Date.now(),
+                deletedAt: null,
+              };
+              try {
+                await new Promise((res, rej) => {
+                  const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                  req.onsuccess = (e) => {
+                    const idbInstance = e.target.result;
+                    const tx = idbInstance.transaction(['apartmentNotes'], 'readwrite');
+                    tx.objectStore('apartmentNotes').put(record);
+                    tx.oncomplete = () => { idbInstance.close(); res(); };
+                    tx.onerror = (err) => { idbInstance.close(); rej(err?.target?.error || err); };
+                  };
+                  req.onerror = (err) => rej(err?.target?.error || err);
+                });
+              } catch (e) {
+                window.hongbuDebugLog?.('ERR', '[sync] 단지 노트 IDB put 실패', `id=${noteId} ${e?.message || e}`);
+              }
+              record.images = null;
+              finalImages.length = 0;
+            }
+            newImageEntries.length = 0;
+            await new Promise(r => setTimeout(r, 5));
+          }
+
+          // 포토: 청크 3 병렬
+          const PHOTO_CHUNK = 5;
+          for (let i = 0; i < photoImgDl.length; i += PHOTO_CHUNK) {
+            const slice = photoImgDl.slice(i, i + PHOTO_CHUNK);
+            const failTxt = imgDownFail > 0 ? ` ⚠️${imgDownFail}` : '';
+            __syncProgressShow(`🔄 ${sName} 포토 ${i + slice.length}/${photoImgDl.length} (✓${imgDownOk}${failTxt})`);
+            await Promise.all(slice.map(async (t) => {
+              let blob = null;
+              try {
+                blob = await __driveDownloadImageAsBlob(t.fid);
+                if (!blob || blob.size === 0) { imgDownFail++; blob = null; return; }
+              } catch (e) {
+                imgDownFail++;
+                window.hongbuDebugLog?.('ERR', '[sync] 포토 이미지 다운로드 실패',
+                  `${t.filename} ${e?.message || e}`);
+                return;
+              }
+              const meta = finalPhotosMap[t.photoId];
+              const L = localPhotos[t.photoId] || {};
+              if (!meta || meta.deletedAt) { blob = null; return; }
+              // DataURL-only 정책: Drive에서 받은 Blob을 DataURL로 변환 후 저장
+              let imageDataUrl = '';
+              try { imageDataUrl = await __blobToDataUrl(blob); } catch (_) {}
+              let thumbDataUrl = meta.thumbDataUrl || L.thumbDataUrl || '';
+              if (!thumbDataUrl && blob) {
+                try {
+                  const tBlob = await __fileToThumbBlob(blob, 96, 0.82);
+                  thumbDataUrl = await __blobToDataUrl(tBlob);
+                } catch (_) {}
+              }
+              imgDownOk++;
+              streamedPhotoIds.add(t.photoId);
+              const record = {
+                id: t.photoId,
+                lat: Number(meta.lat),
+                lng: Number(meta.lng),
+                sgg5: meta.sgg5 || sgg5,
+                createdAt: meta.createdAt || L.createdAt || 0,
+                addedAt: meta.addedAt || meta.createdAt || 0,
+                note: meta.note || L.note || '',
+                thumbDataUrl: thumbDataUrl || '',
+                imageDataUrl: imageDataUrl || '',
+                updatedAt: meta.updatedAt || L.updatedAt || Date.now(),
+                deletedAt: null,
+              };
+              try {
+                await new Promise((res, rej) => {
+                  const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                  req.onsuccess = (e) => {
+                    const idbInstance = e.target.result;
+                    const tx = idbInstance.transaction(['photoMemos'], 'readwrite');
+                    tx.objectStore('photoMemos').put(record);
+                    tx.oncomplete = () => { idbInstance.close(); res(); };
+                    tx.onerror = (err) => { idbInstance.close(); rej(err?.target?.error || err); };
+                  };
+                  req.onerror = (err) => rej(err?.target?.error || err);
+                });
+              } catch (e) {
+                window.hongbuDebugLog?.('ERR', '[sync] photo IDB put 실패', `id=${t.photoId} ${e?.message || e}`);
+              }
+              blob = null;
+            }));
+            await new Promise(r => setTimeout(r, 5));
+          }
+
+          // ── 8) 메타 전파: toLocalMap 로컬 반영 (streaming에 포함되지 않은 것만) ──
+          __perfMark('downloadLoop', `total=${Math.round(performance.now() - tDownAll)}ms ok=${imgDownOk} fail=${imgDownFail}`);
+
+          __syncProgressShow(`🔄 ${sName} 로컬 저장 중...`);
+          const noteLocalPuts = [];
+          const noteLocalDels = [];
+          for (const [id, winner] of Object.entries(noteResult.toLocalMap)) {
+            if (streamedNoteIds.has(id)) continue;
+            if (winner.deletedAt && winner.deletedAt < gcCutoff) { noteLocalDels.push(id); continue; }
+            if (winner.deletedAt) {
+              noteLocalPuts.push({
+                id, sgg5: winner.sgg5 || sgg5, memo: '', images: [],
+                updatedAt: winner.updatedAt, deletedAt: winner.deletedAt,
+              });
+              continue;
+            }
+            const L = localNotes[id];
+            const effectiveSgg5 = winner.sgg5 || L?.sgg5 || sgg5;
+            // D가 winner → 로컬 이미지 중 Drive 폴더에 실제 존재하는 것만 유지
+            // (다른 기기가 삭제한 사진을 로컬에서도 제거)
+            const imgs = (L?.images || [])
+              .filter((it) => {
+                if (!it?.addedAt || !(__getImgData(it) || '').startsWith('data:')) return false;
+                const fname = __aptImgFilename({ sgg5: effectiveSgg5, id }, it.addedAt);
+                return driveAptNameMap.has(fname);
+              })
+              .map((it) => ({ data: __getImgData(it), addedAt: it.addedAt }));
+            noteLocalPuts.push({
+              id, sgg5: effectiveSgg5,
+              memo: winner.memo || '', images: imgs,
+              updatedAt: winner.updatedAt, deletedAt: null,
+            });
+          }
+          for (const [id, L] of Object.entries(localNotes)) {
+            if (L.deletedAt && L.deletedAt < gcCutoff && !noteLocalDels.includes(id)) noteLocalDels.push(id);
+          }
+
+          const photoLocalPuts = [];
+          const photoLocalDels = [];
+          for (const [id, winner] of Object.entries(photoResult.toLocalMap)) {
+            if (streamedPhotoIds.has(id)) continue;
+            if (winner.deletedAt && winner.deletedAt < gcCutoff) { photoLocalDels.push(id); continue; }
+            if (winner.deletedAt) {
+              photoLocalPuts.push({
+                id, lat: 0, lng: 0, sgg5: winner.sgg5 || sgg5,
+                createdAt: 0, addedAt: 0, note: '', thumbDataUrl: '', imageDataUrl: '',
+                updatedAt: winner.updatedAt, deletedAt: winner.deletedAt,
+              });
+              continue;
+            }
+            const L = localPhotos[id] || {};
+            let thumbDataUrl = winner.thumbDataUrl || L.thumbDataUrl || '';
+            let imageDataUrl = L.imageDataUrl || '';
+            // 레거시 Blob → DataURL 변환 (DataURL-only 정책)
+            if (!imageDataUrl && L.imageBlob instanceof Blob) {
+              try { imageDataUrl = await __blobToDataUrl(L.imageBlob); } catch (_) {}
+            }
+            if (!thumbDataUrl && L.thumbBlob instanceof Blob) {
+              try { thumbDataUrl = await __blobToDataUrl(L.thumbBlob); } catch (_) {}
+            }
+            // 썸네일이 없고 원본만 있으면 원본에서 재생성
+            if (!thumbDataUrl && imageDataUrl && imageDataUrl.startsWith('data:')) {
+              try {
+                const srcBlob = __dataUrlToBlob(imageDataUrl);
+                if (srcBlob) {
+                  const tBlob = await __fileToThumbBlob(srcBlob, 96, 0.82);
+                  thumbDataUrl = await __blobToDataUrl(tBlob);
+                }
+              } catch (_) {}
+            }
+            photoLocalPuts.push({
+              id,
+              lat: Number(winner.lat), lng: Number(winner.lng),
+              sgg5: winner.sgg5 || L.sgg5 || sgg5,
+              createdAt: winner.createdAt || 0,
+              addedAt: winner.addedAt || winner.createdAt || 0,
+              note: winner.note || '',
+              thumbDataUrl,
+              imageDataUrl,
+              updatedAt: winner.updatedAt, deletedAt: null,
+            });
+          }
+          for (const [id, L] of Object.entries(localPhotos)) {
+            if (L.deletedAt && L.deletedAt < gcCutoff && !photoLocalDels.includes(id)) photoLocalDels.push(id);
+          }
+
+          // 면적그리기(폴리곤): 이미지 재구성이 없어 winner를 거의 그대로 반영
+          const polygonLocalPuts = [];
+          const polygonLocalDels = [];
+          for (const [id, winner] of Object.entries(polygonResult.toLocalMap)) {
+            if (winner.deletedAt && winner.deletedAt < gcCutoff) { polygonLocalDels.push(id); continue; }
+            polygonLocalPuts.push({ ...winner, id });
+          }
+          for (const [id, L] of Object.entries(localPolygons)) {
+            if (L.deletedAt && L.deletedAt < gcCutoff && !polygonLocalDels.includes(id)) polygonLocalDels.push(id);
+          }
+
+          await __perfStage(`localIdbPuts(notes=${noteLocalPuts.length}/${noteLocalDels.length}del photos=${photoLocalPuts.length}/${photoLocalDels.length}del polygons=${polygonLocalPuts.length}/${polygonLocalDels.length}del)`,
+            () => Promise.all([
+              (noteLocalPuts.length || noteLocalDels.length) ? new Promise((res, rej) => {
+                const tx = db.transaction(['apartmentNotes'], 'readwrite');
+                tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
+                const s = tx.objectStore('apartmentNotes');
+                for (const r of noteLocalPuts) s.put(r);
+                for (const id of noteLocalDels) s.delete(id);
+              }) : Promise.resolve(),
+              (photoLocalPuts.length || photoLocalDels.length) ? new Promise((res, rej) => {
+                const tx = db.transaction(['photoMemos'], 'readwrite');
+                tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
+                const s = tx.objectStore('photoMemos');
+                for (const r of photoLocalPuts) s.put(r);
+                for (const id of photoLocalDels) s.delete(id);
+              }) : Promise.resolve(),
+              (polygonLocalPuts.length || polygonLocalDels.length) ? new Promise((res, rej) => {
+                const tx = db.transaction(['polygonMemos'], 'readwrite');
+                tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
+                const s = tx.objectStore('polygonMemos');
+                for (const r of polygonLocalPuts) s.put(r);
+                for (const id of polygonLocalDels) s.delete(id);
+              }) : Promise.resolve(),
+            ])
+          );
+          __perfMark('SYNC_END', `총 ${Math.round(performance.now() - __tSyncStart)}ms`);
+
+          db.close();
+          __syncRegionCache.built = false;
+          window.__memoPresenceCache?.clear?.();
+          try {
+            Object.values(apartmentMarkers || {}).forEach((m) => {
+              const el = m?.getIcon?.()?.content;
+              if (el) {
+                delete el.__memoIconChecked;
+                el.querySelectorAll?.('img.__hongbu_memo_icon').forEach((n) => n.remove());
+              }
+            });
+          } catch (_) {}
+
+          // 면적그리기: Drive가 이긴(toLocalMap) 폴리곤만 지도에 다시 그림
+          try {
+            if (window.map && window.naver && naver.maps) {
+              const visible = document.getElementById('togglePolygonMemo')?.checked !== false;
+              for (const [id, winner] of Object.entries(polygonResult.toLocalMap)) {
+                if (window.__polygonMemos) {
+                  for (const [poly] of window.__polygonMemos) {
+                    if (poly && poly.__memoId === id) { _detachPolygonMemoFromMap(poly); break; }
+                  }
+                }
+                if (!winner.deletedAt) _attachRestoredPolygon({ ...winner, id }, window.map, visible);
+              }
+            }
+          } catch (e) { console.warn('[sync] 면적그리기 화면 갱신 실패', e); }
+
+          // 마커 재구성: 2초 지연 (iOS 메모리 여유 확보)
+          setTimeout(() => {
+            try { refreshApartmentMarkers(); }
+            catch (e) { console.warn('[sync] refreshApartmentMarkers 실패', e); }
+            try {
+              window.__photoMemoIndexLoaded = false;
+              window.__photoMemoIndex = [];
+              if (typeof loadPhotoMemoIndexOnce === 'function') {
+                loadPhotoMemoIndexOnce().then(() => {
+                  if (window.__photoMemoVisible && typeof updatePhotoMemoMarkersByBounds === 'function') {
+                    updatePhotoMemoMarkersByBounds();
+                  }
+                }).catch(() => {});
+              }
+            } catch (_) {}
+          }, 2000);
+
+          __syncProgressHide();
+
+          const hasFail = imgUpFail + imgDownFail > 0;
+          const title = hasFail ? `⚠️ ${sName} 동기화 (일부 실패)` : `✅ ${sName} 동기화 완료`;
+          const lines = [
+            title,
+            `단지메모: 추가 ${noteResult.added} / 갱신 ${noteResult.updated} / 삭제 ${noteResult.deleted}`,
+            `포토메모: 추가 ${photoResult.added} / 갱신 ${photoResult.updated} / 삭제 ${photoResult.deleted}`,
+            `면적그리기: 추가 ${polygonResult.added} / 갱신 ${polygonResult.updated} / 삭제 ${polygonResult.deleted}`,
+          ];
+          if (imgUpOk + imgUpFail > 0) {
+            lines.push(`이미지 업로드 ${imgUpOk}/${imgUpOk + imgUpFail}` + (imgUpFail ? ` ⚠️ 실패 ${imgUpFail}` : ''));
+          }
+          if (imgDownOk + imgDownFail > 0) {
+            lines.push(`이미지 다운로드 ${imgDownOk}/${imgDownOk + imgDownFail}` + (imgDownFail ? ` ⚠️ 실패 ${imgDownFail}` : ''));
+          }
+          if (deleteTasks.length > 0) lines.push(`Drive 정리 ${deleteTasks.length}개`);
+          if (gcNoteCount + gcPhotoCount + gcPolygonCount > 0) {
+            lines.push(`(30일 GC: 단지 ${gcNoteCount}, 포토 ${gcPhotoCount}, 면적 ${gcPolygonCount})`);
+          }
+          if (hasFail) {
+            lines.push('화면 상단 디버그 로그에 실패 상세가 남습니다.');
+            window.hongbuDebugLog?.('ERR', `[sync] ${sName} 일부 실패`, lines.slice(1).join('\n'));
+          }
+          if (silent) {
+            console.log('[sync:auto] 완료', lines.join(' / '));
+            // ▼ 자동 동기화는 진행 중에는 화면 미표시. 성공 시에만 "동기화 완료" 배너를 상단에 1.5초 노출.
+            //    후속 pending flush 가 곧바로 __syncProgressShow 를 호출해 배너가 지워지는 race 는
+            //    __syncCompletionBannerUntil 타임락(__syncProgressShow 내부)으로 보호된다.
+            if (!hasFail) {
+              try {
+                const el = document.getElementById('gdriveProgress');
+                if (el) {
+                  const banner = '✅ 동기화 완료';
+                  el.textContent = banner;
+                  el.style.display = 'block';
+                  window.__syncCompletionBannerUntil = Date.now() + 1500;
+                  setTimeout(() => {
+                    if (el.textContent === banner) { el.style.display = 'none'; el.textContent = ''; }
+                    window.__syncCompletionBannerUntil = 0;
+                  }, 1500);
+                }
+              } catch (_) {}
+            } else {
+              // 자동경로: 부분 실패는 배너 없이 토스트로만 알림
+              try { showToast(`⚠️ ${sName} 자동 동기화 일부 실패 — 디버그 로그 확인`, 5000); } catch (_) {}
+            }
+          } else {
+            alert(lines.join('\n'));
+          }
+
+        } catch (e) {
+          __syncProgressHide();
+          const errMsg = __formatSyncErr(e);
+
+          // 401 인증 만료: OAuth access token TTL 만료는 정상 흐름이므로 디버그/콘솔/alert 모두 생략.
+          // 처음 로드 때와 동일하게 로그인 오버레이만 띄워 재로그인을 유도한다.
+          if (__isAuthError(e)) {
+            if (silent) {
+              __handleAuthExpired({ silent: true });
+              throw e;
+            }
+            __handleAuthExpired({ silent: true });
+            return;
+          }
+
+          // 진입 계측 + 로그 throttle: 같은 sgg5에 대해 짧은 시간 반복 발화 시 2차 이후 압축.
+          // 지속 burst 원인(__sggSync 중복 호출 경로)을 count=3 시점에 스택 1회 기록해 추적.
+          window.__sggSyncCatchStats = window.__sggSyncCatchStats || new Map();
+          const __catchStat = window.__sggSyncCatchStats.get(sgg5) ||
+            { count: 0, firstAt: 0, lastLogAt: 0, resetTimer: null };
+          __catchStat.count++;
+          const __now = Date.now();
+          if (!__catchStat.firstAt) __catchStat.firstAt = __now;
+          const __shouldLog =
+            __catchStat.count <= 2 ||
+            (__now - __catchStat.lastLogAt) > 2000;
+          if (__shouldLog) {
+            __catchStat.lastLogAt = __now;
+            console.error('[sync] 실패', e, '→', errMsg,
+              `(sgg5=${sgg5}, catchCount=${__catchStat.count})`);
+          }
+          if (__catchStat.count === 3) {
+            try {
+              console.warn('[sync:trace] 동일 sgg5 catch burst — 호출 경로 스택',
+                new Error('sync-catch-burst').stack);
+              window.hongbuDebugLog?.('WARN', '[sync] catch burst 감지',
+                `sgg5=${sgg5} count=${__catchStat.count}`);
+            } catch (_) {}
+          }
+          if (__catchStat.resetTimer) clearTimeout(__catchStat.resetTimer);
+          __catchStat.resetTimer = setTimeout(() => {
+            const final = window.__sggSyncCatchStats?.get(sgg5);
+            if (final && final.count > 3) {
+              try {
+                window.hongbuDebugLog?.('ERR', '[sync] catch burst 종료',
+                  `sgg5=${sgg5} totalCount=${final.count} 기간=${Date.now() - final.firstAt}ms`);
+              } catch (_) {}
+            }
+            window.__sggSyncCatchStats?.delete(sgg5);
+          }, 10000);
+          window.__sggSyncCatchStats.set(sgg5, __catchStat);
+
+          // 네트워크 에러: pending 큐에 적재하고 자동 재시도 유도
+          // - 1차 실패: 디버그 창에 ERR 대신 INFO로만 기록 (사용자에게 "에러"로 보이지 않도록)
+          // - 반복 실패: ERR로 전환하여 디버그 창에 노출
+          if (__isNetworkError(e)) {
+            try { window.hongbuDebugLog?.('ERR', '[sync] 네트워크 연결 실패', `${sName} ${errMsg}`); } catch (_) {}
+            const userMsg = `⚠️ ${sName} 네트워크 연결 실패 — 인터넷 상태를 확인한 뒤 🔄 동기화 버튼으로 다시 시도해주세요.`;
+            if (silent) {
+              try { showToast(userMsg, 6000); } catch (_) {}
+              throw e;
+            }
+            alert(userMsg + `\n\n(상세: ${errMsg})`);
+            return;
+          }
+
+          // 기타 에러: ERR 로그 (burst 2차 이후 압축)
+          if (__shouldLog) {
+            try { window.hongbuDebugLog?.('ERR', '[sync] 실패', errMsg); } catch (_) {}
+          }
+          if (e?.code === 'SGG_PARSE_FAIL') {
+            window.hongbuDebugLog?.('ERR', '[sync] Drive JSON 손상 감지 — 동기화 중단',
+              `fileId=${e.fileId}\n응답 일부: ${e.bodySnippet || '(없음)'}`);
+            if (silent) {
+              try { showToast('❌ 자동 동기화 실패 — Drive 파일 손상. 수동 확인 필요.', 6000); } catch (_) {}
+            } else {
+              alert('❌ Drive 동기화 파일이 손상되어 있습니다. 안전을 위해 중단했습니다.');
+            }
+          } else {
+            if (silent) {
+              try { showToast(`❌ 자동 동기화 실패: ${errMsg}`, 6000); } catch (_) {}
+            } else {
+              alert('❌ 동기화 실패: ' + errMsg);
+            }
+          }
+          if (silent) throw e; // (silent 경로는 현재 미사용 — 자동 동기화 제거됨)
+        } finally {
+          window.__sggSyncBusy = false;
+          window.__sggSyncBusySgg = null;
+          // suppress 플래그 복원 (silent 진입 시 저장한 이전 값으로)
+          window.__syncProgressSuppress = __prevSuppress;
+        }
+      }
+
+      // Drive/로컬 잔여 용량 HTML 조회 (동기화 확인 모달 공용)
+      async function __driveSyncGetQuotaHtml() {
+        const parts = [];
+        try {
+          const [q, est] = await Promise.all([
+            __driveGetStorageQuota().catch(() => null),
+            __getLocalStorageEstimate().catch(() => null),
+          ]);
+          if (q) {
+            if (q.limit > 0) {
+              const free = Math.max(0, q.limit - q.usage);
+              parts.push(`Drive 잔여 <b style="color:#1976d2;">${__fmtBytes(free)}</b>`);
+            } else {
+              parts.push(`Drive 사용 <b>${__fmtBytes(q.usage)}</b>`);
+            }
+          }
+          if (est) parts.push(`로컬 잔여 <b style="color:#1976d2;">${__fmtBytes(est.free || 0)}</b>`);
+        } catch (_) {}
+        return parts.join('<br>') || '<span style="color:#999;">용량 조회 실패</span>';
+      }
+
+      // 사용자 확인 래퍼
+      async function __sggSyncWithConfirm(sgg5) {
+        if (!window.__gdriveReady) { __sggSync(sgg5); return; }
+        if (!sgg5) { alert('시군구를 선택하세요'); return; }
+
+        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        const quotaHtml = await __driveSyncGetQuotaHtml();
+
+        const ok = await __showConfirmModal(
+          `🔄 ${sName} 동기화`,
+          `<div style="margin-bottom:10px;">Drive ↔ 로컬을 updatedAt 기준으로 병합합니다.<br>양쪽이 모두 최신본으로 수렴합니다.</div>${quotaHtml}`,
+          { okLabel: '동기화' }
+        );
+        if (ok) __sggSync(sgg5);
+      }
+
+      // ── 시군구 다중 선택 실행 (체크박스 목록에서 선택된 sgg5 순차 동기화) ──
+      async function __driveSyncExecuteSelected() {
+        const list = [...(window.__driveSyncSelectedSgg5 || [])];
+        if (list.length === 0) { alert('시군구를 선택하세요'); return; }
+        if (list.length === 1) { await __sggSyncWithConfirm(list[0]); return; }
+
+        if (!window.__gdriveReady) {
+          for (const sgg5 of list) await __sggSync(sgg5);
+          return;
+        }
+
+        const names = list.map(sgg5 => __syncSigunguNameByCode5.get(sgg5) || sgg5);
+        const quotaHtml = await __driveSyncGetQuotaHtml();
+        const ok = await __showConfirmModal(
+          `🔄 ${list.length}개 지역 동기화`,
+          `<div style="margin-bottom:10px;">아래 ${list.length}개 지역을 순서대로 동기화합니다.<br>${names.join(', ')}</div>${quotaHtml}`,
+          { okLabel: '동기화' }
+        );
+        if (!ok) return;
+        for (const sgg5 of list) await __sggSync(sgg5);
+      }
+
+      // ── Drive sgg 폴더에서 업로드된 sgg5 목록 조회 ──
+      async function __getDriveSggList() {
+        if (!window.__gdriveSggFolderId) return [];
+        let files = [], pageToken = null;
+        do {
+          const params = {
+            q: `'${window.__gdriveSggFolderId}' in parents and trashed=false`,
+            fields: 'nextPageToken,files(id,name)',
+            pageSize: 1000,
+          };
+          if (pageToken) params.pageToken = pageToken;
+          const resp = await gapi.client.drive.files.list(params);
+          files.push(...(resp.result.files || []));
+          pageToken = resp.result.nextPageToken;
+        } while (pageToken);
+        const sgg5Set = new Set();
+        for (const f of files) {
+          const m = f.name.match(/^(\d{5})(?:_.*)?_(notes|photos|polygons)\.json$/);
+          if (m) sgg5Set.add(m[1]);
+        }
+        return [...sgg5Set].sort();
+      }
+
+      // ── 동기화 UI 열기 (데이터가 있는 sgg5만 표시 — memoBackup 패턴) ──
+      // - 단지메모: aptId → __syncAptIndex로 sgg5 추출 (SIG 불필요, 가벼움)
+      // - 포토메모: SIG 인덱스 필요 (포토 0개면 스킵, 로드 실패 시 단지만 사용)
+      // - Drive: 업로드된 sgg5 파일 목록과 합집합
+      async function __openDriveSyncUI() {
+        const panel = document.getElementById('driveSyncPanel');
+        if (!panel) return;
+        if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+
+        __syncProgressShow('🔄 지역 목록 불러오는 중...');
+        let sgg5DriveList = [];
+        let localSgg5Set = new Set();
+        try {
+          await __loadAptIndexForSync();
+          // 로컬 IDB 스캔 (memoBackup 패턴 — sgg5 Set만 추출, 풀 레코드 보유 X)
+          try { localSgg5Set = await __collectLocalSgg5Set(); }
+          catch (e) {
+            window.hongbuDebugLog?.('ERR', '[sync] 로컬 sgg5 수집 실패', e?.message || e);
+          }
+          if (window.__gdriveReady) {
+            try { sgg5DriveList = await __getDriveSggList(); }
+            catch (e) {
+              if (__isAuthError(e)) {
+                try { window.hongbuDebugLog?.('INFO', '[sync] Drive 세션 만료 — 재로그인 시도'); } catch (_) {}
+                __handleAuthExpired({ silent: true });
+              } else {
+                window.hongbuDebugLog?.('ERR', '[sync] Drive 목록 조회 실패', e?.message || e);
+              }
+            }
+          }
+        } catch (e) {
+          if (__isAuthError(e)) {
+            try { window.hongbuDebugLog?.('INFO', '[sync] Drive 세션 만료 — 재로그인 시도'); } catch (_) {}
+            __handleAuthExpired({ silent: true });
+          } else {
+            window.hongbuDebugLog?.('ERR', '[sync] 지역 목록 조회 실패', e?.message || e);
+          }
+        }
+        __syncProgressHide();
+
+        // 데이터가 있는 sgg5만 (로컬 ∪ Drive)
+        const sidoNameMap = new Map(Object.entries(__SYNC_SIDO_CODE_NAME_MAP));
+        const sggBySido = new Map(); // sidoCode2 -> Map(sgg5 -> {name, onLocal, onDrive})
+
+        const addSgg5 = (sgg5, { onLocal = false, onDrive = false }) => {
+          if (!sgg5 || sgg5.length < 5) return;
+          const sc = sgg5.substring(0, 2);
+          if (!sggBySido.has(sc)) sggBySido.set(sc, new Map());
+          const m = sggBySido.get(sc);
+          if (m.has(sgg5)) {
+            const cur = m.get(sgg5);
+            if (onLocal) cur.onLocal = true;
+            if (onDrive) cur.onDrive = true;
+          } else {
+            const name = __syncSigunguNameByCode5.get(sgg5)
+              || [...__syncAptIndex.values()].find(a => a.sgg5 === sgg5)?.sigunguName
+              || sgg5;
+            m.set(sgg5, { name, onLocal, onDrive });
+          }
+        };
+
+        for (const sgg5 of localSgg5Set) addSgg5(sgg5, { onLocal: true });
+        for (const sgg5 of sgg5DriveList) addSgg5(sgg5, { onDrive: true });
+
+        const sidoSel = document.getElementById('driveSyncSido');
+        const sgList = document.getElementById('driveSyncSigunguList');
+        const sgToggle = document.getElementById('driveSyncSigunguToggle');
+        if (!sidoSel || !sgList || !sgToggle) return;
+
+        sidoSel.innerHTML = '<option value="">시도 선택</option>';
+        const sidoItems = [...sggBySido.keys()]
+          .map(sc => ({ value: sc, label: sidoNameMap.get(sc) || sc }))
+          .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+        for (const item of sidoItems) {
+          const opt = document.createElement('option');
+          opt.value = item.value; opt.textContent = item.label;
+          sidoSel.appendChild(opt);
+        }
+
+        window.__driveSyncSelectedSgg5 = new Set();
+        sgList.innerHTML = '';
+        sgList.style.display = 'none';
+        sgToggle.disabled = true;
+        _updateDriveSyncSigunguDisplay();
+
+        sidoSel.onchange = function () {
+          const sel = document.getElementById('driveSyncSido').value;
+          window.__driveSyncSelectedSgg5 = new Set();
+          sgList.innerHTML = '';
+          sgList.style.display = 'none';
+          if (!sel || !sggBySido.has(sel)) { sgToggle.disabled = true; _updateDriveSyncSigunguDisplay(); return; }
+          const items = Array.from(sggBySido.get(sel).entries())
+            .map(([sgg5, o]) => ({
+              value: sgg5,
+              label: `${o.name}${o.onLocal ? ' 📱' : ''}${o.onDrive ? ' ☁️' : ''}`,
+            }))
+            .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+          for (const item of items) {
+            const label = document.createElement('label');
+            label.style.cssText = 'display:block;white-space:nowrap;padding:2px 4px;cursor:pointer;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox'; cb.value = item.value;
+            cb.style.marginRight = '4px';
+            cb.addEventListener('change', function () {
+              if (this.checked) window.__driveSyncSelectedSgg5.add(item.value);
+              else window.__driveSyncSelectedSgg5.delete(item.value);
+              _updateDriveSyncSigunguDisplay();
+            });
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(item.label));
+            sgList.appendChild(label);
+          }
+          sgToggle.disabled = false;
+          _updateDriveSyncSigunguDisplay();
+        };
+
+        panel.style.display = 'inline-flex';
+      }
+
+      // ── 시군구 체크박스 목록 토글/표시 ──
+      function __toggleDriveSyncSigunguList() {
+        const sgList = document.getElementById('driveSyncSigunguList');
+        if (!sgList) return;
+        sgList.style.display = sgList.style.display === 'none' ? 'block' : 'none';
+      }
+
+      function _updateDriveSyncSigunguDisplay() {
+        const sgToggle = document.getElementById('driveSyncSigunguToggle');
+        if (!sgToggle) return;
+        const n = window.__driveSyncSelectedSgg5?.size || 0;
+        sgToggle.textContent = (n > 0 ? `${n}개 선택` : '시군구 선택') + ' ▼';
+      }
+
+      document.addEventListener('click', function (e) {
+        const wrapper = document.getElementById('driveSyncSigunguWrapper');
+        if (!wrapper) return;
+        if (!wrapper.contains(e.target)) {
+          const sgList = document.getElementById('driveSyncSigunguList');
+          if (sgList) sgList.style.display = 'none';
+        }
+      });
+
+      // ── Drive 동기화 패널 초기화 (로그인 시 호출 — 목록은 미리 로드하지 않음) ──
+      function __initDriveSyncPanel() {
+        const panel = document.getElementById('driveSyncControls');
+        if (panel) panel.style.display = 'inline-flex';
+      }
+
       async function savePolygonMemo(polygon) {
         if (!polygon || !Array.isArray(polygon.__memoCoords) || polygon.__memoCoords.length < 3) return;
         await initMemoIndexedDB();
+        const rec = _polygonRecord(polygon);
         return new Promise((resolve, reject) => {
           const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
           req.onerror = (e) => reject(e.target.error);
@@ -9776,7 +13275,20 @@ const originalBase64 = event.target.result;
             const db = e.target.result;
             try {
               const tx = db.transaction([POLYGON_STORE], "readwrite");
-              tx.objectStore(POLYGON_STORE).put(_polygonRecord(polygon));
+              const store = tx.objectStore(POLYGON_STORE);
+              // ✅ 변경 없으면 put 스킵 (updatedAt bump 차단 → 불필요한 동기화 오탐 방지)
+              const getReq = store.get(rec.id);
+              getReq.onsuccess = () => {
+                const old = getReq.result;
+                const same = old && !old.deletedAt &&
+                  old.color === rec.color &&
+                  old.alpha === rec.alpha &&
+                  (old.memoText || "") === (rec.memoText || "") &&
+                  !!old.labelDisabled === !!rec.labelDisabled &&
+                  JSON.stringify(old.coords || []) === JSON.stringify(rec.coords || []);
+                if (!same) store.put(rec);
+              };
+              getReq.onerror = () => { try { store.put(rec); } catch (_) {} };
               tx.oncomplete = () => { db.close(); resolve(); };
               tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
             } catch (err) {
@@ -9787,7 +13299,8 @@ const originalBase64 = event.target.result;
         });
       }
 
-      async function deletePolygonMemoFromDB(id) {
+      // 즉시 삭제 대신 tombstone(deletedAt) 기록 — Drive 동기화 시 삭제가 양방향으로 전파되도록 함
+      async function _softDeletePolygonRecord(id) {
         if (!id) return;
         await initMemoIndexedDB();
         return new Promise((resolve, reject) => {
@@ -9797,7 +13310,15 @@ const originalBase64 = event.target.result;
             const db = e.target.result;
             try {
               const tx = db.transaction([POLYGON_STORE], "readwrite");
-              tx.objectStore(POLYGON_STORE).delete(id);
+              const store = tx.objectStore(POLYGON_STORE);
+              const getReq = store.get(id);
+              getReq.onsuccess = () => {
+                const rec = getReq.result;
+                if (rec) {
+                  const now = Date.now();
+                  store.put({ ...rec, updatedAt: now, deletedAt: now });
+                }
+              };
               tx.oncomplete = () => { db.close(); resolve(); };
               tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
             } catch (err) {
@@ -9863,7 +13384,7 @@ const originalBase64 = event.target.result;
       async function restorePolygonMemos(map) {
         try {
           if (!map || !window.naver || !naver.maps) return;
-          const records = await loadAllPolygonMemos();
+          const records = (await loadAllPolygonMemos()).filter((r) => !r.deletedAt);
           if (!records.length) return;
           const visible = document.getElementById("togglePolygonMemo")?.checked !== false;
           records.forEach((rec) => _attachRestoredPolygon(rec, map, visible));
@@ -9872,10 +13393,10 @@ const originalBase64 = event.target.result;
         }
       }
 
-      // 면적그리기 전체를 JSON 파일로 다운로드 (DB에 저장된 모든 폴리곤 메모)
+      // 면적그리기 전체를 JSON 파일로 다운로드 (DB에 저장된 모든 폴리곤 메모, 삭제된 것 제외)
       async function downloadPolygonMemos() {
         try {
-          const records = await loadAllPolygonMemos();
+          const records = (await loadAllPolygonMemos()).filter((r) => !r.deletedAt);
           if (!records.length) {
             alert("내보낼 면적그리기가 없습니다.");
             return;
@@ -9915,7 +13436,8 @@ const originalBase64 = event.target.result;
               try { removePolygonMemo(p); } catch (_) {}
             });
           }
-          // 2) DB에 잔여 레코드가 있을 가능성 대비 store 전체 비우기
+          // 2) DB에 잔여 레코드가 있을 가능성 대비 전체 soft-delete
+          //    (store.clear()로 물리삭제하면 tombstone이 남지 않아 Drive 동기화 시 삭제가 전파되지 않음)
           await initMemoIndexedDB();
           await new Promise((resolve, reject) => {
             const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
@@ -9924,7 +13446,16 @@ const originalBase64 = event.target.result;
               const db = e.target.result;
               try {
                 const tx = db.transaction([POLYGON_STORE], "readwrite");
-                tx.objectStore(POLYGON_STORE).clear();
+                const store = tx.objectStore(POLYGON_STORE);
+                const now = Date.now();
+                const cursorReq = store.openCursor();
+                cursorReq.onsuccess = (ev) => {
+                  const c = ev.target.result;
+                  if (!c) return;
+                  const rec = c.value;
+                  if (!rec.deletedAt) c.update({ ...rec, updatedAt: now, deletedAt: now });
+                  c.continue();
+                };
                 tx.oncomplete = () => { db.close(); resolve(); };
                 tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
               } catch (err) {
@@ -11755,14 +15286,19 @@ min-height: 24px;
               try {
                 const existing = getRequest.result || null;
 
-                // ✅ 메모/사진 모두 없으면: 저장하지 않음. 기존 레코드가 있으면 삭제.
+                // ✅ 메모/사진 모두 없으면: 저장하지 않음. 기존 레코드가 있으면 tombstone으로 교체(개별 삭제).
                 if ((!memo || memo.length === 0) && (!images || images.length === 0)) {
                   if (existing) {
-                    const delReq = store.delete(id);
+                    // 이 트랜잭션에서 바로 tombstone put — 별도 __softDeleteNote 호출은 트랜잭션 충돌 위험
+                    const now = Date.now();
+                    const delReq = store.put({ id, memo: '', images: [], updatedAt: now, deletedAt: now });
                     delReq.onsuccess = function () {
                       try {
                         window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false);
                       } catch (e) {}
+                      // ▼ 자동 동기화 훅 (tombstone 경로): existing.sgg5 우선, 없으면 aptId로 추론
+                      try { __scheduleAutoSync(existing && existing.sgg5, { aptId: id }); } catch (_) {}
+                      __syncRegionCache.built = false;
                       // UI 초기화
                       aptMemoImageList[id] = [];
                       loadNote(id);
@@ -11789,16 +15325,59 @@ min-height: 24px;
                   return; // 🚫 여기서 끝 — 빈 내용은 저장/생성하지 않음
                 }
 
-                // ✅ 내용이 있으면 저장/갱신
+                // ✅ 변경 없으면 put 자체 스킵 (updatedAt bump 차단 → 동기화 갱신 오탐 방지)
+                if (existing && !existing.deletedAt) {
+                  const oldMemo = existing.memo || '';
+                  const oldImgs = Array.isArray(existing.images) ? existing.images : [];
+                  let same = oldMemo === memo && oldImgs.length === images.length;
+                  if (same) {
+                    for (let i = 0; i < oldImgs.length; i++) {
+                      if ((__getImgData(oldImgs[i]) || '') !== (__getImgData(images[i]) || '')) {
+                        same = false;
+                        break;
+                      }
+                    }
+                  }
+                  if (same) return; // 변경 없음 → 저장 스킵
+                }
+
+                // ✅ 내용이 있으면 저장/갱신 (updatedAt 자동 갱신, deletedAt 초기화)
                 const toSave = existing || { id, memo: "", images: [] };
                 toSave.memo = memo;
-                toSave.images = images;
+
+                // [파일명 기반] note.sgg5 고정 저장 (__syncAptIndex는 loadAptIndexForSync 후 값 존재)
+                if (!toSave.sgg5) {
+                  const region = (typeof __syncAptIndex !== 'undefined') ? __syncAptIndex.get(String(id)) : null;
+                  if (region?.sgg5) toSave.sgg5 = region.sgg5;
+                }
+
+                // [파일명 기반] 이미지 항목 정규화: {data, addedAt} — addedAt 없으면 지금 이 순간으로 부여
+                // 같은 ms 다중 추가 충돌 방지 위해 i 오프셋
+                const now = Date.now();
+                toSave.images = (Array.isArray(images) ? images : []).map((img, i) => {
+                  const data = __getImgData(img);
+                  if (!data) return null;
+                  const existingAddedAt = (img && typeof img === 'object' && img.addedAt) ? img.addedAt : null;
+                  return { data, addedAt: existingAddedAt || (now + i) };
+                }).filter(Boolean);
+                // 최종 방어: DataURL 기준 중복 제거
+                const __seenImgData = new Set();
+                toSave.images = toSave.images.filter((img) => {
+                  if (__seenImgData.has(img.data)) return false;
+                  __seenImgData.add(img.data);
+                  return true;
+                });
+                toSave.updatedAt = now;
+                toSave.deletedAt = null;
 
                 const putRequest = store.put(toSave);
                 putRequest.onsuccess = function () {
                   try {
                     window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), true);
                   } catch (e) {}
+                  // ▼ 자동 동기화 훅 (저장/갱신 경로): toSave.sgg5 우선, 없으면 aptId로 추론
+                  try { __scheduleAutoSync(toSave.sgg5, { aptId: id }); } catch (_) {}
+                  __syncRegionCache.built = false;
                   loadNote(id);
 
                   // 마커 재생성(메모 아이콘 반영)
@@ -11860,16 +15439,14 @@ min-height: 24px;
 
             preview.innerHTML = "";
             document.getElementById("noteText").value = result.memo || "";
-            if (result.images.length > 0) {
+            // 빈 객체 같은 garbage 이미지 항목 자동 정리 (다음 saveNote 시 IndexedDB 도 자가 치유)
+            const cleanImgs = __sanitizeImages(result.images || []);
+            if (cleanImgs.length > 0) {
               preview.style.display = "flex";
             }
-            aptMemoImageList[id] = result.images || [];
+            aptMemoImageList[id] = cleanImgs;
 
-            for (const imageDataUrl of aptMemoImageList[id]) {
-              // 엔트리는 문자열(data URL) 또는 {data, addedAt} 객체일 수 있음
-              const resolvedSrc = __getImgData(imageDataUrl);
-              if (!resolvedSrc) continue;
-
+            const renderImgItem = (item, imageDataUrl) => {
               const wrapper = document.createElement("div");
               wrapper.style.position = "relative";
               wrapper.style.display = "inline-block";
@@ -11886,23 +15463,22 @@ min-height: 24px;
               canvas.title = "미리보기";
 
               const ctx = canvas.getContext("2d");
-              const img = new Image();
-              img.onload = () => {
-                ctx.drawImage(img, 0, 0, 60, 60);
-              };
-              img.onerror = () => {
-                console.warn("loadNote: 미리보기 이미지 로드 실패", imageDataUrl);
+              const imgEl = new Image();
+              imgEl.onload = () => ctx.drawImage(imgEl, 0, 0, 60, 60);
+              imgEl.onerror = () => {
+                console.warn("loadNote: 미리보기 이미지 로드 실패");
                 if (typeof hongbuDebugLog === "function") {
-                  hongbuDebugLog("ERR", "[loadNote] 프리뷰 이미지 로드 실패", String(resolvedSrc).slice(0, 80));
+                  hongbuDebugLog("ERR", "[loadNote] 프리뷰 이미지 로드 실패", String(imageDataUrl).slice(0, 80));
                 }
               };
-              img.src = resolvedSrc;
+              imgEl.src = imageDataUrl;
 
               canvas.onclick = (e) => {
                 e.stopPropagation();
                 const list = aptMemoImageList[id] || [];
-                const idx = list.indexOf(imageDataUrl);
-                openModalImage(imageDataUrl, list, idx);
+                const dataList = list.map(__getImgData);
+                const idx = dataList.indexOf(imageDataUrl);
+                openModalImage(imageDataUrl, dataList, idx);
               };
 
               const deleteBtn = document.createElement("div");
@@ -11924,9 +15500,8 @@ min-height: 24px;
               deleteBtn.onclick = (e) => {
                 e.stopPropagation();
                 if (confirm("사진을 삭제합니다")) {
-                  // ✅ blob: URL일 경우 해제
                   __safeRevokeObjectURL(imageDataUrl);
-                  aptMemoImageList[id] = aptMemoImageList[id].filter((img) => img !== imageDataUrl);
+                  aptMemoImageList[id] = aptMemoImageList[id].filter((i) => __getImgData(i) !== imageDataUrl);
                   wrapper.remove();
                 }
               };
@@ -11934,6 +15509,60 @@ min-height: 24px;
               wrapper.appendChild(canvas);
               wrapper.appendChild(deleteBtn);
               preview.appendChild(wrapper);
+            };
+
+            const noteSgg5 = String(result.sgg5 || '').trim();
+            for (const item of aptMemoImageList[id]) {
+              const data = __getImgData(item);
+              const addedAt = (item && typeof item === 'object') ? item.addedAt : null;
+
+              if (data) {
+                renderImgItem(item, data);
+              } else if (addedAt && noteSgg5 && window.__gdriveReady && window.__gdriveAptImagesFolderId) {
+                // [파일명 기반] addedAt + sgg5로 filename 유도 → Drive lazy 다운로드
+                const filename = __aptImgFilename({ sgg5: noteSgg5, id }, addedAt);
+                (async () => {
+                  try {
+                    const nameMap = await __driveGetNameMapForSgg(window.__gdriveAptImagesFolderId, noteSgg5);
+                    const fid = nameMap?.get?.(filename);
+                    if (!fid) {
+                      console.warn(`[lazy] 단지메모 이미지 Drive에 없음: ${filename}`);
+                      return;
+                    }
+                    const blob = await __driveDownloadImageAsBlob(fid);
+                    const dataUrl = await __blobToDataUrl(blob);
+                    if (!dataUrl) { console.warn('[lazy] 단지메모 dataUrl 변환 실패', id, filename); return; }
+                    // 인메모리 업데이트
+                    const idx = aptMemoImageList[id].findIndex((i) => i?.addedAt === addedAt);
+                    if (idx >= 0) aptMemoImageList[id][idx] = { data: dataUrl, addedAt };
+                    // IndexedDB write-back
+                    try {
+                      await initMemoIndexedDB();
+                      const wbDb = await __openHongbuMemoDb();
+                      await new Promise((res) => {
+                        const tx = wbDb.transaction(['apartmentNotes'], 'readwrite');
+                        tx.oncomplete = () => { wbDb.close(); res(); };
+                        tx.onerror = () => { wbDb.close(); res(); };
+                        const st = tx.objectStore('apartmentNotes');
+                        const g = st.get(id);
+                        g.onsuccess = () => {
+                          const rec = g.result;
+                          if (!rec) return;
+                          const imgs = Array.isArray(rec.images) ? [...rec.images] : [];
+                          const i2 = imgs.findIndex((i) => i?.addedAt === addedAt);
+                          if (i2 >= 0) imgs[i2] = { data: dataUrl, addedAt };
+                          else imgs.push({ data: dataUrl, addedAt });
+                          st.put({ ...rec, images: imgs });
+                        };
+                      });
+                    } catch (wbErr) { console.warn('[lazy] 단지메모 write-back 실패', wbErr); }
+                    renderImgItem({ data: dataUrl, addedAt }, dataUrl);
+                    preview.style.display = "flex";
+                  } catch (e) {
+                    console.warn('[lazy] 단지메모 이미지 Drive 로드 실패:', id, filename, e);
+                  }
+                })();
+              }
             }
             // 로드 완료 후 스크롤 오른쪽 끝으로 이동
             requestAnimationFrame(() => {
@@ -12300,6 +15929,15 @@ min-height: 24px;
         if (!record || !input) return;
 
         const nextNote = String(input.value || "").trim();
+
+        // ✅ 변경 없으면 put 스킵 (updatedAt bump 차단 → 불필요한 동기화 오탐 방지)
+        //    단, 레거시 Blob 필드가 남아있으면 DataURL 정규화 저장이 필요하므로 스킵하지 않음
+        const hasLegacyBlob = record.imageBlob instanceof Blob || record.thumbBlob instanceof Blob;
+        if (!hasLegacyBlob && nextNote === String(record.note || "").trim()) {
+          closeImageModal();
+          return;
+        }
+
         try {
           const sourceImageDataUrl =
             typeof record.imageDataUrl === "string" && record.imageDataUrl.startsWith("data:")

@@ -168,7 +168,7 @@ const TIER_STYLE = {
 const SUDOGWON_SIDO = new Set(['11', '28', '41']);          // 서울·인천·경기 = 수도권(급지 체계)
 const METRO_SIDO = new Set(['26', '27', '29', '30', '31']); // 지방 광역시
 const REGION_METRO = { hue: 250, sat: 48, label: '지방 광역시' }; // 청보라 계열
-const REGION_PROV  = { hue: 150, sat: 46, label: '지방(기타)' };    // 초록 계열
+const REGION_PROV  = { hue: 45, sat: 62, label: '지방(기타)' };    // 골드/황토 계열
 
 function isRegional(code5) { return !SUDOGWON_SIDO.has(String(code5).slice(0, 2)); }
 // 같은 '시'로 묶는 키: 광역시는 시도(2자리), 도지역은 시(4자리)
@@ -405,48 +405,6 @@ function getLabelLatLngByPolylabel(geometry, bbox) {
   return new naver.maps.LatLng(blended[1], blended[0]);
 }
 
-function _label_getBboxPixelSize(bbox, map) {
-  try {
-    const proj = map && map.getProjection && map.getProjection();
-    if (!proj) return null;
-    const sw = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[1], bbox[0]));
-    const ne = proj.fromCoordToOffset(new naver.maps.LatLng(bbox[3], bbox[2]));
-    return { width: Math.abs(ne.x - sw.x), height: Math.abs(ne.y - sw.y) };
-  } catch (e) {
-    return null;
-  }
-}
-
-function _label_measureTextPx(text, fontSizePx, fontWeight = 800, fontFamily = "sans-serif") {
-  const canvas = _label_measureTextPx._canvas || (_label_measureTextPx._canvas = document.createElement("canvas"));
-  const ctx = canvas.getContext("2d");
-  ctx.font = `${fontWeight} ${fontSizePx}px ${fontFamily}`;
-  const w = ctx.measureText(text).width;
-  const h = fontSizePx * 1.15;
-  return { w, h };
-}
-
-function _label_calcFitFontSize({ bbox, text, map, paddingPx = 8, min = 8, max = 40, fontWeight = 800, fontFamily = "sans-serif", hideIfTooSmall = true }) {
-  const px = _label_getBboxPixelSize(bbox, map);
-  if (!px) return min;
-  const availW = Math.max(0, px.width - paddingPx * 2);
-  const availH = Math.max(0, px.height - paddingPx * 2);
-  if (hideIfTooSmall && (availW < 10 || availH < 10)) return 0;
-  let lo = min, hi = max, best = 0;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const m = _label_measureTextPx(text, mid, fontWeight, fontFamily);
-    if (m.w <= availW && m.h <= availH) {
-      best = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  if (best === 0) return hideIfTooSmall ? 0 : min;
-  return best;
-}
-
 // ✅ SIG 경계 로드 (전국, 2개 파트 병합)
 async function loadSigBoundaryOnce() {
   if (sigGeojsonRaw) return;
@@ -564,20 +522,20 @@ function attachSigPolygonEvents(polygon) {
   naver.maps.Event.addListener(polygon, 'click', () => toggleMadang(polygon.__code5));
 }
 
+// 시군구 라벨은 구별 크기 차이 없이 줌 레벨에 따른 고정 폰트로 통일
+// 줌 9 이하 9px, 10→11px, 11→15px, 12→17px, 13→18px, 14 이상 20px
+function sigLabelFontSize(zoom) {
+  if (zoom <= 9) return 9;
+  if (zoom >= 14) return 20;
+  return { 10: 11, 11: 15, 12: 17, 13: 18 }[zoom];
+}
+
 function addSigLabelForFeature(f, isMadang, targetArray) {
   const code5 = String(f.properties?.sgg_cd ?? "");
   const name = sigDisplayName(code5, f.properties?.sgg_nm);
   if (!name) return;
-  const fs = _label_calcFitFontSize({
-    bbox: f.bbox,
-    text: name,
-    map,
-    paddingPx: 6,
-    min: 9,
-    max: 18,
-    hideIfTooSmall: true
-  });
-  if (fs <= 0) return;
+  // 폴리곤 크기와 무관하게 줌 레벨 고정 크기 사용(작은 구도 항상 표시. 예: 대구 중구)
+  const fs = sigLabelFontSize(map.getZoom());
 
   const latlng = getLabelLatLngByPolylabel(f.geometry, f.bbox);
   const color = isMadang ? "#111" : "#333";
