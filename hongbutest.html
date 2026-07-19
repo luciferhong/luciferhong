@@ -1501,6 +1501,9 @@
           }, ms);
         }
         window.hongbuDebugToast = showToast;
+        // ✅ showToast는 이 IIFE 스코프 안에 정의돼 있어 다른 스크립트 블록에서 bare 식별자로 접근 불가.
+        //    메인 블록의 showToast() 호출들이 동작하도록 전역에 노출한다.
+        window.showToast = showToast;
 
         btnShow?.addEventListener("click", () => {
           const on = overlay.style.display !== "none";
@@ -1560,7 +1563,7 @@
 
         // Storage quota monitor
         function showStorageWarning(pct) {
-          const isCritical = pct >= 92;
+          const isCritical = pct >= 90;
           const storageKey = isCritical ? "storageWarnCritical" : "storageWarnHigh";
           const today = new Date().toDateString();
           if (localStorage.getItem(storageKey) === today) return;
@@ -1596,7 +1599,7 @@
                   "STAT",
                   `Storage: ${(usage / 1048576).toFixed(1)}MB / ${(quota / 1048576).toFixed(1)}MB (${pct.toFixed(1)}%)`,
                 );
-                if (pct >= 80) showStorageWarning(pct);
+                if (pct >= 90) showStorageWarning(pct);
               }
             }
           } catch (e) {
@@ -1604,6 +1607,8 @@
           }
         }
         reportStorage();
+        // ✅ 저장 후(사진 추가/일괄 복원 등) 사용률이 90%를 넘겼는지 다시 확인할 수 있게 전역 노출
+        window.reportStorage = reportStorage;
         setInterval(reportStorage, 60000);
 
         // JS heap (desktop chrome only)
@@ -1751,8 +1756,9 @@
         >최소세대수:
         <input class="filter-num" type="number" id="unitFilter" min="0" value="190" placeholder="최소" />
       </label>
-      <label><input type="checkbox" id="over85Filter" />대형포함</label>
       <label><input type="checkbox" id="toggleApartments" checked />아파트</label>
+      <label><input type="checkbox" id="over85Filter" />대형포함</label>
+      <label><input type="checkbox" id="excludePresale" />분양권 제외</label>
       <label><input type="checkbox" id="toggleSchools" />초</label>
       <label><input type="checkbox" id="toggleMiddleSchools" />중</label>
       <label><input type="checkbox" id="toggleFacilities" />환경</label>
@@ -1877,6 +1883,17 @@
     </div>
 
     <script>
+      // innerHTML 주입 시 데이터 필드 이스케이프(XSS 방지). 디버그 스크립트 블록의 escapeHtml은 IIFE에
+      // 갇혀 이 블록에서 접근 불가하므로 여기서 별도로 정의한다.
+      function escapeHtml(s) {
+        return String(s)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
       let sigGeojsonRaw = null;
       let emdGeojsonRaw = null;
 
@@ -2843,29 +2860,8 @@
                 if (_boundaryCanvas) _boundaryCanvas.style.display = '';
               }
             } catch (e) {}
-            // 💾 메모 캐시 추가 정리 (매 idle마다 한 번 더 점검)
-            try {
-              const bounds = window.map.getBounds();
-              if (bounds && apartmentData) {
-                const visibleIds = apartmentData
-                  .filter((apt) => bounds.hasLatLng(new naver.maps.LatLng(apt.lat, apt.lng)))
-                  .map((apt) => String(apt.id));
-
-                const visibleSet = new Set(visibleIds);
-                let cleanedCount = 0;
-
-                for (const id of window.__memoPresenceCache.keys()) {
-                  if (!visibleSet.has(id)) {
-                    window.__memoPresenceCache.delete(id);
-                    cleanedCount++;
-                  }
-                }
-
-                if (cleanedCount > 0) {
-                  hongbuDebugLog("INFO", `🧹 유휴 시 메모 캐시 정리: ${cleanedCount}개`);
-                }
-              }
-            } catch (e) {}
+            // ✅ 메모 캐시 정리는 updateMarkers() 내부에서 keepIds 기준으로 이미 수행하므로
+            //    여기서 apartmentData 전체를 다시 스캔하던 중복 작업은 제거(매 idle O(n) 스캔·LatLng 할당 절감).
           });
 
           // 드래그 중 canvas를 타일과 함께 transform으로 이동 (깜박임 방지)
@@ -4307,6 +4303,8 @@
             sigungu: apt.sigungu, //시군구
             sigunguNm: apt.sigunguNm, //시군구명
             type: apt.type, //유형
+            _builtYear: _hongbuExtractBuiltYear(apt), // ✅ 로드 시 1회 계산(매 idle 정규식 재실행 제거)
+            _moveInYm: _hongbuParseYearMonth(apt.year), // ✅ 입주 년월(년*12+월). 분양권 제외 필터에서 사용
           }));
 
           //console.log("✅ 아파트 데이터 fetch 완료");
@@ -4381,10 +4379,10 @@
 				<div class="apartment-result-item" data-apt-id="${apt.id}" style="cursor: pointer;">
 					<strong>${highlightMatches(apt.name, query)}</strong>
 					<div class="apartment-result-info">
-						<span>${apt.sidoNm}</span>
-						<span>${apt.sigunguNm}</span>
-						<span>연식: ${apt.year}</span>
-						<span>세대수: ${apt.units}</span>
+						<span>${escapeHtml(apt.sidoNm)}</span>
+						<span>${escapeHtml(apt.sigunguNm)}</span>
+						<span>연식: ${escapeHtml(apt.year)}</span>
+						<span>세대수: ${escapeHtml(apt.units)}</span>
 						${apt.distance !== undefined ? `<span style="color: #0066cc; font-weight: 600;">📍 ${apt.distance.toFixed(2)}km</span>` : ""}
 					</div>
 				</div>
@@ -4479,22 +4477,23 @@
 
       // ===== 검색 쿼리와 매칭된 부분 하이라이트 =====
       function highlightMatches(text, query) {
-        const lowerText = text.toLowerCase();
-        const lowerQuery = query.toLowerCase();
+        // 검색 결과는 innerHTML로 주입되므로 각 구간을 escapeHtml 처리(XSS 방지). <mark> 태그만 그대로 둔다.
+        const str = String(text ?? "");
+        const q = String(query ?? "");
+        const lowerText = str.toLowerCase();
+        const lowerQuery = q.toLowerCase();
 
-        if (!lowerText.includes(lowerQuery)) {
-          return text;
+        const index = lowerQuery ? lowerText.indexOf(lowerQuery) : -1;
+        if (index === -1) {
+          return escapeHtml(str);
         }
 
-        const index = lowerText.indexOf(lowerQuery);
-        if (index === -1) return text;
-
         return (
-          text.substring(0, index) +
+          escapeHtml(str.substring(0, index)) +
           '<mark style="background-color: #ffeb3b; font-weight: 600;">' +
-          text.substring(index, index + query.length) +
+          escapeHtml(str.substring(index, index + q.length)) +
           "</mark>" +
-          text.substring(index + query.length)
+          escapeHtml(str.substring(index + q.length))
         );
       }
 
@@ -4632,6 +4631,7 @@
       // ================================
       const HONGBU_DB_VERSION = 8;
       const HONGBU_MEMO_DB_VERSION = 6;
+      const DB_OPEN_TIMEOUT_MS = 5000; // IndexedDB open 최후 안전망(blocked/무응답 시 초기화 체인 정지 방지)
 
       window.__memoPresenceCache = window.__memoPresenceCache || new Map();
       window.__memoPresencePending = window.__memoPresencePending || new Map();
@@ -4676,15 +4676,13 @@
                     resolve(exists);
                   };
                   getReq.onerror = () => {
-                    // 에러면 없는 것으로 처리(표기만)
-                    window.__memoPresenceCache.set(id, false);
+                    // 에러는 일시적일 수 있으므로 false를 "캐시"하지 않는다(stale 아이콘 방지). 표기만 없음 처리.
                     try {
                       db.close();
                     } catch (e) {} // ✅ 새로운 DB 연결 닫기
                     resolve(false);
                   };
                 } catch (e) {
-                  window.__memoPresenceCache.set(id, false);
                   try {
                     db.close();
                   } catch (e) {}
@@ -4692,12 +4690,11 @@
                 }
               };
               req.onerror = () => {
-                window.__memoPresenceCache.set(id, false);
+                // open 실패(blocked/일시 오류)는 캐시하지 않는다 → 다음 호출에서 재시도.
                 resolve(false);
               };
             });
           } catch (e) {
-            window.__memoPresenceCache.set(id, false);
             return false;
           } finally {
             window.__memoPresencePending.delete(id);
@@ -5039,6 +5036,33 @@
         return null;
       }
 
+      // ✅ 입주시기 문자열(예: "2026.12")을 "년*12+월" 정수로 변환(월 단위 비교용). 형식 불명이면 null.
+      function _hongbuParseYearMonth(v) {
+        const m = String(v ?? "").match(/(\d{4})\s*[.\-\/]\s*(\d{1,2})/);
+        if (!m) return null;
+        const year = parseInt(m[1], 10);
+        const month = parseInt(m[2], 10);
+        if (month < 1 || month > 12) return null;
+        return year * 12 + month;
+      }
+
+      // ✅ 최소 전용면적을 apt 객체에 1회 캐시(매 idle Math.min+spread 재계산 제거).
+      // apartmentDetailData(aptDetail1/2.json)는 비동기 로드라 detail이 아직 없으면 undefined 반환(캐시하지 않고 다음에 재시도).
+      // detail이 있는데 유효 면적이 없으면 Infinity를 캐시 → 기존 로직과 동일하게 제외 처리됨.
+      function _hongbuGetMinArea(apartment) {
+        if (apartment.__minAreaComputed) return apartment.__minArea;
+        const types = (apartmentDetailData[String(apartment.id)] || {}).타입정보 || [];
+        if (types.length === 0) return undefined; // detail 미로드 → 캐시하지 않음
+        let min = Infinity;
+        for (const t of types) {
+          const a = Number(t["전용면적"]) || 0;
+          if (a > 0 && a < min) min = a;
+        }
+        apartment.__minArea = min; // Infinity 가능(유효 면적 없음)
+        apartment.__minAreaComputed = true;
+        return min;
+      }
+
       function updateMarkers(bounds) {
         const showApartments = document.getElementById("toggleApartments").checked;
         if (!showApartments) {
@@ -5072,7 +5096,21 @@
         //const showApartments = document.getElementById("toggleApartments").checked;
         const isSiseMapActive = document.getElementById("toggleSiseMap").checked;
 
-        if (!showApartments || window.map.getZoom() < 14) return;
+        // ✅ 최소 줌(14) 미만이면 마커가 표시되면 안 되므로, 화면에 남아있던 마커/클러스터를 제거하고 종료
+        //    (기존에는 그냥 return 해서 줌아웃 시 이전 마커가 그대로 남아있는 문제가 있었음)
+        if (window.map.getZoom() < 14) {
+          clearApartmentMarkersAndCluster();
+          return;
+        }
+
+        // ✅ 필터 상수는 루프 밖에서 1회만 읽는다(아파트마다 DOM 조회하던 것 제거)
+        const includeLarge = document.getElementById("over85Filter")?.checked;
+        const excludePresale = document.getElementById("excludePresale")?.checked; // 분양권 제외
+        // 현재 년월(년*12+월). 분양권이라도 입주시점이 임박/경과했으면(데이터 미갱신 대비) 제외하지 않기 위한 기준.
+        // 현재로부터 +3개월까지는 입주로 간주 (예: 현재 2026.07 → 2026.10 입주분까지 유지)
+        const _now = new Date();
+        const nowYm = _now.getFullYear() * 12 + (_now.getMonth() + 1);
+        const presaleKeepYm = nowYm + 3;
 
         // ▼ 여기서 시도/시군구 필터까지 적용
         const filtered = apartmentData.filter((apartment) => {
@@ -5081,23 +5119,24 @@
 
           const sidoOK = !selectedSido || (apartment.sido || "").trim() === selectedSido;
           const sigunguOK = selectedSigunguSet.size === 0 || selectedSigunguSet.has((apartment.sigungu || "").trim());
-          const builtYear = _hongbuExtractBuiltYear(apartment);
+          const builtYear = apartment._builtYear; // ✅ 로드 시 사전 계산된 값 재사용
           const yearOK =
             (!fromYear || (builtYear && builtYear >= fromYear)) && (!toYear || (builtYear && builtYear <= toYear));
-          //console.log("apartment.sido : "+apartment.sido)
-          //console.log("apartment.sigungu : "+apartment.sigungu)
-          const includeLarge = document.getElementById("over85Filter")?.checked;
+          // ✅ 분양권 제외: 체크 시 유형에 "분양권"이 포함된 단지 제외.
+          //    단, 입주시점(년월)이 현재로부터 +3개월 이내면 입주로 간주해 제외하지 않음(데이터 미갱신 대비).
+          let presaleOK = true;
+          if (excludePresale && String(apartment.type || "").includes("분양권")) {
+            const moveInYm = apartment._moveInYm; // 로드 시 사전 계산된 입주 년월
+            presaleOK = moveInYm != null && moveInYm <= presaleKeepYm; // +3개월 이내 → 유지, 그 이후/불명 → 제외
+          }
           let areaOK = true;
           if (!includeLarge) {
             // 미체크 시: 최소 전용면적이 85 초과인 단지(대형 단지) 제외
-            const types = (apartmentDetailData[String(apartment.id)] || {}).타입정보 || [];
-            if (types.length > 0) {
-              const minArea = Math.min(...types.map((t) => Number(t["전용면적"]) || 0).filter((a) => a > 0));
-              areaOK = minArea <= 85;
-            }
-            // 상세 데이터 없으면 제외하지 않음 (areaOK = true 유지)
+            const minArea = _hongbuGetMinArea(apartment); // ✅ 1회 계산 후 캐시
+            // undefined(detail 미로드)면 제외하지 않음(areaOK = true 유지)
+            if (minArea !== undefined) areaOK = minArea <= 85;
           }
-          return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK;
+          return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK && presaleOK;
         });
 
         // ✅ 필터 결과에 없는 기존 마커는 즉시 제거(연도/세대수/지역/범위 변경 시 즉시 반영)
@@ -5816,6 +5855,20 @@
           );
         }
 
+        // ✅ Naver 지도 API 로드 실패 가드: 키 오류/오프라인/광고차단 등으로 maps.js가 안 뜨면
+        //    naver가 undefined → 지도 초기화가 throw하며 안내 없는 빈 화면이 된다. 사용자에게 알리고 중단.
+        if (typeof naver === "undefined" || !naver.maps) {
+          console.error("❌ Naver 지도 API 로드 실패 (naver 미정의)");
+          const errDiv = document.createElement("div");
+          errDiv.style.cssText =
+            "position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;background:#fff;color:#333;font-size:16px;line-height:1.6;text-align:center;";
+          errDiv.innerHTML =
+            "🗺️ 지도를 불러오지 못했습니다.<br>네트워크 연결 또는 광고 차단 설정을 확인해 주세요." +
+            '<button onclick="location.reload()" style="padding:10px 20px;font-size:15px;border:none;border-radius:6px;background:#27AE60;color:#fff;cursor:pointer;">새로고침</button>';
+          document.body.appendChild(errDiv);
+          return;
+        }
+
         // ✅ OS의 자동 eviction 방지 (저장공간 부족 시 IndexedDB 삭제 예방)
         if (navigator.storage && navigator.storage.persist) {
           const granted = await navigator.storage.persist();
@@ -5842,7 +5895,13 @@
         }
 
         const useBlank = document.getElementById("toggleBlankMap")?.checked;
-        await createMap(useBlank);
+        try {
+          await createMap(useBlank);
+        } catch (e) {
+          console.error("❌ 지도 생성 실패:", e);
+          showToast("❌ 지도를 생성하지 못했습니다. 새로고침 해주세요.");
+          return;
+        }
         injectMaximizeButton(); // 지도 내부 우상단 최대화 버튼 주입
 
         // ✅ 새로고침/상태복원으로 지적편집도 체크가 이미 켜져있으면, 지도 생성 후 레이어를 다시 올림
@@ -6157,6 +6216,12 @@
 
       // ✅ 대형포함(over85Filter) 변경 시 지도 즉시 반영
       document.getElementById("over85Filter")?.addEventListener("change", () => {
+        clearApartmentMarkersAndCluster();
+        if (window.map) updateMarkers(window.map.getBounds());
+      });
+
+      // ✅ 분양권 제외(excludePresale) 변경 시 지도 즉시 반영
+      document.getElementById("excludePresale")?.addEventListener("change", () => {
         clearApartmentMarkersAndCluster();
         if (window.map) updateMarkers(window.map.getBounds());
       });
@@ -6492,7 +6557,7 @@
 
         let infoHtml = `
     <div style="display: flex; justify-content: space-between; align-items: center; position: relative;">
-      <h3 style="margin: 0; text-align: left;">${apt.아파트명}</h3>
+      <h3 style="margin: 0; text-align: left;">${escapeHtml(apt.아파트명)}</h3>
       <div style="display: flex; gap: 6px;">
         ${__hasSiseData(apartmentId) ? `<button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
           style="padding: 8px; min-width: 59px; text-align: center; background: #27AE60; color: white; border: none; border-radius: 4px; cursor: pointer;">
@@ -6556,14 +6621,14 @@
         typeInfo.forEach((type) => {
           infoHtml += `
       <tr>
-        <td>${type["공급평수"]}</td>
-        <td>${type["공급면적"]}</td>
-        <td>${type["전용면적"]}</td>
-        <td>${type["구조"]}</td>
-        <td>${type["방 갯수"]}</td>
-        <td>${type["화장실 갯수"]}</td>
-        <td>${type["타입"]}</td>
-        <td>${type["평형 세대수"]}</td>
+        <td>${escapeHtml(type["공급평수"])}</td>
+        <td>${escapeHtml(type["공급면적"])}</td>
+        <td>${escapeHtml(type["전용면적"])}</td>
+        <td>${escapeHtml(type["구조"])}</td>
+        <td>${escapeHtml(type["방 갯수"])}</td>
+        <td>${escapeHtml(type["화장실 갯수"])}</td>
+        <td>${escapeHtml(type["타입"])}</td>
+        <td>${escapeHtml(type["평형 세대수"])}</td>
       </tr>`;
         });
 
@@ -7502,46 +7567,164 @@ const originalBase64 = event.target.result;
         return data;
       }
 
-      function initMemoIndexedDB() {
+      // hongbuMemo DB의 3개 스토어를 멱등 생성 (open/재오픈 공통 사용)
+      function __createMemoStores(db) {
+        if (!db.objectStoreNames.contains("apartmentNotes")) {
+          db.createObjectStore("apartmentNotes", { keyPath: "id" });
+        }
+        // ✅ 지도 특정 좌표에 붙이는 사진 메모
+        if (!db.objectStoreNames.contains("photoMemos")) {
+          const store = db.createObjectStore("photoMemos", { keyPath: "id" });
+          store.createIndex("createdAt", "createdAt", { unique: false });
+        }
+        // ✅ 면적그리기 폴리곤 메모 (좌표·색·메모·라벨 상태)
+        if (!db.objectStoreNames.contains("polygonMemos")) {
+          const store = db.createObjectStore("polygonMemos", { keyPath: "id" });
+          store.createIndex("createdAt", "createdAt", { unique: false });
+        }
+      }
+
+      const __MEMO_REQUIRED_STORES = ["apartmentNotes", "photoMemos", "polygonMemos"];
+
+      // depth: 무손실 복구(삭제→재생성→복원)를 이미 1회 수행했는지 가드. 무한 재귀/무한 루프 차단.
+      function initMemoIndexedDB(depth = 0) {
         return new Promise((resolve, reject) => {
           const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          let settled = false;
+          const settle = (fn, arg) => {
+            if (settled) return;
+            settled = true;
+            fn(arg);
+          };
+
+          // 다른 탭이 이전 버전 연결을 잡고 있으면 업그레이드가 blocked → onsuccess/onerror가 발화되지 않아
+          // Promise가 영원히 pending → 메모/사진/폴리곤 기능 전체가 무응답이 된다. 반드시 핸들러를 둔다.
+          request.onblocked = function () {
+            console.warn("⚠️ hongbuMemo DB 업그레이드 blocked — 다른 탭/창에서 이전 버전을 쓰고 있습니다.");
+            showToast("⚠️ 다른 탭에서 이전 버전을 사용 중입니다. 해당 탭을 닫고 새로고침 해주세요.");
+            settle(reject, new Error("hongbuMemo open blocked"));
+          };
+
+          // 최후 안전망: 어떤 이유로든 제한시간 내 resolve/reject가 없으면 중단.
+          const timeoutId = setTimeout(() => {
+            console.warn("⚠️ hongbuMemo DB open 타임아웃 — 초기화 중단");
+            settle(reject, new Error("hongbuMemo open timeout"));
+          }, DB_OPEN_TIMEOUT_MS);
 
           request.onupgradeneeded = function (event) {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains("apartmentNotes")) {
-              db.createObjectStore("apartmentNotes", { keyPath: "id" });
-            }
-            // ✅ 지도 특정 좌표에 붙이는 사진 메모
-            if (!db.objectStoreNames.contains("photoMemos")) {
-              const store = db.createObjectStore("photoMemos", { keyPath: "id" });
-              store.createIndex("createdAt", "createdAt", { unique: false });
-            }
-            // ✅ 면적그리기 폴리곤 메모 (좌표·색·메모·라벨 상태)
-            if (!db.objectStoreNames.contains("polygonMemos")) {
-              const store = db.createObjectStore("polygonMemos", { keyPath: "id" });
-              store.createIndex("createdAt", "createdAt", { unique: false });
-            }
+            __createMemoStores(event.target.result);
           };
 
           request.onsuccess = function (event) {
+            clearTimeout(timeoutId);
             const db = event.target.result;
 
-            // ✅ iOS 꼬임 복구: 이미 v4인데 store가 없으면 DB를 지우고 재생성 유도
-            // (polygonMemos는 누락 체크에서 제외 — 자가 복구가 photoMemos 데이터를 삭제할 위험 차단)
-            if (!db.objectStoreNames.contains("apartmentNotes") || !db.objectStoreNames.contains("photoMemos")) {
+            const missing = __MEMO_REQUIRED_STORES.filter((s) => !db.objectStoreNames.contains(s));
+            if (missing.length === 0) {
               db.close();
-              const del = indexedDB.deleteDatabase("hongbuMemo");
-              del.onsuccess = () => resolve(initMemoIndexedDB());
-              del.onerror = (e) => reject(e.target.error);
-              del.onblocked = () => reject(new Error("hongbuMemo delete blocked (다른 탭 닫기 필요)"));
+              settle(resolve, true);
               return;
             }
 
-            db.close();
-            resolve(true);
+            // ✅ 스토어 누락(iOS 꼬임 등) → 무손실 복구: 살아있는 스토어를 먼저 백업한 뒤
+            //    DB를 삭제/재생성하고 백업 데이터를 복원한다. (기존 코드처럼 무조건 전체 삭제하지 않는다.)
+            if (depth >= 1) {
+              // 이미 한 번 복구했는데도 누락 → 무한 루프 방지. 안내 후 중단.
+              db.close();
+              console.error("❌ hongbuMemo 복구 후에도 스토어 누락:", missing);
+              showToast("❌ 포토메모 DB 복구에 실패했습니다. 브라우저 저장소 설정을 확인해 주세요.");
+              settle(reject, new Error("hongbuMemo recovery failed: " + missing.join(",")));
+              return;
+            }
+
+            const existing = __MEMO_REQUIRED_STORES.filter((s) => db.objectStoreNames.contains(s));
+
+            const performRecovery = (backup) => {
+              const del = indexedDB.deleteDatabase("hongbuMemo");
+              del.onblocked = () => {
+                showToast("⚠️ DB 복구가 다른 탭에 의해 막혔습니다. 다른 탭을 닫고 새로고침 해주세요.");
+                settle(reject, new Error("hongbuMemo delete blocked"));
+              };
+              del.onerror = (e) => settle(reject, e.target.error);
+              del.onsuccess = () => {
+                // 재오픈: DB가 지워졌으므로 onupgradeneeded가 3개 스토어를 재생성.
+                const reopen = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                reopen.onupgradeneeded = (e) => __createMemoStores(e.target.result);
+                reopen.onblocked = () => {
+                  showToast("⚠️ DB 재생성이 막혔습니다. 다른 탭을 닫아 주세요.");
+                  settle(reject, new Error("hongbuMemo reopen blocked"));
+                };
+                reopen.onerror = (e) => settle(reject, e.target.error);
+                reopen.onsuccess = () => {
+                  const db2 = reopen.result;
+                  const toRestore = Object.keys(backup).filter(
+                    (s) => (backup[s] || []).length > 0 && db2.objectStoreNames.contains(s),
+                  );
+                  if (toRestore.length === 0) {
+                    db2.close();
+                    console.log("✅ hongbuMemo 재생성 완료 (복원할 데이터 없음)");
+                    settle(resolve, true);
+                    return;
+                  }
+                  const tx2 = db2.transaction(toRestore, "readwrite");
+                  tx2.oncomplete = () => {
+                    db2.close();
+                    console.log("✅ hongbuMemo 무손실 복구 완료");
+                    settle(resolve, true);
+                  };
+                  tx2.onerror = () => {
+                    db2.close();
+                    console.warn("⚠️ hongbuMemo 복원 중 오류:", tx2.error);
+                    settle(resolve, true); // 스토어는 살아있으므로 앱은 계속 동작
+                  };
+                  toRestore.forEach((s) => {
+                    const os = tx2.objectStore(s);
+                    backup[s].forEach((rec) => {
+                      try { os.put(rec); } catch (e) {}
+                    });
+                  });
+                };
+              };
+            };
+
+            if (existing.length === 0) {
+              db.close();
+              performRecovery({}); // 백업할 것이 없으면 곧바로 재생성
+              return;
+            }
+
+            // 살아있는 스토어 전부 getAll()로 백업
+            const backup = {};
+            let pending = existing.length;
+            const finishBackup = () => {
+              if (--pending === 0) {
+                db.close();
+                performRecovery(backup);
+              }
+            };
+            try {
+              const tx = db.transaction(existing, "readonly");
+              existing.forEach((s) => {
+                const req = tx.objectStore(s).getAll();
+                req.onsuccess = () => {
+                  backup[s] = req.result || [];
+                  finishBackup();
+                };
+                req.onerror = () => {
+                  console.warn("⚠️ hongbuMemo 백업 실패:", s, req.error);
+                  finishBackup();
+                };
+              });
+            } catch (e) {
+              // 트랜잭션 생성 실패 시에도 최소한 재생성은 시도 (데이터 손실 최소화 불가하지만 무응답 회피)
+              console.warn("⚠️ hongbuMemo 백업 트랜잭션 실패:", e);
+              db.close();
+              performRecovery(backup);
+            }
           };
 
           request.onerror = (e) => {
+            clearTimeout(timeoutId);
             const err = e.target.error;
             console.error("❌ hongbuMemo DB 열기 실패:", err);
             // 저장공간 부족 또는 DB 손상 시 사용자에게 안내
@@ -7549,7 +7732,7 @@ const originalBase64 = event.target.result;
               ? "❌ 저장공간이 부족합니다. 기기 저장공간을 확보해 주세요."
               : "❌ 포토메모 DB를 열 수 없습니다.\n크롬 설정 → 사이트 설정 → 저장용량 → 데이터 삭제 후 새로고침 해주세요.";
             showToast(msg);
-            reject(err);
+            settle(reject, err);
           };
         });
       }
@@ -8435,6 +8618,10 @@ const originalBase64 = event.target.result;
 
             // 포토메모 체크박스 ON일 때만 즉시 마커 생성
             if (window.__photoMemoVisible) __createPhotoMemoMarker(rec);
+            // ✅ 신규 사진 저장으로 사용량이 늘었을 수 있으니 사용률 재확인(90% 초과 시 백업 유도)
+            try {
+              window.reportStorage?.();
+            } catch (_) {}
           } catch (err) {
             alert("사진 저장 실패");
           } finally {
@@ -10244,7 +10431,7 @@ min-width: 120px;
         markerElement.setAttribute("data-apartment-id", apartment.id);
 
         const nameElement = document.createElement("div");
-        nameElement.innerHTML = `${apartment.name}<br>${apartment.year.slice(-5)} ${apartment.units}세대`;
+        nameElement.innerHTML = `${escapeHtml(apartment.name)}<br>${escapeHtml(apartment.year.slice(-5))} ${escapeHtml(apartment.units)}세대`;
         nameElement.style = `
         font-weight: bold;
         font-size: 12px;
@@ -12037,6 +12224,18 @@ min-height: 24px;
 
             hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
 
+            // ✅ 복원으로 새로 들어온 메모가 아이콘에 반영되도록 존재 캐시/키셋을 무효화(stale false 방지)
+            try {
+              window.__memoPresenceCache && window.__memoPresenceCache.clear();
+            } catch (e) {}
+            try {
+              window.__hongbuMemoKeySetReady = false;
+            } catch (e) {}
+            // ✅ 대량 복원으로 사용량이 크게 늘었을 수 있으니 사용률 재확인(90% 초과 시 백업 유도)
+            try {
+              window.reportStorage?.();
+            } catch (e) {}
+
             // 2초 지연 후 마커 새로고침 (메모리 정리 시간 제공)
             setTimeout(() => {
               hongbuDebugLog("INFO", "🔄 마커 새로고침 시작...");
@@ -12160,6 +12359,10 @@ min-height: 24px;
           closeImageModal();
           try {
             showToast("포토메모를 저장했습니다.", 1400);
+          } catch (_) {}
+          // ✅ 사진 저장으로 사용량이 늘었을 수 있으니 저장공간 사용률 재확인(90% 초과 시 백업 유도)
+          try {
+            window.reportStorage?.();
           } catch (_) {}
         } catch (e) {
           console.error("포토메모 메모 저장 실패:", e);
@@ -12717,7 +12920,7 @@ min-height: 24px;
         sigunguArray.forEach(({ code, name }) => {
           const label = document.createElement("label");
           label.style.cssText = "display:block;padding:2px 0;cursor:pointer;margin:0;line-height:1.4;font-size:13px;";
-          label.innerHTML = `<input type="checkbox" value="${code}" style="accent-color:orange;"> ${name}`;
+          label.innerHTML = `<input type="checkbox" value="${escapeHtml(code)}" style="accent-color:orange;"> ${escapeHtml(name)}`;
           sigunguFilter.appendChild(label);
           const cb = label.querySelector("input");
 
