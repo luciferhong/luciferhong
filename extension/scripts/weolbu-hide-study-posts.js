@@ -1,9 +1,12 @@
 // [확장 이식] 원본: [루시퍼홍] 월닷 투자공부인증 게시글 숨기기.user.js v1.1
 // greasyfork 업데이트 팝업 제거 — 웹스토어 자동 업데이트로 대체. 본문은 원본 그대로.
-(async () => {
+// MAIN world(페이지 컨텍스트) 실행 — SPA 감지용 history.pushState 오버라이드가 페이지에 적용되어야 하므로. 토글은 common/gate.js가 localStorage로 미러링.
+(() => {
   const SCRIPT_ID = 'weolbu-hide-study-posts';
-  const { enabled = {} } = await chrome.storage.sync.get('enabled');
-  if (enabled[SCRIPT_ID] === false) return; // 미설정 = 켜짐
+  try {
+    const __en = JSON.parse(localStorage.getItem('__luciferhongExtEnabled') || '{}');
+    if (__en[SCRIPT_ID] === false) return; // 미설정 = 켜짐
+  } catch (e) {}
   console.log('월닷 투자공부인증 게시글 숨기기 v1.1 (extension)');
 
 
