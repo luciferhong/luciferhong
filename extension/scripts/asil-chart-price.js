@@ -8,6 +8,11 @@
   } catch (e) {}
   console.log('아실 차트 가격표 v2.40 (extension)');
 
+// [확장 이식] 원본 L14~17 헬퍼 복원 (팝업 블록 제거 시 함께 잘렸던 부분)
+const TS  = () => new Date().toISOString();
+const log = (...a) => console.log(`[%s][ASIL]`, TS(), ...a);
+const warn= (...a) => console.warn(`[%s][ASIL]`, TS(), ...a);
+const err = (...a) => console.error(`[%s][ASIL]`, TS(), ...a);
 
 (function () {
   'use strict';
