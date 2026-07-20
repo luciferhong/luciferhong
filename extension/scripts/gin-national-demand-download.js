@@ -8,10 +8,12 @@
 
 
 
-// SheetJS 라이브러리 로드
-const script = document.createElement("script");
-script.src = "https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js";
-document.head.appendChild(script);
+// SheetJS 라이브러리 로드 — [확장 이식] 번들(vendor/xlsx)이 이미 로드되므로 CDN 폴백은 부재 시에만
+if (!window.XLSX) {
+  const script = document.createElement("script");
+  script.src = "https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js";
+  document.head.appendChild(script);
+}
 
 // 요청을 순차적으로 실행하는 함수
 async function fetchAllDataAndDownloadExcel() {
