@@ -53,6 +53,14 @@ async function save(id, isOn) {
   await chrome.storage.sync.set({ enabled });
 }
 
+// 팝업 높이 = 브라우저 창 높이의 80% (크롬 팝업 상한 600px 이내)
+(async () => {
+  try {
+    const win = await chrome.windows.getCurrent();
+    document.body.style.height = Math.min(600, Math.round(win.height * 0.8)) + 'px';
+  } catch (e) {}
+})();
+
 document.getElementById('reloadBtn').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id) chrome.tabs.reload(tab.id);
