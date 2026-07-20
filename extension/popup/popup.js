@@ -1,7 +1,15 @@
 // 스크립트 레지스트리 — 새 스크립트 편입 시 여기에 1줄 추가
 const SCRIPTS = [
-  { id: 'naver-complex-label', name: '단지라벨 색상변경' },
-  { id: 'naver-price-filter', name: '매물 가격 필터' },
+  { id: 'naver-complex-label', name: '네이버부동산 단지라벨 색상변경' },
+  { id: 'naver-price-filter', name: '부동산 매물 가격 필터(based on 모느나님)' },
+  { id: 'nac', name: 'NAC(New Asil Chart)' },
+  { id: 'asil-trade-more-no-monthly', name: '거래현황 더보기 월세 제외' },
+  { id: 'naver-new-window', name: '네부 부동산 새창으로 열기' },
+  { id: 'naver-article-download', name: '네이버 부동산 매물 다운로드' },
+  { id: 'asil-multi-compare', name: '아실 여러단지비교 편하게 써보자' },
+  { id: 'asil-chart-price', name: '아실 차트 가격표' },
+  { id: 'asil-chart-hogang', name: '아실차트 호갱노노처럼' },
+  { id: 'asil-chart-price-deal-link', name: '아실 차트 가격표[실거래 바로가기][단독사용X]' },
 ];
 
 const listEl = document.getElementById('scriptList');
