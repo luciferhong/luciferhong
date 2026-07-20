@@ -1,9 +1,12 @@
 // [확장 이식] 원본: [루시퍼홍] 부동산 매물 가격 필터(based on 모느나님).user.js
 // greasyfork 업데이트 팝업 IIFE 제거 — 웹스토어 자동 업데이트로 대체. 본문은 원본 그대로.
-(async () => {
+// MAIN world(페이지 컨텍스트) 실행 — 페이지의 javascript: 링크 클릭이 확장 CSP에 막히지 않도록. 토글은 common/gate.js가 localStorage로 미러링.
+(() => {
   const SCRIPT_ID = 'naver-price-filter';
-  const { enabled = {} } = await chrome.storage.sync.get('enabled');
-  if (enabled[SCRIPT_ID] === false) return; // 미설정 = 켜짐
+  try {
+    const __en = JSON.parse(localStorage.getItem('__luciferhongExtEnabled') || '{}');
+    if (__en[SCRIPT_ID] === false) return; // 미설정 = 켜짐
+  } catch (e) {}
   console.log('[루시퍼홍] 부동산 매물 가격 필터(based on 모느나님) v1.31 (extension)');
 
 
