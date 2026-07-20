@@ -15,6 +15,9 @@ const SCRIPTS = [
   { id: 'weolbu-hide-study-posts', name: '월닷 투자공부인증 게시글 숨기기' },
   { id: 'gin-supply-demand-filter', name: '지인 수요-공급 표 필터링' },
   { id: 'gin-national-demand-download', name: '지인 전국 수요-입주 플러스 다운로드' },
+  { id: 'gin-demand-download', name: '지인 수요-입주 다운로드' },
+  { id: 'tutoring-day-helper', name: '튜터링데이 인증샷 Helper' },
+  { id: 'asil-school-env-complex', name: '아실 학군&환경&단지 함께 표시' },
 ];
 
 const listEl = document.getElementById('scriptList');
