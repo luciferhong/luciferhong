@@ -1890,19 +1890,6 @@
         <button onclick="restoreMemoDB()">🗃️ 메모 복원</button>
         <button onclick="deleteMemoDB()">🗑️ 단지메모 일괄 삭제</button>
         <button onclick="deletePhotoMemoDB()">📸 포토메모 일괄 삭제</button>
-        <button onclick="__openDriveDeleteUI()">☁️🗑️ 구글드라이브 데이터 삭제</button>
-        <span id="driveDeletePanel" style="display:none;align-items:center;gap:4px;">
-          <select id="driveDeleteSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
-          <span id="driveDeleteSigunguWrapper" style="position:relative;">
-            <button id="driveDeleteSigunguToggle" type="button" disabled
-                    style="height:26px;font-size:12px;" onclick="__toggleDriveDeleteSigunguList()">시군구 선택 ▲</button>
-            <div id="driveDeleteSigunguList"
-                 style="display:none;position:absolute;bottom:28px;left:0;z-index:50;background:#fff;border:1px solid #cbd5e1;
-                        border-radius:8px;padding:10px;max-height:70vh;overflow-y:auto;min-width:260px;font-size:16px;color:#1e293b;
-                        box-shadow:0 6px 18px rgba(0,0,0,0.18);"></div>
-          </span>
-          <button onclick="document.getElementById('driveDeletePanel').style.display='none'" style="font-size:11px;padding:3px 5px;">닫기</button>
-        </span>
 
         <input type="file" id="memoRestoreInput" accept=".json" style="display: none" />
         <input type="file" id="photoMemoCameraInput" accept="image/*" capture="environment" style="display: none" />
@@ -1921,7 +1908,7 @@
         <button id="gdriveAuthToggleBtn" onclick="__gdriveAuthToggle()">🔑 구글 드라이브 로그인</button>
         <span id="driveSyncControls" style="display:none; align-items:center; gap:4px; flex-wrap:wrap;">
           <button onclick="__openDriveSyncUI()">🔄 지역목록 보기</button>
-          <span id="driveSyncPanel" style="display:none;align-items:center;gap:4px;">
+          <span id="driveSyncPanel" style="display:none;align-items:center;gap:4px;flex-wrap:wrap;">
             <select id="driveSyncSido" style="height:26px;font-size:12px;"><option value="">시도 선택</option></select>
             <span id="driveSyncSigunguWrapper" style="position:relative;">
               <button id="driveSyncSigunguToggle" type="button" disabled
@@ -1931,7 +1918,10 @@
                           border-radius:8px;padding:10px;max-height:70vh;overflow-y:auto;min-width:220px;font-size:16px;color:#1e293b;
                           box-shadow:0 6px 18px rgba(0,0,0,0.18);"></div>
             </span>
-            <button onclick="__driveSyncExecuteSelected()" style="font-size:12px;padding:3px 8px;">실행</button>
+            <button onclick="__driveSyncExecuteSelected()" style="font-size:12px;padding:3px 8px;">동기화</button>
+            <button onclick="__driveSyncDeleteSelected('device')" style="font-size:12px;padding:3px 8px;">기기에서 삭제</button>
+            <button onclick="__driveSyncDeleteSelected('drive')" style="font-size:12px;padding:3px 8px;color:#dc2626;">드라이브에서 삭제</button>
+            <button onclick="__driveSyncDeleteSelected('both')" style="font-size:12px;padding:3px 8px;background:#dc2626;color:#fff;border:none;border-radius:4px;">기기·드라이브 모두 삭제</button>
             <button onclick="document.getElementById('driveSyncPanel').style.display='none'" style="font-size:11px;padding:3px 5px;">✕</button>
           </span>
         </span>
@@ -13150,14 +13140,35 @@ const originalBase64 = event.target.result;
           `<div style="margin-bottom:10px;">Drive ↔ 로컬을 updatedAt 기준으로 병합합니다.<br>양쪽이 모두 최신본으로 수렴합니다.</div>${quotaHtml}`,
           { okLabel: '동기화' }
         );
-        if (ok) __sggSync(sgg5);
+        // 완료 후 목록 갱신을 위해 await (기기 전용 지역 동기화 시 ☁︎ 마커 즉시 반영)
+        if (ok) await __sggSync(sgg5);
+        return ok;
+      }
+
+      // ── 지역목록 패널 갱신 — 열려 있으면 닫고 재조회 (동기화/삭제 후 📱/☁︎ 마커 반영) ──
+      async function __refreshDriveSyncPanel() {
+        const panel = document.getElementById('driveSyncPanel');
+        if (!panel || panel.style.display === 'none') return;
+        const sidoSel = document.getElementById('driveSyncSido');
+        const prevSido = sidoSel ? sidoSel.value : '';
+        panel.style.display = 'none';
+        await __openDriveSyncUI();
+        // 보던 시도 유지 — 재조회 후에도 같은 시도의 시군구 목록을 바로 보여준다
+        if (prevSido && sidoSel && [...sidoSel.options].some((o) => o.value === prevSido)) {
+          sidoSel.value = prevSido;
+          if (sidoSel.onchange) sidoSel.onchange();
+        }
       }
 
       // ── 시군구 다중 선택 실행 (체크박스 목록에서 선택된 sgg5 순차 동기화) ──
       async function __driveSyncExecuteSelected() {
         const list = [...(window.__driveSyncSelectedSgg5 || [])];
         if (list.length === 0) { alert('시군구를 선택하세요'); return; }
-        if (list.length === 1) { await __sggSyncWithConfirm(list[0]); return; }
+        if (list.length === 1) {
+          const done = await __sggSyncWithConfirm(list[0]);
+          if (done) await __refreshDriveSyncPanel();
+          return;
+        }
 
         if (!window.__gdriveReady) {
           for (const sgg5 of list) await __sggSync(sgg5);
@@ -13191,6 +13202,175 @@ const originalBase64 = event.target.result;
           ...results.map(r => r.lines.join('\n')),
         ];
         alert(summary.join('\n\n'));
+        await __refreshDriveSyncPanel();
+      }
+
+      // ── 지역 단위 로컬(이 기기) 데이터 하드 삭제 — tombstone 없음 ──
+      // deleteMemoDB '캐시 비우기' 시맨틱의 지역판: Drive는 보존되어 다음 동기화 때 다시 받을 수 있다.
+      // tombstone을 남기면 동기화 시 Drive까지 삭제가 전파되므로 반드시 물리 삭제만 한다.
+      async function __deleteLocalSggData(sgg5) {
+        const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
+        await __loadAptIndexForSync();
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        let sigWarn = '';
+        let localNotes = {}, localPhotos = {}, localPolygons = {};
+        try {
+          ({ localNotes, localPhotos, localPolygons } = await __sggLoadLocalForSgg(db, sgg5));
+        } catch (e) {
+          sigWarn = ' (일부 지역판정 실패 — 해당 항목 제외)';
+          window.hongbuDebugLog?.('ERR', '[regionDelete] 지역 레코드 수집 실패', e?.message || e);
+        }
+        const noteIds = Object.keys(localNotes);
+        const photoIds = Object.keys(localPhotos);
+        const polygonIds = Object.keys(localPolygons);
+
+        // 키가 문자열/숫자 혼재일 수 있어(구형 데이터) 두 타입 모두 삭제 시도
+        const delFromStore = (storeName, ids) => new Promise((resolve) => {
+          if (!ids.length || !db.objectStoreNames.contains(storeName)) { resolve(); return; }
+          const tx = db.transaction([storeName], 'readwrite');
+          const store = tx.objectStore(storeName);
+          ids.forEach((id) => {
+            try { store.delete(id); } catch (_) {}
+            const n = Number(id);
+            if (Number.isFinite(n) && String(n) === String(id)) {
+              try { store.delete(n); } catch (_) {}
+            }
+          });
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+        await delFromStore('apartmentNotes', noteIds);
+        await delFromStore('photoMemos', photoIds);
+        await delFromStore('polygonMemos', polygonIds);
+        db.close();
+
+        // 화면 갱신 — 삭제된 항목의 마커/폴리곤 제거
+        try {
+          window.__memoPresenceCache && window.__memoPresenceCache.clear();
+          window.__hongbuMemoKeySetReady = false;
+        } catch (_) {}
+        try {
+          photoIds.forEach((id) => { try { __removePhotoMemoMarker(id); } catch (_) {} });
+          if (Array.isArray(window.__photoMemoIndex)) {
+            const dead = new Set(photoIds.map(String));
+            window.__photoMemoIndex = window.__photoMemoIndex.filter((p) => !dead.has(String(p?.id)));
+          }
+        } catch (_) {}
+        try {
+          if (window.__polygonMemos && polygonIds.length) {
+            const dead = new Set(polygonIds.map(String));
+            const targets = [];
+            window.__polygonMemos.forEach((iw, poly) => {
+              if (dead.has(String(poly.__memoId))) targets.push(poly);
+            });
+            targets.forEach((poly) => { try { _detachPolygonMemoFromMap(poly); } catch (_) {} });
+          }
+        } catch (_) {}
+        try { refreshApartmentMarkers(); } catch (_) {}
+
+        const total = noteIds.length + photoIds.length + polygonIds.length;
+        return {
+          ok: true, name: sName,
+          lines: [total
+            ? `✅ ${sName}: 기기에서 단지메모 ${noteIds.length}·포토 ${photoIds.length}·면적 ${polygonIds.length}개 삭제${sigWarn}`
+            : `- ${sName}: 기기에 삭제할 데이터 없음${sigWarn}`],
+        };
+      }
+
+      // ── 지역목록 패널: 체크한 시군구 삭제 (mode: 'device'|'drive'|'both') ──
+      const __DELETE_MODE_INFO = {
+        device: {
+          label: '기기삭제',
+          body: '선택 지역의 데이터를 <b>이 기기에서만</b> 삭제합니다.<br>드라이브 데이터는 보존되며, 다음 동기화 때 다시 받을 수 있습니다.',
+        },
+        drive: {
+          label: '드라이브에서 삭제',
+          body: '선택 지역의 <b>드라이브 데이터 전체</b>(단지메모·포토메모·영역 JSON + 이미지 폴더)를 삭제합니다.<br><span style="color:#dc2626;font-weight:600;">이 기기의 데이터는 그대로 남아 있으며, 이후 해당 지역을 동기화하면 다시 업로드될 수 있습니다.</span>',
+        },
+        both: {
+          label: '기기·드라이브 모두 삭제',
+          body: '선택 지역의 데이터를 <b>이 기기와 드라이브에서 모두</b> 삭제합니다.<br><span style="color:#dc2626;font-weight:600;">다른 기기에 데이터가 남아 있으면 그 기기에서 동기화할 때 드라이브에 다시 업로드될 수 있습니다.</span>',
+        },
+      };
+      async function __driveSyncDeleteSelected(mode) {
+        const info = __DELETE_MODE_INFO[mode];
+        if (!info) return;
+        const list = [...(window.__driveSyncSelectedSgg5 || [])];
+        if (list.length === 0) { alert('시군구를 선택하세요'); return; }
+        if (window.__sggSyncBusy) {
+          alert(`⚠️ 다른 작업이 진행 중입니다 (${window.__sggSyncBusySgg || '?'}). 끝날 때까지 기다려주세요.`);
+          return;
+        }
+        if ((mode === 'drive' || mode === 'both') && !window.__gdriveReady) {
+          const overlay = document.getElementById('gdriveAuthOverlay');
+          if (overlay) overlay.style.display = 'flex';
+          __gdriveSignIn();
+          return;
+        }
+        const names = list.map((s) => __syncSigunguNameByCode5.get(s) || s);
+        const ok = await __showConfirmModal(
+          `🗑️ ${list.length}개 지역 ${info.label}`,
+          `<div style="margin-bottom:10px;">${names.join(', ')}</div><div>${info.body}</div>`,
+          { okLabel: '삭제', cancelLabel: '취소' }
+        );
+        if (!ok) return;
+
+        if (mode === 'drive' || mode === 'both') {
+          try { await __ensureDriveStructure(); }
+          catch (e) {
+            if (__isAuthError(e)) { __handleAuthExpired({ silent: true }); return; }
+            alert(`❌ Drive 연결 실패: ${e?.message || e}`);
+            return;
+          }
+        }
+
+        // 동기화와 동일한 busy 플래그 재사용 → 삭제↔동기화 상호 배제
+        window.__sggSyncBusy = true;
+        window.__sggSyncBusySgg = info.label;
+        const results = [];
+        try {
+          for (let i = 0; i < list.length; i++) {
+            __syncProgressShow(`🗑️ ${names[i]} ${info.label} 중... (${i + 1}/${list.length})`);
+            const lines = [];
+            let regionOk = true;
+            if (mode === 'device' || mode === 'both') {
+              try { lines.push(...(await __deleteLocalSggData(list[i])).lines); }
+              catch (e) {
+                regionOk = false;
+                lines.push(`❌ ${names[i]} 기기삭제 실패: ${e?.message || e}`);
+              }
+            }
+            if (mode === 'drive' || mode === 'both') {
+              try { lines.push(...(await __driveDeleteSggData(list[i])).lines); }
+              catch (e) {
+                regionOk = false;
+                if (__isAuthError(e)) {
+                  __handleAuthExpired({ silent: true });
+                  lines.push(`❌ ${names[i]} 드라이브 삭제 실패: 로그인 만료`);
+                  results.push({ ok: false, name: names[i], lines });
+                  break;
+                }
+                lines.push(`❌ ${names[i]} 드라이브 삭제 실패: ${__formatSyncErr(e)}`);
+              }
+            }
+            results.push({ ok: regionOk, name: names[i], lines });
+          }
+        } finally {
+          window.__sggSyncBusy = false;
+          window.__sggSyncBusySgg = null;
+          __syncProgressHide();
+        }
+
+        const failCount = results.filter((r) => !r.ok).length;
+        alert([
+          failCount === 0 ? `✅ ${results.length}개 지역 ${info.label} 완료` : `⚠️ ${results.length}개 지역 중 ${failCount}개 실패`,
+          '',
+          ...results.map((r) => r.lines.join('\n')),
+        ].join('\n\n'));
+
+        // 목록 갱신 — 로컬∪드라이브 재조회로 📱/☁︎ 마커 갱신
+        await __refreshDriveSyncPanel();
       }
 
       // ── Drive sgg 폴더에서 업로드된 sgg5 목록 조회 ──
@@ -13214,38 +13394,6 @@ const originalBase64 = event.target.result;
           if (m) sgg5Set.add(m[1]);
         }
         return [...sgg5Set].sort();
-      }
-
-      // ── Drive sgg 폴더의 sgg5별 JSON 파일 상세 목록 (삭제 UI용) ──
-      // 반환: Map(sgg5 → {name, jsonFiles:[{id,name}]}) — 동명 중복 파일도 전부 수집
-      // 표시명: apt 인덱스 → 파일명 한글 토큰 → sgg5 코드 순 폴백
-      async function __getDriveSggEntries() {
-        const entries = new Map();
-        if (!window.__gdriveSggFolderId) return entries;
-        let pageToken = null;
-        do {
-          const params = {
-            q: `'${window.__gdriveSggFolderId}' in parents and trashed=false`,
-            fields: 'nextPageToken,files(id,name)',
-            pageSize: 1000,
-          };
-          if (pageToken) params.pageToken = pageToken;
-          const resp = await gapi.client.drive.files.list(params);
-          for (const f of (resp.result.files || [])) {
-            const m = f.name.match(/^(\d{5})(?:_(.*))?_(notes|photos|polygons)\.json$/);
-            if (!m) continue;
-            const sgg5 = m[1];
-            if (!entries.has(sgg5)) {
-              const name = __syncSigunguNameByCode5.get(sgg5)
-                || (m[2] ? m[2].split('_').pop() : '')
-                || sgg5;
-              entries.set(sgg5, { name, jsonFiles: [] });
-            }
-            entries.get(sgg5).jsonFiles.push({ id: f.id, name: f.name });
-          }
-          pageToken = resp.result.nextPageToken;
-        } while (pageToken);
-        return entries;
       }
 
       // ── sgg5 하나의 Drive 데이터 전체 삭제 (3종 JSON + 이미지 폴더 2개) ──
@@ -13433,6 +13581,10 @@ const originalBase64 = event.target.result;
         };
 
         panel.style.display = 'inline-flex';
+        // 모바일: 패널 버튼들이 줄바꿈되며 화면 밖에 생기므로, 열릴 때 버튼이 보이게 스크롤
+        setTimeout(() => {
+          try { panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
+        }, 50);
       }
 
       // ── 시군구 체크박스 목록 토글/표시 ──
@@ -13450,217 +13602,13 @@ const originalBase64 = event.target.result;
       }
 
       document.addEventListener('click', function (e) {
-        for (const [wId, lId] of [
-          ['driveSyncSigunguWrapper', 'driveSyncSigunguList'],
-          ['driveDeleteSigunguWrapper', 'driveDeleteSigunguList'],
-        ]) {
-          const wrapper = document.getElementById(wId);
-          if (!wrapper || wrapper.contains(e.target)) continue;
-          const sgList = document.getElementById(lId);
+        const wrapper = document.getElementById('driveSyncSigunguWrapper');
+        if (!wrapper) return;
+        if (!wrapper.contains(e.target)) {
+          const sgList = document.getElementById('driveSyncSigunguList');
           if (sgList) sgList.style.display = 'none';
         }
       });
-
-      // ── ☁️🗑️ 구글드라이브 데이터 삭제 UI — Drive에 저장된 지역만 표시 ──
-      async function __openDriveDeleteUI() {
-        const panel = document.getElementById('driveDeletePanel');
-        if (!panel) return;
-        if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
-        if (!window.__gdriveReady) {
-          const overlay = document.getElementById('gdriveAuthOverlay');
-          if (overlay) overlay.style.display = 'flex';
-          __gdriveSignIn();
-          return;
-        }
-        if (window.__sggSyncBusy) {
-          alert(`⚠️ 다른 작업이 진행 중입니다 (${window.__sggSyncBusySgg || '?'}). 끝날 때까지 기다려주세요.`);
-          return;
-        }
-
-        __syncProgressShow('🗑️ Drive 지역 목록 불러오는 중...');
-        let entries = new Map();
-        try {
-          await __ensureDriveStructure();
-          try { await __loadAptIndexForSync(); } catch (_) {} // 표시명용 — 실패해도 파일명 폴백으로 진행
-          entries = await __getDriveSggEntries();
-        } catch (e) {
-          __syncProgressHide();
-          if (__isAuthError(e)) {
-            __handleAuthExpired({ silent: true });
-          } else {
-            window.hongbuDebugLog?.('ERR', '[driveDelete] 목록 조회 실패', e?.message || e);
-            alert(`❌ Drive 지역 목록 조회 실패: ${e?.message || e}`);
-          }
-          return;
-        }
-        __syncProgressHide();
-
-        if (entries.size === 0) { alert('드라이브에 저장된 지역이 없습니다.'); return; }
-
-        const sidoNameMap = new Map(Object.entries(__SYNC_SIDO_CODE_NAME_MAP));
-        const sggBySido = new Map(); // sidoCode2 → Map(sgg5 → entry)
-        for (const [sgg5, entry] of entries) {
-          const sc = sgg5.substring(0, 2);
-          if (!sggBySido.has(sc)) sggBySido.set(sc, new Map());
-          sggBySido.get(sc).set(sgg5, entry);
-        }
-
-        const sidoSel = document.getElementById('driveDeleteSido');
-        const sgList = document.getElementById('driveDeleteSigunguList');
-        const sgToggle = document.getElementById('driveDeleteSigunguToggle');
-        if (!sidoSel || !sgList || !sgToggle) return;
-
-        sidoSel.innerHTML = '<option value="">시도 선택</option>';
-        const sidoItems = [...sggBySido.keys()]
-          .map(sc => ({ value: sc, label: sidoNameMap.get(sc) || sc }))
-          .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-        for (const item of sidoItems) {
-          const opt = document.createElement('option');
-          opt.value = item.value; opt.textContent = item.label;
-          sidoSel.appendChild(opt);
-        }
-
-        window.__driveDeleteSelectedSgg5 = new Set();
-        window.__driveDeleteEntries = entries;
-        sgList.innerHTML = '';
-        sgList.style.display = 'none';
-        sgToggle.disabled = true;
-        _updateDriveDeleteSigunguDisplay();
-
-        sidoSel.onchange = function () {
-          const sel = sidoSel.value;
-          window.__driveDeleteSelectedSgg5 = new Set();
-          sgList.innerHTML = '';
-          sgList.style.display = 'none';
-          if (!sel || !sggBySido.has(sel)) { sgToggle.disabled = true; _updateDriveDeleteSigunguDisplay(); return; }
-          const items = Array.from(sggBySido.get(sel).entries())
-            .map(([sgg5, o]) => ({ value: sgg5, label: o.name }))
-            .sort((a, b) => a.label.localeCompare(b.label, 'ko'));
-
-          // "전체" 행 + 오른쪽 삭제 버튼
-          const itemCbs = [];
-          const allLabel = document.createElement('label');
-          allLabel.style.cssText = 'display:flex;align-items:center;white-space:nowrap;padding:8px 6px;cursor:pointer;border-bottom:1px solid #cbd5e1;margin-bottom:4px;font-weight:600;';
-          const allCb = document.createElement('input');
-          allCb.type = 'checkbox';
-          allCb.style.cssText = 'margin-right:8px;width:18px;height:18px;flex-shrink:0;';
-          allCb.addEventListener('change', function () {
-            const on = this.checked;
-            itemCbs.forEach((cb) => {
-              cb.checked = on;
-              if (on) window.__driveDeleteSelectedSgg5.add(cb.value);
-              else window.__driveDeleteSelectedSgg5.delete(cb.value);
-            });
-            _updateDriveDeleteSigunguDisplay();
-          });
-          allLabel.appendChild(allCb);
-          allLabel.appendChild(document.createTextNode(`전체 (${items.length})`));
-          const delBtn = document.createElement('button');
-          delBtn.type = 'button';
-          delBtn.textContent = '🗑️ 삭제';
-          delBtn.style.cssText = 'margin-left:auto;padding:3px 10px;font-size:13px;background:#dc2626;color:#fff;border:none;border-radius:4px;cursor:pointer;flex-shrink:0;';
-          delBtn.onclick = function (e) {
-            // label 기본 동작(체크박스 토글)으로 번지지 않게 차단
-            e.preventDefault();
-            e.stopPropagation();
-            __driveDeleteExecuteSelected();
-          };
-          allLabel.appendChild(delBtn);
-          sgList.appendChild(allLabel);
-
-          for (const item of items) {
-            const label = document.createElement('label');
-            label.style.cssText = 'display:flex;align-items:center;white-space:nowrap;padding:8px 6px;cursor:pointer;';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox'; cb.value = item.value;
-            cb.style.cssText = 'margin-right:8px;width:18px;height:18px;flex-shrink:0;';
-            cb.addEventListener('change', function () {
-              if (this.checked) window.__driveDeleteSelectedSgg5.add(item.value);
-              else window.__driveDeleteSelectedSgg5.delete(item.value);
-              allCb.checked = itemCbs.every((c) => c.checked);
-              _updateDriveDeleteSigunguDisplay();
-            });
-            itemCbs.push(cb);
-            label.appendChild(cb);
-            label.appendChild(document.createTextNode(item.label));
-            sgList.appendChild(label);
-          }
-          sgToggle.disabled = false;
-          _updateDriveDeleteSigunguDisplay();
-        };
-
-        panel.style.display = 'inline-flex';
-      }
-
-      function __toggleDriveDeleteSigunguList() {
-        const sgList = document.getElementById('driveDeleteSigunguList');
-        if (!sgList) return;
-        sgList.style.display = sgList.style.display === 'none' ? 'block' : 'none';
-      }
-
-      function _updateDriveDeleteSigunguDisplay() {
-        const sgToggle = document.getElementById('driveDeleteSigunguToggle');
-        if (!sgToggle) return;
-        const n = window.__driveDeleteSelectedSgg5?.size || 0;
-        sgToggle.textContent = (n > 0 ? `${n}개 선택` : '시군구 선택') + ' ▲';
-      }
-
-      // ── 선택 시군구 Drive 데이터 순차 삭제 ──
-      async function __driveDeleteExecuteSelected() {
-        const list = [...(window.__driveDeleteSelectedSgg5 || [])];
-        if (list.length === 0) { alert('시군구를 선택하세요'); return; }
-        if (window.__sggSyncBusy) {
-          alert(`⚠️ 다른 작업이 진행 중입니다 (${window.__sggSyncBusySgg || '?'}). 끝날 때까지 기다려주세요.`);
-          return;
-        }
-        const entries = window.__driveDeleteEntries || new Map();
-        const names = list.map(sgg5 => entries.get(sgg5)?.name || sgg5);
-        const ok = await __showConfirmModal(
-          `🗑️ ${list.length}개 지역 Drive 데이터 삭제`,
-          `<div style="margin-bottom:10px;">아래 지역의 <b>드라이브 데이터 전체</b>(단지메모·포토메모·영역 JSON + 이미지 폴더)를 삭제합니다.<br>${names.join(', ')}</div>
-           <div style="color:#dc2626;font-weight:600;">⚠️ 구글드라이브에서만 삭제됩니다.<br>현재 기기의 데이터는 그대로 남아 있으며,<br>이후 해당 지역을 동기화하면 다시 업로드될 수 있습니다.</div>`,
-          { okLabel: '삭제', cancelLabel: '취소' }
-        );
-        if (!ok) return;
-
-        // 동기화와 동일한 busy 플래그 재사용 → 삭제↔동기화 상호 배제
-        window.__sggSyncBusy = true;
-        window.__sggSyncBusySgg = 'Drive 삭제';
-        const results = [];
-        try {
-          for (let i = 0; i < list.length; i++) {
-            __syncProgressShow(`🗑️ ${names[i]} Drive 데이터 삭제 중... (${i + 1}/${list.length})`);
-            try {
-              results.push(await __driveDeleteSggData(list[i], entries.get(list[i])));
-            } catch (e) {
-              if (__isAuthError(e)) {
-                __handleAuthExpired({ silent: true });
-                results.push({ ok: false, name: names[i], lines: [`❌ ${names[i]} 실패: 로그인 만료`] });
-                break;
-              }
-              results.push({ ok: false, name: names[i], lines: [`❌ ${names[i]} 실패: ${__formatSyncErr(e)}`] });
-            }
-          }
-        } finally {
-          window.__sggSyncBusy = false;
-          window.__sggSyncBusySgg = null;
-          __syncProgressHide();
-        }
-
-        const okCount = results.filter(r => r.ok).length;
-        const failCount = results.length - okCount;
-        const summary = [
-          failCount === 0 ? `✅ ${results.length}개 지역 Drive 삭제 완료` : `⚠️ ${results.length}개 지역 중 ${failCount}개 실패`,
-          '',
-          ...results.map(r => r.lines.join('\n')),
-        ];
-        alert(summary.join('\n\n'));
-
-        // 목록 갱신 — 닫고 재오픈하면 live 재조회로 삭제된 시군구/빈 시도가 자동 제외됨
-        const panel = document.getElementById('driveDeletePanel');
-        if (panel) panel.style.display = 'none';
-        await __openDriveDeleteUI();
-      }
 
       // ── Drive 동기화 패널 초기화 (로그인 시 호출 — 목록은 미리 로드하지 않음) ──
       function __initDriveSyncPanel() {
