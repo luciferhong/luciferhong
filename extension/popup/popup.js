@@ -10,6 +10,11 @@ const SCRIPTS = [
   { id: 'asil-chart-price', name: '아실 차트 가격표' },
   { id: 'asil-chart-hogang', name: '아실차트 호갱노노처럼' },
   { id: 'asil-chart-price-deal-link', name: '아실 차트 가격표[실거래 바로가기][단독사용X]' },
+  { id: 'naver-agent-download', name: '네이버 부동산 중개소 다운로드' },
+  { id: 'asil-map-deal-count', name: '아실 지도에 실거래수 표시하기' },
+  { id: 'weolbu-hide-study-posts', name: '월닷 투자공부인증 게시글 숨기기' },
+  { id: 'gin-supply-demand-filter', name: '지인 수요-공급 표 필터링' },
+  { id: 'gin-national-demand-download', name: '지인 전국 수요-입주 플러스 다운로드' },
 ];
 
 const listEl = document.getElementById('scriptList');
