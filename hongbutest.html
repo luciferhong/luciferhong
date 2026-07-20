@@ -8973,6 +8973,8 @@ const originalBase64 = event.target.result;
             if (typeof cx !== "number") return;
             try {
               const rect = __mapEl0.getBoundingClientRect();
+              // 지도 영역 밖 탭(완료 버튼 등)은 무시
+              if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
               const proj = window.map && window.map.getProjection && window.map.getProjection();
               if (!proj || typeof proj.fromOffsetToCoord !== "function") return;
               const coord = proj.fromOffsetToCoord(new naver.maps.Point(cx - rect.left, cy - rect.top));
@@ -8988,7 +8990,9 @@ const originalBase64 = event.target.result;
               arr.push(coord);
             } catch (_) {}
           };
-          __mapEl0.addEventListener("touchend", recordVertex, { capture: true, passive: true });
+          // ⚠️ #map이 아니라 document에 등록 — 네이버 드로잉이 첫 꼭짓점 이후
+          // 자체 capture 리스너로 전파를 끊어 #map 리스너에는 touchend가 도달하지 않는다.
+          document.addEventListener("touchend", recordVertex, { capture: true, passive: true });
         }
         // 그리기 모드 토글마다 vertex 배열 초기화 (drawBtn 핸들러 후행으로 등록)
         if (drawBtn) {
@@ -8998,19 +9002,39 @@ const originalBase64 = event.target.result;
         // 면적 그리기 완료 —
         // (A) 모바일: 우리 vertex 배열에 3개 이상이면 직접 폴리곤 생성 후 그리기 모드 종료
         // (B) PC/폴백: drawingManager 내부 메서드 → ESC 합성 dispatch
-        document.getElementById("completePolygonBtn")?.addEventListener("click", () => {
+        const __completePolygonDrawing = () => {
           if (!drawBtn || !drawBtn.classList.contains("is-drawing")) return;
+          // touchend+click 중복 실행 방지 (모바일 ghost click)
+          if (Date.now() - (window.__polyCompleteLastRun || 0) < 400) return;
+          window.__polyCompleteLastRun = Date.now();
           setTimeout(() => {
             if (!drawBtn.classList.contains("is-drawing")) return;
             // (A) 자체 추적 vertex가 충분하면 그걸로 폴리곤 생성 (모바일 경로)
-            const ownVerts = (window.__polyOwnVertices || []).slice();
-            if (ownVerts.length >= 3) {
+            let verts = (window.__polyOwnVertices || []).slice();
+            if (verts.length < 3) {
+              // (A2) 네이버 드로잉 in-progress 오버레이에서 직접 좌표 추출 —
+              // 자체 추적이 실패해도 사용자가 화면에서 보던 폴리곤 그대로 커밋
+              try {
+                const ov = window.__polyDrawingManager?._drawingTool?.currentDrawingOverlay;
+                if (ov && typeof ov.getPath === "function") {
+                  const p = ov.getPath();
+                  const arr = [];
+                  if (p && typeof p.getLength === "function") {
+                    for (let i = 0; i < p.getLength(); i++) arr.push(p.getAt(i));
+                  } else if (Array.isArray(p)) {
+                    arr.push(...p);
+                  }
+                  if (arr.length >= 3) verts = arr;
+                }
+              } catch (_) {}
+            }
+            if (verts.length >= 3) {
               try {
                 // ✅ 그리기 완료 시 "면적그리기 보기"가 꺼져 있어도 강제로 켜서 바로 보여준다
                 __forcePolygonMemoVisible();
                 const polygon = new naver.maps.Polygon({
                   map: map,
-                  paths: [ownVerts],
+                  paths: [verts],
                   fillColor: "#00aa00",
                   fillOpacity: 0.25,
                   strokeColor: "#00aa00",
@@ -9056,8 +9080,31 @@ const originalBase64 = event.target.result;
                 try { t.dispatchEvent(makeEvt("keyup")); } catch (_) {}
               });
             }
+            // 폴백(커밋/ESC) 후에도 그리기 모드가 남아 있으면 종료 —
+            // ESC는 in-progress를 취소만 하므로 모드를 방치하면 완료 버튼이 무반응으로 보인다
+            setTimeout(() => {
+              if (drawBtn.classList.contains("is-drawing")) drawBtn.click();
+            }, 100);
           }, 50);
-        });
+        };
+        const __completeBtn = document.getElementById("completePolygonBtn");
+        if (__completeBtn) {
+          __completeBtn.addEventListener("click", __completePolygonDrawing);
+          // 모바일: 그리기 중 네이버 드로잉이 document 레벨에서 터치를 가로채 click이
+          // 합성되지 않는 경우가 있어 touchend에서도 직접 완료를 실행한다.
+          __completeBtn.addEventListener("touchstart", (e) => {
+            const t = e.changedTouches && e.changedTouches[0];
+            window.__polyCompleteTouchStart = t ? { x: t.clientX, y: t.clientY } : null;
+          }, { passive: true });
+          __completeBtn.addEventListener("touchend", (e) => {
+            // 버튼에서 시작한 스크롤 제스처(10px 이상 이동)는 완료로 취급하지 않음
+            const t = e.changedTouches && e.changedTouches[0];
+            const s = window.__polyCompleteTouchStart;
+            if (s && t && Math.hypot(t.clientX - s.x, t.clientY - s.y) > 10) return;
+            e.preventDefault(); // ghost click 차단
+            __completePolygonDrawing();
+          });
+        }
 
         // 면적그리기 다운로드 버튼
         document.getElementById("downloadPolygonBtn")?.addEventListener("click", () => {
