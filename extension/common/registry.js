@@ -21,8 +21,9 @@ const SCRIPT_REGISTRY = [
 
   { id: 'gin-supply-demand-filter', name: '[지인]지인 수요-공급 표 필터링' },
   { id: 'gin-national-demand-download', name: '[지인] 지인 전국 수요-입주 플러스 다운로드' },
-  { id: 'gin-demand-plus-download', name: '[지인] 지인 수요-입주 플러스 다운로드' },
   { id: 'gin-demand-download', name: '[지인] 지인 수요-입주 다운로드' },
+  { id: 'gin-demand-plus-download', name: '[지인] 지인 수요-입주 플러스 다운로드' },
+  
 
   { id: 'tutoring-day-helper', name: '[네이버카페] 튜터링데이 인증샷 Helper' },
 
