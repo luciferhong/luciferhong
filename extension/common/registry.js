@@ -15,12 +15,13 @@ const SCRIPT_REGISTRY = [
   { id: 'asil-chart-price', name: '[아실] 아실 차트 가격표[실거래 바로가기·월세 제외 포함]' },
   { id: 'asil-chart-hogang', name: '[아실] 아실차트 호갱노노처럼' },
   { id: 'asil-map-deal-count', name: '[아실] 아실 지도에 실거래수 표시하기', on: false },
-  { id: 'asil-school-env-complex', name: '[아실] 아실 학군&환경&단지 함께 표시' },
+  { id: 'asil-school-env-complex', name: '[아실] 아실 학군&환경&단지 함께 표시', on: false},
   { id: 'asil-agent-contact-download', name: '[아실] 아실 중개소 연락처 다운로드' },
   { id: 'asil-apt-year-label', name: '[아실] 아실 아파트 연식라벨' },
 
   { id: 'gin-supply-demand-filter', name: '[지인]지인 수요-공급 표 필터링' },
   { id: 'gin-national-demand-download', name: '[지인] 지인 전국 수요-입주 플러스 다운로드' },
+  { id: 'gin-demand-plus-download', name: '[지인] 지인 수요-입주 플러스 다운로드' },
   { id: 'gin-demand-download', name: '[지인] 지인 수요-입주 다운로드' },
 
   { id: 'tutoring-day-helper', name: '[네이버카페] 튜터링데이 인증샷 Helper' },

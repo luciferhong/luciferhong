@@ -20,6 +20,7 @@ const SCRIPT_REGISTRY = [
   { id: 'asil-apt-year-label', name: '[아실] 아실 아파트 연식라벨' },
 
   { id: 'gin-supply-demand-filter', name: '[지인]지인 수요-공급 표 필터링' },
+  { id: 'gin-demand-plus-download', name: '[지인] 지인 수요-입주 플러스 다운로드' },
   { id: 'gin-demand-download', name: '[지인] 지인 수요-입주 다운로드' },
 
   { id: 'tutoring-day-helper', name: '[네이버카페] 튜터링데이 인증샷 Helper' },

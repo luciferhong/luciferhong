@@ -11,6 +11,8 @@ import json
 import os
 import re
 import shutil
+import stat
+import time
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -24,8 +26,22 @@ EXCLUDE_IDS = [
 ]
 
 # 1) extension-share/ 재생성 (제외 스크립트 파일 빼고 복사)
+# OneDrive 동기화 잠금으로 rmtree가 일시 실패할 수 있어 재시도
+def _rmtree_retry(path, attempts=5):
+    def onexc(func, p, exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    for i in range(attempts):
+        try:
+            shutil.rmtree(path, onexc=onexc)
+            return
+        except OSError:
+            if i == attempts - 1:
+                raise
+            time.sleep(1.5)
+
 if os.path.exists(DST):
-    shutil.rmtree(DST)
+    _rmtree_retry(DST)
 exclude_files = {f'{sid}.js' for sid in EXCLUDE_IDS}
 shutil.copytree(SRC, DST, ignore=lambda d, names: [
     n for n in names if os.path.basename(d) == 'scripts' and n in exclude_files])
