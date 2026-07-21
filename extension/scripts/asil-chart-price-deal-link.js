@@ -69,11 +69,11 @@ if (v_deal === "1") {
 }
 
 var links = document.querySelectorAll('#mCSB_1_container ul li a');
-var targetText = v_evt.replace("py", "평");
+var targetText = v_evt ? v_evt.replace("py", "평") : null; // [확장 이식] 파라미터 없이 연 일반 페이지에서 null 크래시 방지
 //console.log(targetText);
 
 links.forEach(function (link) {
-    if (link.textContent.includes(targetText)) {
+    if (targetText && link.textContent.includes(targetText)) {
         //console.log('Found link:', link);
         // 클릭 이벤트 트리거
         link.click();
@@ -116,7 +116,7 @@ function searchyear() {
     }
 }
 
-// 2초 후에 searchyear 함수 실행
-setTimeout(searchyear, 2000);
+// 2초 후에 searchyear 함수 실행 — [확장 이식] year 파라미터가 있을 때만 (없으면 morePriceBtn 무한 클릭 폭주)
+if (v_year6) setTimeout(searchyear, 2000);
 
 })();
