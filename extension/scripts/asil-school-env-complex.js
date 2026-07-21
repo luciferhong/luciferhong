@@ -8,6 +8,11 @@
   } catch (e) {}
   console.log('아실 학군&환경&단지 함께 표시 v3.03 (extension)');
 
+  // [확장 이식] 아실 UI(#filter)·map·jQuery가 준비된 뒤 본문 실행.
+  // (확장은 TM보다 이른 시점에 주입될 수 있고, all_frames로 #filter 없는 iframe에서도 실행되므로)
+  const __run = () => {
+
+
 
 ////////////////
 
@@ -15021,4 +15026,11 @@ var starbucksData = [
 {"s_name": "원주기업도시DT", "lat": "37.3714478035235", "lot": "127.871560132075"},
 {"s_name": "원주봉화산DT", "lat": "37.3530655992955", "lot": "127.92221801574"},
 ]
+  }; // __run
+
+  (function __wait(n) {
+    if (window.jQuery && window.map && document.querySelector('#filter > div.filter_scroll > div')) return __run();
+    if (n > 100) return; // 약 30초 후 포기 (#filter 없는 iframe/페이지)
+    setTimeout(() => __wait(n + 1), 300);
+  })(0);
 })();
