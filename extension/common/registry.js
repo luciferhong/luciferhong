@@ -13,10 +13,9 @@ const SCRIPT_REGISTRY = [
   { id: 'nac', name: '[아실] NAC(New Asil Chart)' },
   { id: 'asil-trade-more-no-monthly', name: '[아실] 거래현황 더보기 월세 제외' },
   { id: 'asil-multi-compare', name: '[아실] 아실 여러단지비교 편하게 써보자' },
-  { id: 'asil-chart-price', name: '[아실] 아실 차트 가격표' },
+  { id: 'asil-chart-price', name: '[아실] 아실 차트 가격표[실거래 바로가기 포함]' },
   { id: 'asil-chart-hogang', name: '[아실] 아실차트 호갱노노처럼' },
-  { id: 'asil-chart-price-deal-link', name: '[아실] 아실 차트 가격표[실거래 바로가기][단독사용X]' },
-  { id: 'asil-map-deal-count', name: '[아실] 아실 지도에 실거래수 표시하기' },
+  { id: 'asil-map-deal-count', name: '[아실] 아실 지도에 실거래수 표시하기', on: false },
   { id: 'asil-school-env-complex', name: '[아실] 아실 학군&환경&단지 함께 표시' },
 
   { id: 'gin-supply-demand-filter', name: '[지인]지인 수요-공급 표 필터링' },

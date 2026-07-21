@@ -2,7 +2,7 @@
 // greasyfork 업데이트 팝업 제거 — 웹스토어 자동 업데이트로 대체. 본문은 원본 그대로.
 // MAIN world(페이지 컨텍스트) 실행 — 페이지의 javascript: 링크 클릭이 확장 CSP에 막히지 않도록. 토글은 common/gate.js가 localStorage로 미러링.
 (() => {
-  const SCRIPT_ID = 'asil-chart-price-deal-link';
+  const SCRIPT_ID = 'asil-chart-price'; // [확장 이식] 아실 차트 가격표와 토글 통합 (단독 사용 불가 스크립트)
   try {
     const __en = JSON.parse(localStorage.getItem('__luciferhongExtEnabled') || '{}');
     if (__en[SCRIPT_ID] === false) return; // 미설정 = 켜짐
