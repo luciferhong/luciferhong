@@ -96,14 +96,10 @@
   };
 
   /* ========== 1) CryptoJS 로드 ========== */
+  // CryptoJS는 vendor/crypto-js-4.2.0.min.js 번들로 이미 로드됨 (원격 로드 제거)
   if (typeof CryptoJS === 'undefined') {
-    await new Promise((res, rej) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/crypto-js.min.js';
-      s.onload = res; s.onerror = rej;
-      asilSafeAppend(document.head, s);
-    });
-    log('CryptoJS loaded');
+    err('CryptoJS 번들이 로드되지 않았습니다');
+    return;
   }
 
   /* ========== 1-1) 전역 상태 기본값 ========== */

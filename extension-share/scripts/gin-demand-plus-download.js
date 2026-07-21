@@ -10,12 +10,7 @@
 
 
 
-// SheetJS 라이브러리 로드 — [확장 이식] 번들(vendor/xlsx)이 이미 로드되므로 CDN 폴백은 부재 시에만
-if (!window.XLSX) {
-  const script = document.createElement("script");
-  script.src = "https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js";
-  document.head.appendChild(script);
-}
+// SheetJS는 vendor/xlsx-0.18.5.full.min.js 번들로 이미 로드됨 (원격 로드 제거)
 
 // XMLHttpRequest 요청 감지 및 body 대체를 위한 설정
 const originalOpen = XMLHttpRequest.prototype.open;

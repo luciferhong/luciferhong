@@ -27,12 +27,7 @@ document.getElementById('agencyDownload').addEventListener('click', function(eve
 
 
 async function downloadStart(){
-// Step 1: SheetJS 라이브러리 로드 — [확장 이식] 번들(vendor/xlsx)이 이미 있으므로 CDN 폴백은 부재 시에만
-if (!window.XLSX) {
-  const script = document.createElement('script');
-  script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-  document.head.appendChild(script);
-}
+// Step 1: SheetJS는 vendor/xlsx-0.18.5.full.min.js 번들로 이미 로드됨 (원격 로드 제거)
 
 // Step 2: 모든 관련 요소 찾기 (클래스 mmbrPin 사용)
 const elements = Array.from(document.querySelectorAll('.mmbrPin'));

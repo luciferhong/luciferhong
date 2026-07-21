@@ -19,11 +19,8 @@ function loadSheetJSLibrary() {
             resolve();
             return;
         }
-        const script = document.createElement('script');
-        script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-        script.onload = resolve;
-        script.onerror = reject;
-        document.head.appendChild(script);
+        // vendor/xlsx 번들로 이미 로드됨 — 만약 없으면 즉시 실패 (원격 로드 제거)
+        reject('XLSX 번들이 로드되지 않았습니다');
     });
 }
 
