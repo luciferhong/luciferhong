@@ -1901,6 +1901,7 @@
       <div style="flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 0">
         <button id="siseVer2ImportBtn" style="display: block">시세지도Ver2에서 가져오기</button>
         <button id="siseVer2ResetBtn" style="display: block">시세지도Ver2데이터 초기화</button>
+        <button id="siseVer2DriveImportBtn" style="display: block">☁️ 구글드라이브에서 시세지도Ver2 데이터 가져오기</button>
       </div>
       <!-- ☁️ Google Drive 연동 버튼 -->
       <div style="margin-top: 4px; padding: 4px 0; border-top: 1px dashed #444;">
@@ -2219,6 +2220,11 @@
               }
             };
             input.click();
+          });
+
+          // ☁️ 드라이브에서 siseVer2 시세 가져오기
+          document.getElementById("siseVer2DriveImportBtn").addEventListener("click", () => {
+            importSiseVer2FromDrive();
           });
 
           document.getElementById("siseVer2ResetBtn").addEventListener("click", () => {
@@ -14358,12 +14364,20 @@ const originalBase64 = event.target.result;
           return JSON.parse(cleaned);
         }
       }
-      //시세지도ver2에서 시세 가져오기
+      //시세지도ver2에서 시세 가져오기 (파일 업로드)
       function importFromSiseVer2JSON(file) {
         const reader = new FileReader();
         reader.onload = function (event) {
           const json = __safeJSONParse(event.target.result);
-          const data = Array.isArray(json) ? json : json.apartments;
+          applySiseVer2Import(json);
+        };
+
+        reader.readAsText(file);
+      }
+
+      // 파싱된 JSON → importSiseVer2 스토어 반영 (파일 업로드/드라이브 공용)
+      function applySiseVer2Import(json) {
+          const data = Array.isArray(json) ? json : json?.apartments;
 
           if (!Array.isArray(data)) {
             alert("❌ 유효한 시세지도Ver2 데이터가 아닙니다.");
@@ -14408,9 +14422,144 @@ const originalBase64 = event.target.result;
             .catch((error) => {
               console.error("❌ Failed to initialize hongbu DB:", error);
             });
-        };
+      }
 
-        reader.readAsText(file);
+      // ☁️ 드라이브에서 siseVer2 시세 가져오기 — HongbuMemo/sise/{sgg5}_{시도}_{시군구}_sise.json 을
+      // 시군구 선택 패널로 골라서 가져온다 (siseVer2 동기화 패널과 동일 개념)
+      async function importSiseVer2FromDrive() {
+        const SISE_FOLDER_NAME = "sise";
+        const SISE_LEGACY_FILENAME = "siseVer2_prices.json"; // 구버전 단일 파일 폴백
+        try {
+          if (!window.__gdriveAccessToken) {
+            alert("⚠️ 먼저 구글 드라이브에 로그인해주세요. (☁️ Drive: 🔑 로그인 버튼)");
+            return;
+          }
+          if (!window.__gdriveRootFolderId) {
+            await __ensureDriveStructure();
+          }
+          const folderResp = await gapi.client.drive.files.list({
+            q: `name='${SISE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and '${window.__gdriveRootFolderId}' in parents and trashed=false`,
+            fields: "files(id)",
+            pageSize: 10,
+          });
+          const siseFolder = (folderResp.result.files || [])[0];
+          const regions = [];
+          if (siseFolder) {
+            const listResp = await gapi.client.drive.files.list({
+              q: `'${siseFolder.id}' in parents and trashed=false`,
+              fields: "files(id,name)",
+              pageSize: 1000,
+            });
+            for (const f of listResp.result.files || []) {
+              const m = /^(\d{5})_([^_]+)_(.+)_sise\.json$/.exec(f.name);
+              if (m) regions.push({ fileId: f.id, sgg5: m[1], sidoNm: m[2], sigunguNm: m[3] });
+            }
+          }
+          if (!regions.length) {
+            // 구버전 단일 파일 폴백 — 전체 가져오기
+            const legacyResp = await gapi.client.drive.files.list({
+              q: `name='${SISE_LEGACY_FILENAME}' and '${window.__gdriveRootFolderId}' in parents and trashed=false`,
+              fields: "files(id)",
+              pageSize: 10,
+            });
+            const legacy = (legacyResp.result.files || [])[0];
+            if (legacy) {
+              const j = await __driveReadSggFile(legacy.id);
+              const records = Array.isArray(j) ? j : (j && j.apartments) || [];
+              if (records.length) {
+                applySiseVer2Import(records);
+                return;
+              }
+            }
+            alert("⚠️ 드라이브에 시세 데이터가 없습니다.\n시세지도Ver2에서 먼저 '🔄 드라이브 동기화'를 실행해주세요.");
+            return;
+          }
+          regions.sort((a, b) => (a.sidoNm + a.sigunguNm).localeCompare(b.sidoNm + b.sigunguNm, "ko"));
+          __sisev2ImportRenderPanel(regions);
+        } catch (e) {
+          console.error("❌ 드라이브 시세 가져오기 실패:", e);
+          alert("❌ 드라이브 시세 가져오기 실패: " + (e?.message || e?.result?.error?.message || e));
+        }
+      }
+
+      function __sisev2ImportClosePanel() {
+        const p = document.getElementById("sisev2ImportPanel");
+        if (p) p.remove();
+      }
+
+      function __sisev2ImportRenderPanel(regions) {
+        __sisev2ImportClosePanel();
+        const panel = document.createElement("div");
+        panel.id = "sisev2ImportPanel";
+        panel.style.cssText =
+          "position:fixed;top:70px;left:10px;z-index:100000;background:#fff;color:#222;border:1px solid #888;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:10px 12px;max-height:70vh;overflow:auto;min-width:280px;font-size:13px;";
+
+        const rowsHtml = regions
+          .map(
+            (r, i) => `
+          <label style="display:block;padding:3px 0;cursor:pointer;white-space:nowrap;">
+            <input type="checkbox" class="sisev2ImpChk" value="${i}">
+            ${r.sidoNm} ${r.sigunguNm} <span style="color:#888;">☁️</span>
+          </label>`,
+          )
+          .join("");
+
+        panel.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <b>☁️ 드라이브 시세 가져오기</b>
+            <button onclick="__sisev2ImportClosePanel()" style="border:none;background:none;font-size:15px;cursor:pointer;">✖</button>
+          </div>
+          <label style="display:block;padding:3px 0;border-bottom:1px solid #ddd;margin-bottom:4px;cursor:pointer;">
+            <input type="checkbox" id="sisev2ImpChkAll"> <b>전체 선택</b>
+          </label>
+          <div>${rowsHtml}</div>
+          <div id="sisev2ImpStatus" style="color:#0066cc;min-height:16px;margin-top:6px;"></div>
+          <div style="display:flex;gap:6px;margin-top:8px;">
+            <button id="sisev2ImpBtn" style="padding:5px 10px;cursor:pointer;">📥 선택 가져오기</button>
+          </div>`;
+        document.body.appendChild(panel);
+
+        window.__sisev2ImportRegions = regions;
+        document.getElementById("sisev2ImpChkAll").addEventListener("change", (e) => {
+          panel.querySelectorAll(".sisev2ImpChk").forEach((c) => { c.checked = e.target.checked; });
+        });
+        document.getElementById("sisev2ImpBtn").addEventListener("click", () => __sisev2ImportSelected());
+      }
+
+      async function __sisev2ImportSelected() {
+        const checked = [...document.querySelectorAll("#sisev2ImportPanel .sisev2ImpChk:checked")].map((c) => Number(c.value));
+        if (!checked.length) {
+          alert("⚠️ 시군구를 하나 이상 체크해주세요.");
+          return;
+        }
+        const status = document.getElementById("sisev2ImpStatus");
+        const btn = document.getElementById("sisev2ImpBtn");
+        if (btn) btn.disabled = true;
+        try {
+          const regions = window.__sisev2ImportRegions || [];
+          let records = [];
+          for (let i = 0; i < checked.length; i++) {
+            const r = regions[checked[i]];
+            if (!r) continue;
+            if (status) status.textContent = `다운로드 중 (${i + 1}/${checked.length}) ${r.sidoNm} ${r.sigunguNm}...`;
+            const j = await __driveReadSggFile(r.fileId);
+            const arr = Array.isArray(j) ? j : (j && j.apartments) || [];
+            records = records.concat(arr);
+          }
+          if (status) status.textContent = "";
+          if (!records.length) {
+            alert("⚠️ 선택한 시군구에 시세 데이터가 없습니다.");
+            return;
+          }
+          applySiseVer2Import(records);
+          __sisev2ImportClosePanel();
+        } catch (e) {
+          console.error("❌ 드라이브 시세 가져오기 실패:", e);
+          if (status) status.textContent = "";
+          alert("❌ 드라이브 시세 가져오기 실패: " + (e?.message || e?.result?.error?.message || e));
+        } finally {
+          if (btn) btn.disabled = false;
+        }
       }
 
       // 🔍 Ver2 시세 표시용 함수

@@ -9,6 +9,7 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ffffff'/%3E%3Ctext x='32' y='39' text-anchor='middle' font-size='24' font-family='Malgun Gothic,Noto Sans KR,sans-serif' font-weight='700' fill='%23162033'%3E%EC%8B%9C%EC%84%B8%3C/text%3E%3C/svg%3E" />
     <title>[루시퍼홍] 시세지도 Ver.2</title>
 <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 
 
 
@@ -470,6 +471,7 @@ buttonContainer {
 <button id="siseExportBtn" style="display: block;">시세지도 백업</button>
 <button id="siseImportBtn" style="display: block;">시세지도 복원</button>
 <button id="siseResetBtn" style="display: block;">시세지도 초기화</button>
+<button id="siseDriveSyncBtn" style="display: block;">🔄 구글드라이브 동기화</button>
 <button id="colorExportBtn" style="display: block;">색상 설정 백업</button>
 <button id="colorImportBtn" style="display: block;">색상 설정 복원</button>
 <button id="colorResetBtn" style="display: none;">색상 설정 초기화</button>
@@ -504,6 +506,8 @@ buttonContainer {
 				document.getElementById("siseExportBtn").addEventListener("click", () => {
 					exportHongSiseToJSON();
 				});
+				// ✅ 구글드라이브 시세 동기화 (미로그인 시 자동으로 로그인 창 표시)
+				document.getElementById("siseDriveSyncBtn").addEventListener("click", () => __sisyncRun());
 				document.getElementById("colorExportBtn").addEventListener("click", () => {
 					exportColorSettingsToJSON();
 				});
@@ -2773,7 +2777,7 @@ function saveToIndexedDB(id, type, text, color, textColor, fontSize) {
         const transaction = db.transaction(["apartments"], "readwrite");
         const store = transaction.objectStore("apartments");
 //console.log("2073 ; "+text);
-        store.put({ idType: `${id}-${type}`, text, color, textColor, fontSize });
+        store.put({ idType: `${id}-${type}`, text, color, textColor, fontSize, updatedAt: Date.now() });
 
         transaction.oncomplete = () => {
             console.log(`✅ IndexedDB 저장 완료: ${id}`);
@@ -3965,6 +3969,615 @@ function parsePriceDataFromTable(tableContainer) {
 }
 
 
+// ================================
+// ✅ 구글드라이브 시세 동기화 (__sisync*)
+// - hongbutest.html/hongbu.html의 드라이브 연동과 동일 OAuth client·HongbuMemo 폴더 사용
+// - gapi 없이 GIS(토큰) + Drive v3 REST fetch만으로 동작 (경량)
+// - 레코드별 updatedAt LWW(최신 수정 우선) 양방향 병합, 전체 1개 파일
+// ================================
+const __SISYNC_CLIENT_ID = "674891465698-lb3898i1qj4enuh36tie0h1qugnp27gr.apps.googleusercontent.com";
+const __SISYNC_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const __SISYNC_ROOT_NAME = "HongbuMemo";
+const __SISYNC_SISE_FOLDER = "sise"; // HongbuMemo/sise/ 아래 시군구별 파일
+const __SISYNC_FILE_SUFFIX = "_sise.json"; // 파일명: {sgg5}_{시도}_{시군구}_sise.json
+const __SISYNC_TOKEN_KEY = "__hongbuDriveToken"; // hongbutest/hongbu와 토큰 상호 재사용 (same-origin)
+
+window.__sisyncTokenClient = null;
+window.__sisyncAccessToken = null;
+window.__sisyncBusy = false;
+let __sisyncSignInResolve = null;
+let __sisyncSignInReject = null;
+
+function __sisyncWaitForGis() {
+    return new Promise((resolve, reject) => {
+        const started = Date.now();
+        const check = () => {
+            if (window.google?.accounts?.oauth2) resolve();
+            else if (Date.now() - started > 15000) reject(new Error("구글 로그인 스크립트를 불러오지 못했습니다. 네트워크를 확인해주세요."));
+            else setTimeout(check, 100);
+        };
+        check();
+    });
+}
+
+// localStorage에 저장된 토큰(hongbutest에서 로그인한 것 포함) 복원 시도
+function __sisyncRestoreToken() {
+    try {
+        const raw = localStorage.getItem(__SISYNC_TOKEN_KEY);
+        if (!raw) return false;
+        const tok = JSON.parse(raw);
+        if (tok && tok.access_token && Number(tok.expires_at) > Date.now()) {
+            window.__sisyncAccessToken = tok.access_token;
+            return true;
+        }
+        localStorage.removeItem(__SISYNC_TOKEN_KEY); // 만료 → 삭제
+    } catch (_) {}
+    return false;
+}
+
+async function __sisyncInit() {
+    if (window.__sisyncTokenClient) return;
+    await __sisyncWaitForGis();
+    window.__sisyncTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: __SISYNC_CLIENT_ID,
+        scope: __SISYNC_SCOPE,
+        callback: (resp) => {
+            if (resp.error) {
+                const err = new Error("드라이브 로그인 실패: " + (resp.error_description || resp.error));
+                if (__sisyncSignInReject) __sisyncSignInReject(err);
+            } else {
+                window.__sisyncAccessToken = resp.access_token;
+                try {
+                    const expiresIn = Number(resp.expires_in) || 3600;
+                    localStorage.setItem("__hongbuDriveAutoLogin", "1");
+                    localStorage.setItem(__SISYNC_TOKEN_KEY, JSON.stringify({
+                        access_token: resp.access_token,
+                        expires_at: Date.now() + (expiresIn * 1000 - 60000), // 1분 여유
+                    }));
+                } catch (_) {}
+                if (__sisyncSignInResolve) __sisyncSignInResolve();
+            }
+            __sisyncSignInResolve = null;
+            __sisyncSignInReject = null;
+        },
+    });
+}
+
+async function __sisyncSignIn() {
+    await __sisyncInit();
+    return new Promise((resolve, reject) => {
+        __sisyncSignInResolve = resolve;
+        __sisyncSignInReject = reject;
+        window.__sisyncTokenClient.requestAccessToken({ prompt: "" });
+    });
+}
+
+async function __sisyncEnsureToken() {
+    if (window.__sisyncAccessToken) return;
+    if (__sisyncRestoreToken()) return;
+    await __sisyncSignIn();
+}
+
+async function __sisyncFetch(url, opts = {}, timeoutMs = 60000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+        const resp = await fetch(url, {
+            ...opts,
+            headers: { Authorization: `Bearer ${window.__sisyncAccessToken}`, ...(opts.headers || {}) },
+            signal: ctrl.signal,
+        });
+        if (resp.status === 401) {
+            window.__sisyncAccessToken = null;
+            try { localStorage.removeItem(__SISYNC_TOKEN_KEY); } catch (_) {}
+            throw new Error("드라이브 인증이 만료되었습니다. 동기화 버튼을 다시 눌러주세요.");
+        }
+        if (!resp.ok) throw new Error(`Drive API 오류 (HTTP ${resp.status})`);
+        return resp;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function __sisyncFindOrCreateFolder() {
+    const q = encodeURIComponent(`name='${__SISYNC_ROOT_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+    const resp = await __sisyncFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=10`);
+    const json = await resp.json();
+    if (json.files && json.files.length) return json.files[0].id;
+    const created = await __sisyncFetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: __SISYNC_ROOT_NAME, mimeType: "application/vnd.google-apps.folder" }),
+    });
+    return (await created.json()).id;
+}
+
+// HongbuMemo 아래 sise 하위 폴더 확보 (없으면 생성)
+async function __sisyncEnsureSiseFolder(rootId) {
+    const q = encodeURIComponent(`name='${__SISYNC_SISE_FOLDER}' and mimeType='application/vnd.google-apps.folder' and '${rootId}' in parents and trashed=false`);
+    const resp = await __sisyncFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=10`);
+    const json = await resp.json();
+    if (json.files && json.files.length) return json.files[0].id;
+    const created = await __sisyncFetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: __SISYNC_SISE_FOLDER, mimeType: "application/vnd.google-apps.folder", parents: [rootId] }),
+    });
+    return (await created.json()).id;
+}
+
+// sise 폴더의 시군구별 파일 목록 → Map(sgg5 → {fileId, sidoNm, sigunguNm})
+async function __sisyncListSiseFiles(folderId) {
+    const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+    const resp = await __sisyncFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=1000`);
+    const json = await resp.json();
+    const map = new Map();
+    for (const f of json.files || []) {
+        const m = /^(\d{5})_([^_]+)_(.+)_sise\.json$/.exec(f.name);
+        if (m) map.set(m[1], { fileId: f.id, sidoNm: m[2], sigunguNm: m[3] });
+    }
+    return map;
+}
+
+async function __sisyncDownloadJSON(fileId) {
+    const resp = await __sisyncFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    const text = await resp.text();
+    if (!text || !text.trim()) return null;
+    return JSON.parse(text); // 손상 파일이면 throw — 로컬/드라이브 어느 쪽도 덮어쓰지 않음
+}
+
+async function __sisyncCreateFile(folderId, filename, data) {
+    const boundary = "sisync_" + Math.random().toString(36).slice(2);
+    const metadata = { name: filename, parents: [folderId], mimeType: "application/json" };
+    const body =
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+        `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(data)}\r\n--${boundary}--`;
+    const resp = await __sisyncFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+        method: "POST",
+        headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+        body,
+    });
+    return (await resp.json()).id;
+}
+
+async function __sisyncUploadJSON(fileId, data) {
+    await __sisyncFetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+    });
+}
+
+function __sisyncGetAllApartments() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("hongSise", HONGSISE_DB_VERSION);
+        request.onerror = (e) => reject(e.target.error);
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains("apartments")) { resolve([]); return; }
+            const getAll = db.transaction(["apartments"], "readonly").objectStore("apartments").getAll();
+            getAll.onsuccess = () => resolve(getAll.result || []);
+            getAll.onerror = (ev) => reject(ev.target.error);
+        };
+    });
+}
+
+// 드라이브에서 내려받은/스탬프된 레코드를 updatedAt 보존한 채 그대로 put
+// (saveToIndexedDB 경유 금지 — Date.now() 재스탬프로 LWW가 깨짐)
+function __sisyncPutApartments(records) {
+    return new Promise((resolve, reject) => {
+        if (!records || !records.length) { resolve(); return; }
+        const request = indexedDB.open("hongSise", HONGSISE_DB_VERSION);
+        request.onerror = (e) => reject(e.target.error);
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            const tx = db.transaction(["apartments"], "readwrite");
+            const store = tx.objectStore("apartments");
+            records.forEach((r) => store.put(r));
+            tx.oncomplete = () => resolve();
+            tx.onerror = (ev) => reject(ev.target.error);
+        };
+    });
+}
+
+// idType 키 LWW 병합. updatedAt 없는 레거시 레코드는 0으로 간주하되,
+// 드라이브로 올라가는 시점에 Date.now() 스탬프(→ 이후 기기에서 결정적 수렴).
+// 동률이면서 내용이 다르면 드라이브 우선. tombstone 없음(빈 text도 일반 레코드).
+function __sisyncMerge(localArr, driveArr) {
+    const localMap = new Map(localArr.map((r) => [r.idType, r]));
+    const driveMap = new Map(driveArr.filter((r) => r && r.idType).map((r) => [r.idType, r]));
+    const merged = [];
+    const toLocal = [];   // 드라이브 → 로컬 반영분
+    const stamped = [];   // 레거시 스탬프 로컬 write-back
+    let upCount = 0;
+    const now = Date.now();
+    const allIds = new Set([...localMap.keys(), ...driveMap.keys()]);
+    for (const id of allIds) {
+        const L = localMap.get(id);
+        const D = driveMap.get(id);
+        if (L && !D) {
+            let rec = L;
+            if (!(Number(rec.updatedAt) > 0)) { rec = { ...rec, updatedAt: now }; stamped.push(rec); }
+            merged.push(rec);
+            upCount++;
+            continue;
+        }
+        if (D && !L) {
+            merged.push(D);
+            toLocal.push(D);
+            continue;
+        }
+        const lts = Number(L.updatedAt) || 0;
+        const dts = Number(D.updatedAt) || 0;
+        if (lts > dts) {
+            merged.push(L);
+            upCount++;
+        } else if (dts > lts) {
+            merged.push(D);
+            toLocal.push(D);
+        } else if (JSON.stringify(L) === JSON.stringify(D)) {
+            merged.push(D); // 완전 동일 → 스킵
+        } else {
+            merged.push(D); // 동률(주로 0 vs 0) + 내용 상이 → 드라이브 우선
+            toLocal.push(D);
+        }
+    }
+    return { merged, toLocal, stamped, upCount };
+}
+
+// ── 색상 설정(차트 색상 + 연식 색상) 동기화 ──
+// hongSiseColor DB의 chartColor/yearColor 레코드를 sise/_settings.json 하나로 항목별 LWW 동기화.
+// 파일명이 시군구 패턴(5자리코드_...)과 달라 지역 목록/hongbutest 가져오기에는 잡히지 않는다.
+const __SISYNC_SETTINGS_FILENAME = "_settings.json";
+
+function __sisyncGetColorRecord(storeName, key) {
+    return new Promise((resolve) => {
+        try {
+            if (!window.colorDB || !window.colorDB.objectStoreNames.contains(storeName)) { resolve(null); return; }
+            const req = window.colorDB.transaction(storeName, "readonly").objectStore(storeName).get(key);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+        } catch (_) { resolve(null); }
+    });
+}
+
+function __sisyncPutColorRecord(storeName, record) {
+    return new Promise((resolve, reject) => {
+        try {
+            const tx = window.colorDB.transaction(storeName, "readwrite");
+            tx.objectStore(storeName).put(record);
+            tx.oncomplete = () => resolve();
+            tx.onerror = (e) => reject(e.target.error);
+        } catch (e) { reject(e); }
+    });
+}
+
+async function __sisyncFindSettingsFile(folderId) {
+    const q = encodeURIComponent(`name='${__SISYNC_SETTINGS_FILENAME}' and '${folderId}' in parents and trashed=false`);
+    const resp = await __sisyncFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&pageSize=10`);
+    const json = await resp.json();
+    return (json.files && json.files.length) ? json.files[0].id : null;
+}
+
+async function __sisyncSyncSettings(siseFolderId) {
+    if (!window.colorDB) return { msg: "건너뜀(색상 DB 미초기화)", downloaded: false };
+    const keys = [
+        { store: "chartColor", id: "priceColorSettings" },
+        { store: "yearColor", id: "yearColorSettings" },
+    ];
+    const local = {};
+    for (const k of keys) local[k.store] = await __sisyncGetColorRecord(k.store, k.id);
+
+    const fileId = await __sisyncFindSettingsFile(siseFolderId);
+    let drive = null;
+    if (fileId) {
+        const j = await __sisyncDownloadJSON(fileId);
+        if (j && typeof j === "object") drive = j;
+    }
+
+    const out = { schemaVersion: 1, updatedAt: Date.now() };
+    let uploadNeeded = false;
+    let downloaded = false;
+    const now = Date.now();
+
+    for (const k of keys) {
+        const L = local[k.store];
+        const D = drive && drive[k.store];
+        if (!L && !D) continue;
+        const lts = Number(L && L.updatedAt) || 0;
+        const dts = Number(D && D.updatedAt) || 0;
+        let winner;
+        if (L && !D) winner = "local";
+        else if (D && !L) winner = "drive";
+        else if (lts > dts) winner = "local";
+        else if (dts > lts) winner = "drive";
+        else winner = JSON.stringify(L) === JSON.stringify(D) ? "same" : "drive"; // 동률+상이 → 드라이브 우선
+
+        if (winner === "local") {
+            let rec = L;
+            if (!(Number(rec.updatedAt) > 0)) { rec = { ...rec, updatedAt: now }; await __sisyncPutColorRecord(k.store, rec); }
+            out[k.store] = rec;
+            uploadNeeded = true;
+        } else if (winner === "drive") {
+            out[k.store] = D;
+            await __sisyncPutColorRecord(k.store, D);
+            // 메모리 즉시 반영 (다음 마커 렌더부터 적용)
+            if (k.store === "chartColor" && Array.isArray(D.settings)) priceColorSettings = [...D.settings];
+            if (k.store === "yearColor" && Array.isArray(D.settings)) window.yearColorSettings = [...D.settings];
+            downloaded = true;
+        } else {
+            out[k.store] = D; // 동일 → 그대로 유지
+        }
+    }
+
+    if (uploadNeeded) {
+        if (fileId) await __sisyncUploadJSON(fileId, out);
+        else await __sisyncCreateFile(siseFolderId, __SISYNC_SETTINGS_FILENAME, out);
+    }
+    const msg = downloaded && uploadNeeded ? "양방향 반영" : downloaded ? "내려받음" : uploadNeeded ? "올림" : "변경 없음";
+    return { msg, downloaded };
+}
+
+// ── 시군구 매핑/그룹 헬퍼 ──
+function __sisyncIdToRegionMap() {
+    const map = new Map(); // id → {sgg5, sidoNm, sigunguNm}
+    if (Array.isArray(apartmentData)) {
+        for (const apt of apartmentData) {
+            if (apt && apt.id != null && apt.sigungu) {
+                map.set(String(apt.id), {
+                    sgg5: String(apt.sigungu).slice(0, 5),
+                    sidoNm: String(apt.sidoNm || "").trim() || "기타",
+                    sigunguNm: String(apt.sigunguNm || "").trim() || "미분류",
+                });
+            }
+        }
+    }
+    return map;
+}
+
+function __sisyncRecordId(rec) {
+    if (rec && rec.id != null) return String(rec.id);
+    if (rec && typeof rec.idType === "string" && rec.idType.includes("-")) return rec.idType.split("-")[0];
+    return "";
+}
+
+// 로컬 apartments 레코드를 시군구별 그룹핑 → Map(sgg5 → {sgg5, sidoNm, sigunguNm, records[]})
+function __sisyncGroupLocalBySgg(localArr, idToRegion) {
+    const groups = new Map();
+    for (const rec of localArr) {
+        const region = idToRegion.get(__sisyncRecordId(rec)) || { sgg5: "00000", sidoNm: "기타", sigunguNm: "미분류" };
+        let g = groups.get(region.sgg5);
+        if (!g) { g = { sgg5: region.sgg5, sidoNm: region.sidoNm, sigunguNm: region.sigunguNm, records: [] }; groups.set(region.sgg5, g); }
+        g.records.push(rec);
+    }
+    return groups;
+}
+
+function __sisyncFileName(row) {
+    return `${row.sgg5}_${row.sidoNm}_${row.sigunguNm}${__SISYNC_FILE_SUFFIX}`;
+}
+
+function __sisyncClosePanel() {
+    const p = document.getElementById("sisyncPanel");
+    if (p) p.remove();
+}
+
+// 🔄 버튼 클릭 → 로컬∪드라이브 지역 목록 패널 열기 (hongbutest 지역목록과 동일 개념)
+async function __sisyncRun() {
+    if (window.__sisyncBusy) { alert("⏳ 동기화가 이미 진행 중입니다."); return; }
+    if (!Array.isArray(apartmentData) || !apartmentData.length) {
+        alert("⏳ 아파트 데이터 로딩이 끝나지 않았습니다. 잠시 후 다시 시도해주세요.");
+        return;
+    }
+    const btn = document.getElementById("siseDriveSyncBtn");
+    const origLabel = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "🔄 지역목록 조회 중..."; }
+    try {
+        await __sisyncEnsureToken();
+        const rootId = await __sisyncFindOrCreateFolder();
+        const siseFolderId = await __sisyncEnsureSiseFolder(rootId);
+        const [localArr, driveFiles] = await Promise.all([
+            __sisyncGetAllApartments(),
+            __sisyncListSiseFiles(siseFolderId),
+        ]);
+        const localGroups = __sisyncGroupLocalBySgg(localArr, __sisyncIdToRegionMap());
+
+        // 지역 목록 = 로컬에 데이터 있는 시군구 ∪ 드라이브에 파일 있는 시군구
+        const rows = new Map();
+        for (const [sgg5, g] of localGroups) {
+            rows.set(sgg5, { sgg5, sidoNm: g.sidoNm, sigunguNm: g.sigunguNm, localCount: g.records.length, fileId: null });
+        }
+        for (const [sgg5, f] of driveFiles) {
+            const row = rows.get(sgg5);
+            if (row) row.fileId = f.fileId;
+            else rows.set(sgg5, { sgg5, sidoNm: f.sidoNm, sigunguNm: f.sigunguNm, localCount: 0, fileId: f.fileId });
+        }
+        if (!rows.size) {
+            alert("⚠️ 로컬과 드라이브 모두 시세 데이터가 없습니다.");
+            return;
+        }
+        window.__sisyncCtx = { siseFolderId, rows };
+        const sorted = [...rows.values()].sort((a, b) => (a.sidoNm + a.sigunguNm).localeCompare(b.sidoNm + b.sigunguNm, "ko"));
+        __sisyncRenderPanel(sorted);
+    } catch (e) {
+        console.error("❌ 드라이브 지역목록 조회 실패:", e);
+        alert("❌ 드라이브 지역목록 조회 실패: " + (e?.message || e));
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = origLabel; }
+    }
+}
+
+function __sisyncRenderPanel(list) {
+    __sisyncClosePanel();
+    const panel = document.createElement("div");
+    panel.id = "sisyncPanel";
+    panel.style.cssText = "position:fixed;top:70px;left:10px;z-index:100000;background:#fff;color:#222;border:1px solid #888;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:10px 12px;max-height:70vh;overflow:auto;min-width:280px;font-size:13px;";
+
+    const rowsHtml = list.map((r) => `
+        <label style="display:block;padding:3px 0;cursor:pointer;white-space:nowrap;">
+            <input type="checkbox" class="sisyncChk" value="${r.sgg5}">
+            ${r.sidoNm} ${r.sigunguNm}
+            <span style="color:#888;">(로컬 ${r.localCount}건${r.fileId ? " · ☁️" : ""})</span>
+        </label>`).join("");
+
+    panel.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <b>☁️ 드라이브 시세 동기화</b>
+            <button onclick="__sisyncClosePanel()" style="border:none;background:none;font-size:15px;cursor:pointer;">✖</button>
+        </div>
+        <label style="display:block;padding:3px 0;border-bottom:1px solid #ddd;margin-bottom:4px;cursor:pointer;">
+            <input type="checkbox" id="sisyncChkAll"> <b>전체 선택</b>
+        </label>
+        <div>${rowsHtml}</div>
+        <div id="sisyncStatus" style="color:#0066cc;min-height:16px;margin-top:6px;"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+            <button id="sisyncSyncBtn" style="padding:5px 10px;cursor:pointer;">🔄 선택 동기화</button>
+            <select id="sisyncDelMode" style="height:26px;font-size:12px;">
+                <option value="device">이 기기만</option>
+                <option value="drive">드라이브만</option>
+                <option value="both">기기+드라이브</option>
+            </select>
+            <button id="sisyncDelBtn" style="padding:5px 10px;cursor:pointer;color:#c0392b;">🗑 선택 삭제</button>
+        </div>`;
+    document.body.appendChild(panel);
+
+    document.getElementById("sisyncChkAll").addEventListener("change", (e) => {
+        panel.querySelectorAll(".sisyncChk").forEach((c) => { c.checked = e.target.checked; });
+    });
+    document.getElementById("sisyncSyncBtn").addEventListener("click", () => __sisyncSyncSelected());
+    document.getElementById("sisyncDelBtn").addEventListener("click", () => __sisyncDeleteSelected());
+}
+
+function __sisyncSelectedSggs() {
+    return [...document.querySelectorAll("#sisyncPanel .sisyncChk:checked")].map((c) => c.value);
+}
+
+// 선택한 시군구들만 개별 파일 단위로 LWW 동기화
+async function __sisyncSyncSelected() {
+    const sggs = __sisyncSelectedSggs();
+    if (!sggs.length) { alert("⚠️ 시군구를 하나 이상 체크해주세요."); return; }
+    if (window.__sisyncBusy) return;
+    window.__sisyncBusy = true;
+    const status = document.getElementById("sisyncStatus");
+    try {
+        const { siseFolderId, rows } = window.__sisyncCtx;
+        // 패널 연 뒤 편집됐을 수 있으므로 로컬 재조회
+        const localArr = await __sisyncGetAllApartments();
+        const localGroups = __sisyncGroupLocalBySgg(localArr, __sisyncIdToRegionMap());
+        let totalDown = 0, totalUp = 0;
+        for (let i = 0; i < sggs.length; i++) {
+            const row = rows.get(sggs[i]);
+            if (!row) continue;
+            if (status) status.textContent = `동기화 중 (${i + 1}/${sggs.length}) ${row.sidoNm} ${row.sigunguNm}...`;
+            const localRecords = (localGroups.get(row.sgg5) || {}).records || [];
+            let driveArr = [];
+            if (row.fileId) {
+                const j = await __sisyncDownloadJSON(row.fileId);
+                driveArr = Array.isArray(j) ? j : (j && j.apartments) || [];
+            }
+            const { merged, toLocal, stamped, upCount } = __sisyncMerge(localRecords, driveArr);
+            await __sisyncPutApartments(toLocal);
+            await __sisyncPutApartments(stamped);
+            const payload = { schemaVersion: 2, updatedAt: Date.now(), sgg5: row.sgg5, apartments: merged };
+            if (!row.fileId) {
+                if (merged.length) row.fileId = await __sisyncCreateFile(siseFolderId, __sisyncFileName(row), payload);
+            } else if (upCount > 0) {
+                await __sisyncUploadJSON(row.fileId, payload);
+            }
+            row.localCount = merged.length;
+            totalDown += toLocal.length;
+            totalUp += upCount;
+        }
+        // 색상 설정(차트 색상 + 연식 색상)도 함께 동기화
+        if (status) status.textContent = "색상 설정 동기화 중...";
+        let setRes = { msg: "변경 없음", downloaded: false };
+        try {
+            setRes = await __sisyncSyncSettings(siseFolderId);
+        } catch (e) {
+            console.warn("❌ 색상 설정 동기화 실패:", e);
+            setRes = { msg: "실패 (" + (e?.message || e) + ")", downloaded: false };
+        }
+        if (status) status.textContent = "";
+        if ((totalDown || setRes.downloaded) && window.map) {
+            priceCache = {};
+            prevSiseMapState = "초기화";
+            updateMarkers(window.map.getBounds(), true);
+        }
+        alert(`✅ 드라이브 동기화 완료 (${sggs.length}개 시군구)\n내려받음 ${totalDown}건 / 올림 ${totalUp}건\n색상 설정: ${setRes.msg}`);
+        __sisyncClosePanel();
+    } catch (e) {
+        console.error("❌ 드라이브 동기화 실패:", e);
+        if (status) status.textContent = "";
+        alert("❌ 드라이브 동기화 실패: " + (e?.message || e));
+    } finally {
+        window.__sisyncBusy = false;
+    }
+}
+
+function __sisyncDeleteLocalByKeys(keys) {
+    return new Promise((resolve, reject) => {
+        if (!keys || !keys.length) { resolve(); return; }
+        const request = indexedDB.open("hongSise", HONGSISE_DB_VERSION);
+        request.onerror = (e) => reject(e.target.error);
+        request.onsuccess = (e) => {
+            const db = e.target.result;
+            const tx = db.transaction(["apartments"], "readwrite");
+            const store = tx.objectStore("apartments");
+            keys.forEach((k) => store.delete(k));
+            tx.oncomplete = () => resolve();
+            tx.onerror = (ev) => reject(ev.target.error);
+        };
+    });
+}
+
+// 선택한 시군구의 시세 데이터 삭제 — 기기만 / 드라이브만 / 기기+드라이브 (hongbutest 삭제 모드와 동일 개념)
+async function __sisyncDeleteSelected() {
+    const sggs = __sisyncSelectedSggs();
+    if (!sggs.length) { alert("⚠️ 시군구를 하나 이상 체크해주세요."); return; }
+    if (window.__sisyncBusy) return;
+    const mode = document.getElementById("sisyncDelMode").value; // device | drive | both
+    const modeText = { device: "이 기기에서만", drive: "드라이브에서만", both: "기기와 드라이브 모두에서" }[mode];
+    if (!confirm(`⚠️ 선택한 ${sggs.length}개 시군구의 시세 데이터를 ${modeText} 삭제합니다.\n(기기만 삭제한 경우 드라이브 파일이 남아 있으면 나중에 다시 내려받을 수 있습니다)\n계속하시겠습니까?`)) return;
+    window.__sisyncBusy = true;
+    const status = document.getElementById("sisyncStatus");
+    try {
+        const { rows } = window.__sisyncCtx;
+        const localArr = await __sisyncGetAllApartments();
+        const localGroups = __sisyncGroupLocalBySgg(localArr, __sisyncIdToRegionMap());
+        let localDel = 0, driveDel = 0;
+        for (let i = 0; i < sggs.length; i++) {
+            const row = rows.get(sggs[i]);
+            if (!row) continue;
+            if (status) status.textContent = `삭제 중 (${i + 1}/${sggs.length}) ${row.sidoNm} ${row.sigunguNm}...`;
+            if (mode !== "drive") {
+                const keys = ((localGroups.get(row.sgg5) || {}).records || []).map((r) => r.idType);
+                await __sisyncDeleteLocalByKeys(keys);
+                localDel += keys.length;
+                row.localCount = 0;
+            }
+            if (mode !== "device" && row.fileId) {
+                await __sisyncFetch(`https://www.googleapis.com/drive/v3/files/${row.fileId}`, { method: "DELETE" });
+                row.fileId = null;
+                driveDel++;
+            }
+        }
+        if (status) status.textContent = "";
+        if (mode !== "drive" && window.map) {
+            priceCache = {};
+            prevSiseMapState = "초기화";
+            updateMarkers(window.map.getBounds());
+        }
+        alert(`✅ 삭제 완료\n기기 레코드 ${localDel}건 / 드라이브 파일 ${driveDel}개`);
+        __sisyncClosePanel();
+    } catch (e) {
+        console.error("❌ 삭제 실패:", e);
+        if (status) status.textContent = "";
+        alert("❌ 삭제 실패: " + (e?.message || e));
+    } finally {
+        window.__sisyncBusy = false;
+    }
+}
+
 async function exportHongSiseToJSON() {
     try {
         // ✅ 시군구 필터 확인 — 선택된 시군구만 내보내 파일 크기 축소 (모바일 import 가능하도록)
@@ -4756,7 +5369,7 @@ document.getElementById("priceColorSettingsBtn").addEventListener("click", () =>
 
 		const tx = window.colorDB.transaction('chartColor', 'readwrite');
 		const store = tx.objectStore('chartColor');
-		const data = { id: 'priceColorSettings', settings };
+		const data = { id: 'priceColorSettings', settings, updatedAt: Date.now() };
 
 		const request = store.put(data);
 		request.onsuccess = () => {
@@ -4805,10 +5418,11 @@ const resetBtn = document.createElement("button");
   deleteRequest.onsuccess = () => {
     console.log("🧹 기존 설정 삭제 완료");
 
-    // ✅ 초기값 저장
+    // ✅ 초기값 저장 (의도적 초기화이므로 스탬프 → 동기화 시 초기화 상태가 전파됨)
     const saveRequest = store.put({
       id: "priceColorSettings",
-      settings: defaultPriceColorSettings
+      settings: defaultPriceColorSettings,
+      updatedAt: Date.now()
     });
 
     saveRequest.onsuccess = () => {
@@ -4980,7 +5594,7 @@ function saveColorSettingsToDB(settings) {
     const tx = colorDB.transaction('chartColor', 'readwrite');
     const store = tx.objectStore('chartColor');
 
-    const data = { id: 'priceColorSettings', settings };
+    const data = { id: 'priceColorSettings', settings, updatedAt: Date.now() };
 
     const request = store.put(data);
 
@@ -5340,7 +5954,7 @@ function saveYearColorSettingsToDB(settings) {
 
     const tx = window.colorDB.transaction("yearColor", "readwrite");
     const store = tx.objectStore("yearColor");
-    const data = { id: "yearColorSettings", settings };
+    const data = { id: "yearColorSettings", settings, updatedAt: Date.now() };
 
     const request = store.put(data);
     request.onsuccess = () => {
