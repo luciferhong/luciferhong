@@ -5063,7 +5063,8 @@
 
         // ✅ 최소 줌(14) 미만이면 마커가 표시되면 안 되므로, 화면에 남아있던 마커/클러스터를 제거하고 종료
         //    (기존에는 그냥 return 해서 줌아웃 시 이전 마커가 그대로 남아있는 문제가 있었음)
-        if (window.map.getZoom() < 14) {
+        //    [시세보기 훅] hongbuSise.js 로드 시 토글 ON이면 하한 13 (미로드 시 14 고정)
+        if (window.map.getZoom() < (window.__siseDbHook?.minZoom?.() ?? 14)) {
           clearApartmentMarkersAndCluster();
           return;
         }
@@ -5103,6 +5104,9 @@
           }
           return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK && presaleOK;
         });
+
+        // [시세보기 훅] 스냅샷 로드 트리거·300개 초과 가드 (hongbuSise.js 미로드 시 무동작)
+        if (window.__siseDbHook?.beforeRender?.(filtered) === false) return;
 
         // ✅ 필터 결과에 없는 기존 마커는 즉시 제거(연도/세대수/지역/범위 변경 시 즉시 반영)
         const keepIds = new Set(filtered.map((a) => String(a.id)));
@@ -7476,9 +7480,15 @@ const originalBase64 = event.target.result;
           req.onerror = () => resolve(null);
         });
 
+        // ⚠️ 조건부 헤더는 same-origin일 때만. If-None-Match/If-Modified-Since는 CORS 안전 헤더가
+        //    아니라서 크로스오리진(예: sise-cloud에서 서비스되는 hongbuSise.html은 <base>가 GitHub
+        //    Pages라 데이터 fetch가 크로스오리진)에서는 OPTIONS preflight가 발생하는데, GitHub
+        //    Pages가 OPTIONS를 405로 거부해 fetch 자체가 실패한다. 크로스오리진은 브라우저 HTTP
+        //    캐시(max-age + 브라우저 내부 재검증, preflight 없음)에 캐싱을 맡긴다.
+        const sameOrigin = new URL(url, document.baseURI).origin === location.origin;
         const headers = {};
-        if (cached?.etag) headers["If-None-Match"] = cached.etag;
-        else if (cached?.lastModified) headers["If-Modified-Since"] = cached.lastModified;
+        if (sameOrigin && cached?.etag) headers["If-None-Match"] = cached.etag;
+        else if (sameOrigin && cached?.lastModified) headers["If-Modified-Since"] = cached.lastModified;
 
         const res = await fetch(url, { headers });
 
@@ -16431,6 +16441,33 @@ const originalBase64 = event.target.result;
         if (!lnglat) return null;
         return new naver.maps.LatLng(lnglat[1], lnglat[0]);
       }
+    </script>
+    <script>
+      // ✅ DB 시세보기 애드온 로더 (개인용, 토큰 필요)
+      //    최초 1회 ?token=<토큰> 으로 접속하면 localStorage에 저장 → 이후 평소 URL로도 활성화.
+      //    해제: ?token=off. 토큰이 없으면 아무것도 로드하지 않는다(일반 방문자 무영향).
+      (function () {
+        try {
+          const u = new URL(location.href);
+          const t = u.searchParams.get("token");
+          if (t) {
+            if (t === "off") localStorage.removeItem("hongbuSiseToken");
+            else localStorage.setItem("hongbuSiseToken", t);
+            u.searchParams.delete("token");
+            history.replaceState(null, "", u.toString());
+          }
+          const tok = localStorage.getItem("hongbuSiseToken");
+          if (!tok) return;
+          // 로컬(localhost)에서는 로컬 sise_server, 그 외(GitHub Pages)에서는 오라클 VM에서 로드
+          const base =
+            location.hostname === "localhost" || location.hostname === "127.0.0.1"
+              ? "http://localhost:7123"
+              : "https://sise-cloud.luciferhong.com";
+          const s = document.createElement("script");
+          s.src = base + "/hongbuSise.js?token=" + encodeURIComponent(tok);
+          document.body.appendChild(s);
+        } catch (e) {}
+      })();
     </script>
   </body>
 </html>
