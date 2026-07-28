@@ -12,7 +12,7 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23162033'/%3E%3Ctext x='32' y='39' text-anchor='middle' font-size='24' font-family='Malgun Gothic,Noto Sans KR,sans-serif' font-weight='700' fill='white'%3E%ED%99%8D%EB%B6%80%3C/text%3E%3C/svg%3E"
     />
     <title>[루시퍼홍] 홍부가 기가막혀</title>
-    <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8&submodules=drawing"></script>
+    <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8&submodules=drawing,panorama"></script>
     <script type="text/javascript" src="MarkerClustering.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <!-- Google Drive API (Drive 백업/동기화) -->
@@ -1833,6 +1833,7 @@
       <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
 
       <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
+      <label><input type="checkbox" id="toggleStreetView" />거리뷰</label>
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
       <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기 보기</label>
       <label><input type="checkbox" id="toggleSchoolZoneKeep" />초등배정남기기</label>
@@ -2744,6 +2745,168 @@
         }
       }
 
+      // ==============================
+      // ✅ 거리뷰(StreetLayer + Panorama) 토글
+      // - ON: 거리뷰 가능 도로가 파란 선으로 표시, 지도 클릭 시 파노라마 오버레이 열림
+      // - submodules=panorama 필요
+      // ==============================
+      let __streetLayer = null;
+      let __streetClickListener = null;
+      let __panoInstance = null;
+      window.__isStreetViewOn = () => !!document.getElementById("toggleStreetView")?.checked;
+      function __ensureStreetLayer() {
+        if (!__streetLayer && window.naver && naver.maps && typeof naver.maps.StreetLayer === "function") {
+          __streetLayer = new naver.maps.StreetLayer();
+        }
+        return __streetLayer;
+      }
+      function __setStreetLayer(on) {
+        try {
+          const layer = __ensureStreetLayer();
+          if (!layer) {
+            if (on) console.warn("naver.maps.StreetLayer를 사용할 수 없습니다. submodules=panorama 확인.");
+            return;
+          }
+          layer.setMap(on ? window.map : null);
+          // ✅ 클릭 리스너는 map 인스턴스 재생성(백지도 토글)에 대비해 켤 때마다 재등록
+          if (__streetClickListener) {
+            naver.maps.Event.removeListener(__streetClickListener);
+            __streetClickListener = null;
+          }
+          if (on && window.map) {
+            __streetClickListener = naver.maps.Event.addListener(window.map, "click", (e) => {
+              // 포토메모 위치선택 모드가 우선 (카메라 버튼으로 명시적으로 켠 모드)
+              if (window.__photoMemoAddMode) return;
+              __openPanorama(e.coord);
+            });
+          }
+          if (!on) __closePanorama();
+        } catch (e) {
+          console.warn("StreetLayer toggle failed:", e);
+        }
+      }
+      // ✅ 지도 위 현재 파노라마 위치·시야 방향 마커 (네이버지도 스타일: 파란 점 + 부채꼴)
+      let __panoPosMarker = null;
+      function __panoDirIconHtml(pan) {
+        return (
+          '<div id="panoDirIcon" style="width:56px;height:56px;position:relative;pointer-events:none;transform:rotate(' +
+          (Number(pan) || 0) +
+          'deg);">' +
+          '<div style="position:absolute;inset:0;border-radius:50%;background:conic-gradient(from -35deg at 50% 50%, rgba(26,115,232,0.45) 0deg 70deg, transparent 70deg 360deg);"></div>' +
+          '<div style="position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;background:#1a73e8;border:3px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>' +
+          "</div>"
+        );
+      }
+      function __updatePanoMarker(recenter) {
+        try {
+          if (!__panoInstance || !window.map) return;
+          const pos = __panoInstance.getPosition();
+          if (!pos) return;
+          const pov = __panoInstance.getPov();
+          const pan = pov ? pov.pan : 0;
+          if (!__panoPosMarker) {
+            __panoPosMarker = new naver.maps.Marker({
+              position: pos,
+              map: window.map,
+              clickable: false,
+              zIndex: 100000,
+              icon: { content: __panoDirIconHtml(pan), anchor: new naver.maps.Point(28, 28) },
+            });
+          } else {
+            __panoPosMarker.setPosition(pos);
+            if (__panoPosMarker.getMap() !== window.map) __panoPosMarker.setMap(window.map);
+            // 회전은 setIcon 재생성 대신 DOM transform만 갱신 (드래그 중 성능)
+            const el = document.getElementById("panoDirIcon");
+            if (el) el.style.transform = "rotate(" + (Number(pan) || 0) + "deg)";
+            else __panoPosMarker.setIcon({ content: __panoDirIconHtml(pan), anchor: new naver.maps.Point(28, 28) });
+          }
+          if (recenter) {
+            // 파노라마가 화면 위쪽을 덮으므로, 마커가 남은 아래쪽 영역의 중앙에 오도록 지도 이동
+            const overlayH =
+              document.getElementById("panoOverlay")?.offsetHeight || Math.round(window.innerHeight / 2);
+            window.map.setCenter(pos);
+            window.map.panBy(new naver.maps.Point(0, -Math.round(overlayH / 2)));
+          }
+        } catch (e) {}
+      }
+      let __panoBuiltSize = null; // 파노라마 생성 시점의 컨테이너 크기 (리사이즈 감지용)
+      function __createPanorama(coord, pov) {
+        const viewerEl = document.getElementById("panoViewer");
+        __panoBuiltSize = viewerEl ? { w: viewerEl.clientWidth, h: viewerEl.clientHeight } : null;
+        __panoInstance = new naver.maps.Panorama("panoViewer", {
+          position: coord,
+          pov: pov || { pan: 0, tilt: 0, fov: 100 },
+          flightSpot: false,
+          aroundControl: true,
+          zoomControl: true,
+        });
+        // 해당 좌표 주변에 거리뷰가 없으면 안내 후 닫기
+        naver.maps.Event.addListener(__panoInstance, "pano_status", (status) => {
+          if (status !== "OK") {
+            __closePanorama();
+            try { showToast("이 위치에는 거리뷰가 없습니다."); } catch (_) {}
+          } else {
+            __updatePanoMarker(true);
+          }
+        });
+        // 시야 회전 → 방향 아이콘 회전
+        naver.maps.Event.addListener(__panoInstance, "pov_changed", () => __updatePanoMarker(false));
+        // 거리뷰 안에서 이동 → 마커 이동 + 지도 따라가기
+        naver.maps.Event.addListener(__panoInstance, "position_changed", () => __updatePanoMarker(true));
+      }
+      // ✅ 리사이즈 후 파노라마 재생성 (setSize가 캔버스에 반영되지 않아 유일하게 확실한 방법)
+      //    현재 위치(position)·보던 방향(pov)을 그대로 유지한 채 새 컨테이너 크기로 다시 만든다.
+      function __recreatePanorama() {
+        try {
+          if (!__panoInstance) return;
+          const overlay = document.getElementById("panoOverlay");
+          const viewer = document.getElementById("panoViewer");
+          if (!overlay || !viewer) return;
+          if (overlay.style.display === "none" || viewer.clientHeight < 10) return; // 닫힌 상태면 스킵
+          const pos = __panoInstance.getPosition();
+          const pov = __panoInstance.getPov();
+          viewer.innerHTML = "";
+          __panoInstance = null;
+          __createPanorama(pos, pov);
+        } catch (e) {
+          console.warn("Panorama recreate failed:", e);
+        }
+      }
+      function __openPanorama(coord) {
+        const overlay = document.getElementById("panoOverlay");
+        if (!overlay || !coord) return;
+        overlay.style.display = "block";
+        try {
+          // 닫힌 사이 창 크기가 바뀌었으면 생성 시점 크기와 비교해 재생성
+          const viewer = document.getElementById("panoViewer");
+          if (
+            __panoInstance &&
+            __panoBuiltSize &&
+            viewer &&
+            (Math.abs(viewer.clientWidth - __panoBuiltSize.w) > 4 || Math.abs(viewer.clientHeight - __panoBuiltSize.h) > 4)
+          ) {
+            __recreatePanorama();
+          }
+          if (!__panoInstance) {
+            __createPanorama(coord, null);
+          } else {
+            __panoInstance.setPosition(coord);
+          }
+          __updatePanoMarker(true);
+        } catch (e) {
+          console.warn("Panorama open failed:", e);
+          __closePanorama();
+          try { showToast("거리뷰를 열 수 없습니다."); } catch (_) {}
+        }
+      }
+      function __closePanorama() {
+        const overlay = document.getElementById("panoOverlay");
+        if (overlay) overlay.style.display = "none";
+        try {
+          if (__panoPosMarker) __panoPosMarker.setMap(null);
+        } catch (_) {}
+      }
+
       //지도 선택
       async function createMap(useBlankMap) {
         const mapElement = document.getElementById("map");
@@ -3074,6 +3237,9 @@
         if (!useBlank) {
           __setCadastralLayer(!!cadastralEl?.checked);
         }
+
+        // ✅ 지도 재생성으로 리스너/레이어가 날아가므로 거리뷰도 재적용
+        __setStreetLayer(window.__isStreetViewOn());
       });
 
       // ✅ 포토메모 토글 — 체크 ON: 인덱스 로드 후 현재 범위 마커 표시, OFF: 모든 마커 제거
@@ -3107,6 +3273,11 @@
 
         // ✅ 지적편집도는 현재 지도 위에 레이어로만 올림
         __setCadastralLayer(useCadastral);
+      });
+
+      // ✅ 거리뷰 토글 (StreetLayer 표시 + 지도 클릭 시 파노라마)
+      document.getElementById("toggleStreetView")?.addEventListener("change", function () {
+        __setStreetLayer(this.checked);
       });
 
       const mapElement = document.getElementById("map");
@@ -5869,12 +6040,16 @@
           }
         }
 
+        // ✅ 새로고침/상태복원으로 거리뷰 체크가 이미 켜져있으면 레이어 재적용
+        __setStreetLayer(window.__isStreetViewOn());
+
         // ✅ 데이터 로드/이벤트 등록은 createMap() 내부에서 처리됨 (중복 호출 방지)
 
         const metaViewport = document.querySelector("meta[name='viewport']");
 
         //이동시 선 긋기
         naver.maps.Event.addListener(window.map, "click", function (e) {
+          if (window.__isStreetViewOn?.()) return; // 거리뷰 모드에서는 이동선 긋기 무시
           if (activeMarker && activeMarker instanceof naver.maps.Marker) {
             const newPosition = e.coord;
 
@@ -16441,6 +16616,61 @@ const originalBase64 = event.target.result;
         if (!lnglat) return null;
         return new naver.maps.LatLng(lnglat[1], lnglat[0]);
       }
+    </script>
+    <!-- ✅ 거리뷰 파노라마 오버레이 (toggleStreetView ON + 지도 클릭 시 상단 절반 표시) -->
+    <div
+      id="panoOverlay"
+      style="
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 50%;
+        z-index: 100000;
+        background: #000;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+      "
+    >
+      <!-- position:relative + z-index:0 → 파노라마 내부의 큰 z-index를 이 안에 격리 / overflow:hidden → 축소 시 이전 크기 캔버스가 지도 위로 넘치는 것 차단 -->
+      <div id="panoViewer" style="width: 100%; height: 100%; position: relative; z-index: 0; overflow: hidden"></div>
+      <!-- 닫기 버튼: 거리뷰 영역 밖(오버레이 바로 아래)에 표시 → 파노라마 렌더링과 겹치지 않아 깜빡임 없음 -->
+      <button
+        type="button"
+        onclick="__closePanorama()"
+        style="
+          position: absolute;
+          top: 100%;
+          left: 50%;
+          transform: translateX(-50%);
+          margin-top: 8px;
+          z-index: 10;
+          padding: 8px 14px;
+          font-size: 15px;
+          font-weight: bold;
+          background: rgba(255, 255, 255, 0.95);
+          border: 1px solid #888;
+          border-radius: 6px;
+          box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+          cursor: pointer;
+        "
+      >
+        ✕ 닫기
+      </button>
+    </div>
+    <script>
+      // ✅ 창 크기 변경/모바일 화면 회전 시 파노라마 재생성 (디바운스)
+      (function () {
+        let resizeTimer = null;
+        window.addEventListener("resize", () => {
+          if (resizeTimer) clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => {
+            resizeTimer = null;
+            try { __recreatePanorama(); } catch (_) {}
+            try { __updatePanoMarker(true); } catch (_) {}
+          }, 300);
+        });
+      })();
     </script>
     <script>
       // ✅ DB 시세보기 애드온 로더 (개인용, 토큰 필요)
