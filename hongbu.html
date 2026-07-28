@@ -1831,9 +1831,10 @@
       <label><input type="checkbox" id="toggleAdminBoundary" />행정동경계</label>
       <label class="only-pc"><input type="checkbox" id="toggleFindWay" />업무지구 길찾기</label>
       <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
-
-      <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
       <label><input type="checkbox" id="toggleStreetView" />거리뷰</label>
+      <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
+      <label><input type="checkbox" id="toggleSatelliteMap" />위성</label>
+      <label><input type="checkbox" id="toggleTerrainMap" />지형</label>
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
       <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기 보기</label>
       <label><input type="checkbox" id="toggleSchoolZoneKeep" />초등배정남기기</label>
@@ -2746,6 +2747,28 @@
       }
 
       // ==============================
+      // ✅ 위성(하이브리드)/지형 지도 타입 토글
+      // - 위성 ↔ 지형 상호배타, 백지도와도 상호배타 (백지도는 전용 mapTypes registry라 적용 불가)
+      // - 지도 재생성 없이 setMapTypeId로 전환
+      // ==============================
+      function __applyMapTypeFromUI() {
+        try {
+          if (!window.map) return;
+          if (document.getElementById("toggleBlankMap")?.checked) return; // 백지도 모드에서는 미적용
+          const sat = document.getElementById("toggleSatelliteMap")?.checked;
+          const ter = document.getElementById("toggleTerrainMap")?.checked;
+          const t = sat
+            ? naver.maps.MapTypeId.HYBRID // 위성 + 라벨
+            : ter
+              ? naver.maps.MapTypeId.TERRAIN
+              : naver.maps.MapTypeId.NORMAL;
+          if (window.map.getMapTypeId() !== t) window.map.setMapTypeId(t);
+        } catch (e) {
+          console.warn("MapType 적용 실패:", e);
+        }
+      }
+
+      // ==============================
       // ✅ 거리뷰(StreetLayer + Panorama) 토글
       // - ON: 거리뷰 가능 도로가 파란 선으로 표시, 지도 클릭 시 파노라마 오버레이 열림
       // - submodules=panorama 필요
@@ -2802,6 +2825,13 @@
       function __updatePanoMarker() {
         try {
           if (!__panoInstance || !window.map) return;
+          // ✅ 거리뷰 OFF 또는 파노라마 닫힘 상태에서는 마커를 올리지 않고 제거 보장
+          //    (모바일 주소창 접힘 등으로 발생하는 resize 경로가 마커를 되살리는 것 방지)
+          const overlayEl = document.getElementById("panoOverlay");
+          if (!window.__isStreetViewOn?.() || !overlayEl || overlayEl.style.display === "none") {
+            if (__panoPosMarker) __panoPosMarker.setMap(null);
+            return;
+          }
           const pos = __panoInstance.getPosition();
           if (!pos) return;
           const pov = __panoInstance.getPov();
@@ -2832,7 +2862,7 @@
         __panoInstance = new naver.maps.Panorama("panoViewer", {
           position: coord,
           pov: pov || { pan: 0, tilt: 0, fov: 100 },
-          flightSpot: false,
+          flightSpot: true, // ✅ 항공뷰: 항공 파노라마 지원 지역에서 하늘에서 내려다보는 뷰 전환 가능
           aroundControl: true,
           zoomControl: true,
         });
@@ -3220,10 +3250,16 @@
 
         const useBlank = blankEl.checked;
 
-        // ✅ 상호배타: 백지도 ON이면 지적편집도 OFF (백지도 ON일 때만)
+        // ✅ 상호배타: 백지도 ON이면 지적편집도/위성/지형 OFF (백지도 ON일 때만)
         if (useBlank && cadastralEl) {
           cadastralEl.checked = false;
           __setCadastralLayer(false);
+        }
+        if (useBlank) {
+          const satEl = document.getElementById("toggleSatelliteMap");
+          const terEl = document.getElementById("toggleTerrainMap");
+          if (satEl) satEl.checked = false;
+          if (terEl) terEl.checked = false;
         }
 
         await createMap(useBlank); // 기존 동작 유지 (백지도 토글에서만 지도 재생성)
@@ -3234,8 +3270,9 @@
           __setCadastralLayer(!!cadastralEl?.checked);
         }
 
-        // ✅ 지도 재생성으로 리스너/레이어가 날아가므로 거리뷰도 재적용
+        // ✅ 지도 재생성으로 리스너/레이어가 날아가므로 거리뷰·지도타입도 재적용
         __setStreetLayer(window.__isStreetViewOn());
+        __applyMapTypeFromUI();
       });
 
       // ✅ 포토메모 토글 — 체크 ON: 인덱스 로드 후 현재 범위 마커 표시, OFF: 모든 마커 제거
@@ -3267,6 +3304,15 @@
           injectMaximizeButton();
         }
 
+        // ✅ 상호배타: 지적편집도 ON이면 위성/지형 OFF (셋 중 하나만 선택 가능)
+        if (useCadastral) {
+          const satEl = document.getElementById("toggleSatelliteMap");
+          const terEl = document.getElementById("toggleTerrainMap");
+          if (satEl) satEl.checked = false;
+          if (terEl) terEl.checked = false;
+          __applyMapTypeFromUI(); // 기본지도로 복귀
+        }
+
         // ✅ 지적편집도는 현재 지도 위에 레이어로만 올림
         __setCadastralLayer(useCadastral);
       });
@@ -3274,6 +3320,37 @@
       // ✅ 거리뷰 토글 (StreetLayer 표시 + 지도 클릭 시 파노라마)
       document.getElementById("toggleStreetView")?.addEventListener("change", function () {
         __setStreetLayer(this.checked);
+      });
+
+      // ✅ 위성/지형 토글 공통 처리: 서로 상호배타 + 백지도 ON이면 기본지도로 복귀 후 적용
+      async function __onMapTypeToggleChange(changedId, otherId) {
+        const changedEl = document.getElementById(changedId);
+        const otherEl = document.getElementById(otherId);
+        const blankEl = document.getElementById("toggleBlankMap");
+        if (changedEl?.checked && otherEl?.checked) otherEl.checked = false;
+        // ✅ 상호배타: 위성/지형 ON이면 지적편집도 OFF (셋 중 하나만 선택 가능)
+        if (changedEl?.checked) {
+          const cadastralEl = document.getElementById("toggleCadastralMap");
+          if (cadastralEl?.checked) {
+            cadastralEl.checked = false;
+            __setCadastralLayer(false);
+          }
+        }
+        if (changedEl?.checked && blankEl?.checked) {
+          // 백지도 해제는 지도 재생성 경로 (백지도 registry에는 위성/지형 타입이 없음)
+          blankEl.checked = false;
+          await createMap(false);
+          injectMaximizeButton();
+          __setCadastralLayer(!!document.getElementById("toggleCadastralMap")?.checked);
+          __setStreetLayer(window.__isStreetViewOn());
+        }
+        __applyMapTypeFromUI();
+      }
+      document.getElementById("toggleSatelliteMap")?.addEventListener("change", () => {
+        __onMapTypeToggleChange("toggleSatelliteMap", "toggleTerrainMap");
+      });
+      document.getElementById("toggleTerrainMap")?.addEventListener("change", () => {
+        __onMapTypeToggleChange("toggleTerrainMap", "toggleSatelliteMap");
       });
 
       const mapElement = document.getElementById("map");
@@ -6039,6 +6116,10 @@
 
         // ✅ 새로고침/상태복원으로 거리뷰 체크가 이미 켜져있으면 레이어 재적용
         __setStreetLayer(window.__isStreetViewOn());
+
+        // ✅ 새로고침/상태복원으로 위성/지형 체크가 이미 켜져있으면 지도타입 재적용
+        // (브라우저의 폼 상태 복원은 change 이벤트를 발생시키지 않기 때문)
+        __applyMapTypeFromUI();
 
         // ✅ 데이터 로드/이벤트 등록은 createMap() 내부에서 처리됨 (중복 호출 방지)
 
