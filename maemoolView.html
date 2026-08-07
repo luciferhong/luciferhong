@@ -468,22 +468,20 @@ $('#rankBtn').addEventListener('click', () => {
   const old = document.getElementById('rankPanel');
   if (old) { old.remove(); return; }
   const ranked = buildRankData();
+  const rankSort = { k: 'sale', asc: false };   // 기본: 매매 물건수 내림차순
 
   const panel = document.createElement('div');
   panel.id = 'rankPanel';
   panel.style.cssText = 'position:fixed;top:0;right:0;bottom:0;width:560px;max-width:92vw;' +
     'background:var(--panel);border-left:1px solid var(--border);z-index:9999;' +
     'box-shadow:-6px 0 22px rgba(0,0,0,.15);overflow:auto;padding:14px 16px;';
-  let rowsHtml = '';
-  ranked.forEach((r, i) => {
-    rowsHtml +=
-      `<tr class="rank-row" data-name="${r.name.replace(/"/g, '&quot;')}">` +
-      `<td style="color:var(--muted);">${i + 1}</td>` +
-      `<td title="${r.name.replace(/"/g, '&quot;')}">${r.name}</td><td>${r.tel}</td><td>${r.cell}</td>` +
-      `<td style="color:var(--sale);font-weight:600;">${r.sale}</td>` +
-      `<td style="color:var(--rent);font-weight:600;">${r.rent}</td>` +
-      `<td><b>${r.total}</b></td></tr>`;
-  });
+  const rowsHtml = list => list.map((r, i) =>
+    `<tr class="rank-row" data-name="${r.name.replace(/"/g, '&quot;')}">` +
+    `<td style="color:var(--muted);">${i + 1}</td>` +
+    `<td title="${r.name.replace(/"/g, '&quot;')}">${r.name}</td><td>${r.tel}</td><td>${r.cell}</td>` +
+    `<td style="color:var(--sale);font-weight:600;">${r.sale}</td>` +
+    `<td style="color:var(--rent);font-weight:600;">${r.rent}</td>` +
+    `<td><b>${r.total}</b></td></tr>`).join('');
   panel.innerHTML =
     '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;position:sticky;top:0;background:var(--panel);padding:4px 0 8px;z-index:1;">' +
     `<b>🏆 매물 많이 올린 부동산 (${ranked.length}곳)</b><span style="flex:1"></span>` +
@@ -491,12 +489,29 @@ $('#rankBtn').addEventListener('click', () => {
     '<table>' +
     '<thead><tr><th style="cursor:default;width:34px;">순위</th><th style="cursor:default;">부동산</th>' +
     '<th style="cursor:default;width:100px;">유선</th><th style="cursor:default;width:104px;">무선</th>' +
-    '<th style="cursor:default;width:38px;">매매</th><th style="cursor:default;width:38px;">전세</th>' +
-    '<th style="cursor:default;width:38px;">합계</th></tr></thead>' +
-    `<tbody>${rowsHtml}</tbody></table>` +
+    '<th class="rank-sort" data-k="sale" style="width:44px;">매매<span class="arrow">▼</span></th>' +
+    '<th class="rank-sort" data-k="rent" style="width:44px;">전세</th>' +
+    '<th class="rank-sort" data-k="total" style="width:44px;">합계</th></tr></thead>' +
+    `<tbody>${rowsHtml(ranked)}</tbody></table>` +
     '<div style="color:var(--muted);font-size:12px;margin-top:10px;">※ 물건수는 현재 아파트에 올린 건수를 의미 (동일매물 묶음 안에 같은 부동산이 여러 건 올려도 1건으로 집계)</div>';
   document.body.appendChild(panel);
   panel.querySelector('#rankClose').addEventListener('click', () => panel.remove());
+  // 매물 수 헤더 클릭 정렬 (같은 헤더 재클릭 시 오름/내림 전환)
+  panel.querySelectorAll('th.rank-sort').forEach(th => th.addEventListener('click', () => {
+    const k = th.dataset.k;
+    if (rankSort.k === k) rankSort.asc = !rankSort.asc;
+    else { rankSort.k = k; rankSort.asc = false; }
+    const sorted = [...ranked].sort((a, b) => {
+      const c = a[rankSort.k] - b[rankSort.k] || a.total - b.total;
+      return rankSort.asc ? c : -c;
+    });
+    panel.querySelectorAll('th.rank-sort .arrow').forEach(a => a.remove());
+    const s = document.createElement('span');
+    s.className = 'arrow'; s.textContent = rankSort.asc ? '▲' : '▼';
+    th.appendChild(s);
+    panel.querySelector('tbody').innerHTML = rowsHtml(sorted);
+    syncRankPanelSel();
+  }));
   // 패널 행 클릭 = 본문 중개소 클릭과 동일 (노란 강조 토글 + 패널 선택 표시)
   panel.querySelector('tbody').addEventListener('click', e => {
     const tr = e.target.closest('tr.rank-row');
