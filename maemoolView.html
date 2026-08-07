@@ -146,11 +146,12 @@ async function loadFromHash() {
   ridMap = data.rids || {};
 
   // ↳ 행을 직전 일반 행의 하위로 묶어 그룹 재구성 (확장 엑셀과 동일 구조)
+  // id: 필터·정렬과 무관한 고정 키 (펼침 상태 추적용)
   groups = [];
   for (const r of (data.rows || [])) {
     const isChild = String(r[0] || '').trim().startsWith('↳');
     if (isChild && groups.length) groups[groups.length - 1].children.push(r);
-    else groups.push({ row: r, children: [] });
+    else groups.push({ row: r, children: [], id: groups.length });
   }
   const hr = $('#headRow');
   HEADERS.forEach((h, i) => {
@@ -184,6 +185,16 @@ const karBadge = agent => String(agent || '').includes('한국공인중개사협
 const isKarGroup = g => [g.row, ...g.children].some(r => String(r[8] || '').includes('한국공인중개사협회'));
 
 let hlRealtor = '';   // 클릭으로 강조 중인 중개소명 (재클릭 시 해제)
+
+const groupKeyOf = g => 'g' + g.id + '|' + clean(g.row[0]) + '|' + clean(g.row[2]);
+
+// 중개소 선택 시 그 중개소 매물이 든 그룹을 1회 펼쳐준다 (이후 모두 펼치기/접기는 정상 동작)
+function revealRealtor(name) {
+  if (!name) return;
+  for (const g of groups) {
+    if (g.children.some(c => clean(c[7]) === name)) expanded.add(groupKeyOf(g));
+  }
+}
 
 function cellsHtml(r, isChild) {
   const tds = [];
@@ -245,10 +256,8 @@ function render() {
     // (중개소명 등은 하위 행에만 있어, 접힌 채로는 검색 결과가 안 보이기 때문)
     const parentHit = q && hit(g.row);
     const shownChildren = (q && !parentHit) ? g.children.filter(hit) : g.children;
-    // 중개소 강조 중이면: 그 중개소 매물이 든 그룹은 강제 펼침 (접힌 채론 강조가 안 보임)
-    const hlHit = hlRealtor && g.children.some(c => clean(c[7]) === hlRealtor);
-    const key = 'g' + gi + '|' + clean(g.row[0]) + '|' + clean(g.row[2]);
-    const open = ((q && !parentHit) || hlHit) ? true : expanded.has(key);
+    const key = groupKeyOf(g);
+    const open = (q && !parentHit) ? true : expanded.has(key);
     tr.className = cls + ' grp-parent';
     tr.innerHTML = `<td class="type first"><span class="tri">${open ? '▾' : '▸'}</span>${clean(g.row[0])}` +
       `<span class="badge badge-cnt">동일 ${g.children.length}건${shownChildren.length !== g.children.length ? ` 중 ${shownChildren.length}건 일치` : ''}</span></td>` +
@@ -296,6 +305,7 @@ $('#tbody').addEventListener('click', e => {
   const name = td.dataset.r || '';
   if (!name) return;
   hlRealtor = (hlRealtor === name) ? '' : name;
+  revealRealtor(hlRealtor);
   render();
   syncRankPanelSel();   // 순위 패널이 열려 있으면 선택 상태 동기화
 });
@@ -310,7 +320,7 @@ $('#tradeChips').addEventListener('click', e => {
 $('#expandAll').addEventListener('click', () => {
   const anyCollapsed = [...$('#tbody').querySelectorAll('tr.grp-parent .tri')].some(t => t.textContent === '▸');
   if (anyCollapsed) {
-    groups.forEach((g, gi) => { if (g.children.length) expanded.add('g' + gi + '|' + clean(g.row[0]) + '|' + clean(g.row[2])); });
+    groups.forEach(g => { if (g.children.length) expanded.add(groupKeyOf(g)); });
     $('#expandAll').textContent = '모두 접기';
   } else {
     expanded.clear();
@@ -431,6 +441,7 @@ $('#rankBtn').addEventListener('click', () => {
     if (!tr) return;
     const name = tr.dataset.name;
     hlRealtor = (hlRealtor === name) ? '' : name;
+    revealRealtor(hlRealtor);
     render();
     syncRankPanelSel();
   });
