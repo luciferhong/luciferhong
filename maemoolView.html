@@ -157,14 +157,20 @@ async function loadFromHash() {
   HEADERS.forEach((h, i) => {
     const th = document.createElement('th');
     th.textContent = h;
-    th.addEventListener('click', () => {
-      if (sortKey === i) sortAsc = !sortAsc; else { sortKey = i; sortAsc = true; }
-      document.querySelectorAll('th .arrow').forEach(a => a.remove());
-      const s = document.createElement('span');
-      s.className = 'arrow'; s.textContent = sortAsc ? '▲' : '▼';
-      th.appendChild(s);
-      render();
-    });
+    if (i === 3) {   // 면적: 정렬 대신 멀티 체크박스 필터
+      th.id = 'areaTh';
+      th.textContent = '면적 ▾';
+      th.addEventListener('click', () => openAreaFilter(th));
+    } else {
+      th.addEventListener('click', () => {
+        if (sortKey === i) sortAsc = !sortAsc; else { sortKey = i; sortAsc = true; }
+        document.querySelectorAll('th .arrow').forEach(a => a.remove());
+        const s = document.createElement('span');
+        s.className = 'arrow'; s.textContent = sortAsc ? '▲' : '▼';
+        th.appendChild(s);
+        render();
+      });
+    }
     hr.appendChild(th);
   });
   render();
@@ -187,6 +193,60 @@ const isKarGroup = g => [g.row, ...g.children].some(r => String(r[8] || '').incl
 let hlRealtor = '';   // 클릭으로 강조 중인 중개소명 (재클릭 시 해제)
 
 const groupKeyOf = g => 'g' + g.id + '|' + clean(g.row[0]) + '|' + clean(g.row[2]);
+
+// ── 면적 멀티 체크박스 필터 (헤더 클릭) — 빈 Set = 전체 표시 ──
+let areaFilter = new Set();
+function uniqueAreas() {
+  const s = new Set();
+  for (const g of groups) for (const r of [g.row, ...g.children]) {
+    const v = clean(r[3]);
+    if (v) s.add(v);
+  }
+  return [...s].sort((a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0) || a.localeCompare(b, 'ko'));
+}
+function updateAreaTh() {
+  const th = document.getElementById('areaTh');
+  if (th) th.textContent = areaFilter.size ? `면적 ▾ (${areaFilter.size})` : '면적 ▾';
+}
+function openAreaFilter(th) {
+  const old = document.getElementById('areaFilterPop');
+  if (old) { old.remove(); return; }
+  const pop = document.createElement('div');
+  pop.id = 'areaFilterPop';
+  const r = th.getBoundingClientRect();
+  pop.style.cssText = `position:fixed;top:${Math.round(r.bottom + 4)}px;left:${Math.round(r.left)}px;` +
+    'z-index:10001;background:var(--panel);border:1px solid var(--border);border-radius:9px;' +
+    'padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.18);max-height:60vh;overflow:auto;min-width:150px;';
+  const areas = uniqueAreas();
+  let html = '<div style="display:flex;gap:8px;margin-bottom:8px;">' +
+    '<button id="areaClear" style="padding:3px 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel);cursor:pointer;font-size:12px;">전체 해제</button></div>';
+  for (const a of areas) {
+    html += `<label style="display:flex;align-items:center;gap:6px;padding:3px 2px;cursor:pointer;font-size:13px;white-space:nowrap;">` +
+      `<input type="checkbox" class="area-chk" value="${a.replace(/"/g, '&quot;')}" ${areaFilter.has(a) ? 'checked' : ''}>${a}</label>`;
+  }
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  pop.addEventListener('change', e => {
+    const c = e.target.closest('.area-chk');
+    if (!c) return;
+    if (c.checked) areaFilter.add(c.value); else areaFilter.delete(c.value);
+    updateAreaTh();
+    render();
+  });
+  pop.querySelector('#areaClear').addEventListener('click', () => {
+    areaFilter.clear();
+    pop.querySelectorAll('.area-chk').forEach(c => { c.checked = false; });
+    updateAreaTh();
+    render();
+  });
+  const onDoc = e => {
+    if (!pop.contains(e.target) && e.target !== th) {
+      pop.remove();
+      document.removeEventListener('mousedown', onDoc, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('mousedown', onDoc, true), 0);
+}
 
 // hlGroup: 접힌 그룹 부모 행이라도 하위에 강조 중개소 매물이 있으면 중개소 칸을 노랗게 표시
 function cellsHtml(r, isChild, hlGroup) {
@@ -216,6 +276,8 @@ function render() {
 
   if (tradeFilter) list = list.filter(g =>
     tradeOf(g.row).includes(tradeFilter) || g.children.some(c => tradeOf(c).includes(tradeFilter)));
+  if (areaFilter.size) list = list.filter(g =>
+    [g.row, ...g.children].some(r => areaFilter.has(clean(r[3]))));
   if (q) list = list.filter(g => hit(g.row) || g.children.some(hit));
 
   if (sortKey >= 0) {
