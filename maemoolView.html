@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매물 웹뷰어</title>
+<!--
+  루시퍼홍 부동산 도구모음(크롬 확장) "네이버부동산 매물 다운로드"의 웹페이지 출력용 셸.
+  데이터는 서버에 저장되지 않고 URL 해시(#d=base64url(gzip(JSON)))로만 전달된다.
+  payload: { t: 단지명, at: 생성시각, rows: [[동,매/전,가격,면적,층,향,정보,중개소,에이전트,등록일자,유선,무선], ...] }
+  rows 는 확장 엑셀과 동일 — 첫 셀이 "↳"로 시작하면 직전 일반 행(동일매물 그룹 부모)의 하위 매물.
+-->
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --border: #dde2e8;
+    --text: #23272e; --muted: #6b7684;
+    --sale: #d93025; --rent: #1a63c9;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', 'Malgun Gothic', system-ui, sans-serif; font-size: 14px; }
+  header { padding: 14px 18px 10px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0 8px 0 0; }
+  #meta { color: var(--muted); font-size: 12.5px; }
+  input[type=text] { background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 7px 10px; font-size: 13px; outline: none; }
+  .chips { display: flex; gap: 6px; }
+  .chip { padding: 6px 12px; border-radius: 15px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--muted); cursor: pointer; font-size: 12.5px; user-select: none; }
+  .chip.on { background: #e3efff; border-color: #4a90d9; color: #1a63c9; }
+  #summary { padding: 4px 18px 8px; color: var(--muted); font-size: 13px; display: flex; gap: 16px; flex-wrap: wrap; }
+  #summary b { color: var(--text); }
+  .sale-c { color: var(--sale); } .rent-c { color: var(--rent); }
+  main { padding: 0 18px 30px; }
+  .tblwrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 9px; }
+  table { border-collapse: collapse; width: 100%; min-width: 1150px; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { background: var(--panel); color: var(--muted); font-weight: 600; font-size: 12.5px;
+    position: sticky; top: 0; cursor: pointer; }
+  th .arrow { font-size: 10px; margin-left: 3px; }
+  tr:hover td { background: #f0f4f8; }
+  td.price { font-weight: 600; }
+  tr.t-sale td.type { color: var(--sale); font-weight: 700; }
+  tr.t-rent td.type { color: var(--rent); font-weight: 700; }
+  tr.grp-parent td { cursor: pointer; }
+  tr.grp-parent td.first .tri { display: inline-block; width: 14px; color: var(--muted); font-size: 11px; }
+  tr.grp-child td { background: #f7f8fa; }
+  tr.grp-child td:first-child { padding-left: 26px; color: var(--muted); }
+  tr.grp-child:hover td { background: #eef2f6; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 9px; margin-left: 6px; vertical-align: 1px; }
+  .badge-cnt { background: #e3efff; color: #1a63c9; }
+  .kar-badge { display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%; margin-left: 5px; vertical-align: middle;
+    background: #fff3e0; color: #b26a00; border: 1px solid #f0c27a; font-size: 9.5px; font-weight: 600; }
+  td.feature { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #msg { padding: 40px 18px; text-align: center; color: var(--muted); line-height: 1.8; }
+</style>
+</head>
+<body>
+<header>
+  <h1>📦 <span id="title">매물 웹뷰어</span></h1>
+  <span id="meta"></span>
+  <div class="chips" id="tradeChips">
+    <span class="chip on" data-v="">전체</span>
+    <span class="chip" data-v="매매">매매</span>
+    <span class="chip" data-v="전세">전세</span>
+    <span class="chip" data-v="월세">월세</span>
+  </div>
+  <input type="text" id="searchBox" placeholder="동·정보·중개소 검색" size="18">
+  <span class="chip" id="expandAll">모두 펼치기</span>
+</header>
+<div id="summary"></div>
+<main>
+  <div id="msg">로딩 중…</div>
+  <div class="tblwrap" style="display:none">
+    <table>
+      <thead><tr id="headRow"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const HEADERS = ['동', '매/전', '가격', '면적', '층', '향', '정보', '중개소', '에이전트', '등록일자', '유선', '무선'];
+const $ = s => document.querySelector(s);
+let groups = [];          // [{row, children: [row...]}]
+let tradeFilter = '';
+let sortKey = -1, sortAsc = true;
+const expanded = new Set();
+
+function showMsg(t) { $('#msg').innerHTML = t; $('#msg').style.display = ''; $('.tblwrap').style.display = 'none'; }
+const clean = v => String(v || '').replace(/^\s*↳\s*/, '').trim();
+
+// #d= 해시 → base64url → gzip 해제 → JSON
+async function loadFromHash() {
+  const m = location.hash.match(/[#&]d=([^&]+)/);
+  if (!m) {
+    showMsg('표시할 데이터가 없습니다.<br>네이버부동산에서 확장 프로그램의 매물 다운로드 → <b>웹페이지로 보기</b>를 사용해 주세요.');
+    return;
+  }
+  if (typeof DecompressionStream === 'undefined') { showMsg('이 브라우저는 지원되지 않습니다 (DecompressionStream 미지원).'); return; }
+  const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const data = JSON.parse(await new Response(stream).text());
+
+  document.title = (data.t || '매물') + ' - 매물 웹뷰어';
+  $('#title').textContent = data.t || '매물 웹뷰어';
+  $('#meta').textContent = data.at ? `생성 ${data.at}` : '';
+
+  // ↳ 행을 직전 일반 행의 하위로 묶어 그룹 재구성 (확장 엑셀과 동일 구조)
+  groups = [];
+  for (const r of (data.rows || [])) {
+    const isChild = String(r[0] || '').trim().startsWith('↳');
+    if (isChild && groups.length) groups[groups.length - 1].children.push(r);
+    else groups.push({ row: r, children: [] });
+  }
+  const hr = $('#headRow');
+  HEADERS.forEach((h, i) => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    th.addEventListener('click', () => {
+      if (sortKey === i) sortAsc = !sortAsc; else { sortKey = i; sortAsc = true; }
+      document.querySelectorAll('th .arrow').forEach(a => a.remove());
+      const s = document.createElement('span');
+      s.className = 'arrow'; s.textContent = sortAsc ? '▲' : '▼';
+      th.appendChild(s);
+      render();
+    });
+    hr.appendChild(th);
+  });
+  render();
+}
+
+function tradeOf(row) { return clean(row[1]); }
+function priceNum(s) {
+  // "9억 4,000" → 94000 (만원). 정렬용
+  s = clean(s).split('~')[0];
+  const parts = s.split('억');
+  const eok = parseInt(parts[0].replace(/[^0-9]/g, ''), 10);
+  const man = parseInt((parts[1] || '').replace(/[^0-9]/g, ''), 10);
+  if (parts.length > 1) return (isNaN(eok) ? 0 : eok * 10000) + (isNaN(man) ? 0 : man);
+  return isNaN(eok) ? 0 : eok;
+}
+const karBadge = agent => String(agent || '').includes('한국공인중개사협회') ? '<span class="kar-badge">협회</span>' : '';
+
+function cellsHtml(r, isChild) {
+  const tds = [];
+  for (let i = isChild ? 2 : 0; i < HEADERS.length; i++) {
+    let v = clean(r[i]);
+    let cls = i === 2 ? 'price' : (i === 6 ? 'feature' : '');
+    let extra = i === 8 ? karBadge(r[i]) : '';
+    tds.push(`<td class="${cls}" ${i === 6 ? `title="${v.replace(/"/g, '&quot;')}"` : ''}>${v}${extra}</td>`);
+  }
+  return tds.join('');
+}
+
+function render() {
+  const q = $('#searchBox').value.trim().toLowerCase();
+  let list = groups.slice();
+
+  if (tradeFilter) list = list.filter(g =>
+    tradeOf(g.row).includes(tradeFilter) || g.children.some(c => tradeOf(c).includes(tradeFilter)));
+  if (q) list = list.filter(g =>
+    [g.row, ...g.children].some(r => r.some(v => String(v || '').toLowerCase().includes(q))));
+
+  if (sortKey >= 0) {
+    const numeric = sortKey === 2;
+    list.sort((a, b) => {
+      const av = numeric ? priceNum(a.row[2]) : clean(a.row[sortKey]);
+      const bv = numeric ? priceNum(b.row[2]) : clean(b.row[sortKey]);
+      const c = numeric ? av - bv : String(av).localeCompare(String(bv), 'ko');
+      return sortAsc ? c : -c;
+    });
+  }
+
+  const tbody = $('#tbody');
+  tbody.innerHTML = '';
+  list.forEach((g, gi) => {
+    const trade = tradeOf(g.row);
+    const cls = trade.includes('매매') ? 't-sale' : (trade ? 't-rent' : '');
+    const tr = document.createElement('tr');
+    if (!g.children.length) {
+      tr.className = cls;
+      tr.innerHTML = `<td class="type first"><span class="tri" style="display:inline-block;width:14px"></span>${clean(g.row[0])}</td>` +
+        `<td class="type">${trade}</td>` + cellsHtml(g.row, true);
+      tbody.appendChild(tr);
+      return;
+    }
+    const key = 'g' + gi + '|' + clean(g.row[0]) + '|' + clean(g.row[2]);
+    const open = expanded.has(key);
+    tr.className = cls + ' grp-parent';
+    tr.innerHTML = `<td class="type first"><span class="tri">${open ? '▾' : '▸'}</span>${clean(g.row[0])}` +
+      `<span class="badge badge-cnt">동일 ${g.children.length}건</span></td>` +
+      `<td class="type">${trade}</td>` + cellsHtml(g.row, true);
+    tr.addEventListener('click', () => {
+      if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
+      render();
+    });
+    tbody.appendChild(tr);
+    if (open) {
+      for (const c of g.children) {
+        const ctr = document.createElement('tr');
+        const ct = tradeOf(c);
+        ctr.className = (ct.includes('매매') ? 't-sale' : 't-rent') + ' grp-child';
+        ctr.innerHTML = `<td>↳</td><td class="type">${ct}</td>` + cellsHtml(c, true);
+        tbody.appendChild(ctr);
+      }
+    }
+  });
+
+  // 매물 수 = 단독(자식 없는 행) + 그룹 하위 합 (그룹 부모는 대표 표시용)
+  let saleCnt = 0, rentCnt = 0, total = 0;
+  for (const g of groups) {
+    const members = g.children.length ? g.children : [g.row];
+    for (const r of members) {
+      total++;
+      const t = tradeOf(r);
+      if (t.includes('매매')) saleCnt++; else if (t.includes('전세')) rentCnt++;
+    }
+  }
+  $('#summary').innerHTML =
+    `<span>총 <b>${total}</b>건 (<b class="sale-c">매매 ${saleCnt}</b> · <b class="rent-c">전세 ${rentCnt}</b>)</span>` +
+    `<span>표시 ${list.length}줄 (동일매물 묶음)</span>`;
+  $('#msg').style.display = 'none';
+  $('.tblwrap').style.display = '';
+}
+
+$('#searchBox').addEventListener('input', render);
+$('#tradeChips').addEventListener('click', e => {
+  const chip = e.target.closest('.chip');
+  if (!chip || !('v' in chip.dataset)) return;
+  document.querySelectorAll('#tradeChips .chip').forEach(c => c.classList.remove('on'));
+  chip.classList.add('on');
+  tradeFilter = chip.dataset.v;
+  render();
+});
+$('#expandAll').addEventListener('click', () => {
+  const anyCollapsed = [...$('#tbody').querySelectorAll('tr.grp-parent .tri')].some(t => t.textContent === '▸');
+  if (anyCollapsed) {
+    groups.forEach((g, gi) => { if (g.children.length) expanded.add('g' + gi + '|' + clean(g.row[0]) + '|' + clean(g.row[2])); });
+    $('#expandAll').textContent = '모두 접기';
+  } else {
+    expanded.clear();
+    $('#expandAll').textContent = '모두 펼치기';
+  }
+  render();
+});
+window.addEventListener('hashchange', () => location.reload());
+
+loadFromHash().catch(e => showMsg('데이터 해석 실패: ' + e.message));
+</script>
+</body>
+</html>
