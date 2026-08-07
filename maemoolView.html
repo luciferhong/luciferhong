@@ -60,6 +60,9 @@
     padding: 1px 8px; border-radius: 9px; background: #1a63c9; color: #fff;
     font-size: 11px; text-decoration: none; box-shadow: 0 0 0 2px #ffe873; }
   a.rt-go:hover { background: #134c9c; }
+  #rankPanel tr.rank-row { cursor: pointer; }
+  #rankPanel tr.rank-row:hover td { background: #f0f4f8; }
+  #rankPanel tr.rank-row.sel td { background: #ffe873 !important; }
   td.feature { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #msg { padding: 40px 18px; text-align: center; color: var(--muted); line-height: 1.8; }
 </style>
@@ -288,6 +291,7 @@ $('#tbody').addEventListener('click', e => {
   if (!name) return;
   hlRealtor = (hlRealtor === name) ? '' : name;
   render();
+  syncRankPanelSel();   // 순위 패널이 열려 있으면 선택 상태 동기화
 });
 $('#tradeChips').addEventListener('click', e => {
   const chip = e.target.closest('.chip');
@@ -346,11 +350,9 @@ $('#xlsxBtn').addEventListener('click', async () => {
   }
 });
 
-// ── 매물 많이 올린 부동산 순위 ──
+// ── 매물 많이 올린 부동산 순위 (우측 도킹 패널) ──
 // 건수 산정: 단독 매물 + 그룹 하위 매물 (그룹 부모 행은 대표 표시용이라 제외 — 요약 총건수와 동일 기준)
-$('#rankBtn').addEventListener('click', () => {
-  const old = document.getElementById('rankOverlay');
-  if (old) { old.remove(); return; }
+function buildRankData() {
   const stat = new Map();   // 부동산명 → {tel, cell, sale, rent}
   for (const g of groups) {
     const members = g.children.length ? g.children : [g.row];
@@ -370,42 +372,63 @@ $('#rankBtn').addEventListener('click', () => {
       else if (t.includes('전세')) s.rent++;
     }
   }
-  const ranked = [...stat.entries()]
+  return [...stat.entries()]
     .map(([name, s]) => ({ name, ...s, total: s.sale + s.rent }))
     .sort((a, b) => b.total - a.total || b.sale - a.sale);
+}
 
-  const ov = document.createElement('div');
-  ov.id = 'rankOverlay';
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:10000;' +
-    'display:flex;align-items:center;justify-content:center;';
-  const box = document.createElement('div');
-  box.style.cssText = 'background:var(--panel);border:1px solid var(--border);border-radius:10px;' +
-    'padding:18px 20px;width:640px;max-width:94vw;max-height:82vh;overflow:auto;' +
-    'box-shadow:0 6px 30px rgba(0,0,0,.25);';
+// 패널·본문의 선택 상태(노란 강조)를 hlRealtor 하나로 동기화
+function syncRankPanelSel() {
+  const panel = document.getElementById('rankPanel');
+  if (!panel) return;
+  panel.querySelectorAll('tr.rank-row').forEach(tr => {
+    tr.classList.toggle('sel', !!hlRealtor && tr.dataset.name === hlRealtor);
+  });
+}
+
+$('#rankBtn').addEventListener('click', () => {
+  const old = document.getElementById('rankPanel');
+  if (old) { old.remove(); return; }
+  const ranked = buildRankData();
+
+  const panel = document.createElement('div');
+  panel.id = 'rankPanel';
+  panel.style.cssText = 'position:fixed;top:0;right:0;bottom:0;width:560px;max-width:92vw;' +
+    'background:var(--panel);border-left:1px solid var(--border);z-index:9999;' +
+    'box-shadow:-6px 0 22px rgba(0,0,0,.15);overflow:auto;padding:14px 16px;';
   let rowsHtml = '';
   ranked.forEach((r, i) => {
     rowsHtml +=
-      `<tr><td style="color:var(--muted);">${i + 1}</td>` +
+      `<tr class="rank-row" data-name="${r.name.replace(/"/g, '&quot;')}">` +
+      `<td style="color:var(--muted);">${i + 1}</td>` +
       `<td>${r.name}</td><td>${r.tel}</td><td>${r.cell}</td>` +
       `<td style="color:var(--sale);font-weight:600;">${r.sale}</td>` +
       `<td style="color:var(--rent);font-weight:600;">${r.rent}</td>` +
       `<td><b>${r.total}</b></td></tr>`;
   });
-  box.innerHTML =
-    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
+  panel.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;position:sticky;top:0;background:var(--panel);padding:4px 0 8px;z-index:1;">' +
     `<b>🏆 매물 많이 올린 부동산 (${ranked.length}곳)</b><span style="flex:1"></span>` +
     '<button id="rankClose" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel);cursor:pointer;font-size:12.5px;">닫기</button></div>' +
     '<table style="min-width:0;width:100%;">' +
     '<thead><tr><th style="cursor:default;width:36px;">순위</th><th style="cursor:default;">부동산</th>' +
     '<th style="cursor:default;">유선</th><th style="cursor:default;">무선</th>' +
-    '<th style="cursor:default;width:52px;">매매</th><th style="cursor:default;width:52px;">전세</th>' +
-    '<th style="cursor:default;width:52px;">합계</th></tr></thead>' +
+    '<th style="cursor:default;width:44px;">매매</th><th style="cursor:default;width:44px;">전세</th>' +
+    '<th style="cursor:default;width:44px;">합계</th></tr></thead>' +
     `<tbody>${rowsHtml}</tbody></table>` +
     '<div style="color:var(--muted);font-size:12px;margin-top:10px;">※ 물건수는 현재 아파트에 올린 건수를 의미 (동일매물 묶음 안에 같은 부동산이 여러 건 올려도 1건으로 집계)</div>';
-  ov.appendChild(box);
-  ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
-  document.body.appendChild(ov);
-  box.querySelector('#rankClose').addEventListener('click', () => ov.remove());
+  document.body.appendChild(panel);
+  panel.querySelector('#rankClose').addEventListener('click', () => panel.remove());
+  // 패널 행 클릭 = 본문 중개소 클릭과 동일 (노란 강조 토글 + 패널 선택 표시)
+  panel.querySelector('tbody').addEventListener('click', e => {
+    const tr = e.target.closest('tr.rank-row');
+    if (!tr) return;
+    const name = tr.dataset.name;
+    hlRealtor = (hlRealtor === name) ? '' : name;
+    render();
+    syncRankPanelSel();
+  });
+  syncRankPanelSel();
 });
 
 window.addEventListener('hashchange', () => location.reload());
