@@ -68,6 +68,10 @@
   </div>
   <input type="text" id="searchBox" placeholder="동·정보·중개소 검색" size="18">
   <span class="chip" id="expandAll">모두 펼치기</span>
+  <span class="chip" id="xlsxBtn" style="display:inline-flex;align-items:center;gap:5px;">
+    <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><rect width="16" height="16" rx="3" fill="#1D6F42"/><path d="M4.3 4h2.1l1.6 2.7L9.6 4h2.1L9.1 8l2.6 4H9.6L8 9.3 6.4 12H4.3l2.6-4z" fill="#fff"/></svg>
+    엑셀 다운로드
+  </span>
 </header>
 <div id="summary"></div>
 <main>
@@ -83,6 +87,8 @@
 <script>
 const HEADERS = ['동', '매/전', '가격', '면적', '층', '향', '정보', '중개소', '에이전트', '등록일자', '유선', '무선'];
 const $ = s => document.querySelector(s);
+let rawRows = [];         // 원본 rows (확장 엑셀과 동일 구조) — 엑셀 다운로드용
+let viewTitle = '매물';
 let groups = [];          // [{row, children: [row...]}]
 let tradeFilter = '';
 let sortKey = -1, sortAsc = true;
@@ -109,6 +115,8 @@ async function loadFromHash() {
   document.title = (data.t || '매물') + ' - 매물 웹뷰어';
   $('#title').textContent = data.t || '매물 웹뷰어';
   $('#meta').textContent = data.at ? `생성 ${data.at}` : '';
+  rawRows = data.rows || [];
+  viewTitle = data.t || '매물';
 
   // ↳ 행을 직전 일반 행의 하위로 묶어 그룹 재구성 (확장 엑셀과 동일 구조)
   groups = [];
@@ -248,6 +256,44 @@ $('#expandAll').addEventListener('click', () => {
   }
   render();
 });
+// ── 엑셀 다운로드 (확장 엑셀 출력과 동일 포맷 — SheetJS 는 클릭 시 CDN 지연 로드) ──
+let xlsxLoading = null;
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve();
+  if (!xlsxLoading) {
+    xlsxLoading = new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      s.onload = res;
+      s.onerror = () => { xlsxLoading = null; rej(new Error('엑셀 라이브러리 로드 실패 (네트워크 확인)')); };
+      document.head.appendChild(s);
+    });
+  }
+  return xlsxLoading;
+}
+$('#xlsxBtn').addEventListener('click', async () => {
+  if (!rawRows.length) { alert('다운로드할 데이터가 없습니다.'); return; }
+  const btn = $('#xlsxBtn');
+  try {
+    btn.style.opacity = '.5';
+    await loadXLSX();
+    const rows = [HEADERS, ...rawRows];
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!autofilter'] = { ref: `A1:L${rows.length}` };
+    ws['!cols'] = HEADERS.map((_, colIdx) => {
+      const maxWidth = rows.reduce((max, row) => Math.max(max, String(row[colIdx] || '').length), 10);
+      return { width: maxWidth + 2 };
+    });
+    XLSX.utils.book_append_sheet(wb, ws, 'Listings');
+    XLSX.writeFile(wb, viewTitle + '_매물다운로드.xlsx');
+  } catch (e) {
+    alert('엑셀 다운로드 실패: ' + e.message);
+  } finally {
+    btn.style.opacity = '';
+  }
+});
+
 window.addEventListener('hashchange', () => location.reload());
 
 loadFromHash().catch(e => showMsg('데이터 해석 실패: ' + e.message));
