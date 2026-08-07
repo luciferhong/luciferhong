@@ -174,12 +174,12 @@ function cellsHtml(r, isChild) {
 
 function render() {
   const q = $('#searchBox').value.trim().toLowerCase();
+  const hit = r => r.some(v => String(v || '').toLowerCase().includes(q));
   let list = groups.slice();
 
   if (tradeFilter) list = list.filter(g =>
     tradeOf(g.row).includes(tradeFilter) || g.children.some(c => tradeOf(c).includes(tradeFilter)));
-  if (q) list = list.filter(g =>
-    [g.row, ...g.children].some(r => r.some(v => String(v || '').toLowerCase().includes(q))));
+  if (q) list = list.filter(g => hit(g.row) || g.children.some(hit));
 
   if (sortKey >= 0) {
     const numeric = sortKey === 2;
@@ -204,11 +204,15 @@ function render() {
       tbody.appendChild(tr);
       return;
     }
+    // 검색 중이면: 부모가 직접 매칭되지 않은 그룹은 자동으로 펼치고 매칭 하위만 표시
+    // (중개소명 등은 하위 행에만 있어, 접힌 채로는 검색 결과가 안 보이기 때문)
+    const parentHit = q && hit(g.row);
+    const shownChildren = (q && !parentHit) ? g.children.filter(hit) : g.children;
     const key = 'g' + gi + '|' + clean(g.row[0]) + '|' + clean(g.row[2]);
-    const open = expanded.has(key);
+    const open = (q && !parentHit) ? true : expanded.has(key);
     tr.className = cls + ' grp-parent';
     tr.innerHTML = `<td class="type first"><span class="tri">${open ? '▾' : '▸'}</span>${clean(g.row[0])}` +
-      `<span class="badge badge-cnt">동일 ${g.children.length}건</span></td>` +
+      `<span class="badge badge-cnt">동일 ${g.children.length}건${shownChildren.length !== g.children.length ? ` 중 ${shownChildren.length}건 일치` : ''}</span></td>` +
       `<td class="type">${trade}</td>` + cellsHtml(g.row, true);
     tr.addEventListener('click', () => {
       if (expanded.has(key)) expanded.delete(key); else expanded.add(key);
@@ -216,7 +220,7 @@ function render() {
     });
     tbody.appendChild(tr);
     if (open) {
-      for (const c of g.children) {
+      for (const c of shownChildren) {
         const ctr = document.createElement('tr');
         const ct = tradeOf(c);
         ctr.className = (ct.includes('매매') ? 't-sale' : 't-rent') + ' grp-child';
