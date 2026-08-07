@@ -87,6 +87,7 @@
     </svg>
     <b>엑셀 다운로드</b>
   </span>
+  <span class="chip" id="rankBtn">🏆 매물 많이 올린 부동산 보기</span>
 </header>
 <div id="summary"></div>
 <main>
@@ -343,6 +344,64 @@ $('#xlsxBtn').addEventListener('click', async () => {
   } finally {
     btn.style.opacity = '';
   }
+});
+
+// ── 매물 많이 올린 부동산 순위 ──
+// 건수 산정: 단독 매물 + 그룹 하위 매물 (그룹 부모 행은 대표 표시용이라 제외 — 요약 총건수와 동일 기준)
+$('#rankBtn').addEventListener('click', () => {
+  const old = document.getElementById('rankOverlay');
+  if (old) { old.remove(); return; }
+  const stat = new Map();   // 부동산명 → {tel, cell, sale, rent}
+  for (const g of groups) {
+    const members = g.children.length ? g.children : [g.row];
+    for (const r of members) {
+      const name = clean(r[7]);
+      if (!name) continue;
+      let s = stat.get(name);
+      if (!s) { s = { tel: '', cell: '', sale: 0, rent: 0 }; stat.set(name, s); }
+      if (!s.tel) s.tel = clean(r[10]);
+      if (!s.cell) s.cell = clean(r[11]);
+      const t = tradeOf(r);
+      if (t.includes('매매')) s.sale++;
+      else if (t.includes('전세')) s.rent++;
+    }
+  }
+  const ranked = [...stat.entries()]
+    .map(([name, s]) => ({ name, ...s, total: s.sale + s.rent }))
+    .sort((a, b) => b.total - a.total || b.sale - a.sale);
+
+  const ov = document.createElement('div');
+  ov.id = 'rankOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:10000;' +
+    'display:flex;align-items:center;justify-content:center;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);border:1px solid var(--border);border-radius:10px;' +
+    'padding:18px 20px;width:640px;max-width:94vw;max-height:82vh;overflow:auto;' +
+    'box-shadow:0 6px 30px rgba(0,0,0,.25);';
+  let rowsHtml = '';
+  ranked.forEach((r, i) => {
+    rowsHtml +=
+      `<tr><td style="color:var(--muted);">${i + 1}</td>` +
+      `<td>${r.name}</td><td>${r.tel}</td><td>${r.cell}</td>` +
+      `<td style="color:var(--sale);font-weight:600;">${r.sale}</td>` +
+      `<td style="color:var(--rent);font-weight:600;">${r.rent}</td>` +
+      `<td><b>${r.total}</b></td></tr>`;
+  });
+  box.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' +
+    `<b>🏆 매물 많이 올린 부동산 (${ranked.length}곳)</b><span style="flex:1"></span>` +
+    '<button id="rankClose" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--panel);cursor:pointer;font-size:12.5px;">닫기</button></div>' +
+    '<table style="min-width:0;width:100%;">' +
+    '<thead><tr><th style="cursor:default;width:36px;">순위</th><th style="cursor:default;">부동산</th>' +
+    '<th style="cursor:default;">유선</th><th style="cursor:default;">무선</th>' +
+    '<th style="cursor:default;width:52px;">매매</th><th style="cursor:default;width:52px;">전세</th>' +
+    '<th style="cursor:default;width:52px;">합계</th></tr></thead>' +
+    `<tbody>${rowsHtml}</tbody></table>` +
+    '<div style="color:var(--muted);font-size:12px;margin-top:10px;">※ 물건수는 현재 아파트에 올린 건수를 의미</div>';
+  ov.appendChild(box);
+  ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+  document.body.appendChild(ov);
+  box.querySelector('#rankClose').addEventListener('click', () => ov.remove());
 });
 
 window.addEventListener('hashchange', () => location.reload());
