@@ -55,6 +55,9 @@
   tr.kar-boundary td { border-top: 2.5px solid #d93025; }
   td.realtor { cursor: pointer; }
   td.realtor.hl { background: #ffe873 !important; }
+  a.rt-go { display: inline-block; margin-left: 7px; padding: 1px 8px; border-radius: 9px;
+    background: #1a63c9; color: #fff; font-size: 11px; text-decoration: none; vertical-align: 1px; }
+  a.rt-go:hover { background: #134c9c; }
   td.feature { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #msg { padding: 40px 18px; text-align: center; color: var(--muted); line-height: 1.8; }
 </style>
@@ -99,6 +102,8 @@ const HEADERS = ['동', '매/전', '가격', '면적', '층', '향', '정보', '
 const $ = s => document.querySelector(s);
 let rawRows = [];         // 원본 rows (확장 엑셀과 동일 구조) — 엑셀 다운로드용
 let viewTitle = '매물';
+let complexNo = '';       // 단지번호 (중개소 바로가기용)
+let ridMap = {};          // 중개소명 → realtorId
 let groups = [];          // [{row, children: [row...]}]
 let tradeFilter = '';
 let sortKey = -1, sortAsc = true;
@@ -127,6 +132,8 @@ async function loadFromHash() {
   $('#meta').textContent = data.at ? `생성 ${data.at}` : '';
   rawRows = data.rows || [];
   viewTitle = data.t || '매물';
+  complexNo = data.no || '';
+  ridMap = data.rids || {};
 
   // ↳ 행을 직전 일반 행의 하위로 묶어 그룹 재구성 (확장 엑셀과 동일 구조)
   groups = [];
@@ -174,11 +181,15 @@ function cellsHtml(r, isChild) {
     let v = clean(r[i]);
     let cls = i === 2 ? 'price' : (i === 6 ? 'feature' : '');
     let attr = i === 6 ? `title="${v.replace(/"/g, '&quot;')}"` : '';
-    if (i === 7) {   // 중개소: 클릭 시 같은 중개소 전체 노란 강조
-      cls = 'realtor' + (v && v === hlRealtor ? ' hl' : '');
-      attr = `data-r="${v.replace(/"/g, '&quot;')}"`;
-    }
     let extra = i === 8 ? karBadge(r[i]) : '';
+    if (i === 7) {   // 중개소: 클릭 시 같은 중개소 전체 노란 강조 + 네이버 바로가기 버튼
+      const hl = v && v === hlRealtor;
+      cls = 'realtor' + (hl ? ' hl' : '');
+      attr = `data-r="${v.replace(/"/g, '&quot;')}"`;
+      if (hl && complexNo && ridMap[v]) {
+        extra = `<a class="rt-go" target="_blank" href="https://new.land.naver.com/complexes/${complexNo}?realtorId=${encodeURIComponent(ridMap[v])}">바로가기</a>`;
+      }
+    }
     tds.push(`<td class="${cls}" ${attr}>${v}${extra}</td>`);
   }
   return tds.join('');
@@ -267,6 +278,7 @@ $('#searchBox').addEventListener('input', render);
 // 중개소 셀 클릭 → 같은 중개소 전체 노란 강조 (재클릭 해제).
 // 그룹 부모 행은 중개소가 비어 있어 기존 접기/펼치기 클릭과 충돌하지 않음.
 $('#tbody').addEventListener('click', e => {
+  if (e.target.closest('a.rt-go')) return;   // 바로가기 클릭은 강조 토글하지 않고 링크만 동작
   const td = e.target.closest('td.realtor');
   if (!td) return;
   const name = td.dataset.r || '';
