@@ -6994,14 +6994,29 @@
           if (!otherSets.length) return null;
           const [x0, y0, x1, y1] = __parcelFeatBBox(f);
           const bldgs = await __vworldGet({ data: "LT_C_SPBD", geomFilter: `BOX(${x0},${y0},${x1},${y1})` });
+          // 씨앗: 건물 중심점 + 발자국 꼭짓점(최대 20개/동) — 꼭짓점 씨앗이 있어야
+          // 보로노이 경계가 건물 윤곽에 밀착해 톱니(지그재그)가 완만해진다
           const seeds = [];
+          const seenPt = new Set();
+          const addSeed = (pt, mine) => {
+            const k = pt[0].toFixed(7) + "," + pt[1].toFixed(7);
+            if (seenPt.has(k)) return;
+            seenPt.add(k);
+            seeds.push({ pt: [pt[0], pt[1]], mine });
+          };
           bldgs.forEach((b) => {
             const [cx, cy] = __parcelCentroid(b.geometry);
             if (!__pointInParcel(cx, cy, f)) return;
             const key = __parcelDongKey(b.properties?.buld_nm_dc);
             if (!key) return; // 동 번호 없는 부속건물(경비실 등)은 씨앗에서 제외
-            if (mySet.has(key)) seeds.push({ pt: [cx, cy], mine: true });
-            else if (otherSets.some((s) => s.has(key))) seeds.push({ pt: [cx, cy], mine: false });
+            let mine;
+            if (mySet.has(key)) mine = true;
+            else if (otherSets.some((s) => s.has(key))) mine = false;
+            else return;
+            addSeed([cx, cy], mine);
+            const ring = __parcelOuterRing(b.geometry);
+            const step = Math.max(1, Math.floor(ring.length / 20));
+            for (let i = 0; i < ring.length; i += step) addSeed(ring[i], mine);
           });
           if (!seeds.some((s) => s.mine) || !seeds.some((s) => !s.mine)) return null;
           const fc = turf.featureCollection(seeds.map((s) => turf.point(s.pt)));
