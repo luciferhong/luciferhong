@@ -7230,7 +7230,41 @@
         const aptNorm = __parcelNormName(aptName);
         let name = __parcelDetectName(smallB, aptNorm, parcels);
 
-        // 2-b) 이름 미검출 → 마커 최근접 건물의 필지를 2차 앵커로 재시도
+        // 2-b) 이름 미검출 → 네이버 동 목록으로 단지 동 발자국을 직접 매칭해 필지 수집
+        //      (신축 등 주소DB 건물명이 빈 단지: 이수푸르지오더프레티움 — 동번호 buld_nm_dc는 있음)
+        if (!name) {
+          try {
+            const myDongs = await __parcelFetchDongs(aptId);
+            const mySet = myDongs ? new Set(myDongs.map(__parcelDongKey).filter(Boolean)) : null;
+            if (mySet && mySet.size) {
+              const nearB = await __vworldGet({
+                data: "LT_C_SPBD",
+                geomFilter: `BOX(${lng - 0.003},${lat - 0.0025},${lng + 0.003},${lat + 0.0025})`,
+              });
+              let calls = 0;
+              const dongExcluded = []; // 타단지/도로 판정 필지 — 같은 필지 반복 조회로 호출 상한 소모 방지
+              for (const b of nearB) {
+                const k = __parcelDongKey(b.properties?.buld_nm_dc);
+                if (!k || !mySet.has(k)) continue;
+                const [cx, cy] = __parcelCentroid(b.geometry);
+                if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) continue;
+                if (dongExcluded.some((f) => __pointInParcel(cx, cy, f))) continue;
+                if (++calls > 15) break;
+                const ps = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" });
+                ps.forEach((f) => {
+                  const pnu = f.properties?.pnu;
+                  if (!pnu || parcels.has(pnu)) return;
+                  if (__parcelIsRoadLike(f)) { dongExcluded.push(f); return; }
+                  if (__parcelOtherMarkerInside(f, aptId)) { dongExcluded.push(f); return; } // 이웃 단지의 같은 동번호(무명) 오염 방지
+                  parcels.set(pnu, f);
+                });
+              }
+              if (calls) console.log(`[필지] 동번호 매칭 수집(${aptName}): 필지 ${parcels.size}개`);
+            }
+          } catch (e) {}
+        }
+
+        // 2-c) 여전히 이름 미검출 → 마커 최근접 건물의 필지를 2차 앵커로 재시도
         //      (마커가 도로·공원 필지 위라 P0에 건물이 없는 단지: 보라매SK뷰·당산효성2차 케이스)
         if (!name && smallB.length) {
           const sorted = [...smallB].sort((b1, b2) => {
