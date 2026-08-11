@@ -6818,32 +6818,49 @@
         return polys.some((rings) => __pointInRing(x, y, rings[0]));
       }
 
+      // 단지명 정규화: 공백 제거 + '아파트' 접미 제거 (apt.json 표기와 주소DB 표기 차이 흡수)
+      function __parcelNormName(s) {
+        return String(s || "").replace(/\s+/g, "").replace(/아파트$/, "");
+      }
+
       // 단지 부지 필지 전체 수집 (호갱노노식 다필지):
-      // 1) 마커 좌표 필지(P0) 2) 주변 소범위 건물 중 P0 안의 건물명 추출(도로명주소 건물 DB)
+      // 1) 마커 좌표 필지(P0) 2) 주변 소범위 건물(도로명주소 건물 DB)에서 단지 건물명 검출
+      //    — 1순위: apt.json 단지명과 정규화 일치/포함, 2순위: P0 안에 중심이 있는 건물명 최빈값
+      //    (마커가 놀이터·도로 등 건물 없는 필지에 찍힌 단지는 1순위 폴백이 잡아줌)
       // 3) 광범위에서 동일 건물명 동들 조회 4) 아직 안 덮인 동 중심점마다 필지 역조회 → 합집합
-      async function __parcelCollectFeatures(lat, lng) {
+      async function __parcelCollectFeatures(lat, lng, aptName) {
         const p0 = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${lng} ${lat})`, size: "10" });
         if (!p0.length) return [];
         const parcels = new Map(); // pnu -> feature
         p0.forEach((f) => parcels.set(f.properties?.pnu || Math.random(), f));
 
-        // 2) 단지명 검출: 마커 주변 ±약 100m 건물 중 P0 안에 중심이 있는 건물명 최빈값
+        // 2) 단지 건물명 검출 (마커 주변 ±약 100m)
         const smallB = await __vworldGet({
           data: "LT_C_SPBD",
           geomFilter: `BOX(${lng - 0.0012},${lat - 0.001},${lng + 0.0012},${lat + 0.001})`,
           size: "100",
         });
-        const nameCount = new Map();
+        const aptNorm = __parcelNormName(aptName);
+        const byAptName = new Map(); // 단지명 매칭 건물명 -> 건수
+        const byP0 = new Map(); // P0 안 건물명 -> 건수
         smallB.forEach((b) => {
           const nm = b.properties?.buld_nm;
           if (!nm) return;
+          const norm = __parcelNormName(nm);
+          if (aptNorm && norm.length >= 3 && (norm === aptNorm || norm.includes(aptNorm) || aptNorm.includes(norm))) {
+            byAptName.set(nm, (byAptName.get(nm) || 0) + 1);
+          }
           const [cx, cy] = __parcelCentroid(b.geometry);
           if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) {
-            nameCount.set(nm, (nameCount.get(nm) || 0) + 1);
+            byP0.set(nm, (byP0.get(nm) || 0) + 1);
           }
         });
-        let name = null, best = 0;
-        nameCount.forEach((cnt, nm) => { if (cnt > best) { best = cnt; name = nm; } });
+        const pickMode = (m) => {
+          let name = null, best = 0;
+          m.forEach((cnt, nm) => { if (cnt > best) { best = cnt; name = nm; } });
+          return name;
+        };
+        const name = pickMode(byAptName) || pickMode(byP0);
         if (!name) return [...parcels.values()]; // 건물명 미검출 → 마커 필지만
 
         // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
@@ -6901,7 +6918,7 @@
         let features = __parcelCache.get(idStr);
         if (features === undefined) {
           try {
-            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng);
+            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name);
           } catch (e) {
             console.warn("[필지] 조회 실패:", e);
             return;
