@@ -6893,6 +6893,49 @@
         return null;
       }
 
+      // 점→필지 외곽선 최소 거리(m). 내부면 0.
+      function __parcelDistToFeatM(x, y, feat) {
+        if (__pointInParcel(x, y, feat)) return 0;
+        const g = feat.geometry;
+        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+        const kx = 111320 * Math.cos((y * Math.PI) / 180), ky = 110540;
+        let best = Infinity;
+        polys.forEach((rings) => {
+          const r = rings[0];
+          for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+            const ax = (r[j][0] - x) * kx, ay = (r[j][1] - y) * ky;
+            const bx = (r[i][0] - x) * kx, by = (r[i][1] - y) * ky;
+            const dx = bx - ax, dy = by - ay;
+            const len2 = dx * dx + dy * dy;
+            let t = len2 ? -(ax * dx + ay * dy) / len2 : 0;
+            t = Math.max(0, Math.min(1, t));
+            const px = ax + t * dx, py = ay + t * dy;
+            const d = px * px + py * py;
+            if (d < best) best = d;
+          }
+        });
+        return Math.sqrt(best);
+      }
+
+      // 검출 건물명과 "같은 계열"(정규화 포함관계) 이름의 타단지 마커가 필지 경계 80m 이내면 그 단지명 반환.
+      // 마커가 자기 필지 살짝 밖(도로·상가 위)에 찍힌 주공14단지(49m)·철산주공12단지(31m) 같은 누수 차단.
+      // 계열 무관 이웃(마포푸르지오어반피스가 마래푸 779에서 23m)은 제외하지 않아 정상 블록 보존.
+      function __parcelFamilyMarkerNear(f, selfId, searchName) {
+        if (!Array.isArray(apartmentData) || !apartmentData.length) return null;
+        const sNorm = __parcelNormName(searchName);
+        if (!sNorm) return null;
+        const [x0, y0, x1, y1] = __parcelFeatBBox(f);
+        const m = 0.0012; // 후보 마커 사전 필터 여유(약 100m)
+        for (const a of apartmentData) {
+          if (String(a.id) === String(selfId)) continue;
+          if (a.lng < x0 - m || a.lng > x1 + m || a.lat < y0 - m || a.lat > y1 + m) continue;
+          const aNorm = __parcelNormName(a.name);
+          if (!aNorm || !(aNorm.includes(sNorm) || sNorm.includes(aNorm))) continue;
+          if (__parcelDistToFeatM(a.lng, a.lat, f) <= 80) return a.name;
+        }
+        return null;
+      }
+
       // 단지 건물명 검출 — 점수제: 3점 = 단지명 정규화 완전일치, 1점 = 수집 필지 안에 중심이 있는 건물.
       // 최고점(동점이면 건물 수 많은 쪽) 선택. (부분일치는 역명·브랜드명 오염 사례가 많아 미사용)
       function __parcelDetectName(smallB, aptNorm, parcels) {
@@ -7046,7 +7089,7 @@
             const pnu = f.properties?.pnu;
             if (!pnu || parcels.has(pnu)) return;
             if (__parcelIsRoadLike(f)) { excluded.push(f); return; }
-            const other = __parcelOtherMarkerInside(f, aptId);
+            const other = __parcelOtherMarkerInside(f, aptId) || __parcelFamilyMarkerNear(f, aptId, name);
             if (other) {
               excluded.push(f);
               console.log(`[필지] 타단지(${other}) 필지 제외:`, f.properties?.jibun);
