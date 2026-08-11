@@ -6761,7 +6761,7 @@
         let bestHue = null, bestMinDist = -1;
         for (let i = 0; i < 360; i += 5) {
           const hue = (baseHue + i) % 360;
-          if (hue >= 70 && hue <= 170) continue; // 녹색 계열 제외
+          if (hue >= 55 && hue <= 170) continue; // 녹색 계열 제외 (올리브·연두 포함)
           if (!active.length) { bestHue = hue; break; } // 활성색 없으면 baseHue에서 가장 가까운 허용 hue
           const cand = __hslToHex(hue, __PARCEL_COLOR_SAT, __PARCEL_COLOR_LIGHT);
           const minDist = Math.min(...active.map((c) => __colorDistance(cand, c)));
@@ -6871,6 +6871,56 @@
         const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
         return polys.some((rings) => __pointInRing(x, y, rings[0]));
       }
+      function __parcelFeatBBox(f) {
+        const g = f.geometry;
+        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        polys.forEach((rings) => rings[0].forEach(([x, y]) => {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (y < y0) y0 = y; if (y > y1) y1 = y;
+        }));
+        return [x0, y0, x1, y1];
+      }
+      // 필지 안에 다른 단지의 마커가 있으면 그 단지명 반환 (동명 타단지·하안주공식 병합 방지)
+      function __parcelOtherMarkerInside(f, selfId) {
+        if (!Array.isArray(apartmentData) || !apartmentData.length) return null;
+        const [x0, y0, x1, y1] = __parcelFeatBBox(f);
+        for (const a of apartmentData) {
+          if (String(a.id) === String(selfId)) continue;
+          if (a.lng < x0 || a.lng > x1 || a.lat < y0 || a.lat > y1) continue;
+          if (__pointInParcel(a.lng, a.lat, f)) return a.name;
+        }
+        return null;
+      }
+
+      // 단지 건물명 검출 — 점수제: 3점 = 단지명 정규화 완전일치, 1점 = 수집 필지 안에 중심이 있는 건물.
+      // 최고점(동점이면 건물 수 많은 쪽) 선택. (부분일치는 역명·브랜드명 오염 사례가 많아 미사용)
+      function __parcelDetectName(smallB, aptNorm, parcels) {
+        const cand = new Map(); // buld_nm -> {score, cnt}
+        smallB.forEach((b) => {
+          const nm = b.properties?.buld_nm;
+          if (!nm) return;
+          const norm = __parcelNormName(nm);
+          let score = 0;
+          if (aptNorm && norm && norm === aptNorm) score = 3;
+          if (!score) {
+            const [cx, cy] = __parcelCentroid(b.geometry);
+            if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) score = 1;
+          }
+          if (!score) return;
+          const c = cand.get(nm) || { score: 0, cnt: 0 };
+          c.score = Math.max(c.score, score);
+          c.cnt += 1;
+          cand.set(nm, c);
+        });
+        let name = null, bestScore = 0, bestCnt = 0;
+        cand.forEach((c, nm) => {
+          if (c.score > bestScore || (c.score === bestScore && c.cnt > bestCnt)) {
+            bestScore = c.score; bestCnt = c.cnt; name = nm;
+          }
+        });
+        return name;
+      }
 
       // 단지명 정규화: 공백 제거 + '아파트' 접미 제거 (apt.json 표기와 주소DB 표기 차이 흡수)
       function __parcelNormName(s) {
@@ -6922,11 +6972,11 @@
       }
 
       // 단지 부지 필지 전체 수집 (호갱노노식 다필지):
-      // 1) 마커 좌표 필지(P0) 2) 주변 소범위 건물(도로명주소 건물 DB)에서 단지 건물명 검출
-      //    — 1순위: apt.json 단지명과 정규화 일치/포함, 2순위: P0 안에 중심이 있는 건물명 최빈값
-      //    (마커가 놀이터·도로 등 건물 없는 필지에 찍힌 단지는 1순위 폴백이 잡아줌)
+      // 1) 마커 좌표 필지(P0, 도로류 제외) 2) 주변 소범위 건물(도로명주소 건물 DB)에서 단지 건물명 검출
+      //    — 미검출 시 마커 최근접 건물의 필지를 2차 앵커로 재시도 (마커가 도로·공원 위인 단지)
       // 3) 광범위에서 동일 건물명 동들 조회 4) 아직 안 덮인 동 중심점마다 필지 역조회 → 합집합
-      async function __parcelCollectFeatures(lat, lng, aptName, aptType) {
+      //    — 추가 필지에 다른 단지의 마커가 들어 있으면 타단지 부지로 보고 제외 (동명 단지·주공 단지군 병합 방지)
+      async function __parcelCollectFeatures(lat, lng, aptName, aptType, aptId) {
         // 분양권(준공 전) 단지: 지적·건물DB가 철거 전 옛 상태라 필지 수집 불가 →
         // 도시계획 사업구역(정비구역 등, LT_C_UPISUQ161)에서 마커가 속한 구역 경계를 우선 사용
         if (/분양권/.test(String(aptType || ""))) {
@@ -6943,40 +6993,36 @@
         const parcels = new Map(); // pnu -> feature (도로류 필지는 부지에서 제외)
         p0raw.filter((f) => !__parcelIsRoadLike(f)).forEach((f) => parcels.set(f.properties?.pnu || Math.random(), f));
 
-        // 2) 단지 건물명 검출 (마커 주변 ±약 100m) — 점수제:
-        //    3점 = 단지명 정규화 완전일치, 2점 = 포함관계(짧은 쪽 5자 이상 — "래미안" 같은 브랜드명 오염 차단),
-        //    1점 = 마커 필지(P0) 안에 중심이 있는 건물. 최고점(동점이면 건물 수 많은 쪽) 선택.
+        // 2) 단지 건물명 검출 (마커 주변 ±약 100m)
         const smallB = await __vworldGet({
           data: "LT_C_SPBD",
           geomFilter: `BOX(${lng - 0.0012},${lat - 0.001},${lng + 0.0012},${lat + 0.001})`,
           size: "100",
         });
         const aptNorm = __parcelNormName(aptName);
-        const cand = new Map(); // buld_nm -> {score, cnt}
-        smallB.forEach((b) => {
-          const nm = b.properties?.buld_nm;
-          if (!nm) return;
-          const norm = __parcelNormName(nm);
-          // 건물명 매칭은 정규화 후 완전일치만 인정 (부분일치는 역명·브랜드명 오염 사례가 많아 제거).
-          // 표기가 다른 단지는 아래 1점 경로(마커 필지 안 건물의 DB상 실제 이름)가 커버.
-          let score = 0;
-          if (aptNorm && norm && norm === aptNorm) score = 3;
-          if (!score) {
+        let name = __parcelDetectName(smallB, aptNorm, parcels);
+
+        // 2-b) 이름 미검출 → 마커 최근접 건물의 필지를 2차 앵커로 재시도
+        //      (마커가 도로·공원 필지 위라 P0에 건물이 없는 단지: 보라매SK뷰·당산효성2차 케이스)
+        if (!name && smallB.length) {
+          const sorted = [...smallB].sort((b1, b2) => {
+            const [x1, y1] = __parcelCentroid(b1.geometry);
+            const [x2, y2] = __parcelCentroid(b2.geometry);
+            return (x1 - lng) ** 2 + (y1 - lat) ** 2 - ((x2 - lng) ** 2 + (y2 - lat) ** 2);
+          });
+          for (const b of sorted.slice(0, 5)) {
             const [cx, cy] = __parcelCentroid(b.geometry);
-            if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) score = 1;
+            const anchor = (await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" }))
+              .filter((f) => !__parcelIsRoadLike(f))
+              .filter((f) => f.properties?.pnu && !parcels.has(f.properties.pnu))
+              .filter((f) => !__parcelOtherMarkerInside(f, aptId));
+            if (!anchor.length) continue;
+            anchor.forEach((f) => parcels.set(f.properties.pnu, f));
+            name = __parcelDetectName(smallB, aptNorm, parcels);
+            console.log(`[필지] 2차 앵커 사용(${aptName}):`, anchor.map((f) => f.properties?.jibun).join(", "));
+            break;
           }
-          if (!score) return;
-          const c = cand.get(nm) || { score: 0, cnt: 0 };
-          c.score = Math.max(c.score, score);
-          c.cnt += 1;
-          cand.set(nm, c);
-        });
-        let name = null, bestScore = 0, bestCnt = 0;
-        cand.forEach((c, nm) => {
-          if (c.score > bestScore || (c.score === bestScore && c.cnt > bestCnt)) {
-            bestScore = c.score; bestCnt = c.cnt; name = nm;
-          }
-        });
+        }
         if (!name) return __parcelUnion([...parcels.values()]); // 건물명 미검출 → 마커 필지만(도로류 제외 후)
 
         // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
@@ -6987,15 +7033,26 @@
         });
 
         // 4) 아직 수집한 필지에 안 덮인 동 중심점 → 필지 역조회 (호출 상한 12회)
+        //    타단지 마커가 든 필지·도로류는 excluded에 넣어 중복 조회 없이 건너뜀
+        const excluded = [];
         let extraCalls = 0;
         for (const b of bigB) {
           const [cx, cy] = __parcelCentroid(b.geometry);
           if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) continue;
+          if (excluded.some((f) => __pointInParcel(cx, cy, f))) continue;
           if (++extraCalls > 12) break;
           const ps = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" });
           ps.forEach((f) => {
             const pnu = f.properties?.pnu;
-            if (pnu && !parcels.has(pnu)) parcels.set(pnu, f);
+            if (!pnu || parcels.has(pnu)) return;
+            if (__parcelIsRoadLike(f)) { excluded.push(f); return; }
+            const other = __parcelOtherMarkerInside(f, aptId);
+            if (other) {
+              excluded.push(f);
+              console.log(`[필지] 타단지(${other}) 필지 제외:`, f.properties?.jibun);
+              return;
+            }
+            parcels.set(pnu, f);
           });
         }
         return __parcelUnion([...parcels.values()]);
@@ -7040,7 +7097,7 @@
         let features = __parcelCache.get(idStr);
         if (features === undefined) {
           try {
-            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name, aptInfo.type);
+            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name, aptInfo.type, idStr);
           } catch (e) {
             console.warn("[필지] 조회 실패:", e);
             return;
@@ -7163,7 +7220,7 @@
           let features = __parcelCache.get(t.id);
           if (features === undefined) {
             try {
-              features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type);
+              features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type, t.id);
             } catch (e) {
               failed++;
               console.warn(`[필지] 수집 실패: ${apt.name}(${t.id})`, e);
