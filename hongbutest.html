@@ -6995,14 +6995,17 @@
           const [x0, y0, x1, y1] = __parcelFeatBBox(f);
           const bldgs = await __vworldGet({ data: "LT_C_SPBD", geomFilter: `BOX(${x0},${y0},${x1},${y1})` });
           // 씨앗: 건물 중심점 + 발자국 꼭짓점(최대 20개/동) — 꼭짓점 씨앗이 있어야
-          // 보로노이 경계가 건물 윤곽에 밀착해 톱니(지그재그)가 완만해진다
-          const seeds = [];
+          // 보로노이 경계가 건물 윤곽에 밀착해 톱니(지그재그)가 완만해진다.
+          // 단, d3-voronoi는 초근접 중복 점에서 깨지므로 1e-6(≈0.1m) 그리드로 중복 제거하고,
+          // 그래도 실패하면 중심점 씨앗만으로 재시도한다.
+          const centroidSeeds = [];
+          const vertexSeeds = [];
           const seenPt = new Set();
-          const addSeed = (pt, mine) => {
-            const k = pt[0].toFixed(7) + "," + pt[1].toFixed(7);
+          const addSeed = (arr, pt, mine) => {
+            const k = pt[0].toFixed(6) + "," + pt[1].toFixed(6);
             if (seenPt.has(k)) return;
             seenPt.add(k);
-            seeds.push({ pt: [pt[0], pt[1]], mine });
+            arr.push({ pt: [pt[0], pt[1]], mine });
           };
           bldgs.forEach((b) => {
             const [cx, cy] = __parcelCentroid(b.geometry);
@@ -7013,22 +7016,31 @@
             if (mySet.has(key)) mine = true;
             else if (otherSets.some((s) => s.has(key))) mine = false;
             else return;
-            addSeed([cx, cy], mine);
+            addSeed(centroidSeeds, [cx, cy], mine);
             const ring = __parcelOuterRing(b.geometry);
             const step = Math.max(1, Math.floor(ring.length / 20));
-            for (let i = 0; i < ring.length; i += step) addSeed(ring[i], mine);
+            for (let i = 0; i < ring.length; i += step) addSeed(vertexSeeds, ring[i], mine);
           });
-          if (!seeds.some((s) => s.mine) || !seeds.some((s) => !s.mine)) return null;
-          const fc = turf.featureCollection(seeds.map((s) => turf.point(s.pt)));
-          const vor = turf.voronoi(fc, { bbox: [x0 - 0.001, y0 - 0.001, x1 + 0.001, y1 + 0.001] });
+          if (!centroidSeeds.some((s) => s.mine) || !centroidSeeds.some((s) => !s.mine)) return null;
           const parcelFeat = { type: "Feature", properties: {}, geometry: f.geometry };
-          let region = null;
-          vor.features.forEach((cell, i) => {
-            if (!cell || !seeds[i].mine) return;
-            const part = turf.intersect(cell, parcelFeat);
-            if (!part) return;
-            region = region ? turf.union(region, part) : part;
-          });
+          const bbox = [x0 - 0.001, y0 - 0.001, x1 + 0.001, y1 + 0.001];
+          const voronoiRegion = (seeds) => {
+            try {
+              const fc = turf.featureCollection(seeds.map((s) => turf.point(s.pt)));
+              const vor = turf.voronoi(fc, { bbox });
+              let region = null;
+              vor.features.forEach((cell, i) => {
+                if (!cell || !seeds[i].mine) return;
+                const part = turf.intersect(cell, parcelFeat);
+                if (!part) return;
+                region = region ? turf.union(region, part) : part;
+              });
+              return region;
+            } catch (e) {
+              return null;
+            }
+          };
+          const region = voronoiRegion([...centroidSeeds, ...vertexSeeds]) || voronoiRegion(centroidSeeds);
           if (!region) return null;
           region.properties = { ...(f.properties || {}), __split: true };
           return region;
