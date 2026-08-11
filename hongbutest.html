@@ -6950,6 +6950,9 @@
         return null;
       }
 
+      // 1점 경로(필지 내 건물명)에서 배제할 비주거 시설명 — 학교·관리사무소 등이 검출되면 엉뚱한 확장 발생
+      const __PARCEL_NAME_BLOCK = /(학교|교회|성당|어린이집|유치원|관리사무소|경로당|주민센터|파출소|도서관|체육관|병원|의원|연립|빌라|빌딩|상가|쇼핑|공원|별동|주차장)/;
+
       // 단지 건물명 검출 — 점수제: 3점 = 단지명 정규화 완전일치, 1점 = 수집 필지 안에 중심이 있는 건물.
       // 최고점(동점이면 건물 수 많은 쪽) 선택. (부분일치는 역명·브랜드명 오염 사례가 많아 미사용)
       function __parcelDetectName(smallB, aptNorm, parcels) {
@@ -6960,7 +6963,7 @@
           const norm = __parcelNormName(nm);
           let score = 0;
           if (aptNorm && norm && norm === aptNorm) score = 3;
-          if (!score) {
+          if (!score && !__PARCEL_NAME_BLOCK.test(nm)) {
             const [cx, cy] = __parcelCentroid(b.geometry);
             if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) score = 1;
           }
@@ -7103,10 +7106,13 @@
         }
 
         // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
+        // 검출명이 "~N동" 꼴(주소DB가 동 단위로 등록: 신기목련아파트 101동, 도곡한신아파트1동)이면
+        // 어간 like 검색으로 전 동을 잡는다 (완전일치는 그 동 1개만 찾아 부지가 축소됨)
+        const stemMatch = name.match(/^(.{4,}?)\s*\d+동$/);
         const bigB = await __vworldGet({
           data: "LT_C_SPBD",
           geomFilter: `BOX(${lng - 0.013},${lat - 0.009},${lng + 0.013},${lat + 0.009})`,
-          attrFilter: `buld_nm:=:${name}`,
+          attrFilter: stemMatch ? `buld_nm:like:${stemMatch[1].trim()}` : `buld_nm:=:${name}`,
         });
 
         // 4) 아직 수집한 필지에 안 덮인 동 중심점 → 필지 역조회 (호출 상한 12회)
