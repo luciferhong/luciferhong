@@ -7036,13 +7036,22 @@
       async function __parcelCollectFeatures(lat, lng, aptName, aptType, aptId, aptUnits) {
         // 분양권(준공 전) 단지: 지적·건물DB가 철거 전 옛 상태라 필지 수집 불가 →
         // 도시계획 사업구역(정비구역 등, LT_C_UPISUQ161)에서 마커가 속한 구역 경계를 우선 사용
-        if (/분양권/.test(String(aptType || ""))) {
-          const zones = await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" });
-          if (zones.length) {
-            // 재정비촉진지구 전체 같은 광역 폴리곤이 겹칠 수 있어 면적(dgm_ar) 최소 구역 선택
-            zones.sort((a, b) => (parseFloat(a.properties?.dgm_ar) || Infinity) - (parseFloat(b.properties?.dgm_ar) || Infinity));
-            return [zones[0]];
+        // 사업구역 채택 공통 헬퍼: 최소면적 구역 선택 + 세대수 대비 과대(세대당 120㎡ 초과) 광역구역 배제
+        const pickZone = (zones) => {
+          if (!zones.length) return null;
+          zones.sort((a, b) => (parseFloat(a.properties?.dgm_ar) || Infinity) - (parseFloat(b.properties?.dgm_ar) || Infinity));
+          const z = zones[0];
+          const u = Number(aptUnits) || 0;
+          if (u > 0 && __parcelFeatAreaM2(z) > u * 120) {
+            console.log(`[필지] ${aptName}: 사업구역(${z.properties?.dgm_nm})이 세대수 대비 과대 — 미채택`);
+            return null;
           }
+          return z;
+        };
+
+        if (/분양권/.test(String(aptType || ""))) {
+          const z = pickZone(await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" }));
+          if (z) return [z];
           // 정비구역 미검출(민간 신규분양 등)이면 아래 일반 필지 로직으로 폴백
         }
 
@@ -7088,11 +7097,8 @@
           const units = Number(aptUnits) || 0;
           const totalArea = feats.reduce((s, f) => s + __parcelFeatAreaM2(f), 0);
           if (units > 0 && totalArea < units * 5) {
-            const zones = await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" });
-            if (zones.length) {
-              zones.sort((a, b) => (parseFloat(a.properties?.dgm_ar) || Infinity) - (parseFloat(b.properties?.dgm_ar) || Infinity));
-              return [zones[0]];
-            }
+            const z = pickZone(await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" }));
+            if (z) return [z];
             console.log(`[필지] ${aptName}: 필지 ${Math.round(totalArea)}㎡가 세대수(${units}) 대비 과소 — 지적 미정리 신축 추정, 경계 미표시`);
             return [];
           }
@@ -7129,7 +7135,17 @@
             parcels.set(pnu, f);
           });
         }
-        return __parcelUnion([...parcels.values()]);
+        // 결과-마커 포함 검증: 마커가 도로 위라 2차 앵커가 엉뚱한 이웃 단지를 잡은 경우
+        // (창전현대홈타운→창전동삼성 등) 최종 경계가 마커와 동떨어짐 → 오검출로 보고 미표시
+        const feats = [...parcels.values()];
+        if (feats.length && !feats.some((f) => __pointInParcel(lng, lat, f))) {
+          const dmin = Math.min(...feats.map((f) => __parcelDistToFeatM(lng, lat, f)));
+          if (dmin > 40) {
+            console.log(`[필지] ${aptName}: 수집 경계가 마커에서 ${Math.round(dmin)}m 떨어짐 — 오검출 추정, 경계 미표시`);
+            return [];
+          }
+        }
+        return __parcelUnion(feats);
       }
 
       function __parcelDraw(features, store, color) {
