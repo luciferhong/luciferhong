@@ -6824,6 +6824,12 @@
         return String(s || "").replace(/\s+/g, "").replace(/아파트$/, "");
       }
 
+      // 지목이 도로/하천/구거/제방/철도인 필지는 단지 부지가 아님 (마커가 도로 위에 찍힌 경우 배제)
+      function __parcelIsRoadLike(f) {
+        const m = String(f?.properties?.jibun || "").trim().match(/([가-힣])$/);
+        return !!m && ["도", "천", "구", "제", "철"].includes(m[1]);
+      }
+
       // turf.js 지연 로드 (필지 합집합용 — 다필지 단지에서만 필요)
       let __turfPromise = null;
       function __parcelEnsureTurf() {
@@ -6880,39 +6886,46 @@
           // 정비구역 미검출(민간 신규분양 등)이면 아래 일반 필지 로직으로 폴백
         }
 
-        const p0 = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${lng} ${lat})`, size: "10" });
-        if (!p0.length) return [];
-        const parcels = new Map(); // pnu -> feature
-        p0.forEach((f) => parcels.set(f.properties?.pnu || Math.random(), f));
+        const p0raw = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${lng} ${lat})`, size: "10" });
+        const parcels = new Map(); // pnu -> feature (도로류 필지는 부지에서 제외)
+        p0raw.filter((f) => !__parcelIsRoadLike(f)).forEach((f) => parcels.set(f.properties?.pnu || Math.random(), f));
 
-        // 2) 단지 건물명 검출 (마커 주변 ±약 100m)
+        // 2) 단지 건물명 검출 (마커 주변 ±약 100m) — 점수제:
+        //    3점 = 단지명 정규화 완전일치, 2점 = 포함관계(짧은 쪽 5자 이상 — "래미안" 같은 브랜드명 오염 차단),
+        //    1점 = 마커 필지(P0) 안에 중심이 있는 건물. 최고점(동점이면 건물 수 많은 쪽) 선택.
         const smallB = await __vworldGet({
           data: "LT_C_SPBD",
           geomFilter: `BOX(${lng - 0.0012},${lat - 0.001},${lng + 0.0012},${lat + 0.001})`,
           size: "100",
         });
         const aptNorm = __parcelNormName(aptName);
-        const byAptName = new Map(); // 단지명 매칭 건물명 -> 건수
-        const byP0 = new Map(); // P0 안 건물명 -> 건수
+        const cand = new Map(); // buld_nm -> {score, cnt}
         smallB.forEach((b) => {
           const nm = b.properties?.buld_nm;
           if (!nm) return;
           const norm = __parcelNormName(nm);
-          if (aptNorm && norm.length >= 3 && (norm === aptNorm || norm.includes(aptNorm) || aptNorm.includes(norm))) {
-            byAptName.set(nm, (byAptName.get(nm) || 0) + 1);
+          let score = 0;
+          if (aptNorm && norm) {
+            if (norm === aptNorm) score = 3;
+            else if (Math.min(norm.length, aptNorm.length) >= 5 && (norm.includes(aptNorm) || aptNorm.includes(norm))) score = 2;
           }
-          const [cx, cy] = __parcelCentroid(b.geometry);
-          if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) {
-            byP0.set(nm, (byP0.get(nm) || 0) + 1);
+          if (!score) {
+            const [cx, cy] = __parcelCentroid(b.geometry);
+            if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) score = 1;
+          }
+          if (!score) return;
+          const c = cand.get(nm) || { score: 0, cnt: 0 };
+          c.score = Math.max(c.score, score);
+          c.cnt += 1;
+          cand.set(nm, c);
+        });
+        let name = null, bestScore = 0, bestCnt = 0;
+        cand.forEach((c, nm) => {
+          if (c.score > bestScore || (c.score === bestScore && c.cnt > bestCnt)) {
+            bestScore = c.score; bestCnt = c.cnt; name = nm;
           }
         });
-        const pickMode = (m) => {
-          let name = null, best = 0;
-          m.forEach((cnt, nm) => { if (cnt > best) { best = cnt; name = nm; } });
-          return name;
-        };
-        const name = pickMode(byAptName) || pickMode(byP0);
-        if (!name) return __parcelUnion([...parcels.values()]); // 건물명 미검출 → 마커 필지만
+        if (!name) return __parcelUnion([...parcels.values()]); // 건물명 미검출 → 마커 필지만(도로류 제외 후)
 
         // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
         const bigB = await __vworldGet({
