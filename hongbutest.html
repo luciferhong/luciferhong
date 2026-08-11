@@ -6795,7 +6795,13 @@
         let data;
         if (h === "localhost" || h === "127.0.0.1") {
           const token = localStorage.getItem("hongbuSiseToken");
-          if (!token) return []; // 시세 애드온 토큰 없으면 미동작
+          if (!token) {
+            if (!window.__parcelTokenWarned) {
+              window.__parcelTokenWarned = true;
+              console.warn("[필지] localhost에서는 hongbuSiseToken이 필요합니다 (?token= 으로 1회 접속) — 경계 미표시");
+            }
+            return [];
+          }
           const qs = new URLSearchParams({ ...params, token });
           const res = await fetch(`http://localhost:7123/vworld_data?${qs}`, { signal: AbortSignal.timeout(10000) });
           data = await res.json();
@@ -7069,11 +7075,23 @@
       }
 
       async function __parcelAutoRefresh() {
-        if (!__parcelAutoChecked() || !window.map) return;
+        try {
+          await __parcelAutoRefreshInner();
+        } catch (e) {
+          console.warn("[필지] 아파트경계 갱신 중 오류:", e);
+        }
+      }
+
+      async function __parcelAutoRefreshInner() {
+        if (!__parcelAutoChecked()) return;
+        if (!window.map) {
+          console.log("[필지] 아파트경계: 지도가 아직 준비되지 않음");
+          return;
+        }
         if (window.map.getZoom() < 14) {
           // 저줌에서는 미표시 (마커 과다 + 시인성 없음). 아파트 마커와 동일한 줌 기준.
           if (__parcelAutoPolys.size) __parcelAutoClear();
-          else console.log(`[필지] 아파트경계: 현재 줌 ${window.map.getZoom()} — 줌 14 이상에서 표시됩니다`);
+          console.log(`[필지] 아파트경계: 현재 줌 ${window.map.getZoom()} — 줌 14 이상에서 표시됩니다`);
           return;
         }
         const gen = ++__parcelAutoGen;
@@ -7084,6 +7102,7 @@
           (apartmentData || []).forEach((a) => __aptById.set(String(a.id), a));
         }
         // 화면 안 마커를 중심 가까운 순으로 최대 30개
+        const markerCnt = Object.keys(apartmentMarkers || {}).length;
         const visible = [];
         Object.entries(apartmentMarkers || {}).forEach(([id, marker]) => {
           try {
@@ -7093,6 +7112,10 @@
             visible.push({ id: String(id), d: dx * dx + dy * dy });
           } catch (e) {}
         });
+        if (!visible.length) {
+          console.log(`[필지] 아파트경계: 화면 내 아파트 마커 없음 (전체 마커 ${markerCnt}개) — '아파트' 체크·세대수 필터·줌 확인`);
+          return;
+        }
         visible.sort((a, b) => a.d - b.d);
         const targets = visible.slice(0, 30);
         const targetIds = new Set(targets.map((t) => t.id));
@@ -7100,29 +7123,52 @@
         [...__parcelAutoPolys.keys()].forEach((id) => {
           if (!targetIds.has(id)) __parcelAutoRemove(id);
         });
+        const todo = targets.filter((t) => !__parcelAutoPolys.has(t.id) && String(__parcelAptId) !== t.id);
+        console.log(`[필지] 아파트경계: 화면 내 ${visible.length}개, 대상 ${targets.length}개 (표시됨 ${targets.length - todo.length}, 신규 ${todo.length})`);
         // 순차 수집·표시 (캐시 히트는 즉시, 미보유 단지만 API 호출)
-        for (const t of targets) {
-          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) return; // 지도 이동/해제 시 중단
+        let drawn = 0, empty = 0, failed = 0, noInfo = 0;
+        for (const t of todo) {
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) {
+            console.log("[필지] 아파트경계: 지도 이동/해제로 이번 회차 중단");
+            return;
+          }
           if (__parcelAutoPolys.has(t.id)) continue;
-          if (String(__parcelAptId) === t.id) continue; // 클릭 선택으로 이미 그려짐
           const apt = __aptById.get(t.id);
-          if (!apt) continue;
+          if (!apt) {
+            noInfo++;
+            console.warn(`[필지] 단지정보 없음: id=${t.id} (apartmentData 미포함)`);
+            continue;
+          }
           let features = __parcelCache.get(t.id);
           if (features === undefined) {
             try {
               features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type);
             } catch (e) {
+              failed++;
+              console.warn(`[필지] 수집 실패: ${apt.name}(${t.id})`, e);
               continue;
             }
             __parcelCache.set(t.id, features);
           }
-          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) return;
-          if (!features.length || __parcelAutoPolys.has(t.id)) continue;
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) {
+            console.log("[필지] 아파트경계: 지도 이동/해제로 이번 회차 중단");
+            return;
+          }
+          if (!features.length) {
+            empty++;
+            console.log(`[필지] 경계 데이터 없음: ${apt.name}(${t.id}) — 해당 좌표에 필지/구역 미검출`);
+            continue;
+          }
+          if (__parcelAutoPolys.has(t.id)) continue;
           const store = [];
           const color = __pickParcelColor(t.id);
           __parcelColors.set(t.id, color);
           __parcelDraw(features, store, color);
           __parcelAutoPolys.set(t.id, store);
+          drawn++;
+        }
+        if (todo.length) {
+          console.log(`[필지] 아파트경계 완료: 신규 ${drawn}개 표시, 데이터없음 ${empty}, 실패 ${failed}, 정보없음 ${noInfo}`);
         }
       }
 
@@ -7131,9 +7177,11 @@
         if (!cb) return;
         cb.addEventListener("change", () => {
           if (cb.checked) {
+            console.log("[필지] 아파트경계 ON — 표시 시작");
             __parcelAutoEnsureIdle();
             __parcelAutoRefresh();
           } else {
+            console.log("[필지] 아파트경계 OFF — 전체 제거");
             __parcelAutoClear();
           }
         });
