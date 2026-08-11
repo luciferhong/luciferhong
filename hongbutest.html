@@ -1833,6 +1833,7 @@
       <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
       <label><input type="checkbox" id="toggleStreetView" />거리뷰</label>
       <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
+      <label><input type="checkbox" id="toggleParcelBoundary" />아파트경계</label>
       <label><input type="checkbox" id="toggleSatelliteMap" />위성</label>
       <label><input type="checkbox" id="toggleTerrainMap" />지형</label>
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
@@ -6897,7 +6898,8 @@
         return [...parcels.values()];
       }
 
-      function __parcelDraw(features) {
+      function __parcelDraw(features, store) {
+        store = store || __parcelPolygons;
         const toLatLng = ([x, y]) => new naver.maps.LatLng(y, x);
         features.forEach((f) => {
           const geom = f?.geometry;
@@ -6919,7 +6921,7 @@
               clickable: false,
               zIndex: 5,
             });
-            __parcelPolygons.push(polygon);
+            store.push(polygon);
           });
           if (isZone) console.log("[필지] 분양권 → 사업구역 경계 표시:", f.properties.dgm_nm, `(${f.properties.dgm_ar}㎡)`);
         });
@@ -6928,6 +6930,7 @@
       async function __parcelShowForApartment(apartmentId, aptInfo) {
         if (!aptInfo || !window.map || typeof naver === "undefined") return;
         const idStr = String(apartmentId);
+        if (__parcelAutoPolys.has(idStr)) { __parcelClear(); __parcelAptId = idStr; return; } // 자동표시가 이미 그림
         if (__parcelAptId === idStr && __parcelPolygons.length) return; // 같은 단지 재클릭
         const seq = ++__parcelReqSeq;
         let features = __parcelCache.get(idStr);
@@ -6945,6 +6948,120 @@
         __parcelAptId = idStr;
         __parcelDraw(features);
       }
+
+      // ---- "아파트경계" 자동 표시: 체크 시 화면 안 단지들의 부지 경계를 클릭 없이 표시 ----
+      const __parcelAutoPolys = new Map(); // aptId -> polygons[]
+      let __parcelAutoGen = 0; // 지도 이동/해제 시 진행 중인 수집 취소용
+      let __parcelAutoTimer = null;
+      let __parcelIdleBound = false;
+      let __aptById = null;
+
+      function __parcelAutoChecked() {
+        return !!document.getElementById("toggleParcelBoundary")?.checked;
+      }
+
+      function __parcelAutoClear() {
+        __parcelAutoGen++;
+        __parcelAutoPolys.forEach((polys) => polys.forEach((p) => p.setMap(null)));
+        __parcelAutoPolys.clear();
+      }
+
+      function __parcelAutoRemove(idStr) {
+        const polys = __parcelAutoPolys.get(idStr);
+        if (polys) {
+          polys.forEach((p) => p.setMap(null));
+          __parcelAutoPolys.delete(idStr);
+        }
+      }
+
+      function __parcelAutoEnsureIdle() {
+        if (__parcelIdleBound || !window.map || typeof naver === "undefined") return;
+        naver.maps.Event.addListener(window.map, "idle", () => {
+          if (!__parcelAutoChecked()) return;
+          clearTimeout(__parcelAutoTimer);
+          __parcelAutoTimer = setTimeout(__parcelAutoRefresh, 500);
+        });
+        __parcelIdleBound = true;
+      }
+
+      async function __parcelAutoRefresh() {
+        if (!__parcelAutoChecked() || !window.map) return;
+        if (window.map.getZoom() < 15) {
+          __parcelAutoClear();
+          return; // 저줌에서는 미표시 (마커 과다 + 시인성 없음)
+        }
+        const gen = ++__parcelAutoGen;
+        const bounds = window.map.getBounds();
+        const center = window.map.getCenter();
+        if (!__aptById) {
+          __aptById = new Map();
+          (apartmentData || []).forEach((a) => __aptById.set(String(a.id), a));
+        }
+        // 화면 안 마커를 중심 가까운 순으로 최대 30개
+        const visible = [];
+        Object.entries(apartmentMarkers || {}).forEach(([id, marker]) => {
+          try {
+            const pos = marker.getPosition();
+            if (!bounds.hasLatLng(pos)) return;
+            const dx = pos.lng() - center.lng(), dy = pos.lat() - center.lat();
+            visible.push({ id: String(id), d: dx * dx + dy * dy });
+          } catch (e) {}
+        });
+        visible.sort((a, b) => a.d - b.d);
+        const targets = visible.slice(0, 30);
+        const targetIds = new Set(targets.map((t) => t.id));
+        // 화면 밖으로 나간 단지 정리
+        [...__parcelAutoPolys.keys()].forEach((id) => {
+          if (!targetIds.has(id)) __parcelAutoRemove(id);
+        });
+        // 순차 수집·표시 (캐시 히트는 즉시, 미보유 단지만 API 호출)
+        for (const t of targets) {
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) return; // 지도 이동/해제 시 중단
+          if (__parcelAutoPolys.has(t.id)) continue;
+          if (String(__parcelAptId) === t.id) continue; // 클릭 선택으로 이미 그려짐
+          const apt = __aptById.get(t.id);
+          if (!apt) continue;
+          let features = __parcelCache.get(t.id);
+          if (features === undefined) {
+            try {
+              features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type);
+            } catch (e) {
+              continue;
+            }
+            __parcelCache.set(t.id, features);
+          }
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) return;
+          if (!features.length || __parcelAutoPolys.has(t.id)) continue;
+          const store = [];
+          __parcelDraw(features, store);
+          __parcelAutoPolys.set(t.id, store);
+        }
+      }
+
+      (function __parcelAutoInit() {
+        const cb = document.getElementById("toggleParcelBoundary");
+        if (!cb) return;
+        cb.addEventListener("change", () => {
+          if (cb.checked) {
+            __parcelAutoEnsureIdle();
+            __parcelAutoRefresh();
+          } else {
+            __parcelAutoClear();
+          }
+        });
+        // 지도 준비 대기 + uiState 복원(로드 시 체크 상태) 대응
+        let tries = 0;
+        const timer = setInterval(() => {
+          if (++tries > 120) { clearInterval(timer); return; }
+          if (window.map && typeof naver !== "undefined" && window.map.getBounds) {
+            clearInterval(timer);
+            __parcelAutoEnsureIdle();
+            if (cb.checked) __parcelAutoRefresh();
+            // uiState 복원이 지도 준비보다 늦는 경우 대비 재확인
+            setTimeout(() => { if (cb.checked && !__parcelAutoPolys.size) __parcelAutoRefresh(); }, 4000);
+          }
+        }, 500);
+      })();
 
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
