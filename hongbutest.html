@@ -7007,7 +7007,7 @@
 
       // 인접 필지 합집합 → 내부 경계선 없이 바깥 외곽선만. 실패 시 원본(개별 필지) 반환.
       // 떨어져 있는 블록은 합쳐도 MultiPolygon으로 남아 각각 그려짐(정상).
-      // 합집합 결과의 구멍(단지 안에 낀 타인 필지 — 상가·어린이집 등)은 제거하고 외곽 링만 남긴다.
+      // 구멍(단지 안에 낀 타인 필지)은 유지한다 — 시세통/호갱노노와 동일 (2026-08-11 정합 결정).
       async function __parcelUnion(features) {
         if (features.length < 2) return features;
         if (!(await __parcelEnsureTurf()) || !window.turf?.union) return features;
@@ -7018,9 +7018,6 @@
             merged = merged ? turf.union(merged, geo) : geo;
             if (!merged) return features;
           }
-          const g = merged.geometry;
-          if (g.type === "Polygon") g.coordinates = [g.coordinates[0]];
-          else if (g.type === "MultiPolygon") g.coordinates = g.coordinates.map((rings) => [rings[0]]);
           return [merged];
         } catch (e) {
           console.warn("[필지] 합집합 실패(개별 필지로 표시):", e);
@@ -7134,6 +7131,20 @@
             }
             parcels.set(pnu, f);
           });
+        }
+        // 시세통(호갱노노) 정합: 동일명 건물이 하나도 없는 비대지(지목≠대) 부속필지(놀이터·공원 등) 제외
+        for (const [pnu, f] of [...parcels.entries()]) {
+          if (parcels.size <= 1) break;
+          const jm = String(f.properties?.jibun || "").trim().match(/([가-힣])$/);
+          if (!jm || jm[1] === "대") continue;
+          const hasBldg = bigB.some((b) => {
+            const [cx, cy] = __parcelCentroid(b.geometry);
+            return __pointInParcel(cx, cy, f);
+          });
+          if (!hasBldg) {
+            parcels.delete(pnu);
+            console.log(`[필지] 부속필지 제외(지목 ${jm[1]}):`, f.properties?.jibun);
+          }
         }
         // 결과-마커 포함 검증: 마커가 도로 위라 2차 앵커가 엉뚱한 이웃 단지를 잡은 경우
         // (창전현대홈타운→창전동삼성 등) 최종 경계가 마커와 동떨어짐 → 오검출로 보고 미표시
