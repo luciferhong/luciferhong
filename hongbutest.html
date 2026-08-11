@@ -6721,6 +6721,109 @@
         }
       }
 
+      // ✅ [테스트] VWorld 연속지적도 — 아파트 부지(필지) 경계 표시 (호갱노노식)
+      // 마커 클릭 시 해당 좌표가 속한 필지 폴리곤을 VWorld 2D데이터 API(LP_PA_CBND_BUBUN)에서 JSONP로 조회해 지도에 그린다.
+      const VWORLD_PARCEL_KEY = "163AF7CB-EA4D-37A8-9F2B-005D0EFE4D88";
+      const __parcelCache = new Map(); // aptId(String) -> GeoJSON features 배열(빈 배열 = 조회했으나 없음)
+      let __parcelPolygons = [];
+      let __parcelAptId = null;
+      let __parcelReqSeq = 0;
+
+      function __parcelClear() {
+        __parcelPolygons.forEach((p) => p.setMap(null));
+        __parcelPolygons = [];
+        __parcelAptId = null;
+      }
+
+      function __parcelJsonp(url) {
+        return new Promise((resolve, reject) => {
+          const cbName = "__vworldCb" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+          const script = document.createElement("script");
+          const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error("VWorld 응답 시간 초과"));
+          }, 8000);
+          function cleanup() {
+            clearTimeout(timer);
+            try { delete window[cbName]; } catch (e) {}
+            script.remove();
+          }
+          window[cbName] = (data) => {
+            cleanup();
+            resolve(data);
+          };
+          script.onerror = () => {
+            cleanup();
+            reject(new Error("VWorld 요청 실패(네트워크)"));
+          };
+          script.src = url + "&callback=" + cbName;
+          document.head.appendChild(script);
+        });
+      }
+
+      async function __parcelFetchFeatures(lat, lng) {
+        const url =
+          "https://api.vworld.kr/req/data?service=data&request=GetFeature" +
+          "&data=LP_PA_CBND_BUBUN" +
+          "&geomFilter=" + encodeURIComponent(`POINT(${lng} ${lat})`) +
+          "&geometry=true&crs=EPSG:4326&format=json&size=10" +
+          "&key=" + VWORLD_PARCEL_KEY;
+        const res = await __parcelJsonp(url);
+        const status = res?.response?.status;
+        if (status !== "OK") {
+          // NOT_FOUND = 해당 좌표에 필지 없음(정상), 그 외는 인증/파라미터 문제일 수 있으니 로그
+          if (status !== "NOT_FOUND") console.warn("[필지] VWorld 응답 이상:", status, res?.response?.error || res);
+          return [];
+        }
+        return res?.response?.result?.featureCollection?.features || [];
+      }
+
+      function __parcelDraw(features) {
+        const toLatLng = ([x, y]) => new naver.maps.LatLng(y, x);
+        features.forEach((f) => {
+          const geom = f?.geometry;
+          if (!geom) return;
+          // Polygon: [ring][pt] / MultiPolygon: [poly][ring][pt] → 폴리곤 단위로 분리
+          const polys = geom.type === "MultiPolygon" ? geom.coordinates : geom.type === "Polygon" ? [geom.coordinates] : [];
+          polys.forEach((rings) => {
+            if (!rings?.length) return;
+            const polygon = new naver.maps.Polygon({
+              map: window.map,
+              paths: rings.map((ring) => ring.map(toLatLng)), // 두 번째 이후 ring은 구멍(hole)
+              fillColor: "#5A50DC",
+              fillOpacity: 0.15,
+              strokeColor: "#5A50DC",
+              strokeOpacity: 0.9,
+              strokeWeight: 2,
+              clickable: false,
+              zIndex: 5,
+            });
+            __parcelPolygons.push(polygon);
+          });
+        });
+      }
+
+      async function __parcelShowForApartment(apartmentId, aptInfo) {
+        if (!aptInfo || !window.map || typeof naver === "undefined") return;
+        const idStr = String(apartmentId);
+        if (__parcelAptId === idStr && __parcelPolygons.length) return; // 같은 단지 재클릭
+        const seq = ++__parcelReqSeq;
+        let features = __parcelCache.get(idStr);
+        if (features === undefined) {
+          try {
+            features = await __parcelFetchFeatures(aptInfo.lat, aptInfo.lng);
+          } catch (e) {
+            console.warn("[필지] 조회 실패:", e);
+            return;
+          }
+          __parcelCache.set(idStr, features);
+        }
+        if (seq !== __parcelReqSeq) return; // 대기 중 다른 단지가 클릭됨
+        __parcelClear();
+        __parcelAptId = idStr;
+        __parcelDraw(features);
+      }
+
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
 
@@ -6744,6 +6847,9 @@
         }
 
         let aptInfo = apartmentData.find((apartment) => String(apartment.id) === apartmentId);
+
+        // ✅ [테스트] 클릭한 단지의 필지 경계 표시 (실패해도 팝업에는 영향 없음)
+        try { __parcelShowForApartment(apartmentId, aptInfo); } catch (e) {}
 
         let apt = hasDetail
           ? apartmentDetailData[apartmentId]
@@ -7122,6 +7228,8 @@ const originalBase64 = event.target.result;
         saveNote(id);
 
         apartmentInfo.style.display = "none";
+        // ✅ [테스트] 필지 경계 제거
+        try { __parcelClear(); } catch (e) {}
         // ✅ 메모 팝업 닫힐 때 큰 데이터 참조 해제
         try {
           closeImageModal();
