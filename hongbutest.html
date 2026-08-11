@@ -6828,7 +6828,19 @@
       //    — 1순위: apt.json 단지명과 정규화 일치/포함, 2순위: P0 안에 중심이 있는 건물명 최빈값
       //    (마커가 놀이터·도로 등 건물 없는 필지에 찍힌 단지는 1순위 폴백이 잡아줌)
       // 3) 광범위에서 동일 건물명 동들 조회 4) 아직 안 덮인 동 중심점마다 필지 역조회 → 합집합
-      async function __parcelCollectFeatures(lat, lng, aptName) {
+      async function __parcelCollectFeatures(lat, lng, aptName, aptType) {
+        // 분양권(준공 전) 단지: 지적·건물DB가 철거 전 옛 상태라 필지 수집 불가 →
+        // 도시계획 사업구역(정비구역 등, LT_C_UPISUQ161)에서 마커가 속한 구역 경계를 우선 사용
+        if (/분양권/.test(String(aptType || ""))) {
+          const zones = await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" });
+          if (zones.length) {
+            // 재정비촉진지구 전체 같은 광역 폴리곤이 겹칠 수 있어 면적(dgm_ar) 최소 구역 선택
+            zones.sort((a, b) => (parseFloat(a.properties?.dgm_ar) || Infinity) - (parseFloat(b.properties?.dgm_ar) || Infinity));
+            return [zones[0]];
+          }
+          // 정비구역 미검출(민간 신규분양 등)이면 아래 일반 필지 로직으로 폴백
+        }
+
         const p0 = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${lng} ${lat})`, size: "10" });
         if (!p0.length) return [];
         const parcels = new Map(); // pnu -> feature
@@ -6918,7 +6930,7 @@
         let features = __parcelCache.get(idStr);
         if (features === undefined) {
           try {
-            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name);
+            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name, aptInfo.type);
           } catch (e) {
             console.warn("[필지] 조회 실패:", e);
             return;
