@@ -6824,6 +6824,40 @@
         return String(s || "").replace(/\s+/g, "").replace(/아파트$/, "");
       }
 
+      // turf.js 지연 로드 (필지 합집합용 — 다필지 단지에서만 필요)
+      let __turfPromise = null;
+      function __parcelEnsureTurf() {
+        if (window.turf?.union) return Promise.resolve(true);
+        if (__turfPromise) return __turfPromise;
+        __turfPromise = new Promise((resolve) => {
+          const s = document.createElement("script");
+          s.src = "https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js";
+          s.onload = () => resolve(true);
+          s.onerror = () => resolve(false);
+          document.head.appendChild(s);
+        });
+        return __turfPromise;
+      }
+
+      // 인접 필지 합집합 → 내부 경계선 없이 바깥 외곽선만. 실패 시 원본(개별 필지) 반환.
+      // 떨어져 있는 블록은 합쳐도 MultiPolygon으로 남아 각각 그려짐(정상).
+      async function __parcelUnion(features) {
+        if (features.length < 2) return features;
+        if (!(await __parcelEnsureTurf()) || !window.turf?.union) return features;
+        try {
+          let merged = null;
+          for (const f of features) {
+            const geo = { type: "Feature", properties: {}, geometry: f.geometry };
+            merged = merged ? turf.union(merged, geo) : geo;
+            if (!merged) return features;
+          }
+          return [merged];
+        } catch (e) {
+          console.warn("[필지] 합집합 실패(개별 필지로 표시):", e);
+          return features;
+        }
+      }
+
       // 단지 부지 필지 전체 수집 (호갱노노식 다필지):
       // 1) 마커 좌표 필지(P0) 2) 주변 소범위 건물(도로명주소 건물 DB)에서 단지 건물명 검출
       //    — 1순위: apt.json 단지명과 정규화 일치/포함, 2순위: P0 안에 중심이 있는 건물명 최빈값
@@ -6874,7 +6908,7 @@
           return name;
         };
         const name = pickMode(byAptName) || pickMode(byP0);
-        if (!name) return [...parcels.values()]; // 건물명 미검출 → 마커 필지만
+        if (!name) return __parcelUnion([...parcels.values()]); // 건물명 미검출 → 마커 필지만
 
         // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
         const bigB = await __vworldGet({
@@ -6895,7 +6929,7 @@
             if (pnu && !parcels.has(pnu)) parcels.set(pnu, f);
           });
         }
-        return [...parcels.values()];
+        return __parcelUnion([...parcels.values()]);
       }
 
       function __parcelDraw(features, store) {
