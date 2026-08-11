@@ -6893,6 +6893,20 @@
         return null;
       }
 
+      // 필지 근사 면적(㎡) — shoelace + 등장방형 스케일
+      function __parcelFeatAreaM2(f) {
+        const g = f.geometry;
+        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+        let total = 0;
+        polys.forEach((rings) => {
+          const r = rings[0];
+          let s = 0;
+          for (let i = 0, j = r.length - 1; i < r.length; j = i++) s += (r[j][0] + r[i][0]) * (r[j][1] - r[i][1]);
+          total += Math.abs(s / 2) * 111320 * Math.cos((r[0][1] * Math.PI) / 180) * 110540;
+        });
+        return total;
+      }
+
       // 점→필지 외곽선 최소 거리(m). 내부면 0.
       function __parcelDistToFeatM(x, y, feat) {
         if (__pointInParcel(x, y, feat)) return 0;
@@ -7019,7 +7033,7 @@
       //    — 미검출 시 마커 최근접 건물의 필지를 2차 앵커로 재시도 (마커가 도로·공원 위인 단지)
       // 3) 광범위에서 동일 건물명 동들 조회 4) 아직 안 덮인 동 중심점마다 필지 역조회 → 합집합
       //    — 추가 필지에 다른 단지의 마커가 들어 있으면 타단지 부지로 보고 제외 (동명 단지·주공 단지군 병합 방지)
-      async function __parcelCollectFeatures(lat, lng, aptName, aptType, aptId) {
+      async function __parcelCollectFeatures(lat, lng, aptName, aptType, aptId, aptUnits) {
         // 분양권(준공 전) 단지: 지적·건물DB가 철거 전 옛 상태라 필지 수집 불가 →
         // 도시계획 사업구역(정비구역 등, LT_C_UPISUQ161)에서 마커가 속한 구역 경계를 우선 사용
         if (/분양권/.test(String(aptType || ""))) {
@@ -7066,7 +7080,24 @@
             break;
           }
         }
-        if (!name) return __parcelUnion([...parcels.values()]); // 건물명 미검출 → 마커 필지만(도로류 제외 후)
+        if (!name) {
+          // 건물명 미검출 → 마커 필지만(도로류 제외 후). 단, 필지 면적이 세대수 대비 과소하면
+          // (세대당 5㎡ 미만 — 지적 미정리 신축 재개발에서 옛 소필지가 잡힌 경우: 영등포자이디그니티 등)
+          // 사업구역 폴백을 시도하고, 그것도 없으면 잘못된 조각 대신 미표시.
+          const feats = [...parcels.values()];
+          const units = Number(aptUnits) || 0;
+          const totalArea = feats.reduce((s, f) => s + __parcelFeatAreaM2(f), 0);
+          if (units > 0 && totalArea < units * 5) {
+            const zones = await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" });
+            if (zones.length) {
+              zones.sort((a, b) => (parseFloat(a.properties?.dgm_ar) || Infinity) - (parseFloat(b.properties?.dgm_ar) || Infinity));
+              return [zones[0]];
+            }
+            console.log(`[필지] ${aptName}: 필지 ${Math.round(totalArea)}㎡가 세대수(${units}) 대비 과소 — 지적 미정리 신축 추정, 경계 미표시`);
+            return [];
+          }
+          return __parcelUnion(feats);
+        }
 
         // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
         const bigB = await __vworldGet({
@@ -7140,7 +7171,7 @@
         let features = __parcelCache.get(idStr);
         if (features === undefined) {
           try {
-            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name, aptInfo.type, idStr);
+            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name, aptInfo.type, idStr, aptInfo.units);
           } catch (e) {
             console.warn("[필지] 조회 실패:", e);
             return;
@@ -7263,7 +7294,7 @@
           let features = __parcelCache.get(t.id);
           if (features === undefined) {
             try {
-              features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type, t.id);
+              features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type, t.id, apt.units);
             } catch (e) {
               failed++;
               console.warn(`[필지] 수집 실패: ${apt.name}(${t.id})`, e);
