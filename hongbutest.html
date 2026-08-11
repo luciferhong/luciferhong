@@ -6726,13 +6726,39 @@
       // 마커 클릭 시 해당 좌표가 속한 필지 폴리곤을 sise_server의 /vworld_parcel 프록시로 조회해 지도에 그린다.
       // (VWorld 키가 github.io Referer 전용이라 서버가 Referer를 붙여 대신 호출 — localhost/Pages 모두 동작)
       const __parcelCache = new Map(); // aptId(String) -> GeoJSON features 배열(빈 배열 = 조회했으나 없음)
+      const __parcelColors = new Map(); // aptId(String) -> 표시 색 (현재 화면에 떠 있는 단지들)
       let __parcelPolygons = [];
       let __parcelAptId = null;
       let __parcelReqSeq = 0;
 
+      // 단지별 색상: 초등배정남기기와 동일한 방식 — 단지 해시 기반 hue에서 시작해
+      // 현재 떠 있는 색들과 가장 멀리 떨어진 hue를 색상환 전체에서 탐색
+      const __PARCEL_COLOR_SAT = 0.68;
+      const __PARCEL_COLOR_LIGHT = 0.48;
+      function __pickParcelColor(aptId) {
+        const baseHue = __hashStringToUint32(String(aptId)) % 360;
+        const active = Array.from(__parcelColors.values());
+        if (!active.length) return __hslToHex(baseHue, __PARCEL_COLOR_SAT, __PARCEL_COLOR_LIGHT);
+        let bestHue = baseHue, bestMinDist = -1;
+        for (let i = 0; i < 360; i += 5) {
+          const hue = (baseHue + i) % 360;
+          const cand = __hslToHex(hue, __PARCEL_COLOR_SAT, __PARCEL_COLOR_LIGHT);
+          const minDist = Math.min(...active.map((c) => __colorDistance(cand, c)));
+          if (minDist > bestMinDist) {
+            bestMinDist = minDist;
+            bestHue = hue;
+          }
+        }
+        return __hslToHex(bestHue, __PARCEL_COLOR_SAT, __PARCEL_COLOR_LIGHT);
+      }
+
       function __parcelClear() {
         __parcelPolygons.forEach((p) => p.setMap(null));
         __parcelPolygons = [];
+        // 자동표시(아파트경계)가 그린 단지 색은 유지 — 클릭 선택 전용 색만 반납
+        if (__parcelAptId && !__parcelAutoPolys.has(String(__parcelAptId))) {
+          __parcelColors.delete(String(__parcelAptId));
+        }
         __parcelAptId = null;
       }
 
@@ -6949,8 +6975,9 @@
         return __parcelUnion([...parcels.values()]);
       }
 
-      function __parcelDraw(features, store) {
+      function __parcelDraw(features, store, color) {
         store = store || __parcelPolygons;
+        color = color || "#5A50DC";
         const toLatLng = ([x, y]) => new naver.maps.LatLng(y, x);
         features.forEach((f) => {
           const geom = f?.geometry;
@@ -6963,9 +6990,9 @@
             const polygon = new naver.maps.Polygon({
               map: window.map,
               paths: rings.map((ring) => ring.map(toLatLng)), // 두 번째 이후 ring은 구멍(hole)
-              fillColor: "#5A50DC",
-              fillOpacity: isZone ? 0.1 : 0.15,
-              strokeColor: "#5A50DC",
+              fillColor: color,
+              fillOpacity: isZone ? 0.12 : 0.2,
+              strokeColor: color,
               strokeOpacity: 0.9,
               strokeWeight: 2,
               strokeStyle: isZone ? "shortdash" : "solid",
@@ -6997,7 +7024,9 @@
         if (seq !== __parcelReqSeq) return; // 대기 중 다른 단지가 클릭됨
         __parcelClear();
         __parcelAptId = idStr;
-        __parcelDraw(features);
+        const color = __pickParcelColor(idStr);
+        __parcelColors.set(idStr, color);
+        __parcelDraw(features, __parcelPolygons, color);
       }
 
       // ---- "아파트경계" 자동 표시: 체크 시 화면 안 단지들의 부지 경계를 클릭 없이 표시 ----
@@ -7013,7 +7042,10 @@
 
       function __parcelAutoClear() {
         __parcelAutoGen++;
-        __parcelAutoPolys.forEach((polys) => polys.forEach((p) => p.setMap(null)));
+        __parcelAutoPolys.forEach((polys, id) => {
+          polys.forEach((p) => p.setMap(null));
+          __parcelColors.delete(id);
+        });
         __parcelAutoPolys.clear();
       }
 
@@ -7022,6 +7054,7 @@
         if (polys) {
           polys.forEach((p) => p.setMap(null));
           __parcelAutoPolys.delete(idStr);
+          __parcelColors.delete(idStr);
         }
       }
 
@@ -7086,7 +7119,9 @@
           if (gen !== __parcelAutoGen || !__parcelAutoChecked()) return;
           if (!features.length || __parcelAutoPolys.has(t.id)) continue;
           const store = [];
-          __parcelDraw(features, store);
+          const color = __pickParcelColor(t.id);
+          __parcelColors.set(t.id, color);
+          __parcelDraw(features, store, color);
           __parcelAutoPolys.set(t.id, store);
         }
       }
