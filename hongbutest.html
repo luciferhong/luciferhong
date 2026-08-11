@@ -6722,8 +6722,8 @@
       }
 
       // ✅ [테스트] VWorld 연속지적도 — 아파트 부지(필지) 경계 표시 (호갱노노식)
-      // 마커 클릭 시 해당 좌표가 속한 필지 폴리곤을 VWorld 2D데이터 API(LP_PA_CBND_BUBUN)에서 JSONP로 조회해 지도에 그린다.
-      const VWORLD_PARCEL_KEY = "163AF7CB-EA4D-37A8-9F2B-005D0EFE4D88";
+      // 마커 클릭 시 해당 좌표가 속한 필지 폴리곤을 sise_server의 /vworld_parcel 프록시로 조회해 지도에 그린다.
+      // (VWorld 키가 github.io Referer 전용이라 서버가 Referer를 붙여 대신 호출 — localhost/Pages 모두 동작)
       const __parcelCache = new Map(); // aptId(String) -> GeoJSON features 배열(빈 배열 = 조회했으나 없음)
       let __parcelPolygons = [];
       let __parcelAptId = null;
@@ -6761,21 +6761,111 @@
         });
       }
 
-      async function __parcelFetchFeatures(lat, lng) {
-        const url =
-          "https://api.vworld.kr/req/data?service=data&request=GetFeature" +
-          "&data=LP_PA_CBND_BUBUN" +
-          "&geomFilter=" + encodeURIComponent(`POINT(${lng} ${lat})`) +
-          "&geometry=true&crs=EPSG:4326&format=json&size=10" +
-          "&key=" + VWORLD_PARCEL_KEY;
-        const res = await __parcelJsonp(url);
-        const status = res?.response?.status;
+      // VWorld 데이터 API GetFeature 공통 호출. params: {data, geomFilter, attrFilter?, size?}
+      // localhost → 로컬 sise_server 프록시(Referer 대납) / github.io → 직접 JSONP(Referer 일치)
+      async function __vworldGet(params) {
+        const h = location.hostname;
+        let data;
+        if (h === "localhost" || h === "127.0.0.1") {
+          const token = localStorage.getItem("hongbuSiseToken");
+          if (!token) return []; // 시세 애드온 토큰 없으면 미동작
+          const qs = new URLSearchParams({ ...params, token });
+          const res = await fetch(`http://localhost:7123/vworld_data?${qs}`, { signal: AbortSignal.timeout(10000) });
+          data = await res.json();
+        } else {
+          const qs = new URLSearchParams({
+            service: "data",
+            request: "GetFeature",
+            format: "json",
+            crs: "EPSG:4326",
+            geometry: "true",
+            size: "1000",
+            key: "163AF7CB-EA4D-37A8-9F2B-005D0EFE4D88",
+            ...params,
+          });
+          data = await __parcelJsonp("https://api.vworld.kr/req/data?" + qs.toString());
+        }
+        const status = data?.response?.status;
         if (status !== "OK") {
-          // NOT_FOUND = 해당 좌표에 필지 없음(정상), 그 외는 인증/파라미터 문제일 수 있으니 로그
-          if (status !== "NOT_FOUND") console.warn("[필지] VWorld 응답 이상:", status, res?.response?.error || res);
+          // NOT_FOUND = 결과 없음(정상), 그 외는 인증/파라미터 문제일 수 있으니 로그
+          if (status !== "NOT_FOUND") console.warn("[필지] VWorld 응답 이상:", status, data?.response?.error || data?.error || data);
           return [];
         }
-        return res?.response?.result?.featureCollection?.features || [];
+        return data?.response?.result?.featureCollection?.features || [];
+      }
+
+      // ---- 지오메트리 헬퍼 (GeoJSON [lng,lat]) ----
+      function __parcelOuterRing(geom) {
+        return geom.type === "Polygon" ? geom.coordinates[0] : geom.coordinates[0][0];
+      }
+      function __parcelCentroid(geom) {
+        const pts = __parcelOuterRing(geom);
+        let sx = 0, sy = 0;
+        pts.forEach(([x, y]) => { sx += x; sy += y; });
+        return [sx / pts.length, sy / pts.length];
+      }
+      function __pointInRing(x, y, ring) {
+        let inside = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i], [xj, yj] = ring[j];
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+        return inside;
+      }
+      function __pointInParcel(x, y, feat) {
+        const g = feat.geometry;
+        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+        return polys.some((rings) => __pointInRing(x, y, rings[0]));
+      }
+
+      // 단지 부지 필지 전체 수집 (호갱노노식 다필지):
+      // 1) 마커 좌표 필지(P0) 2) 주변 소범위 건물 중 P0 안의 건물명 추출(도로명주소 건물 DB)
+      // 3) 광범위에서 동일 건물명 동들 조회 4) 아직 안 덮인 동 중심점마다 필지 역조회 → 합집합
+      async function __parcelCollectFeatures(lat, lng) {
+        const p0 = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${lng} ${lat})`, size: "10" });
+        if (!p0.length) return [];
+        const parcels = new Map(); // pnu -> feature
+        p0.forEach((f) => parcels.set(f.properties?.pnu || Math.random(), f));
+
+        // 2) 단지명 검출: 마커 주변 ±약 100m 건물 중 P0 안에 중심이 있는 건물명 최빈값
+        const smallB = await __vworldGet({
+          data: "LT_C_SPBD",
+          geomFilter: `BOX(${lng - 0.0012},${lat - 0.001},${lng + 0.0012},${lat + 0.001})`,
+          size: "100",
+        });
+        const nameCount = new Map();
+        smallB.forEach((b) => {
+          const nm = b.properties?.buld_nm;
+          if (!nm) return;
+          const [cx, cy] = __parcelCentroid(b.geometry);
+          if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) {
+            nameCount.set(nm, (nameCount.get(nm) || 0) + 1);
+          }
+        });
+        let name = null, best = 0;
+        nameCount.forEach((cnt, nm) => { if (cnt > best) { best = cnt; name = nm; } });
+        if (!name) return [...parcels.values()]; // 건물명 미검출 → 마커 필지만
+
+        // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
+        const bigB = await __vworldGet({
+          data: "LT_C_SPBD",
+          geomFilter: `BOX(${lng - 0.013},${lat - 0.009},${lng + 0.013},${lat + 0.009})`,
+          attrFilter: `buld_nm:=:${name}`,
+        });
+
+        // 4) 아직 수집한 필지에 안 덮인 동 중심점 → 필지 역조회 (호출 상한 12회)
+        let extraCalls = 0;
+        for (const b of bigB) {
+          const [cx, cy] = __parcelCentroid(b.geometry);
+          if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) continue;
+          if (++extraCalls > 12) break;
+          const ps = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" });
+          ps.forEach((f) => {
+            const pnu = f.properties?.pnu;
+            if (pnu && !parcels.has(pnu)) parcels.set(pnu, f);
+          });
+        }
+        return [...parcels.values()];
       }
 
       function __parcelDraw(features) {
@@ -6811,7 +6901,7 @@
         let features = __parcelCache.get(idStr);
         if (features === undefined) {
           try {
-            features = await __parcelFetchFeatures(aptInfo.lat, aptInfo.lng);
+            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng);
           } catch (e) {
             console.warn("[필지] 조회 실패:", e);
             return;
