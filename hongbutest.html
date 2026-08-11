@@ -7138,10 +7138,23 @@
           for (const f of features) {
             const geo = { type: "Feature", properties: {}, geometry: f.geometry };
             merged = merged ? turf.union(merged, geo) : geo;
-            if (!merged) return features;
+            if (!merged) throw new Error("union null");
           }
           return [merged];
         } catch (e) {
+          // turf.union(martinez)이 인접 필지에서 스택 오버플로로 죽는 케이스(관악푸르지오) →
+          // 버퍼 클로징(+3m/-3m)으로 대체: 맞닿은 필지를 녹여 붙이고 6m 이하 틈만 메움
+          try {
+            const coords = features.flatMap((f) =>
+              f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates],
+            );
+            const mp = { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
+            const closed = turf.buffer(turf.buffer(mp, 3, { units: "meters" }), -3, { units: "meters" });
+            if (closed) {
+              console.log("[필지] 합집합 폴백(버퍼 클로징) 사용");
+              return [closed];
+            }
+          } catch (e2) {}
           console.warn("[필지] 합집합 실패(개별 필지로 표시):", e);
           return features;
         }
