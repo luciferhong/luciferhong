@@ -6783,13 +6783,15 @@
         __parcelAptId = null;
       }
 
-      // ---- 호갱노노 단지 경계 조회 (sise_server /hogang_polygon 프록시) ----
-      // hogang_polygons.json(naver 단지번호 키)을 서버가 메모리 보유. 단지 클릭/자동표시 시
-      // 해당 단지의 groupPolygons를 받아 MultiPolygon 피처로 변환해 그린다. VWorld 미사용.
+      // ---- 호갱노노 단지 경계 (전체 파일 1회 로드 + IndexedDB 캐시) ----
+      // sise_server가 hogang_polygons.json(naver 단지번호 키, gzip)을 서빙. 최초 1회 받아
+      // IndexedDB(settings)에 캐시하고 클라이언트에서 단지별 lookup. VWorld 미사용.
+      // 서버 ?meta=1(버전)로 신선도 판단 → 파일 갱신 시 자동 재다운로드.
       function __parcelApiBase() {
         const h = location.hostname;
         return h === "localhost" || h === "127.0.0.1" ? "http://localhost:7123" : "https://sise-cloud.luciferhong.com";
       }
+      const __HOGANG_CACHE_KEY = "hogangPolygons_v1";
 
       // 호갱 groupPolygons([group][polygon][ring][{x,y}]) → MultiPolygon 피처(좌표 [lng,lat])
       function __parcelHogangToFeature(poly) {
@@ -6804,28 +6806,57 @@
         return { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
       }
 
-      // 단지(naver id)의 호갱 경계 피처 배열 반환. 없으면 [] (조회했으나 경계 없음).
-      async function __parcelFetchHogang(aptId) {
-        const token = localStorage.getItem("hongbuSiseToken");
-        if (!token) {
-          if (!window.__parcelTokenWarned) {
-            window.__parcelTokenWarned = true;
-            console.warn("[경계] hongbuSiseToken 필요 (?token= 으로 1회 접속) — 경계 미표시");
+      // 경계 맵(naver_id → 레코드) 1회 로드. 세션 내 memoize + IndexedDB 캐시.
+      let __hogangMapPromise = null;
+      async function __parcelLoadHogangMap() {
+        if (__hogangMapPromise) return __hogangMapPromise;
+        __hogangMapPromise = (async () => {
+          const token = localStorage.getItem("hongbuSiseToken");
+          if (!token) {
+            if (!window.__parcelTokenWarned) {
+              window.__parcelTokenWarned = true;
+              console.warn("[경계] hongbuSiseToken 필요 (?token= 으로 1회 접속) — 경계 미표시");
+            }
+            return {};
           }
-          return [];
-        }
-        try {
-          const url = `${__parcelApiBase()}/hogang_polygon?apt=${encodeURIComponent(aptId)}&token=${encodeURIComponent(token)}`;
-          const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-          if (res.status === 404) return []; // 매핑/경계 없음
-          if (!res.ok) { console.warn("[경계] 서버 응답 이상:", res.status); return []; }
-          const d = await res.json();
-          const feat = __parcelHogangToFeature(d && d.poly);
-          return feat ? [feat] : [];
-        } catch (e) {
-          console.warn("[경계] 조회 실패:", e);
-          return [];
-        }
+          const base = __parcelApiBase();
+          let cached = null;
+          try { cached = await getHongbuSetting(__HOGANG_CACHE_KEY); } catch (e) {}
+          // 서버 버전(etag) 확인 — 실패해도 캐시 있으면 그걸 사용
+          let etag = null;
+          try {
+            const m = await fetch(`${base}/hogang_polygons.json?meta=1&token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(6000) });
+            if (m.ok) etag = (await m.json()).etag;
+          } catch (e) {}
+          if (cached && cached.data && (!etag || cached.etag === etag)) {
+            console.log(`[경계] 캐시 사용: ${Object.keys(cached.data).length}개 (etag ${cached.etag})`);
+            return cached.data;
+          }
+          // 전체 파일 다운로드
+          try {
+            console.log("[경계] 전체 경계 다운로드 중…");
+            const res = await fetch(`${base}/hogang_polygons.json?token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(60000) });
+            if (!res.ok) { console.warn("[경계] 다운로드 실패:", res.status); return (cached && cached.data) || {}; }
+            const data = await res.json();
+            const ver = etag || res.headers.get("ETag") || String(Date.now());
+            try { await setHongbuSetting(__HOGANG_CACHE_KEY, { etag: ver, data }); } catch (e) { console.warn("[경계] 캐시 저장 실패:", e); }
+            console.log(`[경계] 다운로드·캐시 완료: ${Object.keys(data).length}개`);
+            return data;
+          } catch (e) {
+            console.warn("[경계] 다운로드 오류:", e);
+            return (cached && cached.data) || {};
+          }
+        })();
+        return __hogangMapPromise;
+      }
+
+      // 단지(naver id)의 호갱 경계 피처 배열 반환. 없으면 [] (매핑/경계 없음).
+      async function __parcelFetchHogang(aptId) {
+        const map = await __parcelLoadHogangMap();
+        const rec = map && map[String(aptId)];
+        if (!rec || !rec.poly) return [];
+        const feat = __parcelHogangToFeature(rec.poly);
+        return feat ? [feat] : [];
       }
 
       function __parcelDraw(features, store, color) {
