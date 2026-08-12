@@ -695,17 +695,11 @@
         transform: translateZ(0); /* GPU 렌더링 안정화 */
       }
 
-      /* 🖥 PC: 아파트 상세를 왼쪽 사이드패널로 도킹 (지도·경계를 가리지 않도록)
-         JS가 인라인으로 중앙 배치(top/left/transform)를 넣으므로 !important로 덮어씀 */
-      /* PC 판정 = 넓은 화면 AND 주 입력이 정밀(마우스·트랙패드). 터치 주입력 기기는 제외. */
+      /* 🖥 PC: 아파트 상세를 지도영역 왼쪽에 도킹 (지도·경계를 가리지 않도록).
+         위치·높이는 JS(__dockApartmentPanel)가 지도의 화면상 보이는 사각형에 맞춰 인라인 지정.
+         여기서는 외형(폭/테두리/그림자)만. PC 판정 = 넓은 화면 AND 주 입력 정밀(마우스·트랙패드). */
       @media (min-width: 1281px) and (pointer: fine) {
         #apartmentInfo {
-          top: 0 !important;
-          left: 0 !important;
-          bottom: 0;
-          transform: none !important;
-          height: 100vh;
-          max-height: 100vh;
           max-width: min(46vw, 560px);
           border-radius: 0;
           border-top: none;
@@ -6470,6 +6464,8 @@
           //window.map.setSize(new naver.maps.Size(width, height)); // 지도 크기 업데이트
           //console.log("지도 변함");
         }
+        // 지도 크기가 바뀌면 열려 있는 상세 패널도 지도영역에 맞춰 재도킹
+        try { if (typeof __dockApartmentPanel === "function") __dockApartmentPanel(); } catch (e) {}
       });
 
       // `#map` 요소의 크기 변화를 감지하여 자동 업데이트
@@ -7139,6 +7135,47 @@
         }, 500);
       })();
 
+      // PC 도킹 판정(레이아웃 CSS와 동일 조건)
+      function __isPcDock() {
+        return window.matchMedia("(min-width: 1281px) and (pointer: fine)").matches;
+      }
+      // 상세 패널을 지도의 "화면에 보이는 사각형"에 맞춰 배치.
+      // position:fixed라 top/left/height를 뷰포트 좌표로 주면 스크롤과 무관하게
+      // 지도 영역 안쪽 + 화면 제일 아래까지만 차지(스크롤로 늘어나지 않음).
+      function __dockApartmentPanel() {
+        const panel = document.getElementById("apartmentInfo");
+        if (!panel || panel.style.display !== "block") return;
+        if (!__isPcDock()) {
+          // 모바일/터치: 중앙 모달로 복원(도킹에서 넘어온 인라인 값 제거)
+          panel.style.top = "50%";
+          panel.style.left = "50%";
+          panel.style.transform = "translate(-50%, -50%)";
+          panel.style.height = "";
+          panel.style.maxHeight = "";
+          panel.style.bottom = "";
+          return;
+        }
+        const mapEl = document.getElementById("map");
+        if (!mapEl) return;
+        const r = mapEl.getBoundingClientRect();
+        const top = Math.max(0, r.top);                    // 지도 상단(컨트롤바 아래)
+        const bottom = Math.min(window.innerHeight, r.bottom); // 화면에 보이는 지도 하단
+        const h = Math.max(0, bottom - top);
+        panel.style.top = top + "px";
+        panel.style.left = Math.max(0, r.left) + "px";
+        panel.style.transform = "none";
+        panel.style.bottom = "auto";
+        panel.style.height = h + "px";
+        panel.style.maxHeight = h + "px";
+      }
+      // 스크롤/리사이즈/방향전환 시 재도킹(패널 열려 있을 때만 동작)
+      (function __bindDockListeners() {
+        const relayout = () => { try { __dockApartmentPanel(); } catch (e) {} };
+        window.addEventListener("scroll", relayout, { passive: true });
+        window.addEventListener("resize", relayout);
+        window.addEventListener("orientationchange", relayout);
+      })();
+
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
 
@@ -7308,6 +7345,7 @@
 
         infoDiv.innerHTML = infoHtml;
         infoDiv.style.display = "block";
+        __dockApartmentPanel(); // PC: 지도영역 안쪽 + 화면 하단까지로 위치·높이 제한
 
         // 포커스 시 커서를 마지막 글자 뒤로 이동 + 해당 위치로 스크롤
         const noteTextEl = document.getElementById("noteText");
