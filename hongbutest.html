@@ -6836,6 +6836,13 @@
         return { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
       }
 
+      // fetch + 타임아웃. AbortSignal.timeout 미지원(구형 삼성인터넷/안드로이드 WebView) 대응.
+      function __fetchTimeout(url, ms) {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), ms);
+        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+      }
+
       // 경계 맵(naver_id → 레코드) 1회 로드. 세션 내 memoize + IndexedDB 캐시.
       let __boundaryMapPromise = null;
       async function __parcelLoadBoundaryMap() {
@@ -6855,7 +6862,7 @@
           // 서버 버전(etag) 확인 — 실패해도 캐시 있으면 그걸 사용
           let etag = null;
           try {
-            const m = await fetch(`${base}/apt_boundaries.json?meta=1&token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(6000) });
+            const m = await __fetchTimeout(`${base}/apt_boundaries.json?meta=1&token=${encodeURIComponent(token)}`, 6000);
             if (m.ok) etag = (await m.json()).etag;
           } catch (e) {}
           if (cached && cached.data && (!etag || cached.etag === etag)) {
@@ -6865,7 +6872,7 @@
           // 전체 파일 다운로드
           try {
             console.log("[경계] 전체 경계 다운로드 중…");
-            const res = await fetch(`${base}/apt_boundaries.json?token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(60000) });
+            const res = await __fetchTimeout(`${base}/apt_boundaries.json?token=${encodeURIComponent(token)}`, 60000);
             if (!res.ok) { console.warn("[경계] 다운로드 실패:", res.status); return (cached && cached.data) || {}; }
             const data = await res.json();
             const ver = etag || res.headers.get("ETag") || String(Date.now());
