@@ -6756,27 +6756,50 @@
       let __parcelAptId = null;
       let __parcelReqSeq = 0;
 
-      // 단지별 색상: 초등배정남기기와 동일한 방식 — 단지 해시 기반 hue에서 시작해
-      // 현재 떠 있는 색들과 가장 멀리 떨어진 hue를 색상환에서 탐색.
-      // 단, 녹색 계열(hue 70~170°)은 지도 배경의 공원·산과 혼동돼 제외.
-      const __PARCEL_COLOR_SAT = 0.68;
-      const __PARCEL_COLOR_LIGHT = 0.48;
-      function __pickParcelColor(aptId) {
-        const baseHue = __hashStringToUint32(String(aptId)) % 360;
-        const active = Array.from(__parcelColors.values());
-        let bestHue = null, bestMinDist = -1;
-        for (let i = 0; i < 360; i += 5) {
-          const hue = (baseHue + i) % 360;
-          if (hue >= 55 && hue <= 170) continue; // 녹색 계열 제외 (올리브·연두 포함)
-          if (!active.length) { bestHue = hue; break; } // 활성색 없으면 baseHue에서 가장 가까운 허용 hue
-          const cand = __hslToHex(hue, __PARCEL_COLOR_SAT, __PARCEL_COLOR_LIGHT);
-          const minDist = Math.min(...active.map((c) => __colorDistance(cand, c)));
-          if (minDist > bestMinDist) {
-            bestMinDist = minDist;
-            bestHue = hue;
-          }
-        }
-        return __hslToHex(bestHue ?? baseHue, __PARCEL_COLOR_SAT, __PARCEL_COLOR_LIGHT);
+      // 단지 경계 색상: 고정 6색 팔레트 + 인접 단지 색 회피(탐욕 그래프 채색).
+      // 인접(경계 bbox가 서로 45m 이내)한 단지끼리는 절대 같은 색이 안 나오게 보장.
+      // 녹색 계열(hue 55~170°)은 지도 배경(공원/산)과 혼동돼 팔레트에서 제외.
+      const __PARCEL_PALETTE = [0, 35, 200, 230, 275, 320].map((h) => __hslToHex(h, 0.68, 0.48));
+      const __PARCEL_ADJ_M = 45; // 이 거리 이내면 '인접'으로 보고 같은 색 금지(과대추정 = 안전)
+      const __parcelBBoxes = new Map(); // aptId -> [minLng,minLat,maxLng,maxLat]
+
+      function __parcelFeatsBBox(features) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        (features || []).forEach((f) => {
+          const g = f?.geometry;
+          if (!g) return;
+          const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+          polys.forEach((rings) => (rings[0] || []).forEach(([x, y]) => {
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }));
+        });
+        return [x0, y0, x1, y1];
+      }
+      // 두 bbox 사이 최소 거리(m). 겹치면 0.
+      function __parcelBBoxGapM(a, b) {
+        const midLat = (a[1] + a[3] + b[1] + b[3]) / 4;
+        const kx = 111320 * Math.cos((midLat * Math.PI) / 180), ky = 110540;
+        const dx = Math.max(0, b[0] - a[2], a[0] - b[2]) * kx;
+        const dy = Math.max(0, b[1] - a[3], a[1] - b[3]) * ky;
+        return Math.hypot(dx, dy);
+      }
+      // 인접 단지가 쓰지 않는 팔레트 색을 배정(탐욕). 이미 그려진 이웃 색만 회피.
+      function __pickParcelColor(aptId, features) {
+        const id = String(aptId);
+        const bb = __parcelFeatsBBox(features);
+        __parcelBBoxes.set(id, bb);
+        const used = new Map(); // color -> 인접 이웃 수
+        __parcelColors.forEach((col, id2) => {
+          if (id2 === id) return;
+          const bb2 = __parcelBBoxes.get(id2);
+          if (bb2 && __parcelBBoxGapM(bb, bb2) <= __PARCEL_ADJ_M) used.set(col, (used.get(col) || 0) + 1);
+        });
+        for (const c of __PARCEL_PALETTE) if (!used.has(c)) return c; // 이웃이 안 쓴 첫 색
+        // 초고밀(6색 다 인접): 이웃이 가장 적게 쓴 색 (충돌 최소화)
+        let best = __PARCEL_PALETTE[0], bestN = Infinity;
+        for (const c of __PARCEL_PALETTE) { const n = used.get(c) || 0; if (n < bestN) { bestN = n; best = c; } }
+        return best;
       }
 
       function __parcelClear() {
@@ -6785,6 +6808,7 @@
         // 자동표시(아파트경계)가 그린 단지 색은 유지 — 클릭 선택 전용 색만 반납
         if (__parcelAptId && !__parcelAutoPolys.has(String(__parcelAptId))) {
           __parcelColors.delete(String(__parcelAptId));
+          __parcelBBoxes.delete(String(__parcelAptId));
         }
         __parcelAptId = null;
       }
@@ -6914,7 +6938,7 @@
         if (seq !== __parcelReqSeq) return; // 대기 중 다른 단지가 클릭됨
         __parcelClear();
         __parcelAptId = idStr;
-        const color = __pickParcelColor(idStr);
+        const color = __pickParcelColor(idStr, features);
         __parcelColors.set(idStr, color);
         __parcelDraw(features, __parcelPolygons, color);
       }
@@ -6940,6 +6964,7 @@
         __parcelAutoPolys.forEach((polys, id) => {
           polys.forEach((p) => p.setMap(null));
           __parcelColors.delete(id);
+          __parcelBBoxes.delete(id);
         });
         __parcelAutoPolys.clear();
       }
@@ -6950,6 +6975,7 @@
           polys.forEach((p) => p.setMap(null));
           __parcelAutoPolys.delete(idStr);
           __parcelColors.delete(idStr);
+          __parcelBBoxes.delete(idStr);
         }
       }
 
@@ -7051,7 +7077,7 @@
           }
           if (__parcelAutoPolys.has(t.id)) continue;
           const store = [];
-          const color = __pickParcelColor(t.id);
+          const color = __pickParcelColor(t.id, features);
           __parcelColors.set(t.id, color);
           __parcelDraw(features, store, color);
           __parcelAutoPolys.set(t.id, store);
