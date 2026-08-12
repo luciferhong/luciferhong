@@ -1852,7 +1852,13 @@
       <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
       <label><input type="checkbox" id="toggleStreetView" />거리뷰</label>
       <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
-      <label><input type="checkbox" id="toggleParcelBoundary" />아파트경계</label>
+      <label>아파트경계
+        <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
+          <option value="none">표시 안함</option>
+          <option value="selected">선택한 아파트 경계 표시</option>
+          <option value="all">전체 아파트 경계 표시</option>
+        </select>
+      </label>
       <label><input type="checkbox" id="toggleSatelliteMap" />위성</label>
       <label><input type="checkbox" id="toggleTerrainMap" />지형</label>
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
@@ -6920,8 +6926,13 @@
       let __parcelIdleBound = false;
       let __aptById = null;
 
+      // 경계 표시 모드: "none"(표시안함) | "selected"(클릭 단지만) | "all"(화면 전체 자동)
+      function __parcelMode() {
+        return document.getElementById("parcelBoundaryMode")?.value || "none";
+      }
+      // 자동표시(화면 전체)는 "all"에서만
       function __parcelAutoChecked() {
-        return !!document.getElementById("toggleParcelBoundary")?.checked;
+        return __parcelMode() === "all";
       }
 
       function __parcelAutoClear() {
@@ -7052,29 +7063,34 @@
       }
 
       (function __parcelAutoInit() {
-        const cb = document.getElementById("toggleParcelBoundary");
-        if (!cb) return;
-        cb.addEventListener("change", () => {
-          if (cb.checked) {
-            console.log("[필지] 아파트경계 ON — 표시 시작");
+        const sel = document.getElementById("parcelBoundaryMode");
+        if (!sel) return;
+        sel.addEventListener("change", () => {
+          const mode = __parcelMode();
+          if (mode === "all") {
+            console.log("[경계] 전체 아파트 경계 표시");
             __parcelAutoEnsureIdle();
             __parcelAutoRefresh();
-          } else {
-            console.log("[필지] 아파트경계 OFF — 전체 제거");
+          } else if (mode === "selected") {
+            console.log("[경계] 선택한 아파트 경계 표시 — 자동표시 제거(클릭 시 표시)");
             __parcelAutoClear();
+          } else {
+            console.log("[경계] 표시 안함 — 전체 제거");
+            __parcelAutoClear();
+            __parcelClear();
           }
         });
-        // 지도 준비 대기 + uiState 복원(로드 시 체크 상태) 대응
+        // 지도 준비 대기 + uiState 복원(로드 시 선택값) 대응 — "전체"면 자동표시
         let tries = 0;
         const timer = setInterval(() => {
           if (++tries > 120) { clearInterval(timer); return; }
           if (window.map && typeof naver !== "undefined" && window.map.getBounds) {
             clearInterval(timer);
             __parcelAutoEnsureIdle();
-            if (cb.checked) __parcelAutoRefresh();
+            if (__parcelMode() === "all") __parcelAutoRefresh();
             // uiState 복원이 지도 준비보다 늦는 경우 대비 재확인 (2/5/10초)
             [2000, 5000, 10000].forEach((ms) => {
-              setTimeout(() => { if (cb.checked && !__parcelAutoPolys.size) __parcelAutoRefresh(); }, ms);
+              setTimeout(() => { if (__parcelMode() === "all" && !__parcelAutoPolys.size) __parcelAutoRefresh(); }, ms);
             });
           }
         }, 500);
@@ -7104,8 +7120,10 @@
 
         let aptInfo = apartmentData.find((apartment) => String(apartment.id) === apartmentId);
 
-        // ✅ [테스트] 클릭한 단지의 필지 경계 표시 (실패해도 팝업에는 영향 없음)
-        try { __parcelShowForApartment(apartmentId, aptInfo); } catch (e) {}
+        // ✅ 클릭한 단지의 경계 표시 (표시안함 모드에선 생략, 실패해도 팝업 영향 없음)
+        if (__parcelMode() !== "none") {
+          try { __parcelShowForApartment(apartmentId, aptInfo); } catch (e) {}
+        }
 
         let apt = hasDetail
           ? apartmentDetailData[apartmentId]
