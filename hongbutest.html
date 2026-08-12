@@ -6741,9 +6741,9 @@
         }
       }
 
-      // ✅ [테스트] VWorld 연속지적도 — 아파트 부지(필지) 경계 표시 (호갱노노식)
-      // 마커 클릭 시 해당 좌표가 속한 필지 폴리곤을 sise_server의 /vworld_parcel 프록시로 조회해 지도에 그린다.
-      // (VWorld 키가 github.io Referer 전용이라 서버가 Referer를 붙여 대신 호출 — localhost/Pages 모두 동작)
+      // ✅ 아파트 단지 경계 표시 — 호갱노노 폴리곤(hogang_polygons.json) 사용
+      // 마커 클릭/아파트경계 체크 시 sise_server /hogang_polygon 으로 단지 경계를 받아 그린다.
+      // (naver 단지번호 ↔ 호갱 매핑 후 크롤한 groupPolygons. VWorld 미사용)
       const __parcelCache = new Map(); // aptId(String) -> GeoJSON features 배열(빈 배열 = 조회했으나 없음)
       const __parcelColors = new Map(); // aptId(String) -> 표시 색 (현재 화면에 떠 있는 단지들)
       let __parcelPolygons = [];
@@ -6783,582 +6783,49 @@
         __parcelAptId = null;
       }
 
-      function __parcelJsonp(url) {
-        return new Promise((resolve, reject) => {
-          const cbName = "__vworldCb" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
-          const script = document.createElement("script");
-          const timer = setTimeout(() => {
-            cleanup();
-            reject(new Error("VWorld 응답 시간 초과"));
-          }, 8000);
-          function cleanup() {
-            clearTimeout(timer);
-            try { delete window[cbName]; } catch (e) {}
-            script.remove();
-          }
-          window[cbName] = (data) => {
-            cleanup();
-            resolve(data);
-          };
-          script.onerror = () => {
-            cleanup();
-            reject(new Error("VWorld 요청 실패(네트워크)"));
-          };
-          script.src = url + "&callback=" + cbName;
-          document.head.appendChild(script);
-        });
+      // ---- 호갱노노 단지 경계 조회 (sise_server /hogang_polygon 프록시) ----
+      // hogang_polygons.json(naver 단지번호 키)을 서버가 메모리 보유. 단지 클릭/자동표시 시
+      // 해당 단지의 groupPolygons를 받아 MultiPolygon 피처로 변환해 그린다. VWorld 미사용.
+      function __parcelApiBase() {
+        const h = location.hostname;
+        return h === "localhost" || h === "127.0.0.1" ? "http://localhost:7123" : "https://sise-cloud.luciferhong.com";
       }
 
-      // VWorld 데이터 API GetFeature 공통 호출. params: {data, geomFilter, attrFilter?, size?}
-      // localhost → 로컬 sise_server 프록시(Referer 대납) / github.io → 직접 JSONP(Referer 일치)
-      async function __vworldGet(params) {
-        const h = location.hostname;
-        let data;
-        if (h === "localhost" || h === "127.0.0.1") {
-          const token = localStorage.getItem("hongbuSiseToken");
-          if (!token) {
-            if (!window.__parcelTokenWarned) {
-              window.__parcelTokenWarned = true;
-              console.warn("[필지] localhost에서는 hongbuSiseToken이 필요합니다 (?token= 으로 1회 접속) — 경계 미표시");
-            }
-            return [];
-          }
-          const qs = new URLSearchParams({ ...params, token });
-          const res = await fetch(`http://localhost:7123/vworld_data?${qs}`, { signal: AbortSignal.timeout(10000) });
-          data = await res.json();
-        } else {
-          const qs = new URLSearchParams({
-            service: "data",
-            request: "GetFeature",
-            format: "json",
-            crs: "EPSG:4326",
-            geometry: "true",
-            size: "1000",
-            key: "163AF7CB-EA4D-37A8-9F2B-005D0EFE4D88",
-            ...params,
+      // 호갱 groupPolygons([group][polygon][ring][{x,y}]) → MultiPolygon 피처(좌표 [lng,lat])
+      function __parcelHogangToFeature(poly) {
+        const coords = [];
+        (poly || []).forEach((group) => {
+          (group || []).forEach((pg) => {
+            const rings = (pg || []).map((ring) => (ring || []).map((pt) => [pt.x, pt.y]));
+            if (rings.length && rings[0].length >= 3) coords.push(rings);
           });
-          data = await __parcelJsonp("https://api.vworld.kr/req/data?" + qs.toString());
-        }
-        const status = data?.response?.status;
-        if (status !== "OK") {
-          // NOT_FOUND = 결과 없음(정상), 그 외는 인증/파라미터 문제일 수 있으니 로그
-          if (status !== "NOT_FOUND") console.warn("[필지] VWorld 응답 이상:", status, data?.response?.error || data?.error || data);
+        });
+        if (!coords.length) return null;
+        return { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
+      }
+
+      // 단지(naver id)의 호갱 경계 피처 배열 반환. 없으면 [] (조회했으나 경계 없음).
+      async function __parcelFetchHogang(aptId) {
+        const token = localStorage.getItem("hongbuSiseToken");
+        if (!token) {
+          if (!window.__parcelTokenWarned) {
+            window.__parcelTokenWarned = true;
+            console.warn("[경계] hongbuSiseToken 필요 (?token= 으로 1회 접속) — 경계 미표시");
+          }
           return [];
         }
-        return data?.response?.result?.featureCollection?.features || [];
-      }
-
-      // ---- 지오메트리 헬퍼 (GeoJSON [lng,lat]) ----
-      function __parcelOuterRing(geom) {
-        return geom.type === "Polygon" ? geom.coordinates[0] : geom.coordinates[0][0];
-      }
-      function __parcelCentroid(geom) {
-        const pts = __parcelOuterRing(geom);
-        let sx = 0, sy = 0;
-        pts.forEach(([x, y]) => { sx += x; sy += y; });
-        return [sx / pts.length, sy / pts.length];
-      }
-      function __pointInRing(x, y, ring) {
-        let inside = false;
-        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-          const [xi, yi] = ring[i], [xj, yj] = ring[j];
-          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
-        }
-        return inside;
-      }
-      function __pointInParcel(x, y, feat) {
-        const g = feat.geometry;
-        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
-        return polys.some((rings) => __pointInRing(x, y, rings[0]));
-      }
-      function __parcelFeatBBox(f) {
-        const g = f.geometry;
-        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
-        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-        polys.forEach((rings) => rings[0].forEach(([x, y]) => {
-          if (x < x0) x0 = x; if (x > x1) x1 = x;
-          if (y < y0) y0 = y; if (y > y1) y1 = y;
-        }));
-        return [x0, y0, x1, y1];
-      }
-      // 필지 안에 다른 단지의 마커가 있으면 그 단지명 반환 (동명 타단지·하안주공식 병합 방지)
-      function __parcelOtherMarkerInside(f, selfId) {
-        if (!Array.isArray(apartmentData) || !apartmentData.length) return null;
-        const [x0, y0, x1, y1] = __parcelFeatBBox(f);
-        for (const a of apartmentData) {
-          if (String(a.id) === String(selfId)) continue;
-          if (a.lng < x0 || a.lng > x1 || a.lat < y0 || a.lat > y1) continue;
-          if (__pointInParcel(a.lng, a.lat, f)) return a.name;
-        }
-        return null;
-      }
-
-      // 필지 근사 면적(㎡) — shoelace + 등장방형 스케일
-      function __parcelFeatAreaM2(f) {
-        const g = f.geometry;
-        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
-        let total = 0;
-        polys.forEach((rings) => {
-          const r = rings[0];
-          let s = 0;
-          for (let i = 0, j = r.length - 1; i < r.length; j = i++) s += (r[j][0] + r[i][0]) * (r[j][1] - r[i][1]);
-          total += Math.abs(s / 2) * 111320 * Math.cos((r[0][1] * Math.PI) / 180) * 110540;
-        });
-        return total;
-      }
-
-      // 점→필지 외곽선 최소 거리(m). 내부면 0.
-      function __parcelDistToFeatM(x, y, feat) {
-        if (__pointInParcel(x, y, feat)) return 0;
-        const g = feat.geometry;
-        const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
-        const kx = 111320 * Math.cos((y * Math.PI) / 180), ky = 110540;
-        let best = Infinity;
-        polys.forEach((rings) => {
-          const r = rings[0];
-          for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
-            const ax = (r[j][0] - x) * kx, ay = (r[j][1] - y) * ky;
-            const bx = (r[i][0] - x) * kx, by = (r[i][1] - y) * ky;
-            const dx = bx - ax, dy = by - ay;
-            const len2 = dx * dx + dy * dy;
-            let t = len2 ? -(ax * dx + ay * dy) / len2 : 0;
-            t = Math.max(0, Math.min(1, t));
-            const px = ax + t * dx, py = ay + t * dy;
-            const d = px * px + py * py;
-            if (d < best) best = d;
-          }
-        });
-        return Math.sqrt(best);
-      }
-
-      // 필지 안의 타단지 마커 전체 목록 (공유 필지 분할용)
-      function __parcelMarkersInside(f, selfId) {
-        if (!Array.isArray(apartmentData) || !apartmentData.length) return [];
-        const [x0, y0, x1, y1] = __parcelFeatBBox(f);
-        const out = [];
-        for (const a of apartmentData) {
-          if (String(a.id) === String(selfId)) continue;
-          if (a.lng < x0 || a.lng > x1 || a.lat < y0 || a.lat > y1) continue;
-          if (__pointInParcel(a.lng, a.lat, f)) out.push(a);
-        }
-        return out;
-      }
-
-      // 동 번호 키 정규화: '201동'→'201', 'T401동'→'T401'. 숫자 없는 명칭(상가 등)은 null.
-      function __parcelDongKey(s) {
-        const t = String(s || "").trim().replace(/동$/, "").trim();
-        return /\d/.test(t) && t.length <= 8 ? t : null;
-      }
-
-      // 네이버 단지 동 목록 (sise_server /complex_dongs 프록시, 단지별 캐시)
-      // 오라클 VM은 네이버가 IP를 차단해 사용 불가 → Pages에서는 집 PC 터널(sise.luciferhong.com) 경유.
-      // 집 PC가 꺼져 있으면 실패 → 분할 스킵(필지 전체 표시)으로 폴백.
-      const __parcelDongCache = new Map();
-      async function __parcelFetchDongs(complexId) {
-        const id = String(complexId);
-        if (__parcelDongCache.has(id)) return __parcelDongCache.get(id);
-        const token = localStorage.getItem("hongbuSiseToken");
-        if (!token) return null;
-        const h = location.hostname;
-        const base = h === "localhost" || h === "127.0.0.1" ? "http://localhost:7123" : "https://sise.luciferhong.com";
         try {
-          const res = await fetch(`${base}/complex_dongs?complex_id=${id}&token=${encodeURIComponent(token)}`, {
-            signal: AbortSignal.timeout(10000),
-          });
+          const url = `${__parcelApiBase()}/hogang_polygon?apt=${encodeURIComponent(aptId)}&token=${encodeURIComponent(token)}`;
+          const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+          if (res.status === 404) return []; // 매핑/경계 없음
+          if (!res.ok) { console.warn("[경계] 서버 응답 이상:", res.status); return []; }
           const d = await res.json();
-          const dongs = Array.isArray(d?.dongs) && d.dongs.length ? d.dongs : null;
-          if (dongs) __parcelDongCache.set(id, dongs); // 실패(null)는 캐시하지 않음 — 429 등 일시 오류 후 재시도 가능
-          return dongs;
+          const feat = __parcelHogangToFeature(d && d.poly);
+          return feat ? [feat] : [];
         } catch (e) {
-          return null;
+          console.warn("[경계] 조회 실패:", e);
+          return [];
         }
-      }
-
-      // 공유 필지(한 필지 위에 여러 단지 — 사당 극동·우성2·3 등) 분할:
-      // 필지 내 건물 발자국을 동 번호로 단지별 배정(네이버 동 목록 대조) 후 보로노이로 내 영역만 잘라냄.
-      // 성공 시 내 영역 feature 반환, 실패(데이터 부족·타단지 없음 등) 시 null → 필지 전체 표시 유지.
-      async function __parcelSplitSharedParcel(f, selfId) {
-        try {
-          const others = __parcelMarkersInside(f, selfId);
-          if (!others.length) return null;
-          if (!(await __parcelEnsureTurf()) || !window.turf?.voronoi || !window.turf?.intersect) return null;
-          const myDongs = await __parcelFetchDongs(selfId);
-          if (!myDongs) return null;
-          const mySet = new Set(myDongs.map(__parcelDongKey).filter(Boolean));
-          if (!mySet.size) return null;
-          const otherSets = [];
-          for (const o of others.slice(0, 4)) {
-            const ds = await __parcelFetchDongs(o.id);
-            if (ds) otherSets.push(new Set(ds.map(__parcelDongKey).filter(Boolean)));
-          }
-          if (!otherSets.length) return null;
-          const [x0, y0, x1, y1] = __parcelFeatBBox(f);
-          const bldgs = await __vworldGet({ data: "LT_C_SPBD", geomFilter: `BOX(${x0},${y0},${x1},${y1})` });
-          // 씨앗: 건물 중심점 + 발자국 꼭짓점(최대 20개/동) — 꼭짓점 씨앗이 있어야
-          // 보로노이 경계가 건물 윤곽에 밀착해 톱니(지그재그)가 완만해진다.
-          // 단, d3-voronoi는 초근접 중복 점에서 깨지므로 1e-6(≈0.1m) 그리드로 중복 제거하고,
-          // 그래도 실패하면 중심점 씨앗만으로 재시도한다.
-          const centroidSeeds = [];
-          const vertexSeeds = [];
-          const seenPt = new Set();
-          const addSeed = (arr, pt, mine) => {
-            const k = pt[0].toFixed(6) + "," + pt[1].toFixed(6);
-            if (seenPt.has(k)) return;
-            seenPt.add(k);
-            arr.push({ pt: [pt[0], pt[1]], mine });
-          };
-          bldgs.forEach((b) => {
-            const [cx, cy] = __parcelCentroid(b.geometry);
-            if (!__pointInParcel(cx, cy, f)) return;
-            const key = __parcelDongKey(b.properties?.buld_nm_dc);
-            if (!key) return; // 동 번호 없는 부속건물(경비실 등)은 씨앗에서 제외
-            let mine;
-            if (mySet.has(key)) mine = true;
-            else if (otherSets.some((s) => s.has(key))) mine = false;
-            else return;
-            addSeed(centroidSeeds, [cx, cy], mine);
-            const ring = __parcelOuterRing(b.geometry);
-            const step = Math.max(1, Math.floor(ring.length / 20));
-            for (let i = 0; i < ring.length; i += step) addSeed(vertexSeeds, ring[i], mine);
-          });
-          if (!centroidSeeds.some((s) => s.mine) || !centroidSeeds.some((s) => !s.mine)) return null;
-          const parcelFeat = { type: "Feature", properties: {}, geometry: f.geometry };
-          const bbox = [x0 - 0.001, y0 - 0.001, x1 + 0.001, y1 + 0.001];
-          const voronoiRegion = (seeds) => {
-            try {
-              const fc = turf.featureCollection(seeds.map((s) => turf.point(s.pt)));
-              const vor = turf.voronoi(fc, { bbox });
-              let region = null;
-              vor.features.forEach((cell, i) => {
-                if (!cell || !seeds[i].mine) return;
-                const part = turf.intersect(cell, parcelFeat);
-                if (!part) return;
-                region = region ? turf.union(region, part) : part;
-              });
-              return region;
-            } catch (e) {
-              return null;
-            }
-          };
-          const region = voronoiRegion([...centroidSeeds, ...vertexSeeds]) || voronoiRegion(centroidSeeds);
-          if (!region) return null;
-          region.properties = { ...(f.properties || {}), __split: true };
-          return region;
-        } catch (e) {
-          console.warn("[필지] 공유 필지 분할 실패:", e);
-          return null;
-        }
-      }
-
-      // 검출 건물명과 "같은 계열"(정규화 포함관계) 이름의 타단지 마커가 필지 경계 80m 이내면 그 단지명 반환.
-      // 마커가 자기 필지 살짝 밖(도로·상가 위)에 찍힌 주공14단지(49m)·철산주공12단지(31m) 같은 누수 차단.
-      // 계열 무관 이웃(마포푸르지오어반피스가 마래푸 779에서 23m)은 제외하지 않아 정상 블록 보존.
-      function __parcelFamilyMarkerNear(f, selfId, searchName) {
-        if (!Array.isArray(apartmentData) || !apartmentData.length) return null;
-        const sNorm = __parcelNormName(searchName);
-        if (!sNorm) return null;
-        const [x0, y0, x1, y1] = __parcelFeatBBox(f);
-        const m = 0.0012; // 후보 마커 사전 필터 여유(약 100m)
-        for (const a of apartmentData) {
-          if (String(a.id) === String(selfId)) continue;
-          if (a.lng < x0 - m || a.lng > x1 + m || a.lat < y0 - m || a.lat > y1 + m) continue;
-          const aNorm = __parcelNormName(a.name);
-          if (!aNorm || !(aNorm.includes(sNorm) || sNorm.includes(aNorm))) continue;
-          if (__parcelDistToFeatM(a.lng, a.lat, f) <= 80) return a.name;
-        }
-        return null;
-      }
-
-      // 1점 경로(필지 내 건물명)에서 배제할 비주거 시설명 — 학교·관리사무소 등이 검출되면 엉뚱한 확장 발생
-      const __PARCEL_NAME_BLOCK = /(학교|교회|성당|어린이집|유치원|관리사무소|경로당|주민센터|파출소|도서관|체육관|병원|의원|연립|빌라|빌딩|상가|쇼핑|공원|별동|주차장)/;
-
-      // 단지 건물명 검출 — 점수제: 3점 = 단지명 정규화 완전일치, 1점 = 수집 필지 안에 중심이 있는 건물.
-      // 최고점(동점이면 건물 수 많은 쪽) 선택. (부분일치는 역명·브랜드명 오염 사례가 많아 미사용)
-      function __parcelDetectName(smallB, aptNorm, parcels) {
-        const cand = new Map(); // buld_nm -> {score, cnt}
-        smallB.forEach((b) => {
-          const nm = b.properties?.buld_nm;
-          if (!nm) return;
-          const norm = __parcelNormName(nm);
-          let score = 0;
-          if (aptNorm && norm && norm === aptNorm) score = 3;
-          if (!score && !__PARCEL_NAME_BLOCK.test(nm)) {
-            const [cx, cy] = __parcelCentroid(b.geometry);
-            if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) score = 1;
-          }
-          if (!score) return;
-          const c = cand.get(nm) || { score: 0, cnt: 0 };
-          c.score = Math.max(c.score, score);
-          c.cnt += 1;
-          cand.set(nm, c);
-        });
-        let name = null, bestScore = 0, bestCnt = 0;
-        cand.forEach((c, nm) => {
-          if (c.score > bestScore || (c.score === bestScore && c.cnt > bestCnt)) {
-            bestScore = c.score; bestCnt = c.cnt; name = nm;
-          }
-        });
-        return name;
-      }
-
-      // 단지명 정규화: 공백 제거 + '아파트' 접미 제거 (apt.json 표기와 주소DB 표기 차이 흡수)
-      function __parcelNormName(s) {
-        return String(s || "").replace(/\s+/g, "").replace(/아파트$/, "");
-      }
-
-      // 지목이 도로/하천/구거/제방/철도인 필지는 단지 부지가 아님 (마커가 도로 위에 찍힌 경우 배제)
-      function __parcelIsRoadLike(f) {
-        const m = String(f?.properties?.jibun || "").trim().match(/([가-힣])$/);
-        return !!m && ["도", "천", "구", "제", "철"].includes(m[1]);
-      }
-
-      // turf.js 지연 로드 (필지 합집합용 — 다필지 단지에서만 필요)
-      let __turfPromise = null;
-      function __parcelEnsureTurf() {
-        if (window.turf?.union) return Promise.resolve(true);
-        if (__turfPromise) return __turfPromise;
-        __turfPromise = new Promise((resolve) => {
-          const s = document.createElement("script");
-          s.src = "https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js";
-          s.onload = () => resolve(true);
-          s.onerror = () => resolve(false);
-          document.head.appendChild(s);
-        });
-        return __turfPromise;
-      }
-
-      // 인접 필지 합집합 → 내부 경계선 없이 바깥 외곽선만. 실패 시 원본(개별 필지) 반환.
-      // 떨어져 있는 블록은 합쳐도 MultiPolygon으로 남아 각각 그려짐(정상).
-      // 구멍(단지 안에 낀 타인 필지)은 유지한다 — 시세통/호갱노노와 동일 (2026-08-11 정합 결정).
-      async function __parcelUnion(features) {
-        if (features.length < 2) return features;
-        if (!(await __parcelEnsureTurf()) || !window.turf?.union) return features;
-        try {
-          let merged = null;
-          for (const f of features) {
-            const geo = { type: "Feature", properties: {}, geometry: f.geometry };
-            merged = merged ? turf.union(merged, geo) : geo;
-            if (!merged) throw new Error("union null");
-          }
-          return [merged];
-        } catch (e) {
-          // turf.union(martinez)이 인접 필지에서 스택 오버플로로 죽는 케이스(관악푸르지오) →
-          // 버퍼 클로징(+3m/-3m)으로 대체: 맞닿은 필지를 녹여 붙이고 6m 이하 틈만 메움
-          try {
-            const coords = features.flatMap((f) =>
-              f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : [f.geometry.coordinates],
-            );
-            const mp = { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
-            const closed = turf.buffer(turf.buffer(mp, 3, { units: "meters" }), -3, { units: "meters" });
-            if (closed) {
-              console.log("[필지] 합집합 폴백(버퍼 클로징) 사용");
-              return [closed];
-            }
-          } catch (e2) {}
-          console.warn("[필지] 합집합 실패(개별 필지로 표시):", e);
-          return features;
-        }
-      }
-
-      // 큐레이션 오버라이드 (parcelOverride.json — 공유 필지 정밀 분할 등 오프라인 생성 경계)
-      // 단지번호 키가 있으면 실시간 수집 대신 이 경계를 그대로 사용
-      let __parcelOverridePromise = null;
-      function __parcelGetOverrides() {
-        if (!__parcelOverridePromise) {
-          __parcelOverridePromise = fetch("parcelOverride.json", { cache: "no-cache" })
-            .then((r) => (r.ok ? r.json() : {}))
-            .catch(() => ({}));
-        }
-        return __parcelOverridePromise;
-      }
-
-      // 단지 부지 필지 전체 수집 (호갱노노식 다필지):
-      // 1) 마커 좌표 필지(P0, 도로류 제외) 2) 주변 소범위 건물(도로명주소 건물 DB)에서 단지 건물명 검출
-      //    — 미검출 시 마커 최근접 건물의 필지를 2차 앵커로 재시도 (마커가 도로·공원 위인 단지)
-      // 3) 광범위에서 동일 건물명 동들 조회 4) 아직 안 덮인 동 중심점마다 필지 역조회 → 합집합
-      //    — 추가 필지에 다른 단지의 마커가 들어 있으면 타단지 부지로 보고 제외 (동명 단지·주공 단지군 병합 방지)
-      async function __parcelCollectFeatures(lat, lng, aptName, aptType, aptId, aptUnits) {
-        // 0) 큐레이션 오버라이드 우선
-        try {
-          const ov = await __parcelGetOverrides();
-          if (ov && ov[String(aptId)]) {
-            console.log(`[필지] 오버라이드 경계 사용: ${aptName}`);
-            return [ov[String(aptId)]];
-          }
-        } catch (e) {}
-
-        // 분양권(준공 전) 단지: 지적·건물DB가 철거 전 옛 상태라 필지 수집 불가 →
-        // 도시계획 사업구역(정비구역 등, LT_C_UPISUQ161)에서 마커가 속한 구역 경계를 우선 사용
-        // 사업구역 채택 공통 헬퍼: 최소면적 구역 선택 + 세대수 대비 과대(세대당 120㎡ 초과) 광역구역 배제
-        const pickZone = (zones) => {
-          if (!zones.length) return null;
-          zones.sort((a, b) => (parseFloat(a.properties?.dgm_ar) || Infinity) - (parseFloat(b.properties?.dgm_ar) || Infinity));
-          const z = zones[0];
-          const u = Number(aptUnits) || 0;
-          if (u > 0 && __parcelFeatAreaM2(z) > u * 120) {
-            console.log(`[필지] ${aptName}: 사업구역(${z.properties?.dgm_nm})이 세대수 대비 과대 — 미채택`);
-            return null;
-          }
-          return z;
-        };
-
-        if (/분양권/.test(String(aptType || ""))) {
-          const z = pickZone(await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" }));
-          if (z) return [z];
-          // 정비구역 미검출(민간 신규분양 등)이면 아래 일반 필지 로직으로 폴백
-        }
-
-        const p0raw = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${lng} ${lat})`, size: "10" });
-        const parcels = new Map(); // pnu -> feature (도로류 필지는 부지에서 제외)
-        p0raw.filter((f) => !__parcelIsRoadLike(f)).forEach((f) => parcels.set(f.properties?.pnu || Math.random(), f));
-
-        // 공유 필지(타단지 마커 동거) → 동 번호 기반 보로노이 분할 (같은 pnu 키 유지: 이후 확장의 중복 조회 방지)
-        for (const [pnu, f] of [...parcels.entries()]) {
-          const split = await __parcelSplitSharedParcel(f, aptId);
-          if (split) {
-            parcels.set(pnu, split);
-            console.log(`[필지] 공유 필지(${f.properties?.jibun}) 동번호 분할 적용: ${aptName}`);
-          }
-        }
-
-        // 2) 단지 건물명 검출 (마커 주변 ±약 100m)
-        const smallB = await __vworldGet({
-          data: "LT_C_SPBD",
-          geomFilter: `BOX(${lng - 0.0012},${lat - 0.001},${lng + 0.0012},${lat + 0.001})`,
-          size: "100",
-        });
-        const aptNorm = __parcelNormName(aptName);
-        let name = __parcelDetectName(smallB, aptNorm, parcels);
-
-        // 2-b) 이름 미검출 → 네이버 동 목록으로 단지 동 발자국을 직접 매칭해 필지 수집
-        //      (신축 등 주소DB 건물명이 빈 단지: 이수푸르지오더프레티움 — 동번호 buld_nm_dc는 있음)
-        if (!name) {
-          try {
-            const myDongs = await __parcelFetchDongs(aptId);
-            const mySet = myDongs ? new Set(myDongs.map(__parcelDongKey).filter(Boolean)) : null;
-            if (mySet && mySet.size) {
-              const nearB = await __vworldGet({
-                data: "LT_C_SPBD",
-                geomFilter: `BOX(${lng - 0.003},${lat - 0.0025},${lng + 0.003},${lat + 0.0025})`,
-              });
-              let calls = 0;
-              const dongExcluded = []; // 타단지/도로 판정 필지 — 같은 필지 반복 조회로 호출 상한 소모 방지
-              for (const b of nearB) {
-                const k = __parcelDongKey(b.properties?.buld_nm_dc);
-                if (!k || !mySet.has(k)) continue;
-                const [cx, cy] = __parcelCentroid(b.geometry);
-                if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) continue;
-                if (dongExcluded.some((f) => __pointInParcel(cx, cy, f))) continue;
-                if (++calls > 15) break;
-                const ps = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" });
-                ps.forEach((f) => {
-                  const pnu = f.properties?.pnu;
-                  if (!pnu || parcels.has(pnu)) return;
-                  if (__parcelIsRoadLike(f)) { dongExcluded.push(f); return; }
-                  if (__parcelOtherMarkerInside(f, aptId)) { dongExcluded.push(f); return; } // 이웃 단지의 같은 동번호(무명) 오염 방지
-                  parcels.set(pnu, f);
-                });
-              }
-              if (calls) console.log(`[필지] 동번호 매칭 수집(${aptName}): 필지 ${parcels.size}개`);
-            }
-          } catch (e) {}
-        }
-
-        // 2-c) 여전히 이름 미검출 → 마커 최근접 건물의 필지를 2차 앵커로 재시도
-        //      (마커가 도로·공원 필지 위라 P0에 건물이 없는 단지: 보라매SK뷰·당산효성2차 케이스)
-        if (!name && smallB.length) {
-          const sorted = [...smallB].sort((b1, b2) => {
-            const [x1, y1] = __parcelCentroid(b1.geometry);
-            const [x2, y2] = __parcelCentroid(b2.geometry);
-            return (x1 - lng) ** 2 + (y1 - lat) ** 2 - ((x2 - lng) ** 2 + (y2 - lat) ** 2);
-          });
-          for (const b of sorted.slice(0, 5)) {
-            const [cx, cy] = __parcelCentroid(b.geometry);
-            const anchor = (await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" }))
-              .filter((f) => !__parcelIsRoadLike(f))
-              .filter((f) => f.properties?.pnu && !parcels.has(f.properties.pnu))
-              .filter((f) => !__parcelOtherMarkerInside(f, aptId));
-            if (!anchor.length) continue;
-            anchor.forEach((f) => parcels.set(f.properties.pnu, f));
-            name = __parcelDetectName(smallB, aptNorm, parcels);
-            console.log(`[필지] 2차 앵커 사용(${aptName}):`, anchor.map((f) => f.properties?.jibun).join(", "));
-            break;
-          }
-        }
-        if (!name) {
-          // 건물명 미검출 → 마커 필지만(도로류 제외 후). 단, 필지 면적이 세대수 대비 과소하면
-          // (세대당 5㎡ 미만 — 지적 미정리 신축 재개발에서 옛 소필지가 잡힌 경우: 영등포자이디그니티 등)
-          // 사업구역 폴백을 시도하고, 그것도 없으면 잘못된 조각 대신 미표시.
-          const feats = [...parcels.values()];
-          const units = Number(aptUnits) || 0;
-          const totalArea = feats.reduce((s, f) => s + __parcelFeatAreaM2(f), 0);
-          if (units > 0 && totalArea < units * 5) {
-            const z = pickZone(await __vworldGet({ data: "LT_C_UPISUQ161", geomFilter: `POINT(${lng} ${lat})`, size: "5" }));
-            if (z) return [z];
-            console.log(`[필지] ${aptName}: 필지 ${Math.round(totalArea)}㎡가 세대수(${units}) 대비 과소 — 지적 미정리 신축 추정, 경계 미표시`);
-            return [];
-          }
-          return __parcelUnion(feats);
-        }
-
-        // 3) 광범위(±약 1.1km x 1km) 동일 건물명 동 전체
-        // 검출명이 "~N동" 꼴(주소DB가 동 단위로 등록: 신기목련아파트 101동, 도곡한신아파트1동)이면
-        // 어간 like 검색으로 전 동을 잡는다 (완전일치는 그 동 1개만 찾아 부지가 축소됨)
-        const stemMatch = name.match(/^(.{4,}?)\s*\d+동$/);
-        const bigB = await __vworldGet({
-          data: "LT_C_SPBD",
-          geomFilter: `BOX(${lng - 0.013},${lat - 0.009},${lng + 0.013},${lat + 0.009})`,
-          attrFilter: stemMatch ? `buld_nm:like:${stemMatch[1].trim()}` : `buld_nm:=:${name}`,
-        });
-
-        // 4) 아직 수집한 필지에 안 덮인 동 중심점 → 필지 역조회 (호출 상한 12회)
-        //    타단지 마커가 든 필지·도로류는 excluded에 넣어 중복 조회 없이 건너뜀
-        const excluded = [];
-        let extraCalls = 0;
-        for (const b of bigB) {
-          const [cx, cy] = __parcelCentroid(b.geometry);
-          if ([...parcels.values()].some((f) => __pointInParcel(cx, cy, f))) continue;
-          if (excluded.some((f) => __pointInParcel(cx, cy, f))) continue;
-          if (++extraCalls > 12) break;
-          const ps = await __vworldGet({ data: "LP_PA_CBND_BUBUN", geomFilter: `POINT(${cx} ${cy})`, size: "10" });
-          ps.forEach((f) => {
-            const pnu = f.properties?.pnu;
-            if (!pnu || parcels.has(pnu)) return;
-            if (__parcelIsRoadLike(f)) { excluded.push(f); return; }
-            const other = __parcelOtherMarkerInside(f, aptId) || __parcelFamilyMarkerNear(f, aptId, name);
-            if (other) {
-              excluded.push(f);
-              console.log(`[필지] 타단지(${other}) 필지 제외:`, f.properties?.jibun);
-              return;
-            }
-            parcels.set(pnu, f);
-          });
-        }
-        // 시세통(호갱노노) 정합: 동일명 건물이 하나도 없는 비대지(지목≠대) 부속필지(놀이터·공원 등) 제외
-        for (const [pnu, f] of [...parcels.entries()]) {
-          if (parcels.size <= 1) break;
-          const jm = String(f.properties?.jibun || "").trim().match(/([가-힣])$/);
-          if (!jm || jm[1] === "대") continue;
-          const hasBldg = bigB.some((b) => {
-            const [cx, cy] = __parcelCentroid(b.geometry);
-            return __pointInParcel(cx, cy, f);
-          });
-          if (!hasBldg) {
-            parcels.delete(pnu);
-            console.log(`[필지] 부속필지 제외(지목 ${jm[1]}):`, f.properties?.jibun);
-          }
-        }
-        // 결과-마커 포함 검증: 마커가 도로 위라 2차 앵커가 엉뚱한 이웃 단지를 잡은 경우
-        // (창전현대홈타운→창전동삼성 등) 최종 경계가 마커와 동떨어짐 → 오검출로 보고 미표시
-        const feats = [...parcels.values()];
-        if (feats.length && !feats.some((f) => __pointInParcel(lng, lat, f))) {
-          const dmin = Math.min(...feats.map((f) => __parcelDistToFeatM(lng, lat, f)));
-          if (dmin > 40) {
-            console.log(`[필지] ${aptName}: 수집 경계가 마커에서 ${Math.round(dmin)}m 떨어짐 — 오검출 추정, 경계 미표시`);
-            return [];
-          }
-        }
-        return __parcelUnion(feats);
       }
 
       function __parcelDraw(features, store, color) {
@@ -7400,7 +6867,7 @@
         let features = __parcelCache.get(idStr);
         if (features === undefined) {
           try {
-            features = await __parcelCollectFeatures(aptInfo.lat, aptInfo.lng, aptInfo.name, aptInfo.type, idStr, aptInfo.units);
+            features = await __parcelFetchHogang(idStr);
           } catch (e) {
             console.warn("[필지] 조회 실패:", e);
             return;
@@ -7523,7 +6990,7 @@
           let features = __parcelCache.get(t.id);
           if (features === undefined) {
             try {
-              features = await __parcelCollectFeatures(apt.lat, apt.lng, apt.name, apt.type, t.id, apt.units);
+              features = await __parcelFetchHogang(t.id);
             } catch (e) {
               failed++;
               console.warn(`[필지] 수집 실패: ${apt.name}(${t.id})`, e);
