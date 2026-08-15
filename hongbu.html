@@ -695,6 +695,47 @@
         transform: translateZ(0); /* GPU 렌더링 안정화 */
       }
 
+      /* 🖥 PC: 아파트 상세를 지도영역 왼쪽에 도킹 (지도·경계를 가리지 않도록).
+         위치·높이는 JS(__dockApartmentPanel)가 지도의 화면상 보이는 사각형에 맞춰 인라인 지정.
+         여기서는 외형(폭/테두리/그림자)만. PC 판정 = 넓은 화면 AND 주 입력 정밀(마우스·트랙패드). */
+      /* 시세이력 탭 활성 시(hongbuSise.js가 클래스 부여) 폭 제한 해제 — 차트 공간 확보 */
+      @media (min-width: 1281px) and (pointer: fine) {
+        #apartmentInfo.sise-hist-active {
+          width: auto;
+          max-width: none;
+        }
+      }
+      @media (min-width: 1281px) and (pointer: fine) {
+        #apartmentInfo {
+          width: 400px;
+          max-width: 400px;
+          border-radius: 0;
+          border-top: none;
+          border-bottom: none;
+          border-left: none;
+          box-shadow: 4px 0 16px rgba(0, 0, 0, 0.18);
+        }
+      }
+
+      /* PC 도킹(폭 400px): 표 8열을 패널 폭에 맞추고 세로 스크롤바 자리를 예약해
+         세대수(마지막 열)가 잘리거나 스크롤바에 가리지 않게 함. 모바일은 미적용. */
+      @media (min-width: 1281px) and (pointer: fine) {
+        #apartmentInfo {
+          scrollbar-gutter: stable;
+        }
+        #apartmentInfo table {
+          width: 100%;
+          table-layout: fixed;
+        }
+        #apartmentInfo th,
+        #apartmentInfo td {
+          padding: 4px 2px;
+          white-space: normal;
+          word-break: keep-all;
+          font-size: 11px;
+        }
+      }
+
       #apartmentInfo table {
         width: auto; /* 🔹 표 크기를 내용에 맞게 자동 조정 */
         table-layout: auto; /* 🔹 테이블 레이아웃 자동 조정 */
@@ -926,7 +967,9 @@
         height: 100%;
       }
 
-      @media (max-width: 768px) {
+      /* 모바일 판정 = 좁은 화면 OR 주 입력이 터치(pointer:coarse).
+         폴드 펼침처럼 넓어도 터치기기면 모바일. 터치 노트북은 주 입력이 트랙패드라 제외됨. */
+      @media (max-width: 1280px), (pointer: coarse) {
         .only-pc {
           display: none !important;
         }
@@ -1833,6 +1876,13 @@
       <label><input type="checkbox" id="toggleBlankMap" />백지도</label>
       <label><input type="checkbox" id="toggleStreetView" />거리뷰</label>
       <label><input type="checkbox" id="toggleCadastralMap" />지적편집도</label>
+      <label>아파트경계
+        <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
+          <option value="none">표시 안함</option>
+          <option value="selected">선택한 아파트 경계 표시</option>
+          <option value="all" selected>전체 아파트 경계 표시</option>
+        </select>
+      </label>
       <label><input type="checkbox" id="toggleSatelliteMap" />위성</label>
       <label><input type="checkbox" id="toggleTerrainMap" />지형</label>
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모</label>
@@ -3012,6 +3062,9 @@
             };
 
         window.map = new naver.maps.Map("map", mapOptions);
+
+        // 초기 로드에도 PC 동적 지도 높이 적용(컨트롤바 실제 높이 반영, 고정 150px 여백 방지)
+        try { resizeMapToContainer(); } catch (e) {}
 
         // ✅ 지도 좌표 기반 사진 메모(카메라 버튼 모드) 훅 바인딩
         try {
@@ -5325,6 +5378,8 @@
         // ▼ 여기서 시도/시군구 필터까지 적용
         const filtered = apartmentData.filter((apartment) => {
           const inBounds = bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng));
+          // ?focus= 로 연 단지는 필터(세대수·대형·연도·분양권)와 무관하게 화면 안이면 항상 표시
+          if (window.__forceShowAptId && String(apartment.id) === window.__forceShowAptId) return inBounds;
           const unitOK = apartment.units >= minUnits;
 
           const sidoOK = !selectedSido || (apartment.sido || "").trim() === selectedSido;
@@ -5398,6 +5453,11 @@
           if (!marker) {
             marker = createDefaultMarker(apartment);
             apartmentMarkers[apartment.id] = marker;
+          }
+
+          // focus로 연 단지는 좌표가 겹치는 다른 단지(재건축 전후 등) 위로 올려 항상 보이게
+          if (window.__forceShowAptId && String(apartment.id) === window.__forceShowAptId) {
+            try { marker.setZIndex && marker.setZIndex(1000000); } catch (e) {}
           }
 
           newMarkers.push(marker);
@@ -6441,6 +6501,8 @@
           //window.map.setSize(new naver.maps.Size(width, height)); // 지도 크기 업데이트
           //console.log("지도 변함");
         }
+        // 지도 크기가 바뀌면 열려 있는 상세 패널도 지도영역에 맞춰 재도킹
+        try { if (typeof __dockApartmentPanel === "function") __dockApartmentPanel(); } catch (e) {}
       });
 
       // `#map` 요소의 크기 변화를 감지하여 자동 업데이트
@@ -6721,6 +6783,531 @@
         }
       }
 
+      // ✅ 아파트 단지 경계 표시 — 단지 경계 폴리곤(apt_boundaries.json) 사용
+      // 마커 클릭/아파트경계 체크 시 sise_server /apt_boundaries.json 으로 단지 경계를 받아 그린다.
+      // (naver 단지번호별 단지 부지 경계 폴리곤)
+      const __parcelCache = new Map(); // aptId(String) -> GeoJSON features 배열(빈 배열 = 조회했으나 없음)
+      const __parcelColors = new Map(); // aptId(String) -> 표시 색 (현재 화면에 떠 있는 단지들)
+      let __parcelPolygons = [];
+      let __parcelAptId = null;
+      let __parcelReqSeq = 0;
+
+      // 단지 경계 색상: 고정 6색 팔레트 + 인접 단지 색 회피(탐욕 그래프 채색).
+      // 인접(경계 bbox가 서로 45m 이내)한 단지끼리는 절대 같은 색이 안 나오게 보장.
+      // 녹색 계열(hue 55~170°)은 지도 배경(공원/산)과 혼동돼 팔레트에서 제외.
+      // 자주색(hue 320) 제거 → 5색. 200·230은 둘 다 '파랑 계열'로 묶어 인접 금지.
+      const __PARCEL_HUES = [0, 35, 200, 230, 275];
+      const __PARCEL_PALETTE = __PARCEL_HUES.map((h) => __hslToHex(h, 0.68, 0.48));
+      // 색 계열(family): 비슷한 색끼리 같은 라벨 → 인접 시 같은 계열 회피
+      function __hueFamily(h) {
+        if (h < 25) return "red";
+        if (h < 60) return "orange";
+        if (h >= 55 && h < 175) return "green"; // (팔레트엔 없지만 일반화)
+        if (h >= 175 && h < 255) return "blue"; // 200·230 → 파랑 한 계열
+        return "purple"; // 255~ 보라/자주
+      }
+      const __PARCEL_FAM = __PARCEL_HUES.map(__hueFamily); // ['red','orange','blue','blue','purple']
+      const __PARCEL_FAM_OF = new Map(__PARCEL_PALETTE.map((c, i) => [c, __PARCEL_FAM[i]]));
+      const __PARCEL_FAM_ORDER = __PARCEL_FAM.filter((f, i) => __PARCEL_FAM.indexOf(f) === i);
+      const __PARCEL_ADJ_M = 45; // 이 거리 이내면 '인접'으로 보고 같은 색 금지(과대추정 = 안전)
+      const __parcelBBoxes = new Map(); // aptId -> [minLng,minLat,maxLng,maxLat]
+
+      function __parcelFeatsBBox(features) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        (features || []).forEach((f) => {
+          const g = f?.geometry;
+          if (!g) return;
+          const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+          polys.forEach((rings) => (rings[0] || []).forEach(([x, y]) => {
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }));
+        });
+        return [x0, y0, x1, y1];
+      }
+      // 두 bbox 사이 최소 거리(m). 겹치면 0.
+      function __parcelBBoxGapM(a, b) {
+        const midLat = (a[1] + a[3] + b[1] + b[3]) / 4;
+        const kx = 111320 * Math.cos((midLat * Math.PI) / 180), ky = 110540;
+        const dx = Math.max(0, b[0] - a[2], a[0] - b[2]) * kx;
+        const dy = Math.max(0, b[1] - a[3], a[1] - b[3]) * ky;
+        return Math.hypot(dx, dy);
+      }
+      // 인접 단지가 쓰지 않는 팔레트 색을 배정(탐욕). 이미 그려진 이웃 색만 회피.
+      function __pickParcelColor(aptId, features) {
+        const id = String(aptId);
+        const bb = __parcelFeatsBBox(features);
+        __parcelBBoxes.set(id, bb);
+        // 인접 이웃이 쓰는 '계열'과 전역 색 사용량 집계
+        const usedFam = new Set(); // 인접 이웃이 쓴 계열
+        const gc = new Map();      // 전역 색 사용량(계열 내 덜 쓴 색 우선 → 다양성)
+        __parcelColors.forEach((col, id2) => {
+          gc.set(col, (gc.get(col) || 0) + 1);
+          if (id2 === id) return;
+          const bb2 = __parcelBBoxes.get(id2);
+          if (bb2 && __parcelBBoxGapM(bb, bb2) <= __PARCEL_ADJ_M) {
+            const f = __PARCEL_FAM_OF.get(col);
+            if (f) usedFam.add(f);
+          }
+        });
+        // 인접 이웃이 안 쓴 계열 중 하나 선택(그 계열 색들 중 전역 최소 사용색 → 같은 계열도 골고루)
+        for (const fam of __PARCEL_FAM_ORDER) {
+          if (usedFam.has(fam)) continue;
+          let best = null, bn = Infinity;
+          __PARCEL_PALETTE.forEach((c, i) => {
+            if (__PARCEL_FAM[i] === fam) { const n = gc.get(c) || 0; if (n < bn) { bn = n; best = c; } }
+          });
+          if (best) return best;
+        }
+        // 모든 계열이 인접에 이미 쓰임(초고밀) → 전역 최소 사용 색
+        let best = __PARCEL_PALETTE[0], bn = Infinity;
+        __PARCEL_PALETTE.forEach((c) => { const n = gc.get(c) || 0; if (n < bn) { bn = n; best = c; } });
+        return best;
+      }
+
+      function __parcelClear() {
+        __parcelPolygons.forEach((p) => p.setMap(null));
+        __parcelPolygons = [];
+        // 자동표시(아파트경계)가 그린 단지 색은 유지 — 클릭 선택 전용 색만 반납
+        if (__parcelAptId && !__parcelAutoPolys.has(String(__parcelAptId))) {
+          __parcelColors.delete(String(__parcelAptId));
+          __parcelBBoxes.delete(String(__parcelAptId));
+        }
+        __parcelAptId = null;
+      }
+
+      // ---- 아파트 단지 경계 (전체 파일 1회 로드 + IndexedDB 캐시) ----
+      // sise_server가 apt_boundaries.json(naver 단지번호 키, gzip)을 서빙. 최초 1회 받아
+      // IndexedDB(settings)에 캐시하고 클라이언트에서 단지별 lookup.
+      // 서버 ?meta=1(버전)로 신선도 판단 → 파일 갱신 시 자동 재다운로드.
+      function __parcelApiBase() {
+        const h = location.hostname;
+        return h === "localhost" || h === "127.0.0.1" ? "http://localhost:7123" : "https://sise-cloud.luciferhong.com";
+      }
+      const __BOUNDARY_CACHE_KEY = "aptBoundaries_v1";
+
+      // groupPolygons([group][polygon][ring][{x,y}]) → MultiPolygon 피처(좌표 [lng,lat])
+      function __parcelPolyToFeature(poly) {
+        const coords = [];
+        (poly || []).forEach((group) => {
+          (group || []).forEach((pg) => {
+            const rings = (pg || []).map((ring) => (ring || []).map((pt) => [pt.x, pt.y]));
+            if (rings.length && rings[0].length >= 3) coords.push(rings);
+          });
+        });
+        if (!coords.length) return null;
+        return { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
+      }
+
+      // fetch + 타임아웃. AbortSignal.timeout 미지원(구형 삼성인터넷/안드로이드 WebView) 대응.
+      function __fetchTimeout(url, ms) {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), ms);
+        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+      }
+
+      // 경계 맵(naver_id → 레코드) 1회 로드. 세션 내 memoize + IndexedDB 캐시.
+      let __boundaryMapPromise = null;
+      async function __parcelLoadBoundaryMap() {
+        if (__boundaryMapPromise) return __boundaryMapPromise;
+        __boundaryMapPromise = (async () => {
+          // 아파트 경계는 토큰 없이 공개 (서버 게이트 해제됨)
+          const base = __parcelApiBase();
+          let cached = null;
+          try { cached = await getHongbuSetting(__BOUNDARY_CACHE_KEY); } catch (e) {}
+          // 서버 버전(etag) 확인 — 실패해도 캐시 있으면 그걸 사용
+          let etag = null;
+          try {
+            const m = await __fetchTimeout(`${base}/apt_boundaries.json?meta=1`, 6000);
+            if (m.ok) etag = (await m.json()).etag;
+          } catch (e) {}
+          if (cached && cached.data && (!etag || cached.etag === etag)) {
+            console.log(`[경계] 캐시 사용: ${Object.keys(cached.data).length}개 (etag ${cached.etag})`);
+            return cached.data;
+          }
+          // 전체 파일 다운로드
+          try {
+            console.log("[경계] 전체 경계 다운로드 중…");
+            const res = await __fetchTimeout(`${base}/apt_boundaries.json`, 60000);
+            if (!res.ok) { console.warn("[경계] 다운로드 실패:", res.status); return (cached && cached.data) || {}; }
+            const data = await res.json();
+            const ver = etag || res.headers.get("ETag") || String(Date.now());
+            try { await setHongbuSetting(__BOUNDARY_CACHE_KEY, { etag: ver, data }); } catch (e) { console.warn("[경계] 캐시 저장 실패:", e); }
+            console.log(`[경계] 다운로드·캐시 완료: ${Object.keys(data).length}개`);
+            return data;
+          } catch (e) {
+            console.warn("[경계] 다운로드 오류:", e);
+            return (cached && cached.data) || {};
+          }
+        })();
+        return __boundaryMapPromise;
+      }
+
+      // 단지(naver id)의 경계 피처 배열 반환. 없으면 [] (경계 데이터 없음).
+      async function __parcelFetchBoundary(aptId) {
+        const map = await __parcelLoadBoundaryMap();
+        const rec = map && map[String(aptId)];
+        if (!rec || !rec.poly) return [];
+        const feat = __parcelPolyToFeature(rec.poly);
+        return feat ? [feat] : [];
+      }
+
+      // 입주민이야기 버튼 표시 여부: 호갱 매핑(h)이 있는 단지만 노출 (없으면 숨김).
+      async function __updateResidentStoryBtn(aptId) {
+        try {
+          const btn = document.getElementById("residentStoryBtn");
+          if (!btn) return;
+          const map = await __parcelLoadBoundaryMap();
+          const h = map && map[String(aptId)] && map[String(aptId)].h;
+          // 렌더 중 다른 단지로 바뀌었으면 무시
+          const info = document.getElementById("apartmentInfo");
+          if (info && String(info.getAttribute("data-id")) !== String(aptId)) return;
+          btn.style.display = h ? "" : "none";
+        } catch (e) {}
+      }
+
+      // 입주민이야기: 단지 해시로 이야기 페이지 열기 (경계 맵에 실린 h 사용)
+      async function __openResidentStory(aptId) {
+        try {
+          const map = await __parcelLoadBoundaryMap();
+          const h = map && map[String(aptId)] && map[String(aptId)].h;
+          if (!h) { alert("이 단지는 입주민이야기 연결 정보가 없습니다."); return; }
+          const url = `https://hogangnono.com/apt/${h}/0/0/review`;
+          // PC(마우스/트랙패드 = pointer:fine): 새 탭으로 열어 지도 화면 유지.
+          // 터치 기기: window.open(_blank)이 iOS에서 유니버설 링크로 앱 열려도 빈 탭이
+          //   남으므로 현재 탭 이동(앱 설치 시 iOS가 가로채 지도 탭 보존).
+          if (window.matchMedia && window.matchMedia("(pointer: fine)").matches) {
+            window.open(url, "_blank", "noopener");
+          } else {
+            location.href = url;
+          }
+        } catch (e) {
+          alert("입주민이야기를 여는 중 오류가 발생했습니다.");
+        }
+      }
+
+      function __parcelDraw(features, store, color) {
+        store = store || __parcelPolygons;
+        color = color || "#5A50DC";
+        const toLatLng = ([x, y]) => new naver.maps.LatLng(y, x);
+        features.forEach((f) => {
+          const geom = f?.geometry;
+          if (!geom) return;
+          const isZone = !!f?.properties?.dgm_nm; // 정비구역 등 도시계획 사업구역 (필지 아님 → 점선 구분)
+          // Polygon: [ring][pt] / MultiPolygon: [poly][ring][pt] → 폴리곤 단위로 분리
+          const polys = geom.type === "MultiPolygon" ? geom.coordinates : geom.type === "Polygon" ? [geom.coordinates] : [];
+          polys.forEach((rings) => {
+            if (!rings?.length) return;
+            const polygon = new naver.maps.Polygon({
+              map: window.map,
+              paths: rings.map((ring) => ring.map(toLatLng)), // 두 번째 이후 ring은 구멍(hole)
+              fillColor: color,
+              fillOpacity: isZone ? 0.12 : 0.2,
+              strokeColor: color,
+              strokeOpacity: 0.9,
+              strokeWeight: 2,
+              strokeStyle: isZone ? "shortdash" : "solid",
+              clickable: false,
+              zIndex: 5,
+            });
+            store.push(polygon);
+          });
+          if (isZone) console.log("[필지] 분양권 → 사업구역 경계 표시:", f.properties.dgm_nm, `(${f.properties.dgm_ar}㎡)`);
+        });
+      }
+
+      async function __parcelShowForApartment(apartmentId, aptInfo) {
+        if (!aptInfo || !window.map || typeof naver === "undefined") return;
+        const idStr = String(apartmentId);
+        if (__parcelAutoPolys.has(idStr)) { __parcelClear(); __parcelAptId = idStr; return; } // 자동표시가 이미 그림
+        if (__parcelAptId === idStr && __parcelPolygons.length) return; // 같은 단지 재클릭
+        const seq = ++__parcelReqSeq;
+        let features = __parcelCache.get(idStr);
+        if (features === undefined) {
+          try {
+            features = await __parcelFetchBoundary(idStr);
+          } catch (e) {
+            console.warn("[필지] 조회 실패:", e);
+            return;
+          }
+          __parcelCache.set(idStr, features);
+        }
+        if (seq !== __parcelReqSeq) return; // 대기 중 다른 단지가 클릭됨
+        __parcelClear();
+        __parcelAptId = idStr;
+        const color = __pickParcelColor(idStr, features);
+        __parcelColors.set(idStr, color);
+        __parcelDraw(features, __parcelPolygons, color);
+      }
+
+      // ---- "아파트경계" 자동 표시: 체크 시 화면 안 단지들의 부지 경계를 클릭 없이 표시 ----
+      const __parcelAutoPolys = new Map(); // aptId -> polygons[]
+      let __parcelAutoGen = 0; // 지도 이동/해제 시 진행 중인 수집 취소용
+      let __parcelAutoTimer = null;
+      let __parcelIdleBound = false;
+      let __aptById = null;
+
+      // 경계 표시 모드: "none"(표시안함) | "selected"(클릭 단지만) | "all"(화면 전체 자동)
+      function __parcelMode() {
+        return document.getElementById("parcelBoundaryMode")?.value || "none";
+      }
+      // 자동표시(화면 전체)는 "all"에서만
+      function __parcelAutoChecked() {
+        return __parcelMode() === "all";
+      }
+
+      function __parcelAutoClear() {
+        __parcelAutoGen++;
+        __parcelAutoPolys.forEach((polys, id) => {
+          polys.forEach((p) => p.setMap(null));
+          __parcelColors.delete(id);
+          __parcelBBoxes.delete(id);
+        });
+        __parcelAutoPolys.clear();
+      }
+
+      function __parcelAutoRemove(idStr) {
+        const polys = __parcelAutoPolys.get(idStr);
+        if (polys) {
+          polys.forEach((p) => p.setMap(null));
+          __parcelAutoPolys.delete(idStr);
+          __parcelColors.delete(idStr);
+          __parcelBBoxes.delete(idStr);
+        }
+      }
+
+      function __parcelAutoEnsureIdle() {
+        if (__parcelIdleBound || !window.map || typeof naver === "undefined") return;
+        naver.maps.Event.addListener(window.map, "idle", () => {
+          if (!__parcelAutoChecked()) return;
+          clearTimeout(__parcelAutoTimer);
+          __parcelAutoTimer = setTimeout(__parcelAutoRefresh, 500);
+        });
+        __parcelIdleBound = true;
+      }
+
+      async function __parcelAutoRefresh() {
+        try {
+          await __parcelAutoRefreshInner();
+        } catch (e) {
+          console.warn("[필지] 아파트경계 갱신 중 오류:", e);
+        }
+      }
+
+      async function __parcelAutoRefreshInner() {
+        if (!__parcelAutoChecked()) return;
+        if (!window.map) {
+          console.log("[필지] 아파트경계: 지도가 아직 준비되지 않음");
+          return;
+        }
+        if (window.map.getZoom() < 16) {
+          // 저줌에서는 미표시 (마커 과다 + 시인성 없음).
+          if (__parcelAutoPolys.size) __parcelAutoClear();
+          console.log(`[필지] 아파트경계: 현재 줌 ${window.map.getZoom()} — 줌 16 이상에서 표시됩니다`);
+          return;
+        }
+        const gen = ++__parcelAutoGen;
+        const bounds = window.map.getBounds();
+        const center = window.map.getCenter();
+        // apt.json은 비동기(CloudSync) 로드라 빈 상태에서 인덱스가 만들어질 수 있음 → 건수 변하면 재구축
+        if (!__aptById || __aptById.size !== (apartmentData || []).length) {
+          __aptById = new Map();
+          (apartmentData || []).forEach((a) => __aptById.set(String(a.id), a));
+        }
+        // 화면 안 마커 전부(중심 가까운 순). 경계는 로컬 캐시 조회라 렌더가 싸서 상한을 넉넉히.
+        const markerCnt = Object.keys(apartmentMarkers || {}).length;
+        const visible = [];
+        Object.entries(apartmentMarkers || {}).forEach(([id, marker]) => {
+          try {
+            const pos = marker.getPosition();
+            if (!bounds.hasLatLng(pos)) return;
+            const dx = pos.lng() - center.lng(), dy = pos.lat() - center.lat();
+            visible.push({ id: String(id), d: dx * dx + dy * dy });
+          } catch (e) {}
+        });
+        if (!visible.length) {
+          console.log(`[필지] 아파트경계: 화면 내 아파트 마커 없음 (전체 마커 ${markerCnt}개) — '아파트' 체크·세대수 필터·줌 확인`);
+          return;
+        }
+        visible.sort((a, b) => a.d - b.d);
+        // 같은 호갱 단지(h)에 매핑된 네이버 단지가 여럿이면(예: 금빛그랑메종 1~5단지 → 동일 폴리곤)
+        // 전체 폴리곤이 단지 수만큼 겹쳐 그려짐 → h 기준 중복 제거(가장 가까운 1개만). 경계 없는 단지는 제외.
+        const __bmap = await __parcelLoadBoundaryMap();
+        const __seenH = new Set();
+        const __dedup = [];
+        for (const v of visible) {
+          const rec = __bmap && __bmap[String(v.id)];
+          if (!rec) continue;
+          const key = rec.h || "id:" + v.id;
+          if (__seenH.has(key)) continue;
+          __seenH.add(key);
+          __dedup.push(v);
+        }
+        const __PARCEL_MAX = 200; // 안전 상한(줌 16+ 뷰포트라 실제로는 이보다 적음)
+        if (__dedup.length > __PARCEL_MAX) {
+          console.log(`[필지] 아파트경계: 화면 내 ${__dedup.length}개 중 중심 가까운 ${__PARCEL_MAX}개만 표시(상한)`);
+        }
+        const targets = __dedup.slice(0, __PARCEL_MAX);
+        const targetIds = new Set(targets.map((t) => t.id));
+        // 화면 밖으로 나간 단지 정리
+        [...__parcelAutoPolys.keys()].forEach((id) => {
+          if (!targetIds.has(id)) __parcelAutoRemove(id);
+        });
+        const todo = targets.filter((t) => !__parcelAutoPolys.has(t.id) && String(__parcelAptId) !== t.id);
+        console.log(`[필지] 아파트경계: 화면 내 ${visible.length}개, 대상 ${targets.length}개 (표시됨 ${targets.length - todo.length}, 신규 ${todo.length})`);
+        // 순차 수집·표시 (캐시 히트는 즉시, 미보유 단지만 API 호출)
+        let drawn = 0, empty = 0, failed = 0, noInfo = 0;
+        for (const t of todo) {
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) {
+            console.log("[필지] 아파트경계: 지도 이동/해제로 이번 회차 중단");
+            return;
+          }
+          if (__parcelAutoPolys.has(t.id)) continue;
+          const apt = __aptById.get(t.id);
+          if (!apt) {
+            noInfo++;
+            console.warn(`[필지] 단지정보 없음: id=${t.id} (apartmentData 미포함)`);
+            continue;
+          }
+          let features = __parcelCache.get(t.id);
+          if (features === undefined) {
+            try {
+              features = await __parcelFetchBoundary(t.id);
+            } catch (e) {
+              failed++;
+              console.warn(`[필지] 수집 실패: ${apt.name}(${t.id})`, e);
+              continue;
+            }
+            __parcelCache.set(t.id, features);
+          }
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) {
+            console.log("[필지] 아파트경계: 지도 이동/해제로 이번 회차 중단");
+            return;
+          }
+          if (!features.length) {
+            empty++;
+            console.log(`[필지] 경계 데이터 없음: ${apt.name}(${t.id}) — 해당 좌표에 필지/구역 미검출`);
+            continue;
+          }
+          if (__parcelAutoPolys.has(t.id)) continue;
+          const store = [];
+          const color = __pickParcelColor(t.id, features);
+          __parcelColors.set(t.id, color);
+          __parcelDraw(features, store, color);
+          __parcelAutoPolys.set(t.id, store);
+          drawn++;
+        }
+        if (todo.length) {
+          console.log(`[필지] 아파트경계 완료: 신규 ${drawn}개 표시, 데이터없음 ${empty}, 실패 ${failed}, 정보없음 ${noInfo}`);
+        }
+      }
+
+      (function __parcelAutoInit() {
+        const sel = document.getElementById("parcelBoundaryMode");
+        if (!sel) return;
+        sel.addEventListener("change", () => {
+          const mode = __parcelMode();
+          if (mode === "all") {
+            console.log("[경계] 전체 아파트 경계 표시");
+            __parcelAutoEnsureIdle();
+            __parcelAutoRefresh();
+          } else if (mode === "selected") {
+            console.log("[경계] 선택한 아파트 경계 표시 — 자동표시 제거(클릭 시 표시)");
+            __parcelAutoClear();
+          } else {
+            console.log("[경계] 표시 안함 — 전체 제거");
+            __parcelAutoClear();
+            __parcelClear();
+          }
+        });
+        // 지도 준비 대기 + uiState 복원(로드 시 선택값) 대응 — "전체"면 자동표시
+        let tries = 0;
+        const timer = setInterval(() => {
+          if (++tries > 120) { clearInterval(timer); return; }
+          if (window.map && typeof naver !== "undefined" && window.map.getBounds) {
+            clearInterval(timer);
+            __parcelAutoEnsureIdle();
+            if (__parcelMode() === "all") __parcelAutoRefresh();
+            // uiState 복원이 지도 준비보다 늦는 경우 대비 재확인 (2/5/10초)
+            [2000, 5000, 10000].forEach((ms) => {
+              setTimeout(() => { if (__parcelMode() === "all" && !__parcelAutoPolys.size) __parcelAutoRefresh(); }, ms);
+            });
+          }
+        }, 500);
+      })();
+
+      // PC 도킹 판정(레이아웃 CSS와 동일 조건)
+      function __isPcDock() {
+        return window.matchMedia("(min-width: 1281px) and (pointer: fine)").matches;
+      }
+      // PC 지도 높이(px): 컨트롤바 실제 높이에 맞춰 화면 바닥까지 채움(고정 150px 예약 제거).
+      // 컨트롤이 와이드에서 1줄로 접혀도 여백이 남지 않음. (PC일 때만 호출)
+      function __mapDesiredHeight() {
+        const wrap = document.getElementById("mapWrapper") || document.getElementById("map");
+        const topDoc = window.scrollY + (wrap ? wrap.getBoundingClientRect().top : 0); // 지도 상단의 문서 절대 위치
+        return Math.max(200, Math.round(window.innerHeight - topDoc)) + "px";
+      }
+      // 상세 패널을 지도의 "화면에 보이는 사각형"에 맞춰 배치.
+      // position:fixed라 top/left/height를 뷰포트 좌표로 주면 스크롤과 무관하게
+      // 지도 영역 안쪽 + 화면 제일 아래까지만 차지(스크롤로 늘어나지 않음).
+      function __dockApartmentPanel() {
+        const panel = document.getElementById("apartmentInfo");
+        if (!panel || panel.style.display !== "block") return;
+        if (!__isPcDock()) {
+          // 모바일/터치: 중앙 모달로 복원(도킹에서 넘어온 인라인 값 제거)
+          panel.style.top = "50%";
+          panel.style.left = "50%";
+          panel.style.transform = "translate(-50%, -50%)";
+          panel.style.removeProperty("height");
+          panel.style.removeProperty("max-height");
+          panel.style.bottom = "";
+          return;
+        }
+        const mapEl = document.getElementById("map");
+        if (!mapEl) return;
+        const r = mapEl.getBoundingClientRect();
+        const top = Math.max(0, r.top);                    // 지도 상단(컨트롤바 아래)
+        const bottom = Math.min(window.innerHeight, r.bottom); // 화면에 보이는 지도 하단
+        const h = Math.max(0, bottom - top);
+        panel.style.top = top + "px";
+        panel.style.left = Math.max(0, r.left) + "px";
+        panel.style.transform = "none";
+        panel.style.bottom = "auto";
+        // 내용이 적어도 지도 영역 세로를 꽉 채우는 사이드패널(고정 높이 = 보이는 지도 높이).
+        // base CSS `max-height: 80vh`가 인라인을 잘라내므로 !important로 강제. 넘치면 내부 스크롤.
+        panel.style.setProperty("height", h + "px", "important");
+        panel.style.setProperty("max-height", h + "px", "important");
+      }
+      // 스크롤/리사이즈/방향전환 시 재도킹(패널 열려 있을 때만 동작)
+      (function __bindDockListeners() {
+        const relayout = () => { try { __dockApartmentPanel(); } catch (e) {} };
+        window.addEventListener("scroll", relayout, { passive: true });
+        window.addEventListener("resize", relayout);
+        window.addEventListener("orientationchange", relayout);
+      })();
+
+      // ?focus=<네이버단지id> 딥링크: 지도를 해당 단지로 이동 + 상세 모달 열기(미매칭 확인용 바로가기)
+      (function __focusFromUrl() {
+        let fid;
+        try { fid = new URLSearchParams(location.search).get("focus"); } catch (e) {}
+        if (!fid) return;
+        let tries = 0;
+        const timer = setInterval(() => {
+          if (++tries > 150) { clearInterval(timer); return; } // ~30초 대기
+          if (!window.map || !window.naver || !Array.isArray(apartmentData) || !apartmentData.length) return;
+          const apt = apartmentData.find((a) => String(a.id) === String(fid));
+          if (!apt) return;
+          clearInterval(timer);
+          window.__forceShowAptId = String(fid); // 필터 무관 항상 표시(대형·세대수 등에 걸려 사라지지 않게)
+          try {
+            window.map.setZoom(17);
+            window.map.setCenter(new naver.maps.LatLng(apt.lat, apt.lng));
+            if (window.map) updateMarkers(window.map.getBounds());
+            setTimeout(() => { try { showApartmentInfo(String(fid)); } catch (e) {} }, 700);
+          } catch (e) {}
+        }, 200);
+      })();
+
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
 
@@ -6744,6 +7331,11 @@
         }
 
         let aptInfo = apartmentData.find((apartment) => String(apartment.id) === apartmentId);
+
+        // ✅ 클릭한 단지의 경계 표시 (표시안함 모드에선 생략, 실패해도 팝업 영향 없음)
+        if (__parcelMode() !== "none") {
+          try { __parcelShowForApartment(apartmentId, aptInfo); } catch (e) {}
+        }
 
         let apt = hasDetail
           ? apartmentDetailData[apartmentId]
@@ -6772,6 +7364,10 @@
         <button onclick="openNaverRealEstate(${apartmentId})"
           style="padding: 8px; min-width: 59px; text-align: center; background: #4A90E2; color: white; border: none; border-radius: 4px; cursor: pointer;">
           네부
+        </button>
+        <button id="residentStoryBtn" onclick="__openResidentStory(${apartmentId}); event.stopPropagation();"
+          style="display: none; padding: 8px; min-width: 59px; text-align: center; background: #9B59B6; color: white; border: none; border-radius: 4px; cursor: pointer;">
+          🏠 이야기
         </button>
         <button id="naverRouteToggleBtn" onclick="toggleNaverRouteOptions(); event.stopPropagation();"
           style="padding: 8px; background: #03C75A; color: white; border: none; border-radius: 4px; cursor: pointer;">
@@ -6881,6 +7477,8 @@
 
         infoDiv.innerHTML = infoHtml;
         infoDiv.style.display = "block";
+        __dockApartmentPanel(); // PC: 지도영역 안쪽 + 화면 하단까지로 위치·높이 제한
+        __updateResidentStoryBtn(apartmentId); // 호갱 매핑 있는 단지만 이야기 버튼 노출
 
         // 포커스 시 커서를 마지막 글자 뒤로 이동 + 해당 위치로 스크롤
         const noteTextEl = document.getElementById("noteText");
@@ -7122,6 +7720,8 @@ const originalBase64 = event.target.result;
         saveNote(id);
 
         apartmentInfo.style.display = "none";
+        // ✅ [테스트] 필지 경계 제거
+        try { __parcelClear(); } catch (e) {}
         // ✅ 메모 팝업 닫힐 때 큰 데이터 참조 해제
         try {
           closeImageModal();
@@ -16579,8 +17179,17 @@ const originalBase64 = event.target.result;
         const mapEl = document.getElementById("map");
         if (mapEl && window.map) {
           // inline style로 이상하게 커지는 것 방지
-          mapEl.style.height = "calc(100svh - 150px)";
-          mapEl.style.maxHeight = "calc(100svh - 150px)";
+          const __full = document.body.classList.contains("fullscreen-active") || mapEl.classList.contains("fullscreen");
+          if (!__full && __isPcDock()) {
+            const h = __mapDesiredHeight();
+            // CSS의 `height: calc(100svh - 150px) !important`를 이겨야 하므로 인라인도 important로 지정
+            mapEl.style.setProperty("height", h, "important");
+            mapEl.style.setProperty("max-height", h, "important");
+          } else {
+            // 모바일/전체화면: CSS(!important)에 맡김 (인라인 제거)
+            mapEl.style.removeProperty("height");
+            mapEl.style.removeProperty("max-height");
+          }
 
           setTimeout(() => {
             try {
@@ -16627,8 +17236,17 @@ const originalBase64 = event.target.result;
         const mapEl = document.getElementById("map");
         if (mapEl && window.map) {
           // inline style로 커지는 걸 방지
-          mapEl.style.height = "calc(100svh - 150px)";
-          mapEl.style.maxHeight = "calc(100svh - 150px)";
+          const __full = document.body.classList.contains("fullscreen-active") || mapEl.classList.contains("fullscreen");
+          if (!__full && __isPcDock()) {
+            const h = __mapDesiredHeight();
+            // CSS의 `height: calc(100svh - 150px) !important`를 이겨야 하므로 인라인도 important로 지정
+            mapEl.style.setProperty("height", h, "important");
+            mapEl.style.setProperty("max-height", h, "important");
+          } else {
+            // 모바일/전체화면: CSS(!important)에 맡김 (인라인 제거)
+            mapEl.style.removeProperty("height");
+            mapEl.style.removeProperty("max-height");
+          }
 
           setTimeout(() => {
             try {
