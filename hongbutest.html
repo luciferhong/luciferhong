@@ -6795,7 +6795,20 @@
       // 단지 경계 색상: 고정 6색 팔레트 + 인접 단지 색 회피(탐욕 그래프 채색).
       // 인접(경계 bbox가 서로 45m 이내)한 단지끼리는 절대 같은 색이 안 나오게 보장.
       // 녹색 계열(hue 55~170°)은 지도 배경(공원/산)과 혼동돼 팔레트에서 제외.
-      const __PARCEL_PALETTE = [0, 35, 200, 230, 275, 320].map((h) => __hslToHex(h, 0.68, 0.48));
+      // 자주색(hue 320) 제거 → 5색. 200·230은 둘 다 '파랑 계열'로 묶어 인접 금지.
+      const __PARCEL_HUES = [0, 35, 200, 230, 275];
+      const __PARCEL_PALETTE = __PARCEL_HUES.map((h) => __hslToHex(h, 0.68, 0.48));
+      // 색 계열(family): 비슷한 색끼리 같은 라벨 → 인접 시 같은 계열 회피
+      function __hueFamily(h) {
+        if (h < 25) return "red";
+        if (h < 60) return "orange";
+        if (h >= 55 && h < 175) return "green"; // (팔레트엔 없지만 일반화)
+        if (h >= 175 && h < 255) return "blue"; // 200·230 → 파랑 한 계열
+        return "purple"; // 255~ 보라/자주
+      }
+      const __PARCEL_FAM = __PARCEL_HUES.map(__hueFamily); // ['red','orange','blue','blue','purple']
+      const __PARCEL_FAM_OF = new Map(__PARCEL_PALETTE.map((c, i) => [c, __PARCEL_FAM[i]]));
+      const __PARCEL_FAM_ORDER = __PARCEL_FAM.filter((f, i) => __PARCEL_FAM.indexOf(f) === i);
       const __PARCEL_ADJ_M = 45; // 이 거리 이내면 '인접'으로 보고 같은 색 금지(과대추정 = 안전)
       const __parcelBBoxes = new Map(); // aptId -> [minLng,minLat,maxLng,maxLat]
 
@@ -6825,16 +6838,30 @@
         const id = String(aptId);
         const bb = __parcelFeatsBBox(features);
         __parcelBBoxes.set(id, bb);
-        const used = new Map(); // color -> 인접 이웃 수
+        // 인접 이웃이 쓰는 '계열'과 전역 색 사용량 집계
+        const usedFam = new Set(); // 인접 이웃이 쓴 계열
+        const gc = new Map();      // 전역 색 사용량(계열 내 덜 쓴 색 우선 → 다양성)
         __parcelColors.forEach((col, id2) => {
+          gc.set(col, (gc.get(col) || 0) + 1);
           if (id2 === id) return;
           const bb2 = __parcelBBoxes.get(id2);
-          if (bb2 && __parcelBBoxGapM(bb, bb2) <= __PARCEL_ADJ_M) used.set(col, (used.get(col) || 0) + 1);
+          if (bb2 && __parcelBBoxGapM(bb, bb2) <= __PARCEL_ADJ_M) {
+            const f = __PARCEL_FAM_OF.get(col);
+            if (f) usedFam.add(f);
+          }
         });
-        for (const c of __PARCEL_PALETTE) if (!used.has(c)) return c; // 이웃이 안 쓴 첫 색
-        // 초고밀(6색 다 인접): 이웃이 가장 적게 쓴 색 (충돌 최소화)
-        let best = __PARCEL_PALETTE[0], bestN = Infinity;
-        for (const c of __PARCEL_PALETTE) { const n = used.get(c) || 0; if (n < bestN) { bestN = n; best = c; } }
+        // 인접 이웃이 안 쓴 계열 중 하나 선택(그 계열 색들 중 전역 최소 사용색 → 같은 계열도 골고루)
+        for (const fam of __PARCEL_FAM_ORDER) {
+          if (usedFam.has(fam)) continue;
+          let best = null, bn = Infinity;
+          __PARCEL_PALETTE.forEach((c, i) => {
+            if (__PARCEL_FAM[i] === fam) { const n = gc.get(c) || 0; if (n < bn) { bn = n; best = c; } }
+          });
+          if (best) return best;
+        }
+        // 모든 계열이 인접에 이미 쓰임(초고밀) → 전역 최소 사용 색
+        let best = __PARCEL_PALETTE[0], bn = Infinity;
+        __PARCEL_PALETTE.forEach((c) => { const n = gc.get(c) || 0; if (n < bn) { bn = n; best = c; } });
         return best;
       }
 
