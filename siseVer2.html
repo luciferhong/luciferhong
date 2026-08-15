@@ -398,13 +398,20 @@ buttonContainer {
     <input type="number" id="unitFilter" min="0" value="190">
     <span style="width: 6px;"></span>
     <label>연도 :<input class="filter-num" type="number" id="yearFromFilter" min="1900" max="2100" placeholder="시작"> ~ <input class="filter-num" type="number" id="yearToFilter" min="1900" max="2100" placeholder="끝"></label>
-    <label style="margin-left:4px;"><input type="checkbox" id="over85Filter" checked>대형포함</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleApartments" checked>아파트</label>
+    <label style="margin-left:4px;"><input type="checkbox" id="over85Filter" checked>대형포함</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleSchools">초</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleSchoolZoneKeep">초등배정 남기기</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleMiddleSchools">중</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleFacilities">환경</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleStarbucks">스벅</label>
+    <label style="margin-left:4px;">아파트경계
+        <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
+          <option value="none">표시 안함</option>
+          <option value="selected">선택한 아파트 경계 표시</option>
+          <option value="all" selected>전체 아파트 경계 표시</option>
+        </select>
+    </label>
 
 
 <!-- 예: 시세지도 버튼 근처 -->
@@ -1319,6 +1326,14 @@ function addSiseMapMarkerLeftClickEvent(marker, markerElement) {
             console.error("❌ apartmentId 찾을 수 없음!");
             return;
         }
+
+        // 아파트경계: 표시 모드가 none이 아니면 클릭 단지 경계 표시(실패해도 무시)
+        try {
+            if (typeof __parcelMode === "function" && __parcelMode() !== "none" && apartmentId) {
+                const __clkAptInfo = apartmentData.find((a) => String(a.id) === String(apartmentId));
+                if (__clkAptInfo) __parcelShowForApartment(String(apartmentId), __clkAptInfo);
+            }
+        } catch (e) {}
 
 		let apartmentName = marker.apartmentName;
         if (!apartmentName) {
@@ -6286,6 +6301,522 @@ function openHongSiseDB() {
   });
 }
 
+
+      // ✅ 아파트 단지 경계 표시 — 단지 경계 폴리곤(apt_boundaries.json) 사용
+      // 마커 클릭/아파트경계 체크 시 sise_server /apt_boundaries.json 으로 단지 경계를 받아 그린다.
+      // (naver 단지번호별 단지 부지 경계 폴리곤)
+      const __parcelCache = new Map(); // aptId(String) -> GeoJSON features 배열(빈 배열 = 조회했으나 없음)
+      const __parcelColors = new Map(); // aptId(String) -> 표시 색 (현재 화면에 떠 있는 단지들)
+      let __parcelPolygons = [];
+      let __parcelAptId = null;
+      let __parcelReqSeq = 0;
+
+      // 단지 경계 색상: 고정 6색 팔레트 + 인접 단지 색 회피(탐욕 그래프 채색).
+      // 인접(경계 bbox가 서로 45m 이내)한 단지끼리는 절대 같은 색이 안 나오게 보장.
+      // 녹색 계열(hue 55~170°)은 지도 배경(공원/산)과 혼동돼 팔레트에서 제외.
+      // 자주색(hue 320) 제거 → 5색. 200·230은 둘 다 '파랑 계열'로 묶어 인접 금지.
+      const __PARCEL_HUES = [0, 35, 200, 230, 275];
+      const __PARCEL_PALETTE = __PARCEL_HUES.map((h) => __hslToHex(h, 0.68, 0.48));
+      // 색 계열(family): 비슷한 색끼리 같은 라벨 → 인접 시 같은 계열 회피
+      function __hueFamily(h) {
+        if (h < 25) return "red";
+        if (h < 60) return "orange";
+        if (h >= 55 && h < 175) return "green"; // (팔레트엔 없지만 일반화)
+        if (h >= 175 && h < 255) return "blue"; // 200·230 → 파랑 한 계열
+        return "purple"; // 255~ 보라/자주
+      }
+      const __PARCEL_FAM = __PARCEL_HUES.map(__hueFamily); // ['red','orange','blue','blue','purple']
+      const __PARCEL_FAM_OF = new Map(__PARCEL_PALETTE.map((c, i) => [c, __PARCEL_FAM[i]]));
+      const __PARCEL_FAM_ORDER = __PARCEL_FAM.filter((f, i) => __PARCEL_FAM.indexOf(f) === i);
+      const __PARCEL_ADJ_M = 45; // 이 거리 이내면 '인접'으로 보고 같은 색 금지(과대추정 = 안전)
+      const __parcelBBoxes = new Map(); // aptId -> [minLng,minLat,maxLng,maxLat]
+
+      function __parcelFeatsBBox(features) {
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+        (features || []).forEach((f) => {
+          const g = f?.geometry;
+          if (!g) return;
+          const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+          polys.forEach((rings) => (rings[0] || []).forEach(([x, y]) => {
+            if (x < x0) x0 = x; if (x > x1) x1 = x;
+            if (y < y0) y0 = y; if (y > y1) y1 = y;
+          }));
+        });
+        return [x0, y0, x1, y1];
+      }
+      // 두 bbox 사이 최소 거리(m). 겹치면 0.
+      function __parcelBBoxGapM(a, b) {
+        const midLat = (a[1] + a[3] + b[1] + b[3]) / 4;
+        const kx = 111320 * Math.cos((midLat * Math.PI) / 180), ky = 110540;
+        const dx = Math.max(0, b[0] - a[2], a[0] - b[2]) * kx;
+        const dy = Math.max(0, b[1] - a[3], a[1] - b[3]) * ky;
+        return Math.hypot(dx, dy);
+      }
+      // 실제 폴리곤 최근접거리로 인접 판정(bbox 과대추정 제거). bbox는 빠른 선필터로만 사용.
+      const __PARCEL_ADJ_REAL = 30; // m. 맞닿음·좁은도로 사이 = 인접(다른색), 넓게 떨어지면 같은색 허용
+      const __parcelRings = new Map(); // aptId -> [ [ [x,y],... ] , ... ]  (모든 링)
+      function __parcelFeatsRings(features) {
+        const out = [];
+        (features || []).forEach((f) => {
+          const g = f && f.geometry;
+          if (!g) return;
+          const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+          polys.forEach((rings) => (rings || []).forEach((ring) => { if (ring && ring.length >= 2) out.push(ring); }));
+        });
+        return out;
+      }
+      function __segDistM(px, py, ax, ay, bx, by) {
+        const kx = 88300, ky = 110540; // 한국 위도 근사(경도 1°≈88.3km)
+        const Px = px * kx, Py = py * ky, Ax = ax * kx, Ay = ay * ky, Bx = bx * kx, By = by * ky;
+        const dx = Bx - Ax, dy = By - Ay, L2 = dx * dx + dy * dy;
+        let t = L2 > 0 ? ((Px - Ax) * dx + (Py - Ay) * dy) / L2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const cx = Ax + t * dx, cy = Ay + t * dy;
+        return Math.hypot(Px - cx, Py - cy);
+      }
+      // 두 폴리곤(링 목록) 최근접거리(m). limit 이하 발견 시 조기 종료.
+      function __parcelRingsGapM(ringsA, ringsB, limit) {
+        let best = Infinity;
+        const scan = (rA, rB) => {
+          for (const ring of rA) for (const pt of ring) for (const r2 of rB) {
+            for (let i = 0; i < r2.length - 1; i++) {
+              const d = __segDistM(pt[0], pt[1], r2[i][0], r2[i][1], r2[i + 1][0], r2[i + 1][1]);
+              if (d < best) { best = d; if (best <= limit) return true; }
+            }
+          }
+          return false;
+        };
+        if (scan(ringsA, ringsB)) return best;
+        scan(ringsB, ringsA);
+        return best;
+      }
+
+      // 인접 단지가 쓰지 않는 팔레트 색을 배정(탐욕). 이미 그려진 이웃 색만 회피.
+      function __pickParcelColor(aptId, features) {
+        const id = String(aptId);
+        const bb = __parcelFeatsBBox(features);
+        __parcelBBoxes.set(id, bb);
+        const rings = __parcelFeatsRings(features);
+        __parcelRings.set(id, rings);
+        // 인접 이웃의 계열·색 사용 수 + 전역 색 사용량 집계
+        const famNbr = new Map(); // 계열 -> 인접 이웃이 그 계열 쓴 수
+        const colNbr = new Map(); // 색   -> 인접 이웃이 그 색 쓴 수
+        const gc = new Map();     // 전역 색 사용량(다양성용)
+        __parcelColors.forEach((col, id2) => {
+          gc.set(col, (gc.get(col) || 0) + 1);
+          if (id2 === id) return;
+          const bb2 = __parcelBBoxes.get(id2);
+          if (!bb2 || __parcelBBoxGapM(bb, bb2) > __PARCEL_ADJ_M) return; // 1차: bbox 선필터
+          // 2차: 실제 폴리곤 최근접거리로 재확인(가짜 인접 제거). 이웃 링 없으면 bbox 결과 사용.
+          const r2 = __parcelRings.get(id2);
+          const adjacent = !r2 ? true : __parcelRingsGapM(rings, r2, __PARCEL_ADJ_REAL) <= __PARCEL_ADJ_REAL;
+          if (adjacent) {
+            colNbr.set(col, (colNbr.get(col) || 0) + 1);
+            const f = __PARCEL_FAM_OF.get(col);
+            if (f) famNbr.set(f, (famNbr.get(f) || 0) + 1);
+          }
+        });
+        // 계열을 "인접 사용 수 오름차순"으로 정렬(0=안 쓴 계열이 최우선). 동률이면 팔레트 순서 유지.
+        const famsByLeast = __PARCEL_FAM_ORDER.slice().sort(
+          (a, b) => (famNbr.get(a) || 0) - (famNbr.get(b) || 0)
+        );
+        const targetFam = famsByLeast[0];
+        // 그 계열 색들 중: 인접 이웃이 덜 쓴 색 → 동률이면 전역 덜 쓴 색
+        let best = null, bestKey = [Infinity, Infinity];
+        __PARCEL_PALETTE.forEach((c, i) => {
+          if (__PARCEL_FAM[i] !== targetFam) return;
+          const key = [colNbr.get(c) || 0, gc.get(c) || 0];
+          if (key[0] < bestKey[0] || (key[0] === bestKey[0] && key[1] < bestKey[1])) { bestKey = key; best = c; }
+        });
+        return best || __PARCEL_PALETTE[0];
+      }
+
+      function __parcelClear() {
+        __parcelPolygons.forEach((p) => p.setMap(null));
+        __parcelPolygons = [];
+        // 자동표시(아파트경계)가 그린 단지 색은 유지 — 클릭 선택 전용 색만 반납
+        if (__parcelAptId && !__parcelAutoPolys.has(String(__parcelAptId))) {
+          __parcelColors.delete(String(__parcelAptId));
+          __parcelBBoxes.delete(String(__parcelAptId));
+          __parcelRings.delete(String(__parcelAptId));
+        }
+        __parcelAptId = null;
+      }
+
+      // ---- 아파트 단지 경계 (전체 파일 1회 로드 + IndexedDB 캐시) ----
+      // sise_server가 apt_boundaries.json(naver 단지번호 키, gzip)을 서빙. 최초 1회 받아
+      // IndexedDB(settings)에 캐시하고 클라이언트에서 단지별 lookup.
+      // 서버 ?meta=1(버전)로 신선도 판단 → 파일 갱신 시 자동 재다운로드.
+      function __parcelApiBase() {
+        const h = location.hostname;
+        return h === "localhost" || h === "127.0.0.1" ? "http://localhost:7123" : "https://sise-cloud.luciferhong.com";
+      }
+      const __BOUNDARY_CACHE_KEY = "aptBoundaries_v1";
+
+      // groupPolygons([group][polygon][ring][{x,y}]) → MultiPolygon 피처(좌표 [lng,lat])
+      function __parcelPolyToFeature(poly) {
+        const coords = [];
+        (poly || []).forEach((group) => {
+          (group || []).forEach((pg) => {
+            const rings = (pg || []).map((ring) => (ring || []).map((pt) => [pt.x, pt.y]));
+            if (rings.length && rings[0].length >= 3) coords.push(rings);
+          });
+        });
+        if (!coords.length) return null;
+        return { type: "Feature", properties: {}, geometry: { type: "MultiPolygon", coordinates: coords } };
+      }
+
+      // fetch + 타임아웃. AbortSignal.timeout 미지원(구형 삼성인터넷/안드로이드 WebView) 대응.
+      function __fetchTimeout(url, ms) {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), ms);
+        return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+      }
+
+      // 경계 맵(naver_id → 레코드) 1회 로드. 세션 내 memoize + IndexedDB 캐시.
+      let __boundaryMapPromise = null;
+      async function __parcelLoadBoundaryMap() {
+        if (__boundaryMapPromise) return __boundaryMapPromise;
+        __boundaryMapPromise = (async () => {
+          // 아파트 경계는 토큰 없이 공개 (서버 게이트 해제됨)
+          const base = __parcelApiBase();
+          let cached = null;
+          try { cached = await getSettingFromHongSiseDB(__BOUNDARY_CACHE_KEY); } catch (e) {}
+          // 서버 버전(etag) 확인 — 실패해도 캐시 있으면 그걸 사용
+          let etag = null;
+          try {
+            const m = await __fetchTimeout(`${base}/apt_boundaries.json?meta=1`, 6000);
+            if (m.ok) etag = (await m.json()).etag;
+          } catch (e) {}
+          if (cached && cached.data && (!etag || cached.etag === etag)) {
+            console.log(`[경계] 캐시 사용: ${Object.keys(cached.data).length}개 (etag ${cached.etag})`);
+            return cached.data;
+          }
+          // 전체 파일 다운로드
+          try {
+            console.log("[경계] 전체 경계 다운로드 중…");
+            const res = await __fetchTimeout(`${base}/apt_boundaries.json`, 60000);
+            if (!res.ok) { console.warn("[경계] 다운로드 실패:", res.status); return (cached && cached.data) || {}; }
+            const data = await res.json();
+            const ver = etag || res.headers.get("ETag") || String(Date.now());
+            try { await setSettingToHongSiseDB(__BOUNDARY_CACHE_KEY, { etag: ver, data }); } catch (e) { console.warn("[경계] 캐시 저장 실패:", e); }
+            console.log(`[경계] 다운로드·캐시 완료: ${Object.keys(data).length}개`);
+            return data;
+          } catch (e) {
+            console.warn("[경계] 다운로드 오류:", e);
+            return (cached && cached.data) || {};
+          }
+        })();
+        return __boundaryMapPromise;
+      }
+
+      // 단지(naver id)의 경계 피처 배열 반환. 없으면 [] (경계 데이터 없음).
+      async function __parcelFetchBoundary(aptId) {
+        const map = await __parcelLoadBoundaryMap();
+        const rec = map && map[String(aptId)];
+        if (!rec || !rec.poly) return [];
+        const feat = __parcelPolyToFeature(rec.poly);
+        return feat ? [feat] : [];
+      }
+
+      // 입주민이야기 버튼 표시 여부: 호갱 매핑(h)이 있는 단지만 노출 (없으면 숨김).
+      async function __updateResidentStoryBtn(aptId) {
+        try {
+          const btn = document.getElementById("residentStoryBtn");
+          if (!btn) return;
+          const map = await __parcelLoadBoundaryMap();
+          const h = map && map[String(aptId)] && map[String(aptId)].h;
+          // 렌더 중 다른 단지로 바뀌었으면 무시
+          const info = document.getElementById("apartmentInfo");
+          if (info && String(info.getAttribute("data-id")) !== String(aptId)) return;
+          btn.style.display = h ? "" : "none";
+        } catch (e) {}
+      }
+
+      // 입주민이야기: 단지 해시로 이야기 페이지 열기 (경계 맵에 실린 h 사용)
+      async function __openResidentStory(aptId) {
+        try {
+          const map = await __parcelLoadBoundaryMap();
+          const h = map && map[String(aptId)] && map[String(aptId)].h;
+          if (!h) { alert("이 단지는 입주민이야기 연결 정보가 없습니다."); return; }
+          const url = `https://hogangnono.com/apt/${h}/0/0/review`;
+          // PC(마우스/트랙패드 = pointer:fine): 새 탭으로 열어 지도 화면 유지.
+          // 터치 기기: window.open(_blank)이 iOS에서 유니버설 링크로 앱 열려도 빈 탭이
+          //   남으므로 현재 탭 이동(앱 설치 시 iOS가 가로채 지도 탭 보존).
+          if (window.matchMedia && window.matchMedia("(pointer: fine)").matches) {
+            window.open(url, "_blank", "noopener");
+          } else {
+            location.href = url;
+          }
+        } catch (e) {
+          alert("입주민이야기를 여는 중 오류가 발생했습니다.");
+        }
+      }
+
+      function __parcelDraw(features, store, color) {
+        store = store || __parcelPolygons;
+        color = color || "#5A50DC";
+        const toLatLng = ([x, y]) => new naver.maps.LatLng(y, x);
+        features.forEach((f) => {
+          const geom = f?.geometry;
+          if (!geom) return;
+          const isZone = !!f?.properties?.dgm_nm; // 정비구역 등 도시계획 사업구역 (필지 아님 → 점선 구분)
+          // Polygon: [ring][pt] / MultiPolygon: [poly][ring][pt] → 폴리곤 단위로 분리
+          const polys = geom.type === "MultiPolygon" ? geom.coordinates : geom.type === "Polygon" ? [geom.coordinates] : [];
+          polys.forEach((rings) => {
+            if (!rings?.length) return;
+            const polygon = new naver.maps.Polygon({
+              map: window.map,
+              paths: rings.map((ring) => ring.map(toLatLng)), // 두 번째 이후 ring은 구멍(hole)
+              fillColor: color,
+              fillOpacity: isZone ? 0.12 : 0.2,
+              strokeColor: color,
+              strokeOpacity: 0.9,
+              strokeWeight: 2,
+              strokeStyle: isZone ? "shortdash" : "solid",
+              clickable: false,
+              zIndex: 5,
+            });
+            store.push(polygon);
+          });
+          if (isZone) console.log("[필지] 분양권 → 사업구역 경계 표시:", f.properties.dgm_nm, `(${f.properties.dgm_ar}㎡)`);
+        });
+      }
+
+      async function __parcelShowForApartment(apartmentId, aptInfo) {
+        if (!aptInfo || !window.map || typeof naver === "undefined") return;
+        const idStr = String(apartmentId);
+        if (__parcelAutoPolys.has(idStr)) { __parcelClear(); __parcelAptId = idStr; return; } // 자동표시가 이미 그림
+        if (__parcelAptId === idStr && __parcelPolygons.length) return; // 같은 단지 재클릭
+        const seq = ++__parcelReqSeq;
+        let features = __parcelCache.get(idStr);
+        if (features === undefined) {
+          try {
+            features = await __parcelFetchBoundary(idStr);
+          } catch (e) {
+            console.warn("[필지] 조회 실패:", e);
+            return;
+          }
+          __parcelCache.set(idStr, features);
+        }
+        if (seq !== __parcelReqSeq) return; // 대기 중 다른 단지가 클릭됨
+        __parcelClear();
+        __parcelAptId = idStr;
+        const color = __pickParcelColor(idStr, features);
+        __parcelColors.set(idStr, color);
+        __parcelDraw(features, __parcelPolygons, color);
+      }
+
+      // ---- "아파트경계" 자동 표시: 체크 시 화면 안 단지들의 부지 경계를 클릭 없이 표시 ----
+      const __parcelAutoPolys = new Map(); // aptId -> polygons[]
+      let __parcelAutoGen = 0; // 지도 이동/해제 시 진행 중인 수집 취소용
+      let __parcelAutoTimer = null;
+      let __parcelIdleBound = false;
+      let __aptById = null;
+
+      // 경계 표시 모드: "none"(표시안함) | "selected"(클릭 단지만) | "all"(화면 전체 자동)
+      function __parcelMode() {
+        return document.getElementById("parcelBoundaryMode")?.value || "none";
+      }
+      // 자동표시(화면 전체)는 "all"에서만
+      function __parcelAutoChecked() {
+        return __parcelMode() === "all";
+      }
+
+      function __parcelAutoClear() {
+        __parcelAutoGen++;
+        __parcelAutoPolys.forEach((polys, id) => {
+          polys.forEach((p) => p.setMap(null));
+          __parcelColors.delete(id);
+          __parcelBBoxes.delete(id);
+          __parcelRings.delete(id);
+        });
+        __parcelAutoPolys.clear();
+      }
+
+      function __parcelAutoRemove(idStr) {
+        const polys = __parcelAutoPolys.get(idStr);
+        if (polys) {
+          polys.forEach((p) => p.setMap(null));
+          __parcelAutoPolys.delete(idStr);
+          __parcelColors.delete(idStr);
+          __parcelBBoxes.delete(idStr);
+          __parcelRings.delete(idStr);
+        }
+      }
+
+      function __parcelAutoEnsureIdle() {
+        if (__parcelIdleBound || !window.map || typeof naver === "undefined") return;
+        naver.maps.Event.addListener(window.map, "idle", () => {
+          if (!__parcelAutoChecked()) return;
+          clearTimeout(__parcelAutoTimer);
+          __parcelAutoTimer = setTimeout(__parcelAutoRefresh, 500);
+        });
+        __parcelIdleBound = true;
+      }
+
+      async function __parcelAutoRefresh() {
+        try {
+          await __parcelAutoRefreshInner();
+        } catch (e) {
+          console.warn("[필지] 아파트경계 갱신 중 오류:", e);
+        }
+      }
+
+      async function __parcelAutoRefreshInner() {
+        if (!__parcelAutoChecked()) return;
+        if (!window.map) {
+          console.log("[필지] 아파트경계: 지도가 아직 준비되지 않음");
+          return;
+        }
+        if (window.map.getZoom() < 16) {
+          // 저줌에서는 미표시 (마커 과다 + 시인성 없음).
+          if (__parcelAutoPolys.size) __parcelAutoClear();
+          console.log(`[필지] 아파트경계: 현재 줌 ${window.map.getZoom()} — 줌 16 이상에서 표시됩니다`);
+          return;
+        }
+        const gen = ++__parcelAutoGen;
+        const bounds = window.map.getBounds();
+        const center = window.map.getCenter();
+        // apt.json은 비동기(CloudSync) 로드라 빈 상태에서 인덱스가 만들어질 수 있음 → 건수 변하면 재구축
+        if (!__aptById || __aptById.size !== (apartmentData || []).length) {
+          __aptById = new Map();
+          (apartmentData || []).forEach((a) => __aptById.set(String(a.id), a));
+        }
+        // 화면 안 마커 전부(중심 가까운 순). 경계는 로컬 캐시 조회라 렌더가 싸서 상한을 넉넉히.
+        const markerCnt = Object.keys(apartmentMarkers || {}).length;
+        const visible = [];
+        Object.entries(apartmentMarkers || {}).forEach(([id, marker]) => {
+          try {
+            const pos = marker.getPosition();
+            if (!bounds.hasLatLng(pos)) return;
+            const dx = pos.lng() - center.lng(), dy = pos.lat() - center.lat();
+            visible.push({ id: String(id), d: dx * dx + dy * dy });
+          } catch (e) {}
+        });
+        if (!visible.length) {
+          console.log(`[필지] 아파트경계: 화면 내 아파트 마커 없음 (전체 마커 ${markerCnt}개) — '아파트' 체크·세대수 필터·줌 확인`);
+          return;
+        }
+        visible.sort((a, b) => a.d - b.d);
+        // 같은 호갱 단지(h)에 매핑된 네이버 단지가 여럿이면(예: 금빛그랑메종 1~5단지 → 동일 폴리곤)
+        // 전체 폴리곤이 단지 수만큼 겹쳐 그려짐 → h 기준 중복 제거(가장 가까운 1개만). 경계 없는 단지는 제외.
+        const __bmap = await __parcelLoadBoundaryMap();
+        const __seenH = new Set();
+        const __dedup = [];
+        for (const v of visible) {
+          const rec = __bmap && __bmap[String(v.id)];
+          if (!rec) continue;
+          const key = rec.h || "id:" + v.id;
+          if (__seenH.has(key)) continue;
+          __seenH.add(key);
+          __dedup.push(v);
+        }
+        const __PARCEL_MAX = 200; // 안전 상한(줌 16+ 뷰포트라 실제로는 이보다 적음)
+        if (__dedup.length > __PARCEL_MAX) {
+          console.log(`[필지] 아파트경계: 화면 내 ${__dedup.length}개 중 중심 가까운 ${__PARCEL_MAX}개만 표시(상한)`);
+        }
+        const targets = __dedup.slice(0, __PARCEL_MAX);
+        const targetIds = new Set(targets.map((t) => t.id));
+        // 화면 밖으로 나간 단지 정리
+        [...__parcelAutoPolys.keys()].forEach((id) => {
+          if (!targetIds.has(id)) __parcelAutoRemove(id);
+        });
+        const todo = targets.filter((t) => !__parcelAutoPolys.has(t.id) && String(__parcelAptId) !== t.id);
+        console.log(`[필지] 아파트경계: 화면 내 ${visible.length}개, 대상 ${targets.length}개 (표시됨 ${targets.length - todo.length}, 신규 ${todo.length})`);
+        // 순차 수집·표시 (캐시 히트는 즉시, 미보유 단지만 API 호출)
+        let drawn = 0, empty = 0, failed = 0, noInfo = 0;
+        for (const t of todo) {
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) {
+            console.log("[필지] 아파트경계: 지도 이동/해제로 이번 회차 중단");
+            return;
+          }
+          if (__parcelAutoPolys.has(t.id)) continue;
+          const apt = __aptById.get(t.id);
+          if (!apt) {
+            noInfo++;
+            console.warn(`[필지] 단지정보 없음: id=${t.id} (apartmentData 미포함)`);
+            continue;
+          }
+          let features = __parcelCache.get(t.id);
+          if (features === undefined) {
+            try {
+              features = await __parcelFetchBoundary(t.id);
+            } catch (e) {
+              failed++;
+              console.warn(`[필지] 수집 실패: ${apt.name}(${t.id})`, e);
+              continue;
+            }
+            __parcelCache.set(t.id, features);
+          }
+          if (gen !== __parcelAutoGen || !__parcelAutoChecked()) {
+            console.log("[필지] 아파트경계: 지도 이동/해제로 이번 회차 중단");
+            return;
+          }
+          if (!features.length) {
+            empty++;
+            console.log(`[필지] 경계 데이터 없음: ${apt.name}(${t.id}) — 해당 좌표에 필지/구역 미검출`);
+            continue;
+          }
+          if (__parcelAutoPolys.has(t.id)) continue;
+          const store = [];
+          const color = __pickParcelColor(t.id, features);
+          __parcelColors.set(t.id, color);
+          __parcelDraw(features, store, color);
+          __parcelAutoPolys.set(t.id, store);
+          drawn++;
+        }
+        if (todo.length) {
+          console.log(`[필지] 아파트경계 완료: 신규 ${drawn}개 표시, 데이터없음 ${empty}, 실패 ${failed}, 정보없음 ${noInfo}`);
+        }
+      }
+
+      (function __parcelAutoInit() {
+        const sel = document.getElementById("parcelBoundaryMode");
+        if (!sel) return;
+        sel.addEventListener("change", () => {
+          const mode = __parcelMode();
+          if (mode === "all") {
+            console.log("[경계] 전체 아파트 경계 표시");
+            __parcelAutoEnsureIdle();
+            __parcelAutoRefresh();
+          } else if (mode === "selected") {
+            console.log("[경계] 선택한 아파트 경계 표시 — 자동표시 제거(클릭 시 표시)");
+            __parcelAutoClear();
+          } else {
+            console.log("[경계] 표시 안함 — 전체 제거");
+            __parcelAutoClear();
+            __parcelClear();
+          }
+        });
+        // 지도 준비 대기 + uiState 복원(로드 시 선택값) 대응 — "전체"면 자동표시
+        let tries = 0;
+        const timer = setInterval(() => {
+          if (++tries > 120) { clearInterval(timer); return; }
+          if (window.map && typeof naver !== "undefined" && window.map.getBounds) {
+            clearInterval(timer);
+            __parcelAutoEnsureIdle();
+            if (__parcelMode() === "all") __parcelAutoRefresh();
+            // uiState 복원이 지도 준비보다 늦는 경우 대비 재확인 (2/5/10초)
+            [2000, 5000, 10000].forEach((ms) => {
+              setTimeout(() => { if (__parcelMode() === "all" && !__parcelAutoPolys.size) __parcelAutoRefresh(); }, ms);
+            });
+          }
+        }, 500);
+      })();
+
+      // 아파트경계 select 값 저장/복원 (siseVer2 자체 저장소)
+      (function __parcelModePersist() {
+        const sel = document.getElementById("parcelBoundaryMode");
+        if (!sel) return;
+        sel.addEventListener("change", () => { try { setSettingToHongSiseDB("parcelBoundaryMode", sel.value); } catch (e) {} });
+        (async () => {
+          try {
+            const v = await getSettingFromHongSiseDB("parcelBoundaryMode");
+            if (v && v !== sel.value) { sel.value = v; sel.dispatchEvent(new Event("change")); }
+          } catch (e) {}
+        })();
+      })();
 
 function setSettingToHongSiseDB(key, value) {
   return new Promise((resolve, reject) => {

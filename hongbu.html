@@ -6833,36 +6833,83 @@
         const dy = Math.max(0, b[1] - a[3], a[1] - b[3]) * ky;
         return Math.hypot(dx, dy);
       }
+      // 실제 폴리곤 최근접거리로 인접 판정(bbox 과대추정 제거). bbox는 빠른 선필터로만 사용.
+      const __PARCEL_ADJ_REAL = 30; // m. 맞닿음·좁은도로 사이 = 인접(다른색), 넓게 떨어지면 같은색 허용
+      const __parcelRings = new Map(); // aptId -> [ [ [x,y],... ] , ... ]  (모든 링)
+      function __parcelFeatsRings(features) {
+        const out = [];
+        (features || []).forEach((f) => {
+          const g = f && f.geometry;
+          if (!g) return;
+          const polys = g.type === "MultiPolygon" ? g.coordinates : [g.coordinates];
+          polys.forEach((rings) => (rings || []).forEach((ring) => { if (ring && ring.length >= 2) out.push(ring); }));
+        });
+        return out;
+      }
+      function __segDistM(px, py, ax, ay, bx, by) {
+        const kx = 88300, ky = 110540; // 한국 위도 근사(경도 1°≈88.3km)
+        const Px = px * kx, Py = py * ky, Ax = ax * kx, Ay = ay * ky, Bx = bx * kx, By = by * ky;
+        const dx = Bx - Ax, dy = By - Ay, L2 = dx * dx + dy * dy;
+        let t = L2 > 0 ? ((Px - Ax) * dx + (Py - Ay) * dy) / L2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const cx = Ax + t * dx, cy = Ay + t * dy;
+        return Math.hypot(Px - cx, Py - cy);
+      }
+      // 두 폴리곤(링 목록) 최근접거리(m). limit 이하 발견 시 조기 종료.
+      function __parcelRingsGapM(ringsA, ringsB, limit) {
+        let best = Infinity;
+        const scan = (rA, rB) => {
+          for (const ring of rA) for (const pt of ring) for (const r2 of rB) {
+            for (let i = 0; i < r2.length - 1; i++) {
+              const d = __segDistM(pt[0], pt[1], r2[i][0], r2[i][1], r2[i + 1][0], r2[i + 1][1]);
+              if (d < best) { best = d; if (best <= limit) return true; }
+            }
+          }
+          return false;
+        };
+        if (scan(ringsA, ringsB)) return best;
+        scan(ringsB, ringsA);
+        return best;
+      }
+
       // 인접 단지가 쓰지 않는 팔레트 색을 배정(탐욕). 이미 그려진 이웃 색만 회피.
       function __pickParcelColor(aptId, features) {
         const id = String(aptId);
         const bb = __parcelFeatsBBox(features);
         __parcelBBoxes.set(id, bb);
-        // 인접 이웃이 쓰는 '계열'과 전역 색 사용량 집계
-        const usedFam = new Set(); // 인접 이웃이 쓴 계열
-        const gc = new Map();      // 전역 색 사용량(계열 내 덜 쓴 색 우선 → 다양성)
+        const rings = __parcelFeatsRings(features);
+        __parcelRings.set(id, rings);
+        // 인접 이웃의 계열·색 사용 수 + 전역 색 사용량 집계
+        const famNbr = new Map(); // 계열 -> 인접 이웃이 그 계열 쓴 수
+        const colNbr = new Map(); // 색   -> 인접 이웃이 그 색 쓴 수
+        const gc = new Map();     // 전역 색 사용량(다양성용)
         __parcelColors.forEach((col, id2) => {
           gc.set(col, (gc.get(col) || 0) + 1);
           if (id2 === id) return;
           const bb2 = __parcelBBoxes.get(id2);
-          if (bb2 && __parcelBBoxGapM(bb, bb2) <= __PARCEL_ADJ_M) {
+          if (!bb2 || __parcelBBoxGapM(bb, bb2) > __PARCEL_ADJ_M) return; // 1차: bbox 선필터
+          // 2차: 실제 폴리곤 최근접거리로 재확인(가짜 인접 제거). 이웃 링 없으면 bbox 결과 사용.
+          const r2 = __parcelRings.get(id2);
+          const adjacent = !r2 ? true : __parcelRingsGapM(rings, r2, __PARCEL_ADJ_REAL) <= __PARCEL_ADJ_REAL;
+          if (adjacent) {
+            colNbr.set(col, (colNbr.get(col) || 0) + 1);
             const f = __PARCEL_FAM_OF.get(col);
-            if (f) usedFam.add(f);
+            if (f) famNbr.set(f, (famNbr.get(f) || 0) + 1);
           }
         });
-        // 인접 이웃이 안 쓴 계열 중 하나 선택(그 계열 색들 중 전역 최소 사용색 → 같은 계열도 골고루)
-        for (const fam of __PARCEL_FAM_ORDER) {
-          if (usedFam.has(fam)) continue;
-          let best = null, bn = Infinity;
-          __PARCEL_PALETTE.forEach((c, i) => {
-            if (__PARCEL_FAM[i] === fam) { const n = gc.get(c) || 0; if (n < bn) { bn = n; best = c; } }
-          });
-          if (best) return best;
-        }
-        // 모든 계열이 인접에 이미 쓰임(초고밀) → 전역 최소 사용 색
-        let best = __PARCEL_PALETTE[0], bn = Infinity;
-        __PARCEL_PALETTE.forEach((c) => { const n = gc.get(c) || 0; if (n < bn) { bn = n; best = c; } });
-        return best;
+        // 계열을 "인접 사용 수 오름차순"으로 정렬(0=안 쓴 계열이 최우선). 동률이면 팔레트 순서 유지.
+        const famsByLeast = __PARCEL_FAM_ORDER.slice().sort(
+          (a, b) => (famNbr.get(a) || 0) - (famNbr.get(b) || 0)
+        );
+        const targetFam = famsByLeast[0];
+        // 그 계열 색들 중: 인접 이웃이 덜 쓴 색 → 동률이면 전역 덜 쓴 색
+        let best = null, bestKey = [Infinity, Infinity];
+        __PARCEL_PALETTE.forEach((c, i) => {
+          if (__PARCEL_FAM[i] !== targetFam) return;
+          const key = [colNbr.get(c) || 0, gc.get(c) || 0];
+          if (key[0] < bestKey[0] || (key[0] === bestKey[0] && key[1] < bestKey[1])) { bestKey = key; best = c; }
+        });
+        return best || __PARCEL_PALETTE[0];
       }
 
       function __parcelClear() {
@@ -6872,6 +6919,7 @@
         if (__parcelAptId && !__parcelAutoPolys.has(String(__parcelAptId))) {
           __parcelColors.delete(String(__parcelAptId));
           __parcelBBoxes.delete(String(__parcelAptId));
+          __parcelRings.delete(String(__parcelAptId));
         }
         __parcelAptId = null;
       }
@@ -7062,6 +7110,7 @@
           polys.forEach((p) => p.setMap(null));
           __parcelColors.delete(id);
           __parcelBBoxes.delete(id);
+          __parcelRings.delete(id);
         });
         __parcelAutoPolys.clear();
       }
@@ -7073,6 +7122,7 @@
           __parcelAutoPolys.delete(idStr);
           __parcelColors.delete(idStr);
           __parcelBBoxes.delete(idStr);
+          __parcelRings.delete(idStr);
         }
       }
 
