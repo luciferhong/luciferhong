@@ -6809,7 +6809,7 @@
       const __PARCEL_FAM = __PARCEL_HUES.map(__hueFamily); // ['red','orange','blue','blue','purple']
       const __PARCEL_FAM_OF = new Map(__PARCEL_PALETTE.map((c, i) => [c, __PARCEL_FAM[i]]));
       const __PARCEL_FAM_ORDER = __PARCEL_FAM.filter((f, i) => __PARCEL_FAM.indexOf(f) === i);
-      const __PARCEL_ADJ_M = 45; // 이 거리 이내면 '인접'으로 보고 같은 색 금지(과대추정 = 안전)
+      const __PARCEL_ADJ_M = 100; // bbox 선필터 반경(소프트 계열회피 반경을 덮도록 넉넉히)
       const __parcelBBoxes = new Map(); // aptId -> [minLng,minLat,maxLng,maxLat]
 
       function __parcelFeatsBBox(features) {
@@ -6834,7 +6834,8 @@
         return Math.hypot(dx, dy);
       }
       // 실제 폴리곤 최근접거리로 인접 판정(bbox 과대추정 제거). bbox는 빠른 선필터로만 사용.
-      const __PARCEL_ADJ_REAL = 30; // m. 맞닿음·좁은도로 사이 = 인접(다른색), 넓게 떨어지면 같은색 허용
+      const __PARCEL_ADJ_REAL = 30; // m. 하드: 이 거리 이하 = 인접 → 다른 '색' 강제
+      const __PARCEL_FAM_NEAR = 90; // m. 소프트: 이 거리 이하 = 떨어져 있어도 가급적 다른 '계열'(60m급 혼동 방지)
       const __parcelRings = new Map(); // aptId -> [ [ [x,y],... ] , ... ]  (모든 링)
       function __parcelFeatsRings(features) {
         const out = [];
@@ -6888,13 +6889,18 @@
           if (id2 === id) return;
           const bb2 = __parcelBBoxes.get(id2);
           if (!bb2 || __parcelBBoxGapM(bb, bb2) > __PARCEL_ADJ_M) return; // 1차: bbox 선필터
-          // 2차: 실제 폴리곤 최근접거리로 재확인(가짜 인접 제거). 이웃 링 없으면 bbox 결과 사용.
+          // 2차: 실제 폴리곤 최근접거리(가짜 인접 제거). 이웃 링 없으면 bbox 근사.
           const r2 = __parcelRings.get(id2);
-          const adjacent = !r2 ? true : __parcelRingsGapM(rings, r2, __PARCEL_ADJ_REAL) <= __PARCEL_ADJ_REAL;
-          if (adjacent) {
+          const d = !r2 ? __parcelBBoxGapM(bb, bb2) : __parcelRingsGapM(rings, r2, __PARCEL_ADJ_REAL);
+          if (d <= __PARCEL_ADJ_REAL) {
+            // 하드: 30m 이내 = 같은 색 금지(+ 계열도 회피)
             colNbr.set(col, (colNbr.get(col) || 0) + 1);
             const f = __PARCEL_FAM_OF.get(col);
             if (f) famNbr.set(f, (famNbr.get(f) || 0) + 1);
+          } else if (d <= __PARCEL_FAM_NEAR) {
+            // 소프트: 30~90m = 색은 겹쳐도 되지만 계열은 가급적 다르게(하드보다 약한 가중치)
+            const f = __PARCEL_FAM_OF.get(col);
+            if (f) famNbr.set(f, (famNbr.get(f) || 0) + 0.5);
           }
         });
         // 계열을 "인접 사용 수 오름차순"으로 정렬(0=안 쓴 계열이 최우선). 동률이면 팔레트 순서 유지.
