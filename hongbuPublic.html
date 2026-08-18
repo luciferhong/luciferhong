@@ -141,6 +141,45 @@
 			top: 0;
 			height: 100%;
 		}
+
+		/* [모바일] 카카오맵은 모바일 UA로 접근하면 applink 페이지(X-Frame-Options: SAMEORIGIN)로
+		   리다이렉트돼 iframe 안이 빈 오류 화면이 된다. 그래서 프레임 대신 새 탭으로 여는 카드를 쓴다. */
+		.open-external {
+			position: absolute;
+			z-index: 2;
+			inset: 0;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 10px;
+			padding: 16px;
+			box-sizing: border-box;
+			text-align: center;
+			text-decoration: none;
+			color: #1f2328;
+			background: #f6f8fa;
+			font-size: 15px;
+			line-height: 1.5;
+		}
+		.open-external:active {
+			background: #e9eef3;
+		}
+		.open-external .oe-icon {
+			font-size: 30px;
+		}
+		.is-mobile .view-large-button {
+			display: none;
+		}
+		.open-external .oe-go {
+			display: inline-block;
+			margin-top: 2px;
+			padding: 9px 18px;
+			border-radius: 8px;
+			background: #ED7D31;
+			color: #fff;
+			font-weight: 700;
+		}
     </style>
 </head>
 <body>
@@ -297,6 +336,42 @@ document.addEventListener("DOMContentLoaded", function() {
         document.getElementById('carBtn').classList.toggle('active', mode === 'car');
     }
 
+    // [모바일] 카카오맵 길찾기 링크는 모바일 UA면 m.map.kakao.com → applink.map.kakao.com 으로
+    // 리다이렉트되는데, 그 페이지가 X-Frame-Options: SAMEORIGIN 이라 iframe 안에서 차단된다.
+    // (데스크톱 UA는 map.kakao.com 그대로 200 + 프레임 허용) 그래서 모바일에서는
+    // 프레임을 쓰지 않고 새 탭으로 여는 카드를 대신 보여준다.
+    const IS_MOBILE_UA = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    // 크게보기는 iframe 확대용이라 모바일에서는 의미가 없다(고정 1200x800이라 화면도 벗어남)
+    if (IS_MOBILE_UA) document.documentElement.classList.add('is-mobile');
+
+    function setResultTarget(frameIndex, url, dest) {
+        const iframe = document.getElementById(`result${frameIndex}`);
+        const body = iframe.parentElement;
+        let link = body.querySelector('.open-external');
+
+        if (!IS_MOBILE_UA) {
+            if (link) link.remove();
+            iframe.style.display = '';
+            iframe.src = url;
+            return;
+        }
+
+        iframe.style.display = 'none';
+        iframe.src = '';
+        if (!link) {
+            link = document.createElement('a');
+            link.className = 'open-external';
+            link.target = '_blank';
+            link.rel = 'noopener';
+            body.appendChild(link);
+        }
+        link.href = url;
+        link.innerHTML =
+            '<span class="oe-icon">🗺️</span>' +
+            '<span>모바일에서는 카카오맵이 앱 연결 페이지로 넘어가<br>이 화면 안에 지도를 넣을 수 없습니다.</span>' +
+            '<span class="oe-go">카카오맵에서 길찾기 열기</span>';
+    }
+
     function updateRoutes(startX, startY) {
         let frameIndex = 1;
         selectedIds.forEach(id => {
@@ -304,7 +379,7 @@ document.addEventListener("DOMContentLoaded", function() {
             if (dest && frameIndex <= 9) { // ✅ 8에서 9로 변경 (최대 9개 지원)
                 document.getElementById(`resultBox${frameIndex}`).style.display = '';
                 document.getElementById(`resultTitle${frameIndex}`).textContent = dest.name;
-                document.getElementById(`result${frameIndex}`).src = createUrl(startX, startY, dest);
+                setResultTarget(frameIndex, createUrl(startX, startY, dest), dest);
                 frameIndex++;
             }
         });
@@ -325,6 +400,8 @@ document.addEventListener("DOMContentLoaded", function() {
             const iframe = document.getElementById(`result${i}`);
             if (iframe) {
                 iframe.src = '';
+                const link = iframe.parentElement.querySelector('.open-external');
+                if (link) link.remove(); // 모바일 대체 카드도 함께 정리
             }
             const box = document.getElementById(`resultBox${i}`);
             if (box) box.style.display = 'none';
