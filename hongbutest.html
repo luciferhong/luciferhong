@@ -9795,6 +9795,9 @@ const originalBase64 = event.target.result;
 #silentCamOverlay .sc-zooms[hidden]{display:none;}
 #silentCamOverlay .sc-zoombtn{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:999px;min-width:40px;padding:6px 10px;font-size:13px;cursor:pointer;}
 #silentCamOverlay .sc-zoombtn.on{background:#ffd54f;color:#000;font-weight:700;}
+#silentCamOverlay .sc-infobtn{flex:0 0 auto;background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:999px;width:30px;height:30px;padding:0;font-size:14px;cursor:pointer;}
+#silentCamOverlay .sc-info{position:absolute;top:8px;left:8px;right:8px;max-height:52vh;overflow:auto;background:rgba(0,0,0,.82);color:#fff;border-radius:10px;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-all;}
+#silentCamOverlay .sc-info[hidden]{display:none;}
 #silentCamOverlay .sc-strip{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;background:rgba(0,0,0,.65);}
 #silentCamOverlay .sc-strip:empty{display:none;}
 #silentCamOverlay .sc-thumb{position:relative;flex:0 0 auto;width:56px;height:56px;}
@@ -9842,11 +9845,13 @@ const originalBase64 = event.target.result;
             <video playsinline muted autoplay></video>
             <div class="sc-flash"></div>
             <div class="sc-focus"></div>
+            <div class="sc-info" hidden></div>
             <div class="sc-msg"></div>
             <div class="sc-controls">
               <div class="sc-lens">
                 <button type="button" class="sc-lensbtn" style="display:none"></button>
                 <div class="sc-zooms" hidden></div>
+                <button type="button" class="sc-infobtn" title="카메라 정보">ⓘ</button>
               </div>
               <div class="sc-strip"></div>
               <div class="sc-bar">
@@ -9869,6 +9874,8 @@ const originalBase64 = event.target.result;
           const lensRow = ov.querySelector(".sc-lens");
           const lensBtn = ov.querySelector(".sc-lensbtn");
           const zoomsEl = ov.querySelector(".sc-zooms");
+          const infoBtn = ov.querySelector(".sc-infobtn");
+          const infoEl = ov.querySelector(".sc-info");
           const flipBtn = ov.querySelector(".sc-flip");
           const shotBtn = ov.querySelector(".sc-shot");
           const torchBtn = ov.querySelector(".sc-torch");
@@ -9980,6 +9987,7 @@ const originalBase64 = event.target.result;
             refreshTorchBtn();
             refreshZoom();
             updateLensBtn();
+            renderCamInfo();
           }
 
           /* getUserMedia 스트림은 기기에 따라 자동초점이 걸려 있지 않아 흐릿하게 나온다.
@@ -10086,7 +10094,7 @@ const originalBase64 = event.target.result;
             const show = facing === "environment" && backCams.length >= 2;
             lensBtn.style.display = show ? "" : "none";
             if (show) lensBtn.textContent = `렌즈 ${backIdx + 1}/${backCams.length}`;
-            lensRow.style.display = show || !zoomsEl.hidden ? "flex" : "none";
+            lensRow.style.display = "flex"; // ⓘ 버튼이 항상 있으므로 줄은 유지한다
           }
 
           /* 배율 프리셋 버튼.
@@ -10167,6 +10175,46 @@ const originalBase64 = event.target.result;
             });
             if (best) best.classList.add("on");
           }
+
+          /* 카메라 진단 정보. 기기가 실제로 뭘 보고하는지 봐야 배율·화각·초점 문제를
+             추측이 아니라 사실로 판단할 수 있다. ⓘ 버튼으로 토글. */
+          function renderCamInfo() {
+            if (infoEl.hidden) return;
+            const t = videoTrack();
+            const lines = [];
+            const j = (v) => { try { return JSON.stringify(v); } catch (_) { return String(v); } };
+
+            if (!t) {
+              infoEl.textContent = "스트림 없음";
+              return;
+            }
+            let caps = {};
+            let set = {};
+            try { caps = t.getCapabilities?.() || {}; } catch (e) { lines.push("getCapabilities 실패: " + e.name); }
+            try { set = t.getSettings?.() || {}; } catch (e) { lines.push("getSettings 실패: " + e.name); }
+
+            lines.push("track  : " + (t.label || "(라벨 없음)"));
+            lines.push("해상도 : " + (video.videoWidth || "?") + "×" + (video.videoHeight || "?") +
+                       "  (설정 " + (set.width || "?") + "×" + (set.height || "?") + ")");
+            lines.push("화면   : " + Math.round(video.clientWidth) + "×" + Math.round(video.clientHeight));
+            lines.push("zoom   : " + (caps.zoom ? j(caps.zoom) + "  현재 " + (set.zoom ?? "?") : "미지원"));
+            lines.push("focus  : " + (caps.focusMode ? j(caps.focusMode) : "미지원") +
+                       "  현재 " + (set.focusMode ?? "?"));
+            lines.push("POI    : " + (caps.pointsOfInterest ? "지원" : "미지원"));
+            lines.push("torch  : " + (caps.torch ? "지원" : "미지원"));
+            lines.push("facing : " + (set.facingMode ?? "?"));
+            lines.push("");
+            lines.push("후면 카메라 " + backCams.length + "개" + (backCams.length ? " (현재 " + (backIdx + 1) + "번)" : ""));
+            backCams.forEach((d, i) => {
+              lines.push((i === backIdx ? " ▶ " : "   ") + (i + 1) + ". " + (d.label || "(라벨 없음)"));
+            });
+            infoEl.textContent = lines.join("\n");
+          }
+
+          infoBtn.onclick = () => {
+            infoEl.hidden = !infoEl.hidden;
+            renderCamInfo();
+          };
 
           async function setZoom(v) {
             const t = videoTrack();
@@ -10264,6 +10312,30 @@ const originalBase64 = event.target.result;
           function onPageHide() { stopStream(); }
           function onKey(ev) { if (ev.key === "Escape") { ev.stopPropagation(); cancel(); } }
 
+          /* 안드로이드 뒤로가기 대응.
+             오버레이는 페이지 위에 뜬 것뿐이라 뒤로가기가 곧장 페이지를 떠나버린다
+             (이전 히스토리 항목으로 돌아가 지도가 엉뚱한 상태로 다시 열린다).
+             히스토리 항목을 하나 쌓아 두고 popstate 로 받아 "카메라만 닫기"로 만든다. */
+          let pushedState = false;
+          function pushCamState() {
+            try {
+              history.pushState({ __silentCam: 1 }, "");
+              pushedState = true;
+            } catch (_) {
+              pushedState = false;
+            }
+          }
+          function onPop() {
+            if (closed) return;
+            // 찍어둔 사진이 있으면 실수로 날리지 않게 한 번 확인
+            if (shots.length && !confirm(`촬영한 ${shots.length}장을 버리고 닫을까요?`)) {
+              pushCamState(); // 닫지 않기로 했으니 다음 뒤로가기도 여기서 잡도록 다시 쌓는다
+              return;
+            }
+            pushedState = false; // 이미 pop 된 상태
+            cancel();
+          }
+
           function cleanup() {
             if (closed) return;
             closed = true;
@@ -10271,6 +10343,12 @@ const originalBase64 = event.target.result;
             document.removeEventListener("visibilitychange", onVisibility);
             window.removeEventListener("pagehide", onPageHide);
             document.removeEventListener("keydown", onKey, true);
+            window.removeEventListener("popstate", onPop);
+            // 리스너를 먼저 뗀 뒤에 쌓아둔 항목을 걷어낸다 (onPop 이 다시 돌지 않게)
+            if (pushedState) {
+              pushedState = false;
+              try { history.back(); } catch (_) {}
+            }
             stopStream();
             try { video.srcObject = null; } catch (_) {}
             ov.remove();
@@ -10311,6 +10389,8 @@ const originalBase64 = event.target.result;
           document.addEventListener("visibilitychange", onVisibility);
           window.addEventListener("pagehide", onPageHide);
           document.addEventListener("keydown", onKey, true);
+          window.addEventListener("popstate", onPop);
+          pushCamState(); // 뒤로가기가 페이지를 떠나지 않고 이 오버레이만 닫도록
 
           updateDone();
           init();
