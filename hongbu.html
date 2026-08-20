@@ -264,13 +264,14 @@
 
       /* ✅ 지도 사진 메모(좌표 기반) 썸네일 마커 */
       .photo-memo-marker {
+        position: relative; /* 장수 뱃지(.pm-count) 기준 */
         width: 38px;
         height: 38px;
         border-radius: 10px;
         background: #fff;
         border: 2px solid rgba(255, 255, 255, 0.95);
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-        overflow: hidden;
+        overflow: visible;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -281,6 +282,58 @@
         height: 100%;
         object-fit: cover;
         display: block;
+        border-radius: 8px; /* 마커가 overflow:visible 이라 이미지 쪽에서 모서리를 둥글린다 */
+      }
+      /* 같은 좌표에 여러 장(연속 촬영)일 때 장수 뱃지 */
+      .photo-memo-marker .pm-count {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        box-sizing: border-box;
+        background: #dc2626;
+        color: #fff;
+        border: 2px solid #fff;
+        border-radius: 9px;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 14px;
+        text-align: center;
+        pointer-events: none;
+      }
+
+      /* 같은 좌표 포토메모를 모달 아래에 나란히 보여주는 썸네일 줄 */
+      #photoMemoStrip {
+        display: none;
+        gap: 6px;
+        overflow-x: auto;
+        padding: 6px;
+        background: rgba(255, 255, 255, 0.98);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+        flex: 0 0 auto;
+      }
+      #photoMemoStrip .pm-strip-item {
+        flex: 0 0 auto;
+        width: 56px;
+        height: 56px;
+        border-radius: 6px;
+        overflow: hidden;
+        border: 2px solid transparent;
+        cursor: pointer;
+        background: #eee;
+        padding: 0;
+      }
+      #photoMemoStrip .pm-strip-item img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      #photoMemoStrip .pm-strip-item.active {
+        border-color: #2563eb;
       }
 
       /* ✅ 사진 메모 액션 메뉴(촬영/파일) */
@@ -869,7 +922,9 @@
 
       #modalCanvas {
         max-width: 100%;
-        max-height: none;
+        /* 실제 맞춤은 __fitModalCanvas() 가 인라인 width/height 로 한다.
+           여기 max-height:100% 는 부모(#imageModalContent)에 height 가 없어 해석되지 않는다. */
+        max-height: 100%;
         border-radius: 8px;
       }
 
@@ -2006,6 +2061,9 @@
           <canvas id="modalCanvas"></canvas>
         </div>
 
+        <!-- 같은 좌표 포토메모(연속 촬영)를 나란히 -->
+        <div id="photoMemoStrip"></div>
+
         <div id="photoMemoEditPanel">
           <textarea id="photoMemoEditInput" placeholder="포토메모를 입력하세요"></textarea>
           <div id="photoMemoEditActions">
@@ -2088,10 +2146,62 @@
           // 🔥 핵심: width 재설정으로 GPU 버퍼 리셋
           canvas.width = 1;
           canvas.height = 1;
+          canvas.style.width = "";
+          canvas.style.height = "";
         } catch (e) {
           console.warn("clear canvas failed:", e);
         }
       }
+
+      /* 모달 사진을 스크롤 없이 들어가는 최대 크기로 맞춘다.
+         CSS 로는 안 된다 — #imageModalContent 에 height 가 아니라 max-height 만 있어서
+         부모 높이가 미확정이고, 그러면 자식 캔버스의 백분율 max-height 가 무시된다.
+         그래서 남은 높이를 직접 계산해 캔버스의 CSS 크기를 지정한다.
+         폭이 먼저 제한되는 경우(모바일)에는 기존과 같은 결과가 나와 화면이 바뀌지 않는다. */
+      function __fitModalCanvas() {
+        try {
+          const canvas = document.getElementById("modalCanvas");
+          const wrap = document.getElementById("imageModalCanvasWrap");
+          const content = document.getElementById("imageModalContent");
+          if (!canvas || !wrap || !content) return;
+
+          const iw = canvas.width;
+          const ih = canvas.height;
+          if (iw <= 1 || ih <= 1) return;
+
+          const cs = getComputedStyle(content);
+          const maxH = parseFloat(cs.maxHeight);
+          if (!Number.isFinite(maxH)) return; // max-height 가 none 이면 종전 동작 유지
+
+          // 캔버스 영역을 뺀 나머지 형제(상단바·썸네일 줄·메모 패널)와 gap 이 쓰는 높이
+          const gap = parseFloat(cs.rowGap) || parseFloat(cs.gap) || 0;
+          let used = 0;
+          let shown = 0;
+          Array.from(content.children).forEach((el) => {
+            if (getComputedStyle(el).display === "none") return;
+            shown++;
+            if (el !== wrap) used += el.getBoundingClientRect().height;
+          });
+          used += gap * Math.max(0, shown - 1);
+
+          const ws = getComputedStyle(wrap);
+          const padY = (parseFloat(ws.paddingTop) || 0) + (parseFloat(ws.paddingBottom) || 0);
+          const padX = (parseFloat(ws.paddingLeft) || 0) + (parseFloat(ws.paddingRight) || 0);
+
+          const availH = Math.max(80, maxH - used - padY);
+          const availW = Math.max(80, wrap.clientWidth - padX);
+
+          // 원본보다 크게 늘리지는 않는다 (기존 max-width:100% 동작과 동일)
+          const scale = Math.min(availW / iw, availH / ih, 1);
+          canvas.style.width = Math.round(iw * scale) + "px";
+          canvas.style.height = Math.round(ih * scale) + "px";
+        } catch (_) {}
+      }
+
+      // 창 크기·회전이 바뀌면 다시 맞춘다
+      window.addEventListener("resize", () => {
+        if (window.imageModalShowYn === true) __fitModalCanvas();
+      });
 
       function __setPhotoMemoModalContext(photoMemoId) {
         window.__openedPhotoMemoId = photoMemoId ? String(photoMemoId) : null;
@@ -2113,6 +2223,17 @@
         if (input) input.value = isPhotoMemo ? String(photoMemoRecord.note || "") : "";
         if (saveBtn) saveBtn.style.display = isPhotoMemo ? "inline-block" : "none";
         if (closeBtn) closeBtn.style.display = isPhotoMemo ? "inline-block" : "none";
+
+        // 포토메모가 아니면 같은 좌표 썸네일 줄도 내린다
+        if (!isPhotoMemo) {
+          const strip = document.getElementById("photoMemoStrip");
+          if (strip) {
+            strip.style.display = "none";
+            strip.innerHTML = "";
+            strip.dataset.groupKey = "";
+          }
+          window.__photoMemoModalGroup = null;
+        }
       }
 
       function __updatePhotoMemoIndexNote(id, note) {
@@ -2158,6 +2279,17 @@
         const prevBtn = document.getElementById("modalNavPrev");
         const nextBtn = document.getElementById("modalNavNext");
         if (!prevBtn || !nextBtn) return;
+
+        // 같은 좌표 포토메모 묶음이 열려 있으면 그쪽 네비게이션이 우선
+        const g = window.__photoMemoModalGroup;
+        if (g && Array.isArray(g.ids) && g.ids.length > 1) {
+          prevBtn.hidden = false;
+          nextBtn.hidden = false;
+          prevBtn.style.opacity = g.idx > 0 ? "1" : "0.3";
+          nextBtn.style.opacity = g.idx < g.ids.length - 1 ? "1" : "0.3";
+          return;
+        }
+
         const hasMultiple = list && list.length > 1;
         if (hasMultiple) {
           prevBtn.hidden = false;
@@ -2175,13 +2307,17 @@
         const modalCanvas = document.getElementById("modalCanvas");
         const modalCtx = modalCanvas.getContext("2d");
 
+        // 단지메모 사진 경로 — 포토메모 묶음 상태가 남아 있으면 지운다
+        __setPhotoMemoModalRecord(null);
+
         window.__modalImageList = imageList || null;
         window.__modalImageIndex = index !== undefined ? index : -1;
 
         // 엔트리가 {data, addedAt} 객체일 수도 있으므로 실제 data URL만 추출
         const resolvedSrc = __getImgData(imageDataUrl);
 
-        __clearModalCanvas();
+        // 이미 열려 있으면(= 좌우로 넘기는 중) 비우지 않는다 — 레이아웃이 튄다. 위 주석 참고.
+        if (window.imageModalShowYn !== true) __clearModalCanvas();
         const img = new Image();
         img.onload = () => {
           modalCanvas.width = img.width;
@@ -2189,6 +2325,7 @@
           modalCtx.drawImage(img, 0, 0);
           window.__imageModalScrollY = window.scrollY || window.pageYOffset || 0;
           modal.style.display = "flex";
+          __fitModalCanvas(); // 표시된 뒤라야 남은 높이를 잴 수 있다
           window.imageModalShowYn = true;
           window.lastOpenedBase64 = resolvedSrc;
           __updateModalNavButtons();
@@ -2202,12 +2339,25 @@
         img.src = resolvedSrc;
       }
 
+      // 같은 좌표 포토메모 묶음 안에서 이전/다음 사진으로 이동.
+      // 묶음이 열려 있으면 true 를 반환해 단지메모용 네비게이션이 이어서 돌지 않게 한다.
+      function __stepPhotoMemoGroup(delta) {
+        const g = window.__photoMemoModalGroup;
+        if (!g || !Array.isArray(g.ids) || g.ids.length <= 1) return false;
+        const ni = g.idx + delta;
+        if (ni < 0 || ni >= g.ids.length) return true;
+        window.__photoMemoModalOpening = false; // 모달이 이미 열린 상태에서의 전환
+        if (typeof window.__photoMemoActiveOpener === "function") window.__photoMemoActiveOpener(g.ids[ni]);
+        return true;
+      }
+
       (function () {
         const prevBtn = document.getElementById("modalNavPrev");
         const nextBtn = document.getElementById("modalNavNext");
         if (prevBtn) {
           prevBtn.addEventListener("click", (e) => {
             e.stopPropagation();
+            if (__stepPhotoMemoGroup(-1)) return;
             const list = window.__modalImageList;
             const idx = window.__modalImageIndex;
             if (list && idx > 0) {
@@ -2218,6 +2368,7 @@
         if (nextBtn) {
           nextBtn.addEventListener("click", (e) => {
             e.stopPropagation();
+            if (__stepPhotoMemoGroup(1)) return;
             const list = window.__modalImageList;
             const idx = window.__modalImageIndex;
             if (list && idx < list.length - 1) {
@@ -2227,6 +2378,16 @@
         }
         document.addEventListener("keydown", (e) => {
           if (!window.imageModalShowYn) return;
+          if (window.__photoMemoModalGroup) {
+            if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              __stepPhotoMemoGroup(-1);
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              __stepPhotoMemoGroup(1);
+            }
+            return;
+          }
           const list = window.__modalImageList;
           const idx = window.__modalImageIndex;
           if (!list || list.length <= 1) return;
@@ -7503,6 +7664,10 @@
           <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display: none;" />
         </label>
 
+        <button type="button" id="silentCamBtn" style="cursor: pointer; background: white; color: black; padding: 8px 4px; border-radius: 4px; border: 0; font: inherit;">
+          🔇 무음 연속 촬영
+        </button>
+
         <label style="cursor: pointer; background: white; color: black; padding: 8px 4px; border-radius: 4px;">
           📁 파일 선택
           <input type="file" id="imageInput" accept="image/*" multiple style="display: none;" />
@@ -7662,8 +7827,29 @@ const originalBase64 = event.target.result;
 
           if (cameraInput) {
             cameraInput.addEventListener("change", (e) => {
+              // 자동 재오픈(input.click())은 user activation 이 없어 브라우저가 막는다.
+              // 이어 찍기는 미리보기 줄 끝의 ＋📷 타일로 한다.
               handleImageFiles(e.target.files);
               e.target.value = "";
+            });
+          }
+
+          // 🔇 무음 촬영: 기본 카메라 앱을 거치지 않아 셔터음이 없다.
+          // 촬영 결과(dataURL)를 File 로 되돌려 기존 handleImageFiles 파이프라인을 그대로 태운다.
+          const silentCamBtn = document.getElementById("silentCamBtn");
+          if (silentCamBtn) {
+            silentCamBtn.addEventListener("click", async () => {
+              const shots = await window.__openSilentCamera({
+                multiple: true,
+                onFallback: () => cameraInput && cameraInput.click(),
+              });
+              if (!shots.length) return;
+              const files = [];
+              shots.forEach((url, i) => {
+                const blob = __dataUrlToBlob(url);
+                if (blob) files.push(new File([blob], `silent_${Date.now()}_${i}.jpg`, { type: "image/jpeg" }));
+              });
+              if (files.length) handleImageFiles(files);
             });
           }
         }, 0);
@@ -7807,6 +7993,9 @@ const originalBase64 = event.target.result;
 
           if (!apartmentInfo || apartmentInfo.style.display !== "block") return;
           if (window.imageModalShowYn === true) return;
+          // 무음 촬영 오버레이는 body 직속이라 "패널 바깥"으로 잡힌다.
+          // 막지 않으면 촬영 버튼을 누르는 순간 패널이 닫히며 saveNote()가 사진 없이 저장해버린다.
+          if (window.__silentCamOpen === true) return;
           if (event.pointerType === "mouse" && event.button !== 0) return;
           if (apartmentInfo.contains(event.target)) return;
 
@@ -9125,10 +9314,89 @@ const originalBase64 = event.target.result;
         __revokePhotoMemoUrl(key);
       }
 
+      /* ===== 같은 좌표 포토메모 묶음 =====
+         연속 촬영으로 저장된 사진들은 좌표가 정확히 같다. 마커로 겹쳐 쌓이지 않도록
+         묶음당 대표 1개만 지도에 그리고, 모달에서는 썸네일 줄로 나란히 보여준다.
+         "같은 위치" 판정은 좌표 완전 일치만 — 따로 찍은 메모가 임의로 합쳐지지 않는다. */
+      function __photoMemoCoordKey(o) {
+        if (!o) return "";
+        // Number(null)/Number("") 은 0 이라 좌표 없는 레코드가 (0,0) 으로 묶인다 — parseFloat 로 NaN 처리
+        const lat = typeof o.lat === "number" ? o.lat : Number.parseFloat(o.lat);
+        const lng = typeof o.lng === "number" ? o.lng : Number.parseFloat(o.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return "";
+        return lat.toFixed(7) + "," + lng.toFixed(7);
+      }
+
+      // 같은 좌표 묶음을 촬영 순서대로 반환
+      function __photoMemoGroupEntries(o) {
+        const key = __photoMemoCoordKey(o);
+        if (!key) return [];
+        // 인덱스에 같은 id 가 중복으로 들어가 있어도 1건으로 센다 (과거 저장분 방어)
+        const seen = new Set();
+        const out = [];
+        for (const e of window.__photoMemoIndex || []) {
+          if (__photoMemoCoordKey(e) !== key) continue;
+          const eid = String(e.id);
+          if (seen.has(eid)) continue;
+          seen.add(eid);
+          out.push(e);
+        }
+        return out.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || String(a.id).localeCompare(String(b.id)));
+      }
+
+      // 묶음 대표(= 지도에 마커를 그리는 1건) = 가장 먼저 찍은 것
+      function __photoMemoGroupLeadId(o) {
+        const g = __photoMemoGroupEntries(o);
+        return g.length ? String(g[0].id) : String(o?.id ?? "");
+      }
+
+      function __updatePhotoMemoGroupBadge(leadId) {
+        const marker = window.__photoMemoMarkers.get(String(leadId));
+        const el = marker && marker.__photoMemoEl;
+        if (!el) return;
+        const entry = (window.__photoMemoIndex || []).find((e) => String(e.id) === String(leadId));
+        const n = entry ? __photoMemoGroupEntries(entry).length : 0;
+        let badge = el.querySelector(".pm-count");
+        if (n > 1) {
+          if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "pm-count";
+            el.appendChild(badge);
+          }
+          badge.textContent = String(n);
+        } else if (badge) {
+          badge.remove();
+        }
+      }
+
+      // 추가·삭제 후 묶음의 마커/뱃지를 다시 맞춘다 (대표가 삭제되면 다음 사진이 대표가 된다)
+      function __resyncPhotoMemoGroup(coordLike) {
+        try {
+          const g = __photoMemoGroupEntries(coordLike);
+          if (!g.length) return;
+          const lead = String(g[0].id);
+          if (!window.__photoMemoMarkers.has(lead)) {
+            if (window.__photoMemoVisible) __loadAndCreatePhotoMemoMarker(g[0]);
+          } else {
+            __updatePhotoMemoGroupBadge(lead);
+          }
+        } catch (_) {}
+      }
+
       function __createPhotoMemoMarker(memo) {
         if (!window.map || !(window.map instanceof naver.maps.Map)) return null;
         const id = String(memo.id);
-        if (window.__photoMemoMarkers.has(id)) return window.__photoMemoMarkers.get(id);
+
+        // 같은 좌표 묶음의 대표가 따로 있으면 마커를 새로 만들지 않고 대표 뱃지만 갱신
+        const leadId = __photoMemoGroupLeadId(memo);
+        if (leadId && leadId !== id) {
+          __updatePhotoMemoGroupBadge(leadId);
+          return window.__photoMemoMarkers.get(leadId) || null;
+        }
+        if (window.__photoMemoMarkers.has(id)) {
+          __updatePhotoMemoGroupBadge(id);
+          return window.__photoMemoMarkers.get(id);
+        }
 
         const markerElement = document.createElement("div");
         markerElement.className = "photo-memo-marker";
@@ -9144,11 +9412,14 @@ const originalBase64 = event.target.result;
           icon: { content: markerElement, anchor: new naver.maps.Point(19, 19) },
         });
 
-        const openPhotoMemoModal = async () => {
+        // targetId 를 주면 같은 좌표 묶음의 다른 사진을 연다 (모달 썸네일 줄·좌우 화살표가 사용)
+        const openPhotoMemoModal = async (targetId) => {
+          const openId = targetId ? String(targetId) : id;
           try {
             // 모바일 브라우저별 click/touch/pointer 중복 신호를 안전하게 흡수
             if (window.__photoMemoModalOpening) return;
             window.__photoMemoModalOpening = true;
+            window.__photoMemoActiveOpener = openPhotoMemoModal;
 
             const modal = document.getElementById("imageModal");
             const modalCanvas = document.getElementById("modalCanvas");
@@ -9157,11 +9428,17 @@ const originalBase64 = event.target.result;
               window.__photoMemoModalOpening = false;
               return;
             }
-            try {
-              __clearModalCanvas();
-            } catch (e) {}
+            // 모달이 이미 열려 있으면(= 묶음 안에서 사진을 넘기는 중) 캔버스를 비우지 않는다.
+            // 1×1 로 줄이면 세로 가운데 정렬인 모달 내용이 쪼그라들어 상단 버튼이 화면 중앙으로
+            // 튀었다가 새 사진이 그려지며 되돌아온다. 이전 사진을 그대로 두고 교체한다.
+            if (window.imageModalShowYn !== true) {
+              try {
+                __clearModalCanvas();
+              } catch (e) {}
+            }
 
-            let workingMemo = memo;
+            // 묶음 내 다른 사진을 여는 경우 seed 없이 시작해 DB 최신본만 사용한다
+            let workingMemo = openId === id ? memo : { id: openId };
             let fullBlob = workingMemo.imageBlob instanceof Blob ? workingMemo.imageBlob : null;
             let fullDataUrl =
               typeof workingMemo.imageDataUrl === "string" && workingMemo.imageDataUrl.startsWith("data:")
@@ -9175,7 +9452,7 @@ const originalBase64 = event.target.result;
 
             // 저장 직후 stale closure 문제를 피하기 위해 클릭 시 DB 최신본을 항상 우선 사용
             try {
-              const fresh = await __photoMemoGetById(id);
+              const fresh = await __photoMemoGetById(openId);
               if (fresh) {
                 workingMemo = fresh;
                 fullBlob = fresh.imageBlob instanceof Blob ? fresh.imageBlob : null;
@@ -9208,6 +9485,7 @@ const originalBase64 = event.target.result;
             let didBlobFallback = false;
             previewImg.onload = () => {
               __setPhotoMemoModalRecord(workingMemo);
+              __renderPhotoMemoStrip(workingMemo);
               modalCanvas.width = previewImg.width;
               modalCanvas.height = previewImg.height;
               modalCtx.drawImage(previewImg, 0, 0);
@@ -9222,6 +9500,7 @@ const originalBase64 = event.target.result;
               modal.style.display = "flex";
               window.imageModalShowYn = true;
               window.__photoMemoModalOpening = false;
+              __fitModalCanvas(); // 표시된 뒤라야 남은 높이를 잴 수 있다
               if (useBlobUrl) {
                 setTimeout(() => {
                   try {
@@ -9264,7 +9543,8 @@ const originalBase64 = event.target.result;
         };
 
         // 클릭: 큰 사진 보기(기존 imageModal 재사용)
-        naver.maps.Event.addListener(marker, "click", openPhotoMemoModal);
+        // ⚠ 리스너에 함수를 그대로 넘기면 이벤트 객체가 targetId 로 들어가므로 반드시 감싼다
+        naver.maps.Event.addListener(marker, "click", () => openPhotoMemoModal());
 
         // 모바일에서 click 누락되는 케이스 보강: 썸네일 DOM의 touchend도 직접 처리
         markerElement.addEventListener("pointerup", (ev) => {
@@ -9290,13 +9570,90 @@ const originalBase64 = event.target.result;
             await __photoMemoDelete(id);
             window.__photoMemoIndex = window.__photoMemoIndex.filter((x) => String(x.id) !== id);
             __removePhotoMemoMarker(id);
+            __resyncPhotoMemoGroup(memo); // 같은 좌표에 남은 사진이 있으면 새 대표로 마커 재생성
           } catch (e) {
             alert("삭제 실패");
           }
         });
 
+        marker.__photoMemoEl = markerElement; // 뱃지 갱신용
         window.__photoMemoMarkers.set(id, marker);
+        __updatePhotoMemoGroupBadge(id);
         return marker;
+      }
+
+      // 모달 아래 "같은 좌표" 썸네일 줄 — 연속 촬영한 사진들을 나란히 보여준다
+      async function __renderPhotoMemoStrip(rec) {
+        const strip = document.getElementById("photoMemoStrip");
+        if (!strip) return;
+
+        const group = rec ? __photoMemoGroupEntries(rec) : [];
+        if (group.length <= 1) {
+          strip.style.display = "none";
+          strip.innerHTML = "";
+          strip.dataset.groupKey = "";
+          window.__photoMemoModalGroup = null;
+          __updateModalNavButtons();
+          return;
+        }
+
+        const curId = String(rec.id);
+        const ids = group.map((e) => String(e.id));
+        window.__photoMemoModalGroup = { ids, idx: Math.max(0, ids.indexOf(curId)) };
+        __updateModalNavButtons();
+
+        // 같은 묶음을 다시 그리는 중이면(= 사진만 넘기는 중) 활성 표시만 바꾼다.
+        // 통째로 다시 만들면 썸네일이 사라졌다가 DB 조회 후 다시 떠서 모달이 새로 그려지는 것처럼 보인다.
+        const key = ids.join("|");
+        if (strip.dataset.groupKey === key && strip.children.length === ids.length) {
+          let cur = null;
+          strip.querySelectorAll(".pm-strip-item").forEach((b) => {
+            const on = b.dataset.id === curId;
+            b.classList.toggle("active", on);
+            if (on) cur = b;
+          });
+          if (cur) strip.scrollLeft = Math.max(0, cur.offsetLeft - strip.clientWidth / 2 + cur.offsetWidth / 2);
+          return;
+        }
+
+        // 늦게 도착한 썸네일이 다음 렌더를 덮어쓰지 않도록 토큰으로 무효화
+        const token = (window.__photoMemoStripToken = (window.__photoMemoStripToken || 0) + 1);
+        strip.innerHTML = "";
+        strip.dataset.groupKey = key;
+        strip.style.display = "flex";
+
+        let activeBtn = null;
+        ids.forEach((gid) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "pm-strip-item" + (gid === curId ? " active" : "");
+          btn.dataset.id = gid;
+          const im = document.createElement("img");
+          im.alt = "";
+          btn.appendChild(im);
+          btn.onclick = (ev) => {
+            ev.stopPropagation();
+            if (gid === String(window.__openedPhotoMemoRecord?.id || "")) return;
+            window.__photoMemoModalOpening = false; // 모달이 이미 열린 상태에서의 전환
+            if (typeof window.__photoMemoActiveOpener === "function") window.__photoMemoActiveOpener(gid);
+          };
+          strip.appendChild(btn);
+          if (gid === curId) activeBtn = btn;
+
+          // 경량 인덱스에는 이미지가 없으므로 썸네일은 DB에서 읽는다
+          __photoMemoGetById(gid)
+            .then((r) => {
+              if (token !== window.__photoMemoStripToken) return;
+              const src = r?.thumbDataUrl || r?.imageDataUrl || "";
+              if (src) im.src = src;
+            })
+            .catch(() => {});
+        });
+
+        // 현재 사진이 보이도록 가로 스크롤만 조정 (scrollIntoView 는 페이지까지 스크롤해서 쓰지 않는다)
+        if (activeBtn) {
+          strip.scrollLeft = Math.max(0, activeBtn.offsetLeft - strip.clientWidth / 2 + activeBtn.offsetWidth / 2);
+        }
       }
 
       function updatePhotoMemoMarkersByBounds() {
@@ -9319,6 +9676,8 @@ const originalBase64 = event.target.result;
             if (typeof entry.lat !== "number" || typeof entry.lng !== "number") continue;
             if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng)) && _inSgg(entry.lat, entry.lng)) {
               const id = String(entry.id);
+              // 같은 좌표 묶음(연속 촬영)은 대표 1개만 마커로 그린다 — 나머지는 모달 썸네일 줄에서 본다
+              if (__photoMemoGroupLeadId(entry) !== id) continue;
               inView.add(id);
               // 마커 없고 아직 로딩 중이 아닐 때만 DB에서 full record 불러와 마커 생성
               if (!window.__photoMemoMarkers.has(id) && !window.__photoMemoLoadingIds.has(id)) {
@@ -9485,6 +9844,721 @@ const originalBase64 = event.target.result;
         return loadPhotoMemoIndexOnce();
       }
 
+      /* ================= 🔇 무음 촬영 (페이지 내 카메라) =================
+         기본 카메라 앱을 거치지 않고 getUserMedia 스트림에서 프레임을 뽑으므로
+         셔터음이 나지 않는다. HTTPS(또는 localhost)에서만 동작.
+         window.__openSilentCamera(opts) -> Promise<string[]>  (JPEG dataURL 배열, 취소 시 [])
+           opts.multiple   : 연속 촬영 허용 (기본 true)
+           opts.onFallback : 무음 촬영 불가 시 "기본 카메라로 찍기" 로 실행할 콜백
+      */
+      function __silentCamInjectStyleOnce() {
+        if (document.getElementById("silentCamStyle")) return;
+        const st = document.createElement("style");
+        st.id = "silentCamStyle";
+        st.textContent = `
+#silentCamOverlay{position:fixed;inset:0;z-index:2147483000;background:#000;overscroll-behavior:contain;}
+/* 기본 카메라 앱처럼 화면을 꽉 채운다. contain 은 센서 전체를 보여줘 좌우 검은 여백이 생기고
+   화각이 넓어(축소된 것처럼) 보인다. cover 로 채우고, 촬영도 화면에 보이는 영역만 잘라 저장한다.
+   ⚠ 영상은 오버레이 전체에 고정한다. 컨트롤을 세로 flex 로 쌓으면 렌즈 줄·썸네일 줄이
+     뒤늦게 나타날 때마다 영상 높이가 줄어 화면이 다시 잡히는 것처럼 보인다. */
+#silentCamOverlay video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;}
+#silentCamOverlay .sc-controls{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;}
+#silentCamOverlay .sc-flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .18s ease-out;}
+#silentCamOverlay .sc-flash.on{opacity:.85;transition:none;}
+#silentCamOverlay .sc-focus{position:absolute;width:76px;height:76px;margin:-38px 0 0 -38px;border:2px solid #ffd54f;border-radius:10px;box-shadow:0 0 0 1px rgba(0,0,0,.4) inset;opacity:0;pointer-events:none;transition:opacity .35s ease-out;}
+#silentCamOverlay .sc-focus.on{opacity:1;transition:none;}
+#silentCamOverlay .sc-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.82);padding:18px 20px;border-radius:12px;font-size:14px;line-height:1.7;text-align:center;max-width:84%;display:none;}
+#silentCamOverlay .sc-msg button{background:rgba(255,255,255,.18);color:#fff;border:0;border-radius:8px;padding:9px 12px;font-size:13px;cursor:pointer;}
+#silentCamOverlay .sc-lens{display:none;align-items:center;gap:10px;padding:6px 12px;background:rgba(0,0,0,.55);}
+#silentCamOverlay .sc-lensbtn{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;flex:0 0 auto;}
+/* flex:1 1 0 + min-width:0 이라야 버튼이 많아져도 줄이 화면 밖으로 넘치지 않고 안에서 스크롤된다 */
+#silentCamOverlay .sc-zooms{display:flex;gap:6px;flex:1 1 0;min-width:0;overflow-x:auto;justify-content:center;}
+#silentCamOverlay .sc-zooms[hidden]{display:none;}
+#silentCamOverlay .sc-zoombtn{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:999px;min-width:40px;padding:6px 10px;font-size:13px;cursor:pointer;}
+#silentCamOverlay .sc-zoombtn.on{background:#ffd54f;color:#000;font-weight:700;}
+/* 컨트롤 줄에 두면 버튼이 늘었을 때 화면 밖으로 밀려나므로 영상 위에 고정한다 */
+#silentCamOverlay .sc-infobtn{position:absolute;top:10px;right:10px;z-index:3;background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.5);border-radius:999px;width:38px;height:38px;padding:0;font-size:17px;line-height:1;cursor:pointer;}
+#silentCamOverlay .sc-info{position:absolute;top:56px;left:8px;right:8px;max-height:52vh;overflow:auto;background:rgba(0,0,0,.85);color:#fff;border-radius:10px;padding:10px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-all;z-index:3;}
+#silentCamOverlay .sc-info[hidden]{display:none;}
+#silentCamOverlay .sc-strip{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;background:rgba(0,0,0,.65);}
+#silentCamOverlay .sc-strip:empty{display:none;}
+#silentCamOverlay .sc-thumb{position:relative;flex:0 0 auto;width:56px;height:56px;}
+#silentCamOverlay .sc-thumb img{width:56px;height:56px;object-fit:cover;border-radius:4px;display:block;}
+#silentCamOverlay .sc-thumb span{position:absolute;top:-5px;right:-5px;width:18px;height:18px;background:rgba(0,0,0,.85);color:#fff;border-radius:50%;font-size:11px;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+#silentCamOverlay .sc-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:#000;}
+#silentCamOverlay .sc-bar button{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:8px;padding:10px 12px;font-size:14px;cursor:pointer;flex:0 0 auto;}
+#silentCamOverlay .sc-shot{width:62px;height:62px;border-radius:50%!important;background:#fff!important;border:4px solid rgba(255,255,255,.35)!important;padding:0!important;}
+#silentCamOverlay .sc-shot:active{transform:scale(.94);}
+#silentCamOverlay .sc-torch.on{background:#ffd54f!important;color:#000!important;}
+`;
+        document.head.appendChild(st);
+      }
+
+      window.__openSilentCamera = function (opts) {
+        opts = opts || {};
+        const allowMultiple = opts.multiple !== false;
+        const onFallback = typeof opts.onFallback === "function" ? opts.onFallback : null;
+
+        return new Promise((resolve) => {
+          if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert("무음 촬영은 HTTPS 또는 localhost 에서만 동작합니다.\n기본 카메라를 사용해 주세요.");
+            if (onFallback) { try { onFallback(); } catch (_) {} }
+            resolve([]);
+            return;
+          }
+
+          __silentCamInjectStyleOnce();
+
+          const shots = []; // dataURL 배열
+          let stream = null;
+          let facing = "environment";
+          let closed = false;
+          let backCams = []; // 후면 카메라 목록 (권한 승인 후에야 라벨이 채워진다)
+          let backIdx = 0; // 현재 선택된 후면 렌즈
+          // v2: 예전 키에는 잘못 고른 초광각 deviceId 가 저장돼 있으므로 한 번 버린다
+          const LENS_KEY = "silentCamBackDeviceId2";
+          // 지난번에 쓰던 렌즈. 이게 있으면 처음부터 그 렌즈로 열어 스트림 재시작(=화면이 한 번
+          // 바뀌는 것)을 건너뛴다. deviceId 는 라벨과 달리 권한 승인 전에도 그대로 쓸 수 있다.
+          let savedLensId = null;
+          try { savedLensId = localStorage.getItem(LENS_KEY) || null; } catch (_) {}
+          let pendingZoom = null; // 렌즈를 바꿔 연 뒤 적용할 배율
+
+          const ov = document.createElement("div");
+          ov.id = "silentCamOverlay";
+          ov.innerHTML = `
+            <video playsinline muted autoplay></video>
+            <div class="sc-flash"></div>
+            <div class="sc-focus"></div>
+            <button type="button" class="sc-infobtn" title="카메라 정보">ⓘ</button>
+            <div class="sc-info" hidden></div>
+            <div class="sc-msg"></div>
+            <div class="sc-controls">
+              <div class="sc-lens">
+                <button type="button" class="sc-lensbtn" style="display:none"></button>
+                <div class="sc-zooms" hidden></div>
+              </div>
+              <div class="sc-strip"></div>
+              <div class="sc-bar">
+                <button type="button" class="sc-cancel">취소</button>
+                <button type="button" class="sc-flip" title="전/후면 전환">⟲</button>
+                <button type="button" class="sc-shot" title="촬영"></button>
+                <button type="button" class="sc-torch" title="손전등" style="display:none">🔦</button>
+                <button type="button" class="sc-done">완료</button>
+              </div>
+            </div>`;
+          document.body.appendChild(ov);
+          // 오버레이가 열려 있는 동안 "패널 바깥 클릭 = 단지정보 닫기" 같은 문서 레벨 핸들러를 막는다
+          window.__silentCamOpen = true;
+
+          const video = ov.querySelector("video");
+          const flashEl = ov.querySelector(".sc-flash");
+          const focusEl = ov.querySelector(".sc-focus");
+          const msgEl = ov.querySelector(".sc-msg");
+          const stripEl = ov.querySelector(".sc-strip");
+          const lensRow = ov.querySelector(".sc-lens");
+          const lensBtn = ov.querySelector(".sc-lensbtn");
+          const zoomsEl = ov.querySelector(".sc-zooms");
+          const infoBtn = ov.querySelector(".sc-infobtn");
+          const infoEl = ov.querySelector(".sc-info");
+          const flipBtn = ov.querySelector(".sc-flip");
+          const shotBtn = ov.querySelector(".sc-shot");
+          const torchBtn = ov.querySelector(".sc-torch");
+          const doneBtn = ov.querySelector(".sc-done");
+          const cancelBtn = ov.querySelector(".sc-cancel");
+
+          if (!allowMultiple) doneBtn.style.display = "none";
+
+          const videoTrack = () => (stream ? stream.getVideoTracks()[0] : null);
+
+          function stopStream() {
+            if (!stream) return;
+            try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+            stream = null;
+          }
+
+          function showMsg(html) {
+            msgEl.innerHTML = html;
+            msgEl.style.display = "block";
+          }
+          function hideMsg() {
+            msgEl.style.display = "none";
+            msgEl.innerHTML = "";
+          }
+
+          function showError(err) {
+            const name = (err && err.name) || "";
+            let txt = "카메라를 열 수 없습니다." + (name ? "<br><small>(" + name + ")</small>" : "");
+            if (name === "NotAllowedError" || name === "SecurityError") {
+              txt = "카메라 권한이 거부되었습니다.<br>주소창 왼쪽 자물쇠 → 사이트 설정 → 카메라를 허용한 뒤 다시 시도해 주세요.";
+            } else if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+              txt = "사용 가능한 카메라를 찾지 못했습니다.";
+            } else if (name === "NotReadableError" || name === "TrackStartError") {
+              txt = "다른 앱이 카메라를 사용 중입니다.<br>해당 앱을 종료한 뒤 다시 시도해 주세요.";
+            }
+            showMsg(
+              txt +
+                '<div style="margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">' +
+                '<button type="button" data-sc="retry">다시 시도</button>' +
+                (onFallback ? '<button type="button" data-sc="fallback">기본 카메라로 찍기</button>' : "") +
+                '<button type="button" data-sc="close">닫기</button>' +
+                "</div>"
+            );
+          }
+
+          msgEl.addEventListener("click", (ev) => {
+            const act = ev.target?.getAttribute?.("data-sc");
+            if (!act) return;
+            if (act === "retry") { hideMsg(); init(); }
+            else if (act === "fallback") { cleanup(); if (onFallback) { try { onFallback(); } catch (_) {} } resolve([]); }
+            else if (act === "close") cancel();
+          });
+
+          /* ⚠ 해상도를 getUserMedia 단계에서 함께 요구하면 안드로이드 크롬이 "그 모드를 지원하는"
+             다른 물리 카메라(초광각)를 골라 화각이 넓어지고 가장자리가 왜곡된다.
+             → 장치 선택 때는 해상도를 제약하지 않고, 스트림이 열린 뒤 applyConstraints 로
+               같은 렌즈 안에서 해상도만 올린다(applyConstraints 는 장치를 바꾸지 못한다). */
+          function buildVideoConstraints() {
+            // 센서 기본 화각에 가깝도록 4:3 기준으로 요청한다. 16:9 를 요구하면 4:3 센서의
+            // 위아래를 잘라내 화각이 좁아진다.
+            const res = { width: { ideal: 1920 }, height: { ideal: 1440 } };
+            if (facing === "environment") {
+              const id = backCams[backIdx]?.deviceId || savedLensId;
+              // 렌즈를 deviceId 로 못박았으므로 해상도를 같이 요구해도 카메라가 바뀌지 않는다.
+              if (id) return { deviceId: { exact: id }, ...res };
+              // 첫 실행(저장된 렌즈 없음)은 해상도를 요구하지 않는다 —
+              // 해상도 조건이 붙으면 크롬이 그 모드를 지원하는 초광각 렌즈를 고를 수 있다.
+              return { facingMode: { ideal: facing } };
+            }
+            return { facingMode: { ideal: facing }, ...res };
+          }
+
+          async function start() {
+            stopStream();
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({
+                audio: false, // 오디오는 잡지 않는다 (권한 프롬프트만 늘고 무음 목적에 무의미)
+                video: buildVideoConstraints(),
+              });
+            } catch (err) {
+              // 저장해 둔 렌즈가 사라졌거나 점유 중이면 facingMode 로 한 번 더 시도
+              if (facing === "environment" && (backCams[backIdx] || savedLensId)) {
+                backCams = [];
+                backIdx = 0;
+                savedLensId = null;
+                try { localStorage.removeItem(LENS_KEY); } catch (_) {}
+                try {
+                  stream = await navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: { facingMode: { ideal: facing } },
+                  });
+                } catch (err2) {
+                  showError(err2);
+                  return;
+                }
+              } else {
+                showError(err);
+                return;
+              }
+            }
+            if (closed) { stopStream(); return; }
+            video.srcObject = stream;
+            try { await video.play(); } catch (_) {}
+            hideMsg();
+            // ⚠ 스트림이 열린 뒤에는 해상도를 다시 요구하지 않는다. 종횡비가 같아도 캡처 모드가
+            //   바뀌면서 센서 크롭·손떨림 보정 여유분 때문에 화각이 좁아져, 미리보기가 뜬 직후
+            //   확대되는 것처럼 보인다. 해상도는 buildVideoConstraints() 에서 한 번에 요구한다.
+            await applyAutoFocus();
+            refreshTorchBtn();
+            refreshZoom();
+            updateLensBtn();
+            renderCamInfo();
+            if (pendingZoom != null) {
+              const v = pendingZoom;
+              pendingZoom = null;
+              await setZoom(v);
+            }
+          }
+
+          /* getUserMedia 스트림은 기기에 따라 자동초점이 걸려 있지 않아 흐릿하게 나온다.
+             연속 자동초점을 지원하면 명시적으로 켜 준다. */
+          async function applyAutoFocus() {
+            const t = videoTrack();
+            if (!t || typeof t.getCapabilities !== "function" || typeof t.applyConstraints !== "function") return;
+            let caps = null;
+            try { caps = t.getCapabilities() || {}; } catch (_) { return; }
+            const modes = caps.focusMode || [];
+            if (!Array.isArray(modes) || !modes.includes("continuous")) return;
+            try { await t.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (_) {}
+          }
+
+          // 탭한 지점에 초점 맞추기. 화면 좌표를 cover 크롭을 되돌려 원본 프레임 기준 0~1 로 바꾼다.
+          async function focusAt(clientX, clientY) {
+            const t = videoTrack();
+            if (!t || typeof t.getCapabilities !== "function") return;
+
+            const rect = video.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            const ovRect = ov.getBoundingClientRect();
+            focusEl.style.left = clientX - ovRect.left + "px";
+            focusEl.style.top = clientY - ovRect.top + "px";
+            focusEl.classList.add("on");
+            setTimeout(() => focusEl.classList.remove("on"), 900);
+
+            let caps = null;
+            try { caps = t.getCapabilities() || {}; } catch (_) { return; }
+            const modes = caps.focusMode || [];
+            const adv = {};
+
+            if (caps.pointsOfInterest) {
+              const vw = video.videoWidth;
+              const vh = video.videoHeight;
+              if (vw && vh) {
+                const scale = Math.max(rect.width / vw, rect.height / vh);
+                const sw = Math.min(vw, rect.width / scale);
+                const sh = Math.min(vh, rect.height / scale);
+                const sx = (vw - sw) / 2;
+                const sy = (vh - sh) / 2;
+                const fx = (sx + ((clientX - rect.left) / rect.width) * sw) / vw;
+                const fy = (sy + ((clientY - rect.top) / rect.height) * sh) / vh;
+                adv.pointsOfInterest = [
+                  { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) },
+                ];
+              }
+            }
+            if (Array.isArray(modes)) {
+              if (modes.includes("single-shot")) adv.focusMode = "single-shot";
+              else if (modes.includes("continuous")) adv.focusMode = "continuous";
+            }
+            if (!Object.keys(adv).length) return;
+            try { await t.applyConstraints({ advanced: [adv] }); } catch (_) {}
+          }
+
+          /* 라벨에서 카메라 번호를 뽑는다. 안드로이드 크롬은 "camera 0, facing back" 처럼 준다.
+             ⚠ enumerateDevices() 의 순서는 카메라 번호 순이 아니다 — 실측한 기기에서
+               [camera 2(초광각), camera 0(기본)] 순으로 왔다. 그래서 "목록 첫 번째 = 기본"
+               으로 잡으면 초광각이 기본이 되어 화각이 넓고 왜곡돼 보인다. */
+          function camNo(d) {
+            const m = /camera\s*(\d+)/i.exec(String(d.label || ""));
+            return m ? Number(m[1]) : 999;
+          }
+
+          // 기본(1배) 후면 렌즈: 안드로이드는 관례적으로 번호가 가장 작은 후면 카메라가 기본이고
+          // 번호가 큰 쪽이 초광각·망원 같은 보조 렌즈다. iOS 는 "Back Camera" 라벨로 구분된다.
+          function pickMainBackCameraId(list) {
+            if (!list.length) return null;
+            const label = (d) => String(d.label || "").toLowerCase();
+            const exact = list.find((d) => /back camera$|후면\s*카메라$/.test(label(d)));
+            if (exact) return exact.deviceId;
+            const bad = /(ultra|초광각|tele|망원|depth|심도|macro|접사|mono|흑백)/;
+            const good = list.filter((d) => !bad.test(label(d)));
+            return (good[0] || list[0]).deviceId; // list 는 이미 카메라 번호 오름차순
+          }
+
+          // 권한 승인 후 라벨이 채워진 목록으로 후면 렌즈를 확정.
+          // 지금 열린 스트림과 다른 렌즈를 골랐으면 true (호출부가 start() 를 한 번 더 돌린다)
+          async function resolveBackLens() {
+            let cams = [];
+            try {
+              cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+            } catch (_) {
+              return false;
+            }
+            flipBtn.style.display = cams.length >= 2 ? "" : "none";
+
+            backCams = cams
+              .filter((d) => /back|rear|environment|후면/i.test(d.label || ""))
+              .sort((a, b) => camNo(a) - camNo(b)); // 0번(기본 렌즈)이 앞에 오도록
+            if (facing !== "environment" || backCams.length < 2) {
+              updateLensBtn();
+              return false;
+            }
+
+            const wantId =
+              savedLensId && backCams.some((d) => d.deviceId === savedLensId)
+                ? savedLensId
+                : pickMainBackCameraId(backCams);
+            backIdx = Math.max(0, backCams.findIndex((d) => d.deviceId === wantId));
+            // 자동으로 고른 렌즈도 저장해 둔다 → 다음에 열 때는 재시작 없이 바로 이 렌즈로 열린다
+            if (wantId && wantId !== savedLensId) {
+              savedLensId = wantId;
+              try { localStorage.setItem(LENS_KEY, wantId); } catch (_) {}
+            }
+            updateLensBtn();
+
+            let curId = "";
+            try { curId = videoTrack()?.getSettings?.().deviceId || ""; } catch (_) {}
+            return !!wantId && wantId !== curId;
+          }
+
+          function updateLensBtn() {
+            // 후면 렌즈가 3개 이상일 때만 순환 버튼을 둔다 (2개면 배율 줄의 "광각"으로 충분)
+            const show = facing === "environment" && backCams.length >= 3;
+            lensBtn.style.display = show ? "" : "none";
+            if (show) lensBtn.textContent = `렌즈 ${backIdx + 1}/${backCams.length}`;
+            lensRow.style.display = show || !zoomsEl.hidden ? "flex" : "none";
+          }
+
+          /* 배율 프리셋 버튼.
+             기기가 보고하는 zoom 값의 단위가 두 가지라 구분해서 다뤄야 한다.
+             ① 실제 배율을 보고하는 기기 (min <= 1 <= max)
+                예: {min:0.5, max:10} — 0.5 는 초광각, 1 이 기본 화각.
+                값을 그대로 배율로 쓴다. min 을 1배로 잡아버리면 초광각이 "1x" 로
+                표시돼 실제보다 넓게 나오고, 1배 아래로 내려갈 방법도 사라진다.
+             ② 임의 단위를 보고하는 기기 (예: min:100, max:800)
+                min 을 1배로 보고 배수로 환산한다. */
+          const ZOOM_STEPS = [1, 2, 3, 5];
+
+          function buildZoomValues(z) {
+            const ratioMode = z.min <= 1.001 && z.max >= 1;
+            let vals;
+            if (ratioMode) {
+              // 축소(초광각) 프리셋 포함. z.min 이 1 미만이면 그게 가장 넓은 배율이다.
+              vals = [z.min, 0.5, 1, 2, 3, 5].filter((v) => v >= z.min - 1e-6 && v <= z.max + 1e-6);
+            } else {
+              vals = ZOOM_STEPS.map((m) => z.min * m).filter((v) => v <= z.max + 1e-6);
+            }
+            if (!vals.length) vals = [z.min];
+            vals.sort((a, b) => a - b);
+
+            // 최대 배율이 프리셋 사이에 걸치면 최대치도 하나 더 준다
+            const last = vals[vals.length - 1];
+            const gate = ratioMode ? 0.4 : z.min * 0.4;
+            if (z.max - last > gate) vals.push(z.max);
+
+            const out = [];
+            vals.forEach((v) => {
+              if (!out.some((o) => Math.abs(o - v) < 1e-3)) out.push(v);
+            });
+            return { values: out, ratioMode };
+          }
+
+          function zoomLabel(v, z, ratioMode) {
+            const shown = ratioMode ? v : v / z.min;
+            return (Number.isInteger(shown) ? shown : Number(shown.toFixed(1))) + "x";
+          }
+
+          /* 축소(광각)는 zoom 으로 못 한다 — 기기가 min:1 을 보고하므로 1배 아래가 없다.
+             더 넓게 가려면 보조 후면 렌즈(초광각)로 갈아타야 한다. 그래서 렌즈 전환을
+             배율 줄 왼쪽 "광각" 버튼으로 합쳐 카메라 앱처럼 한 줄에서 고르게 한다. */
+          function refreshZoom() {
+            zoomsEl.innerHTML = "";
+            const hasWide = facing === "environment" && backCams.length >= 2;
+
+            if (hasWide) {
+              const wb = document.createElement("button");
+              wb.type = "button";
+              wb.className = "sc-zoombtn sc-widebtn";
+              wb.textContent = "광각";
+              wb.onclick = () => selectLens(1, null);
+              zoomsEl.appendChild(wb);
+            }
+
+            let z = null;
+            try { z = videoTrack()?.getCapabilities?.().zoom || null; } catch (_) {}
+            const hasZoom = !!(z && Number.isFinite(z.min) && Number.isFinite(z.max) && z.max > z.min);
+
+            if (hasZoom) {
+              const { values, ratioMode } = buildZoomValues(z);
+              values.forEach((v) => {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.className = "sc-zoombtn";
+                b.textContent = zoomLabel(v, z, ratioMode);
+                b.dataset.zoom = String(v);
+                // 광각 렌즈에 있을 때 배율을 누르면 기본 렌즈로 돌아간 뒤 그 배율을 적용한다
+                b.onclick = () => (backIdx === 0 ? setZoom(v) : selectLens(0, v));
+                zoomsEl.appendChild(b);
+              });
+            }
+
+            zoomsEl.hidden = !hasWide && !hasZoom;
+            let cur = z ? z.min : 1;
+            try { cur = Number(videoTrack().getSettings().zoom) || cur; } catch (_) {}
+            markActiveZoom(cur);
+            updateLensBtn();
+          }
+
+          // 렌즈를 골라 다시 연다. afterZoom 이 있으면 열린 뒤 그 배율을 적용한다.
+          function selectLens(idx, afterZoom) {
+            if (!backCams[idx] || idx === backIdx) {
+              if (afterZoom != null) setZoom(afterZoom);
+              return;
+            }
+            backIdx = idx;
+            savedLensId = backCams[idx].deviceId;
+            try { localStorage.setItem(LENS_KEY, savedLensId); } catch (_) {}
+            pendingZoom = afterZoom;
+            start();
+          }
+
+          // 활성 표시: 보조(광각) 렌즈면 "광각", 기본 렌즈면 현재 배율에 가장 가까운 버튼
+          function markActiveZoom(cur) {
+            const wideBtn = zoomsEl.querySelector(".sc-widebtn");
+            let best = null;
+            let bestGap = Infinity;
+            zoomsEl.querySelectorAll(".sc-zoombtn").forEach((b) => {
+              b.classList.remove("on");
+              if (!b.dataset.zoom) return; // 광각 버튼은 배율 비교 대상이 아니다
+              const gap = Math.abs(Number(b.dataset.zoom) - cur);
+              if (gap < bestGap) { bestGap = gap; best = b; }
+            });
+            if (backIdx !== 0 && wideBtn) wideBtn.classList.add("on");
+            else if (best) best.classList.add("on");
+          }
+
+          /* 카메라 진단 정보. 기기가 실제로 뭘 보고하는지 봐야 배율·화각·초점 문제를
+             추측이 아니라 사실로 판단할 수 있다. ⓘ 버튼으로 토글. */
+          function renderCamInfo() {
+            if (infoEl.hidden) return;
+            const t = videoTrack();
+            const lines = [];
+            const j = (v) => { try { return JSON.stringify(v); } catch (_) { return String(v); } };
+
+            if (!t) {
+              infoEl.textContent = "스트림 없음";
+              return;
+            }
+            let caps = {};
+            let set = {};
+            try { caps = t.getCapabilities?.() || {}; } catch (e) { lines.push("getCapabilities 실패: " + e.name); }
+            try { set = t.getSettings?.() || {}; } catch (e) { lines.push("getSettings 실패: " + e.name); }
+
+            lines.push("track  : " + (t.label || "(라벨 없음)"));
+            lines.push("해상도 : " + (video.videoWidth || "?") + "×" + (video.videoHeight || "?") +
+                       "  (설정 " + (set.width || "?") + "×" + (set.height || "?") + ")");
+            lines.push("화면   : " + Math.round(video.clientWidth) + "×" + Math.round(video.clientHeight));
+            lines.push("zoom   : " + (caps.zoom ? j(caps.zoom) + "  현재 " + (set.zoom ?? "?") : "미지원"));
+            lines.push("focus  : " + (caps.focusMode ? j(caps.focusMode) : "미지원") +
+                       "  현재 " + (set.focusMode ?? "?"));
+            lines.push("POI    : " + (caps.pointsOfInterest ? "지원" : "미지원"));
+            lines.push("torch  : " + (caps.torch ? "지원" : "미지원"));
+            lines.push("facing : " + (set.facingMode ?? "?"));
+            lines.push("");
+            lines.push("후면 카메라 " + backCams.length + "개" + (backCams.length ? " (현재 " + (backIdx + 1) + "번)" : ""));
+            backCams.forEach((d, i) => {
+              lines.push((i === backIdx ? " ▶ " : "   ") + (i + 1) + ". " + (d.label || "(라벨 없음)"));
+            });
+            infoEl.textContent = lines.join("\n");
+          }
+
+          infoBtn.onclick = () => {
+            infoEl.hidden = !infoEl.hidden;
+            renderCamInfo();
+          };
+
+          async function setZoom(v) {
+            const t = videoTrack();
+            if (!t) return;
+            try { await t.applyConstraints({ advanced: [{ zoom: v }] }); } catch (_) {}
+            let cur = v;
+            try { cur = Number(t.getSettings().zoom) || v; } catch (_) {}
+            markActiveZoom(cur);
+          }
+
+          async function init() {
+            await start(); // 1) 권한 확보 (이 시점엔 장치 라벨이 비어 있다)
+            if (closed || !stream) return;
+            const needRestart = await resolveBackLens(); // 2) 기본 렌즈 확정
+            if (needRestart && !closed) await start(); // 3) 확정된 렌즈로 한 번만 재시작
+            // 4) ⚠ 필수. start() 안의 refreshZoom() 은 backCams 가 비어 있을 때 돌아
+            //    "광각" 버튼을 만들지 못한다. 목록이 채워진 지금 다시 만든다.
+            //    (재시작이 없는 경로 — 저장된 렌즈로 바로 연 경우 — 에서 특히 그렇다)
+            if (!closed) {
+              refreshZoom();
+              renderCamInfo();
+            }
+          }
+
+          function refreshTorchBtn() {
+            let ok = false;
+            try {
+              const t = videoTrack();
+              ok = !!(t && t.getCapabilities && t.getCapabilities().torch);
+            } catch (_) {}
+            torchBtn.style.display = ok ? "" : "none";
+            torchBtn.classList.remove("on");
+          }
+
+          function flash() {
+            flashEl.classList.add("on");
+            setTimeout(() => flashEl.classList.remove("on"), 60);
+          }
+
+          function updateDone() {
+            doneBtn.textContent = shots.length ? `완료 (${shots.length}장)` : "완료";
+          }
+
+          function addThumb(url) {
+            const wrap = document.createElement("div");
+            wrap.className = "sc-thumb";
+            const img = document.createElement("img");
+            img.src = url;
+            const x = document.createElement("span");
+            x.textContent = "✕";
+            x.onclick = () => {
+              const i = shots.indexOf(url);
+              if (i >= 0) shots.splice(i, 1);
+              wrap.remove();
+              updateDone();
+            };
+            wrap.appendChild(img);
+            wrap.appendChild(x);
+            stripEl.appendChild(wrap);
+            stripEl.scrollLeft = stripEl.scrollWidth;
+          }
+
+          function shoot() {
+            if (!video.videoWidth || !video.videoHeight) return;
+            let url;
+            try {
+              // 미리보기가 object-fit:cover 라 화면 밖으로 잘려나간 부분이 있다.
+              // 보이는 그대로 저장되도록 같은 계산으로 원본에서 잘라낸다 (WYSIWYG).
+              const vw = video.videoWidth;
+              const vh = video.videoHeight;
+              const cw = video.clientWidth || vw;
+              const ch = video.clientHeight || vh;
+              const scale = Math.max(cw / vw, ch / vh);
+              const sw = Math.max(1, Math.min(vw, Math.round(cw / scale)));
+              const sh = Math.max(1, Math.min(vh, Math.round(ch / scale)));
+              const sx = Math.round((vw - sw) / 2);
+              const sy = Math.round((vh - sh) / 2);
+
+              const cv = document.createElement("canvas");
+              cv.width = sw;
+              cv.height = sh;
+              cv.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+              url = cv.toDataURL("image/jpeg", 0.92);
+            } catch (_) {
+              return;
+            }
+            shots.push(url);
+            // 소리가 없으므로 시각/촉각 피드백으로 촬영을 알린다
+            flash();
+            try { navigator.vibrate && navigator.vibrate(30); } catch (_) {}
+            if (!allowMultiple) { finish(); return; }
+            addThumb(url);
+            updateDone();
+          }
+
+          function onVisibility() {
+            if (closed) return;
+            // 백그라운드로 가면 스트림을 놓아주고, 복귀하면 다시 잡는다
+            if (document.hidden) stopStream();
+            else start();
+          }
+          function onPageHide() { stopStream(); }
+          function onKey(ev) { if (ev.key === "Escape") { ev.stopPropagation(); cancel(); } }
+
+          /* 안드로이드 뒤로가기 대응.
+             오버레이는 페이지 위에 뜬 것뿐이라 뒤로가기가 곧장 페이지를 떠나버린다
+             (이전 히스토리 항목으로 돌아가 지도가 엉뚱한 상태로 다시 열린다).
+             히스토리 항목을 하나 쌓아 두고 popstate 로 받아 "카메라만 닫기"로 만든다. */
+          let pushedState = false;
+          function pushCamState() {
+            try {
+              history.pushState({ __silentCam: 1 }, "");
+              pushedState = true;
+            } catch (_) {
+              pushedState = false;
+            }
+          }
+          function onPop() {
+            if (closed) return;
+            // 찍어둔 사진이 있으면 실수로 날리지 않게 한 번 확인
+            if (shots.length && !confirm(`촬영한 ${shots.length}장을 버리고 닫을까요?`)) {
+              pushCamState(); // 닫지 않기로 했으니 다음 뒤로가기도 여기서 잡도록 다시 쌓는다
+              return;
+            }
+            pushedState = false; // 이미 pop 된 상태
+            cancel();
+          }
+
+          function cleanup() {
+            if (closed) return;
+            closed = true;
+            window.__silentCamOpen = false;
+            document.removeEventListener("visibilitychange", onVisibility);
+            window.removeEventListener("pagehide", onPageHide);
+            document.removeEventListener("keydown", onKey, true);
+            window.removeEventListener("popstate", onPop);
+            // 리스너를 먼저 뗀 뒤에 쌓아둔 항목을 걷어낸다 (onPop 이 다시 돌지 않게)
+            if (pushedState) {
+              pushedState = false;
+              try { history.back(); } catch (_) {}
+            }
+            stopStream();
+            try { video.srcObject = null; } catch (_) {}
+            ov.remove();
+          }
+          function finish() { if (closed) return; const out = shots.slice(); cleanup(); resolve(out); }
+          function cancel() { if (closed) return; cleanup(); resolve([]); }
+
+          // 미리보기 탭 = 그 지점에 초점 (컨트롤은 video 위에 떠 있어 여기로 안 들어온다)
+          video.addEventListener("click", (ev) => {
+            focusAt(ev.clientX, ev.clientY);
+          });
+
+          shotBtn.onclick = shoot;
+          doneBtn.onclick = finish;
+          cancelBtn.onclick = cancel;
+          flipBtn.onclick = () => {
+            facing = facing === "environment" ? "user" : "environment";
+            start();
+          };
+          lensBtn.onclick = () => {
+            if (backCams.length < 2) return;
+            selectLens((backIdx + 1) % backCams.length, null); // 고른 렌즈는 다음에 열 때도 그대로
+          };
+          torchBtn.onclick = async () => {
+            const t = videoTrack();
+            if (!t) return;
+            const on = !torchBtn.classList.contains("on");
+            try {
+              await t.applyConstraints({ advanced: [{ torch: on }] });
+              torchBtn.classList.toggle("on", on);
+            } catch (_) {}
+          };
+
+          document.addEventListener("visibilitychange", onVisibility);
+          window.addEventListener("pagehide", onPageHide);
+          document.addEventListener("keydown", onKey, true);
+          window.addEventListener("popstate", onPop);
+          pushCamState(); // 뒤로가기가 페이지를 떠나지 않고 이 오버레이만 닫도록
+
+          updateDone();
+          init();
+        });
+      };
+
+      // 포토메모 저장 공통 — 썸네일 생성 / 레코드 1건 저장 (파일 경로·무음촬영 경로가 함께 쓴다)
+      async function __photoMemoMakeThumb(compressedDataUrl, fallbackBlob) {
+        try {
+          const blob = __dataUrlToBlob(compressedDataUrl) || fallbackBlob;
+          const thumbBlob = await __fileToThumbBlob(blob, 96, 0.82);
+          return (await __blobToDataUrl(thumbBlob)) || compressedDataUrl;
+        } catch (_) {
+          return compressedDataUrl;
+        }
+      }
+
+      async function __photoMemoSaveOne(compressedDataUrl, thumbDataUrl, coord, note) {
+        const rec = {
+          id: __uuidv4(),
+          lat: coord.lat,
+          lng: coord.lng,
+          createdAt: Date.now(),
+          note: (note || "").trim(),
+          imageDataUrl: compressedDataUrl,
+          thumbDataUrl,
+        };
+        // __photoMemoPut 이 경량 인덱스 동기화까지 한다 — 여기서 또 push 하면 같은 id 가 2개 들어가
+        // 묶음 장수가 2배로 세어진다(뱃지·썸네일 줄 중복).
+        await __photoMemoPut(rec);
+        // 포토메모 체크박스 ON일 때만 즉시 마커 생성
+        if (window.__photoMemoVisible) __createPhotoMemoMarker(rec);
+        return rec;
+      }
+
       function setupPhotoMemoInputHandlerOnce() {
         // 카메라/파일 2개 input 모두를 같은 핸들러로 처리
         const cameraInput = document.getElementById("photoMemoCameraInput");
@@ -9508,41 +10582,18 @@ const originalBase64 = event.target.result;
             } catch (_) {
               compressedDataUrl = originalDataUrl;
             }
-            const compressedBlob = __dataUrlToBlob(compressedDataUrl) || file;
-            const thumbBlob = await __fileToThumbBlob(compressedBlob, 96, 0.82);
-            const thumbDataUrl = await __blobToDataUrl(thumbBlob);
+            const thumbDataUrl = await __photoMemoMakeThumb(compressedDataUrl, file);
 
             // 썸네일 미리보기 표시 후 메모 입력 모달 열기
-            const note = await __showPhotoMemoNoteModal(thumbDataUrl || thumbBlob);
+            const note = await __showPhotoMemoNoteModal(thumbDataUrl);
             if (note === null) {
               // 취소: pending 좌표 유지 (사용자가 다시 시도할 수 있도록)
               return;
             }
 
-            const id = __uuidv4();
-            const rec = {
-              id,
-              lat: p.lat,
-              lng: p.lng,
-              createdAt: Date.now(),
-              note: note.trim(),
-              imageDataUrl: compressedDataUrl,
-              thumbDataUrl,
-            };
-
-            await __photoMemoPut(rec);
-            // 경량 인덱스에 추가 (Blob 없이)
-            window.__photoMemoIndex.push({
-              id: rec.id,
-              lat: rec.lat,
-              lng: rec.lng,
-              createdAt: rec.createdAt,
-              note: rec.note,
-            });
+            await __photoMemoSaveOne(compressedDataUrl, thumbDataUrl, p, note);
             window.__photoMemoPendingCoord = null;
 
-            // 포토메모 체크박스 ON일 때만 즉시 마커 생성
-            if (window.__photoMemoVisible) __createPhotoMemoMarker(rec);
             // ✅ 신규 사진 저장으로 사용량이 늘었을 수 있으니 사용률 재확인(90% 초과 시 백업 유도)
             try {
               window.reportStorage?.();
@@ -9612,6 +10663,46 @@ const originalBase64 = event.target.result;
 
       window.__photoMemoAddMode = window.__photoMemoAddMode || false; // 카메라 버튼으로 켜는 "위치 선택 모드"
 
+      // 🔇 무음 촬영으로 포토메모 저장 — 연속 촬영 N장은 같은 좌표·같은 메모로 N개 레코드가 된다
+      // (레코드 스키마 imageDataUrl 은 단수. hongbuMemo DB 를 공유하는 memoBackup/memoMap 계열 때문에 스키마는 건드리지 않는다)
+      async function __photoMemoSilentCapture() {
+        const shots = await window.__openSilentCamera({
+          multiple: true,
+          onFallback: () => {
+            const input = document.getElementById("photoMemoCameraInput");
+            if (input) input.click();
+          },
+        });
+        if (!shots.length) return;
+
+        const p = window.__photoMemoPendingCoord;
+        if (!p || typeof p.lat !== "number" || typeof p.lng !== "number") return;
+
+        try {
+          // 압축은 파일 경로와 동일하게 1600px / JPEG 0.82
+          const compressed = [];
+          for (const url of shots) {
+            let c = url;
+            try { c = await compressImage(url, 1600, 0.82); } catch (_) { c = url; }
+            compressed.push(c);
+          }
+
+          const firstThumb = await __photoMemoMakeThumb(compressed[0], null);
+          // 메모는 한 번만 입력받아 N장에 공통 적용
+          const note = await __showPhotoMemoNoteModal(firstThumb);
+          if (note === null) return; // 취소: pending 좌표 유지
+
+          for (let i = 0; i < compressed.length; i++) {
+            const thumb = i === 0 ? firstThumb : await __photoMemoMakeThumb(compressed[i], null);
+            await __photoMemoSaveOne(compressed[i], thumb, p, note);
+          }
+          window.__photoMemoPendingCoord = null;
+          try { window.reportStorage?.(); } catch (_) {}
+        } catch (err) {
+          alert("사진 저장 실패");
+        }
+      }
+
       function __ensurePhotoMemoMenu() {
         const mapEl = document.getElementById("map");
         if (!mapEl) return null;
@@ -9623,6 +10714,7 @@ const originalBase64 = event.target.result;
         menu.className = "photo-memo-menu";
         menu.innerHTML = `
     <button type="button" data-action="camera">📷 촬영</button>
+    <button type="button" data-action="silent">🔇 무음</button>
     <button type="button" data-action="file">🖼️ 파일</button>
     <button type="button" data-action="cancel">취소</button>
   `;
@@ -9639,6 +10731,8 @@ const originalBase64 = event.target.result;
           if (act === "camera") {
             const input = document.getElementById("photoMemoCameraInput");
             if (input) input.click();
+          } else if (act === "silent") {
+            __photoMemoSilentCapture();
           } else if (act === "file") {
             const input = document.getElementById("photoMemoFileInput");
             if (input) input.click();
@@ -16225,11 +17319,24 @@ const originalBase64 = event.target.result;
         if (!photoMemoId) return;
         if (!confirm("이 포토메모를 삭제할까요?")) return;
 
+        const rec = window.__openedPhotoMemoRecord;
+        const prevIdx = window.__photoMemoModalGroup?.idx ?? 0;
+
         try {
           await __photoMemoDelete(photoMemoId);
           window.__photoMemoIndex = (window.__photoMemoIndex || []).filter((x) => String(x.id) !== String(photoMemoId));
           __removePhotoMemoMarker(photoMemoId);
-          closeImageModal();
+          if (rec) __resyncPhotoMemoGroup(rec); // 대표가 지워졌으면 다음 사진이 대표가 된다
+
+          // 같은 좌표에 사진이 남아 있으면 모달을 닫지 말고 이웃 사진으로 넘어간다
+          const rest = rec ? __photoMemoGroupEntries(rec) : [];
+          if (rest.length && typeof window.__photoMemoActiveOpener === "function") {
+            const nextId = String(rest[Math.min(prevIdx, rest.length - 1)].id);
+            window.__photoMemoModalOpening = false;
+            window.__photoMemoActiveOpener(nextId);
+          } else {
+            closeImageModal();
+          }
         } catch (e) {
           console.error("포토메모 삭제 실패:", e);
           alert("포토메모 삭제 실패");
