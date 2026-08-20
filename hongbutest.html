@@ -7770,8 +7770,15 @@ const originalBase64 = event.target.result;
 
           if (cameraInput) {
             cameraInput.addEventListener("change", (e) => {
-              handleImageFiles(e.target.files);
+              const files = Array.from(e.target.files || []);
               e.target.value = "";
+              handleImageFiles(files);
+
+              // 📷 기본 카메라도 연속 촬영: 사진이 돌아오면 카메라를 곧바로 다시 연다.
+              // 사용자가 카메라에서 취소/뒤로 하면 change 가 안 오므로 루프가 자연히 끝난다.
+              if (files.length) {
+                try { cameraInput.click(); } catch (_) {}
+              }
             });
           }
 
@@ -9775,7 +9782,9 @@ const originalBase64 = event.target.result;
         st.id = "silentCamStyle";
         st.textContent = `
 #silentCamOverlay{position:fixed;inset:0;z-index:2147483000;background:#000;display:flex;flex-direction:column;overscroll-behavior:contain;}
-#silentCamOverlay video{flex:1 1 auto;width:100%;min-height:0;object-fit:contain;background:#000;}
+/* 기본 카메라 앱처럼 화면을 꽉 채운다. contain 은 센서 전체를 보여줘 좌우 검은 여백이 생기고
+   화각이 넓어(축소된 것처럼) 보인다. cover 로 채우고, 촬영도 화면에 보이는 영역만 잘라 저장한다. */
+#silentCamOverlay video{flex:1 1 auto;width:100%;min-height:0;object-fit:cover;background:#000;}
 #silentCamOverlay .sc-flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .18s ease-out;}
 #silentCamOverlay .sc-flash.on{opacity:.85;transition:none;}
 #silentCamOverlay .sc-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.82);padding:18px 20px;border-radius:12px;font-size:14px;line-height:1.7;text-align:center;max-width:84%;display:none;}
@@ -9784,6 +9793,8 @@ const originalBase64 = event.target.result;
 #silentCamOverlay .sc-lensbtn{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;flex:0 0 auto;}
 #silentCamOverlay .sc-zoom{flex:1 1 auto;min-width:0;accent-color:#fff;}
 #silentCamOverlay .sc-zoom[hidden]{display:none;}
+#silentCamOverlay .sc-zoomval{flex:0 0 auto;color:#fff;font-size:12px;min-width:38px;text-align:right;}
+#silentCamOverlay .sc-zoomval[hidden]{display:none;}
 #silentCamOverlay .sc-strip{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;background:rgba(0,0,0,.65);}
 #silentCamOverlay .sc-strip:empty{display:none;}
 #silentCamOverlay .sc-thumb{position:relative;flex:0 0 auto;width:56px;height:56px;}
@@ -9830,6 +9841,7 @@ const originalBase64 = event.target.result;
             <div class="sc-lens">
               <button type="button" class="sc-lensbtn" style="display:none"></button>
               <input class="sc-zoom" type="range" hidden />
+              <span class="sc-zoomval" hidden></span>
             </div>
             <div class="sc-strip"></div>
             <div class="sc-bar">
@@ -9850,6 +9862,7 @@ const originalBase64 = event.target.result;
           const lensRow = ov.querySelector(".sc-lens");
           const lensBtn = ov.querySelector(".sc-lensbtn");
           const zoomEl = ov.querySelector(".sc-zoom");
+          const zoomVal = ov.querySelector(".sc-zoomval");
           const flipBtn = ov.querySelector(".sc-flip");
           const shotBtn = ov.querySelector(".sc-shot");
           const torchBtn = ov.querySelector(".sc-torch");
@@ -10006,16 +10019,26 @@ const originalBase64 = event.target.result;
             try { z = videoTrack()?.getCapabilities?.().zoom || null; } catch (_) {}
             if (!z || !Number.isFinite(z.min) || !Number.isFinite(z.max) || z.max <= z.min) {
               zoomEl.hidden = true;
+              zoomVal.hidden = true;
             } else {
               zoomEl.hidden = false;
+              zoomVal.hidden = false;
               zoomEl.min = String(z.min);
               zoomEl.max = String(z.max);
               zoomEl.step = String(z.step || (z.max - z.min) / 100);
               let cur = z.min;
               try { cur = videoTrack().getSettings().zoom ?? z.min; } catch (_) {}
               zoomEl.value = String(cur);
+              showZoomVal();
             }
             updateLensBtn();
+          }
+
+          // 슬라이더 값을 배율로 보여준다 (min 을 1배 기준으로 환산)
+          function showZoomVal() {
+            const min = Number(zoomEl.min) || 1;
+            const cur = Number(zoomEl.value) || min;
+            zoomVal.textContent = (cur / min).toFixed(1) + "x";
           }
 
           async function init() {
@@ -10067,10 +10090,22 @@ const originalBase64 = event.target.result;
             if (!video.videoWidth || !video.videoHeight) return;
             let url;
             try {
+              // 미리보기가 object-fit:cover 라 화면 밖으로 잘려나간 부분이 있다.
+              // 보이는 그대로 저장되도록 같은 계산으로 원본에서 잘라낸다 (WYSIWYG).
+              const vw = video.videoWidth;
+              const vh = video.videoHeight;
+              const cw = video.clientWidth || vw;
+              const ch = video.clientHeight || vh;
+              const scale = Math.max(cw / vw, ch / vh);
+              const sw = Math.max(1, Math.min(vw, Math.round(cw / scale)));
+              const sh = Math.max(1, Math.min(vh, Math.round(ch / scale)));
+              const sx = Math.round((vw - sw) / 2);
+              const sy = Math.round((vh - sh) / 2);
+
               const cv = document.createElement("canvas");
-              cv.width = video.videoWidth;
-              cv.height = video.videoHeight;
-              cv.getContext("2d").drawImage(video, 0, 0, cv.width, cv.height);
+              cv.width = sw;
+              cv.height = sh;
+              cv.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
               url = cv.toDataURL("image/jpeg", 0.92);
             } catch (_) {
               return;
@@ -10122,6 +10157,7 @@ const originalBase64 = event.target.result;
             start(); // 고른 렌즈는 다음에 열 때도 그대로 쓴다
           };
           zoomEl.oninput = async () => {
+            showZoomVal();
             try {
               await videoTrack()?.applyConstraints({ advanced: [{ zoom: Number(zoomEl.value) }] });
             } catch (_) {}
