@@ -9785,14 +9785,16 @@ const originalBase64 = event.target.result;
 #silentCamOverlay .sc-controls{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;}
 #silentCamOverlay .sc-flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .18s ease-out;}
 #silentCamOverlay .sc-flash.on{opacity:.85;transition:none;}
+#silentCamOverlay .sc-focus{position:absolute;width:76px;height:76px;margin:-38px 0 0 -38px;border:2px solid #ffd54f;border-radius:10px;box-shadow:0 0 0 1px rgba(0,0,0,.4) inset;opacity:0;pointer-events:none;transition:opacity .35s ease-out;}
+#silentCamOverlay .sc-focus.on{opacity:1;transition:none;}
 #silentCamOverlay .sc-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.82);padding:18px 20px;border-radius:12px;font-size:14px;line-height:1.7;text-align:center;max-width:84%;display:none;}
 #silentCamOverlay .sc-msg button{background:rgba(255,255,255,.18);color:#fff;border:0;border-radius:8px;padding:9px 12px;font-size:13px;cursor:pointer;}
 #silentCamOverlay .sc-lens{display:none;align-items:center;gap:10px;padding:6px 12px;background:rgba(0,0,0,.55);}
 #silentCamOverlay .sc-lensbtn{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;flex:0 0 auto;}
-#silentCamOverlay .sc-zoom{flex:1 1 auto;min-width:0;accent-color:#fff;}
-#silentCamOverlay .sc-zoom[hidden]{display:none;}
-#silentCamOverlay .sc-zoomval{flex:0 0 auto;color:#fff;font-size:12px;min-width:38px;text-align:right;}
-#silentCamOverlay .sc-zoomval[hidden]{display:none;}
+#silentCamOverlay .sc-zooms{display:flex;gap:6px;flex:1 1 auto;justify-content:center;}
+#silentCamOverlay .sc-zooms[hidden]{display:none;}
+#silentCamOverlay .sc-zoombtn{background:rgba(255,255,255,.15);color:#fff;border:0;border-radius:999px;min-width:40px;padding:6px 10px;font-size:13px;cursor:pointer;}
+#silentCamOverlay .sc-zoombtn.on{background:#ffd54f;color:#000;font-weight:700;}
 #silentCamOverlay .sc-strip{display:flex;gap:6px;overflow-x:auto;padding:6px 8px;background:rgba(0,0,0,.65);}
 #silentCamOverlay .sc-strip:empty{display:none;}
 #silentCamOverlay .sc-thumb{position:relative;flex:0 0 auto;width:56px;height:56px;}
@@ -9839,12 +9841,12 @@ const originalBase64 = event.target.result;
           ov.innerHTML = `
             <video playsinline muted autoplay></video>
             <div class="sc-flash"></div>
+            <div class="sc-focus"></div>
             <div class="sc-msg"></div>
             <div class="sc-controls">
               <div class="sc-lens">
                 <button type="button" class="sc-lensbtn" style="display:none"></button>
-                <input class="sc-zoom" type="range" hidden />
-                <span class="sc-zoomval" hidden></span>
+                <div class="sc-zooms" hidden></div>
               </div>
               <div class="sc-strip"></div>
               <div class="sc-bar">
@@ -9861,12 +9863,12 @@ const originalBase64 = event.target.result;
 
           const video = ov.querySelector("video");
           const flashEl = ov.querySelector(".sc-flash");
+          const focusEl = ov.querySelector(".sc-focus");
           const msgEl = ov.querySelector(".sc-msg");
           const stripEl = ov.querySelector(".sc-strip");
           const lensRow = ov.querySelector(".sc-lens");
           const lensBtn = ov.querySelector(".sc-lensbtn");
-          const zoomEl = ov.querySelector(".sc-zoom");
-          const zoomVal = ov.querySelector(".sc-zoomval");
+          const zoomsEl = ov.querySelector(".sc-zooms");
           const flipBtn = ov.querySelector(".sc-flip");
           const shotBtn = ov.querySelector(".sc-shot");
           const torchBtn = ov.querySelector(".sc-torch");
@@ -9925,11 +9927,18 @@ const originalBase64 = event.target.result;
              → 장치 선택 때는 해상도를 제약하지 않고, 스트림이 열린 뒤 applyConstraints 로
                같은 렌즈 안에서 해상도만 올린다(applyConstraints 는 장치를 바꾸지 못한다). */
           function buildVideoConstraints() {
+            // 센서 기본 화각에 가깝도록 4:3 기준으로 요청한다. 16:9 를 요구하면 4:3 센서의
+            // 위아래를 잘라내 화각이 좁아진다.
+            const res = { width: { ideal: 1920 }, height: { ideal: 1440 } };
             if (facing === "environment") {
               const id = backCams[backIdx]?.deviceId || savedLensId;
-              if (id) return { deviceId: { exact: id } };
+              // 렌즈를 deviceId 로 못박았으므로 해상도를 같이 요구해도 카메라가 바뀌지 않는다.
+              if (id) return { deviceId: { exact: id }, ...res };
+              // 첫 실행(저장된 렌즈 없음)은 해상도를 요구하지 않는다 —
+              // 해상도 조건이 붙으면 크롬이 그 모드를 지원하는 초광각 렌즈를 고를 수 있다.
+              return { facingMode: { ideal: facing } };
             }
-            return { facingMode: { ideal: facing } };
+            return { facingMode: { ideal: facing }, ...res };
           }
 
           async function start() {
@@ -9964,52 +9973,67 @@ const originalBase64 = event.target.result;
             video.srcObject = stream;
             try { await video.play(); } catch (_) {}
             hideMsg();
-            await raiseResolutionKeepingFov();
+            // ⚠ 스트림이 열린 뒤에는 해상도를 다시 요구하지 않는다. 종횡비가 같아도 캡처 모드가
+            //   바뀌면서 센서 크롭·손떨림 보정 여유분 때문에 화각이 좁아져, 미리보기가 뜬 직후
+            //   확대되는 것처럼 보인다. 해상도는 buildVideoConstraints() 에서 한 번에 요구한다.
+            await applyAutoFocus();
             refreshTorchBtn();
             refreshZoom();
             updateLensBtn();
           }
 
-          /* 화각을 건드리지 않고 해상도만 올린다.
-             1920x1080(16:9)을 그냥 요구하면 4:3 센서가 위아래를 잘라 16:9를 만들어
-             미리보기가 뜬 직후 확 확대되는 것처럼 보인다. 그래서 지금 스트림의 종횡비를
-             읽어 그 비율을 유지한 채 긴 변만 1920 까지 끌어올리고,
-             그래도 비율이 바뀌면 원래 설정으로 되돌린다. */
-          async function raiseResolutionKeepingFov() {
+          /* getUserMedia 스트림은 기기에 따라 자동초점이 걸려 있지 않아 흐릿하게 나온다.
+             연속 자동초점을 지원하면 명시적으로 켜 준다. */
+          async function applyAutoFocus() {
             const t = videoTrack();
-            if (!t || typeof t.applyConstraints !== "function" || typeof t.getSettings !== "function") return;
+            if (!t || typeof t.getCapabilities !== "function" || typeof t.applyConstraints !== "function") return;
+            let caps = null;
+            try { caps = t.getCapabilities() || {}; } catch (_) { return; }
+            const modes = caps.focusMode || [];
+            if (!Array.isArray(modes) || !modes.includes("continuous")) return;
+            try { await t.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (_) {}
+          }
 
-            let s = {};
-            try { s = t.getSettings() || {}; } catch (_) { return; }
-            const w0 = Number(s.width) || 0;
-            const h0 = Number(s.height) || 0;
-            if (!w0 || !h0) return;
+          // 탭한 지점에 초점 맞추기. 화면 좌표를 cover 크롭을 되돌려 원본 프레임 기준 0~1 로 바꾼다.
+          async function focusAt(clientX, clientY) {
+            const t = videoTrack();
+            if (!t || typeof t.getCapabilities !== "function") return;
 
-            const ar0 = w0 / h0;
-            const long = Math.max(w0, h0);
-            const TARGET_LONG = 1920;
-            if (long >= TARGET_LONG) return; // 이미 충분
+            const rect = video.getBoundingClientRect();
+            if (!rect.width || !rect.height) return;
+            const ovRect = ov.getBoundingClientRect();
+            focusEl.style.left = clientX - ovRect.left + "px";
+            focusEl.style.top = clientY - ovRect.top + "px";
+            focusEl.classList.add("on");
+            setTimeout(() => focusEl.classList.remove("on"), 900);
 
-            const k = TARGET_LONG / long;
-            try {
-              await t.applyConstraints({
-                aspectRatio: { ideal: ar0 },
-                width: { ideal: Math.round(w0 * k) },
-                height: { ideal: Math.round(h0 * k) },
-              });
-            } catch (_) {
-              return;
-            }
+            let caps = null;
+            try { caps = t.getCapabilities() || {}; } catch (_) { return; }
+            const modes = caps.focusMode || [];
+            const adv = {};
 
-            // 비율이 달라졌다면 화각이 잘린 것이므로 원래 모드로 복구
-            try {
-              const s2 = t.getSettings() || {};
-              const w2 = Number(s2.width) || 0;
-              const h2 = Number(s2.height) || 0;
-              if (w2 && h2 && Math.abs(w2 / h2 - ar0) > 0.02) {
-                await t.applyConstraints({ aspectRatio: { ideal: ar0 }, width: { ideal: w0 }, height: { ideal: h0 } });
+            if (caps.pointsOfInterest) {
+              const vw = video.videoWidth;
+              const vh = video.videoHeight;
+              if (vw && vh) {
+                const scale = Math.max(rect.width / vw, rect.height / vh);
+                const sw = Math.min(vw, rect.width / scale);
+                const sh = Math.min(vh, rect.height / scale);
+                const sx = (vw - sw) / 2;
+                const sy = (vh - sh) / 2;
+                const fx = (sx + ((clientX - rect.left) / rect.width) * sw) / vw;
+                const fy = (sy + ((clientY - rect.top) / rect.height) * sh) / vh;
+                adv.pointsOfInterest = [
+                  { x: Math.min(1, Math.max(0, fx)), y: Math.min(1, Math.max(0, fy)) },
+                ];
               }
-            } catch (_) {}
+            }
+            if (Array.isArray(modes)) {
+              if (modes.includes("single-shot")) adv.focusMode = "single-shot";
+              else if (modes.includes("continuous")) adv.focusMode = "continuous";
+            }
+            if (!Object.keys(adv).length) return;
+            try { await t.applyConstraints({ advanced: [adv] }); } catch (_) {}
           }
 
           // 기본(1배) 후면 렌즈 추정: iOS 는 "Back Camera", 안드로이드는 대개 목록 첫 번째가 기본.
@@ -10062,35 +10086,66 @@ const originalBase64 = event.target.result;
             const show = facing === "environment" && backCams.length >= 2;
             lensBtn.style.display = show ? "" : "none";
             if (show) lensBtn.textContent = `렌즈 ${backIdx + 1}/${backCams.length}`;
-            lensRow.style.display = show || !zoomEl.hidden ? "flex" : "none";
+            lensRow.style.display = show || !zoomsEl.hidden ? "flex" : "none";
           }
 
-          // 렌즈가 하나뿐이라 화각이 여전히 넓을 때를 위한 줌 (지원 기기에서만 노출)
+          /* 배율 프리셋 버튼 (1x / 2x / …).
+             zoom capability 의 min 을 1배 기준으로 본다 — 기기마다 값의 단위가 달라
+             (1 기준 / 100 기준) 절대값을 그대로 배율로 쓸 수 없기 때문이다. */
+          const ZOOM_STEPS = [1, 2, 3, 5];
+
           function refreshZoom() {
+            zoomsEl.innerHTML = "";
             let z = null;
             try { z = videoTrack()?.getCapabilities?.().zoom || null; } catch (_) {}
             if (!z || !Number.isFinite(z.min) || !Number.isFinite(z.max) || z.max <= z.min) {
-              zoomEl.hidden = true;
-              zoomVal.hidden = true;
-            } else {
-              zoomEl.hidden = false;
-              zoomVal.hidden = false;
-              zoomEl.min = String(z.min);
-              zoomEl.max = String(z.max);
-              zoomEl.step = String(z.step || (z.max - z.min) / 100);
-              let cur = z.min;
-              try { cur = videoTrack().getSettings().zoom ?? z.min; } catch (_) {}
-              zoomEl.value = String(cur);
-              showZoomVal();
+              zoomsEl.hidden = true;
+              updateLensBtn();
+              return;
             }
+            zoomsEl.hidden = false;
+
+            const maxMult = z.max / z.min;
+            const mults = ZOOM_STEPS.filter((m) => m <= maxMult + 1e-6);
+            if (!mults.length) mults.push(1);
+            // 최대 배율이 프리셋 사이에 걸치면 최대치도 하나 더 준다
+            if (maxMult - mults[mults.length - 1] > 0.4) mults.push(Math.round(maxMult * 10) / 10);
+
+            mults.forEach((m) => {
+              const b = document.createElement("button");
+              b.type = "button";
+              b.className = "sc-zoombtn";
+              b.textContent = (Number.isInteger(m) ? m : m.toFixed(1)) + "x";
+              b.dataset.zoom = String(Math.min(z.max, z.min * m));
+              b.onclick = () => setZoom(Number(b.dataset.zoom));
+              zoomsEl.appendChild(b);
+            });
+
+            let cur = z.min;
+            try { cur = Number(videoTrack().getSettings().zoom) || z.min; } catch (_) {}
+            markActiveZoom(cur);
             updateLensBtn();
           }
 
-          // 슬라이더 값을 배율로 보여준다 (min 을 1배 기준으로 환산)
-          function showZoomVal() {
-            const min = Number(zoomEl.min) || 1;
-            const cur = Number(zoomEl.value) || min;
-            zoomVal.textContent = (cur / min).toFixed(1) + "x";
+          // 현재 배율과 가장 가까운 버튼을 활성 표시
+          function markActiveZoom(cur) {
+            let best = null;
+            let bestGap = Infinity;
+            zoomsEl.querySelectorAll(".sc-zoombtn").forEach((b) => {
+              b.classList.remove("on");
+              const gap = Math.abs(Number(b.dataset.zoom) - cur);
+              if (gap < bestGap) { bestGap = gap; best = b; }
+            });
+            if (best) best.classList.add("on");
+          }
+
+          async function setZoom(v) {
+            const t = videoTrack();
+            if (!t) return;
+            try { await t.applyConstraints({ advanced: [{ zoom: v }] }); } catch (_) {}
+            let cur = v;
+            try { cur = Number(t.getSettings().zoom) || v; } catch (_) {}
+            markActiveZoom(cur);
           }
 
           async function init() {
@@ -10194,6 +10249,11 @@ const originalBase64 = event.target.result;
           function finish() { if (closed) return; const out = shots.slice(); cleanup(); resolve(out); }
           function cancel() { if (closed) return; cleanup(); resolve([]); }
 
+          // 미리보기 탭 = 그 지점에 초점 (컨트롤은 video 위에 떠 있어 여기로 안 들어온다)
+          video.addEventListener("click", (ev) => {
+            focusAt(ev.clientX, ev.clientY);
+          });
+
           shotBtn.onclick = shoot;
           doneBtn.onclick = finish;
           cancelBtn.onclick = cancel;
@@ -10208,12 +10268,6 @@ const originalBase64 = event.target.result;
             try { localStorage.setItem(LENS_KEY, savedLensId); } catch (_) {}
             updateLensBtn();
             start(); // 고른 렌즈는 다음에 열 때도 그대로 쓴다
-          };
-          zoomEl.oninput = async () => {
-            showZoomVal();
-            try {
-              await videoTrack()?.applyConstraints({ advanced: [{ zoom: Number(zoomEl.value) }] });
-            } catch (_) {}
           };
           torchBtn.onclick = async () => {
             const t = videoTrack();
