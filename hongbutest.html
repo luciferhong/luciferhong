@@ -9776,10 +9776,13 @@ const originalBase64 = event.target.result;
         const st = document.createElement("style");
         st.id = "silentCamStyle";
         st.textContent = `
-#silentCamOverlay{position:fixed;inset:0;z-index:2147483000;background:#000;display:flex;flex-direction:column;overscroll-behavior:contain;}
+#silentCamOverlay{position:fixed;inset:0;z-index:2147483000;background:#000;overscroll-behavior:contain;}
 /* 기본 카메라 앱처럼 화면을 꽉 채운다. contain 은 센서 전체를 보여줘 좌우 검은 여백이 생기고
-   화각이 넓어(축소된 것처럼) 보인다. cover 로 채우고, 촬영도 화면에 보이는 영역만 잘라 저장한다. */
-#silentCamOverlay video{flex:1 1 auto;width:100%;min-height:0;object-fit:cover;background:#000;}
+   화각이 넓어(축소된 것처럼) 보인다. cover 로 채우고, 촬영도 화면에 보이는 영역만 잘라 저장한다.
+   ⚠ 영상은 오버레이 전체에 고정한다. 컨트롤을 세로 flex 로 쌓으면 렌즈 줄·썸네일 줄이
+     뒤늦게 나타날 때마다 영상 높이가 줄어 화면이 다시 잡히는 것처럼 보인다. */
+#silentCamOverlay video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:#000;}
+#silentCamOverlay .sc-controls{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;}
 #silentCamOverlay .sc-flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .18s ease-out;}
 #silentCamOverlay .sc-flash.on{opacity:.85;transition:none;}
 #silentCamOverlay .sc-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;background:rgba(0,0,0,.82);padding:18px 20px;border-radius:12px;font-size:14px;line-height:1.7;text-align:center;max-width:84%;display:none;}
@@ -9826,6 +9829,10 @@ const originalBase64 = event.target.result;
           let backCams = []; // 후면 카메라 목록 (권한 승인 후에야 라벨이 채워진다)
           let backIdx = 0; // 현재 선택된 후면 렌즈
           const LENS_KEY = "silentCamBackDeviceId";
+          // 지난번에 쓰던 렌즈. 이게 있으면 처음부터 그 렌즈로 열어 스트림 재시작(=화면이 한 번
+          // 바뀌는 것)을 건너뛴다. deviceId 는 라벨과 달리 권한 승인 전에도 그대로 쓸 수 있다.
+          let savedLensId = null;
+          try { savedLensId = localStorage.getItem(LENS_KEY) || null; } catch (_) {}
 
           const ov = document.createElement("div");
           ov.id = "silentCamOverlay";
@@ -9833,18 +9840,20 @@ const originalBase64 = event.target.result;
             <video playsinline muted autoplay></video>
             <div class="sc-flash"></div>
             <div class="sc-msg"></div>
-            <div class="sc-lens">
-              <button type="button" class="sc-lensbtn" style="display:none"></button>
-              <input class="sc-zoom" type="range" hidden />
-              <span class="sc-zoomval" hidden></span>
-            </div>
-            <div class="sc-strip"></div>
-            <div class="sc-bar">
-              <button type="button" class="sc-cancel">취소</button>
-              <button type="button" class="sc-flip" title="전/후면 전환">⟲</button>
-              <button type="button" class="sc-shot" title="촬영"></button>
-              <button type="button" class="sc-torch" title="손전등" style="display:none">🔦</button>
-              <button type="button" class="sc-done">완료</button>
+            <div class="sc-controls">
+              <div class="sc-lens">
+                <button type="button" class="sc-lensbtn" style="display:none"></button>
+                <input class="sc-zoom" type="range" hidden />
+                <span class="sc-zoomval" hidden></span>
+              </div>
+              <div class="sc-strip"></div>
+              <div class="sc-bar">
+                <button type="button" class="sc-cancel">취소</button>
+                <button type="button" class="sc-flip" title="전/후면 전환">⟲</button>
+                <button type="button" class="sc-shot" title="촬영"></button>
+                <button type="button" class="sc-torch" title="손전등" style="display:none">🔦</button>
+                <button type="button" class="sc-done">완료</button>
+              </div>
             </div>`;
           document.body.appendChild(ov);
           // 오버레이가 열려 있는 동안 "패널 바깥 클릭 = 단지정보 닫기" 같은 문서 레벨 핸들러를 막는다
@@ -9916,8 +9925,9 @@ const originalBase64 = event.target.result;
              → 장치 선택 때는 해상도를 제약하지 않고, 스트림이 열린 뒤 applyConstraints 로
                같은 렌즈 안에서 해상도만 올린다(applyConstraints 는 장치를 바꾸지 못한다). */
           function buildVideoConstraints() {
-            if (facing === "environment" && backCams[backIdx]) {
-              return { deviceId: { exact: backCams[backIdx].deviceId } };
+            if (facing === "environment") {
+              const id = backCams[backIdx]?.deviceId || savedLensId;
+              if (id) return { deviceId: { exact: id } };
             }
             return { facingMode: { ideal: facing } };
           }
@@ -9931,9 +9941,11 @@ const originalBase64 = event.target.result;
               });
             } catch (err) {
               // 저장해 둔 렌즈가 사라졌거나 점유 중이면 facingMode 로 한 번 더 시도
-              if (facing === "environment" && backCams[backIdx]) {
+              if (facing === "environment" && (backCams[backIdx] || savedLensId)) {
                 backCams = [];
                 backIdx = 0;
+                savedLensId = null;
+                try { localStorage.removeItem(LENS_KEY); } catch (_) {}
                 try {
                   stream = await navigator.mediaDevices.getUserMedia({
                     audio: false,
@@ -10029,10 +10041,16 @@ const originalBase64 = event.target.result;
               return false;
             }
 
-            let saved = null;
-            try { saved = localStorage.getItem(LENS_KEY); } catch (_) {}
-            const wantId = saved && backCams.some((d) => d.deviceId === saved) ? saved : pickMainBackCameraId(backCams);
+            const wantId =
+              savedLensId && backCams.some((d) => d.deviceId === savedLensId)
+                ? savedLensId
+                : pickMainBackCameraId(backCams);
             backIdx = Math.max(0, backCams.findIndex((d) => d.deviceId === wantId));
+            // 자동으로 고른 렌즈도 저장해 둔다 → 다음에 열 때는 재시작 없이 바로 이 렌즈로 열린다
+            if (wantId && wantId !== savedLensId) {
+              savedLensId = wantId;
+              try { localStorage.setItem(LENS_KEY, wantId); } catch (_) {}
+            }
             updateLensBtn();
 
             let curId = "";
@@ -10186,7 +10204,8 @@ const originalBase64 = event.target.result;
           lensBtn.onclick = () => {
             if (backCams.length < 2) return;
             backIdx = (backIdx + 1) % backCams.length;
-            try { localStorage.setItem(LENS_KEY, backCams[backIdx].deviceId); } catch (_) {}
+            savedLensId = backCams[backIdx].deviceId;
+            try { localStorage.setItem(LENS_KEY, savedLensId); } catch (_) {}
             updateLensBtn();
             start(); // 고른 렌즈는 다음에 열 때도 그대로 쓴다
           };
