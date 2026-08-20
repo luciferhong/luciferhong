@@ -922,7 +922,9 @@
 
       #modalCanvas {
         max-width: 100%;
-        max-height: none;
+        /* 높이 제한이 없으면 세로 사진이 모달 폭(PC 720px)에 비례해 길어져 스크롤이 생긴다.
+           폭·높이 양쪽을 제한하면 캔버스가 비율을 유지한 채 남은 공간에 맞춰 줄어든다. */
+        max-height: 100%;
         border-radius: 8px;
       }
 
@@ -2176,6 +2178,7 @@
           if (strip) {
             strip.style.display = "none";
             strip.innerHTML = "";
+            strip.dataset.groupKey = "";
           }
           window.__photoMemoModalGroup = null;
         }
@@ -9534,6 +9537,7 @@ const originalBase64 = event.target.result;
         if (group.length <= 1) {
           strip.style.display = "none";
           strip.innerHTML = "";
+          strip.dataset.groupKey = "";
           window.__photoMemoModalGroup = null;
           __updateModalNavButtons();
           return;
@@ -9544,9 +9548,24 @@ const originalBase64 = event.target.result;
         window.__photoMemoModalGroup = { ids, idx: Math.max(0, ids.indexOf(curId)) };
         __updateModalNavButtons();
 
+        // 같은 묶음을 다시 그리는 중이면(= 사진만 넘기는 중) 활성 표시만 바꾼다.
+        // 통째로 다시 만들면 썸네일이 사라졌다가 DB 조회 후 다시 떠서 모달이 새로 그려지는 것처럼 보인다.
+        const key = ids.join("|");
+        if (strip.dataset.groupKey === key && strip.children.length === ids.length) {
+          let cur = null;
+          strip.querySelectorAll(".pm-strip-item").forEach((b) => {
+            const on = b.dataset.id === curId;
+            b.classList.toggle("active", on);
+            if (on) cur = b;
+          });
+          if (cur) strip.scrollLeft = Math.max(0, cur.offsetLeft - strip.clientWidth / 2 + cur.offsetWidth / 2);
+          return;
+        }
+
         // 늦게 도착한 썸네일이 다음 렌더를 덮어쓰지 않도록 토큰으로 무효화
         const token = (window.__photoMemoStripToken = (window.__photoMemoStripToken || 0) + 1);
         strip.innerHTML = "";
+        strip.dataset.groupKey = key;
         strip.style.display = "flex";
 
         let activeBtn = null;
@@ -9554,6 +9573,7 @@ const originalBase64 = event.target.result;
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "pm-strip-item" + (gid === curId ? " active" : "");
+          btn.dataset.id = gid;
           const im = document.createElement("img");
           im.alt = "";
           btn.appendChild(im);
