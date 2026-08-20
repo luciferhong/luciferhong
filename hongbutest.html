@@ -2261,7 +2261,8 @@
         // 엔트리가 {data, addedAt} 객체일 수도 있으므로 실제 data URL만 추출
         const resolvedSrc = __getImgData(imageDataUrl);
 
-        __clearModalCanvas();
+        // 이미 열려 있으면(= 좌우로 넘기는 중) 비우지 않는다 — 레이아웃이 튄다. 위 주석 참고.
+        if (window.imageModalShowYn !== true) __clearModalCanvas();
         const img = new Image();
         img.onload = () => {
           modalCanvas.width = img.width;
@@ -9371,9 +9372,14 @@ const originalBase64 = event.target.result;
               window.__photoMemoModalOpening = false;
               return;
             }
-            try {
-              __clearModalCanvas();
-            } catch (e) {}
+            // 모달이 이미 열려 있으면(= 묶음 안에서 사진을 넘기는 중) 캔버스를 비우지 않는다.
+            // 1×1 로 줄이면 세로 가운데 정렬인 모달 내용이 쪼그라들어 상단 버튼이 화면 중앙으로
+            // 튀었다가 새 사진이 그려지며 되돌아온다. 이전 사진을 그대로 두고 교체한다.
+            if (window.imageModalShowYn !== true) {
+              try {
+                __clearModalCanvas();
+              } catch (e) {}
+            }
 
             // 묶음 내 다른 사진을 여는 경우 seed 없이 시작해 DB 최신본만 사용한다
             let workingMemo = openId === id ? memo : { id: openId };
@@ -10280,6 +10286,13 @@ const originalBase64 = event.target.result;
             if (closed || !stream) return;
             const needRestart = await resolveBackLens(); // 2) 기본 렌즈 확정
             if (needRestart && !closed) await start(); // 3) 확정된 렌즈로 한 번만 재시작
+            // 4) ⚠ 필수. start() 안의 refreshZoom() 은 backCams 가 비어 있을 때 돌아
+            //    "광각" 버튼을 만들지 못한다. 목록이 채워진 지금 다시 만든다.
+            //    (재시작이 없는 경로 — 저장된 렌즈로 바로 연 경우 — 에서 특히 그렇다)
+            if (!closed) {
+              refreshZoom();
+              renderCamInfo();
+            }
           }
 
           function refreshTorchBtn() {
