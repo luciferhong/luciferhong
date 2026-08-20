@@ -9835,11 +9835,13 @@ const originalBase64 = event.target.result;
           let closed = false;
           let backCams = []; // 후면 카메라 목록 (권한 승인 후에야 라벨이 채워진다)
           let backIdx = 0; // 현재 선택된 후면 렌즈
-          const LENS_KEY = "silentCamBackDeviceId";
+          // v2: 예전 키에는 잘못 고른 초광각 deviceId 가 저장돼 있으므로 한 번 버린다
+          const LENS_KEY = "silentCamBackDeviceId2";
           // 지난번에 쓰던 렌즈. 이게 있으면 처음부터 그 렌즈로 열어 스트림 재시작(=화면이 한 번
           // 바뀌는 것)을 건너뛴다. deviceId 는 라벨과 달리 권한 승인 전에도 그대로 쓸 수 있다.
           let savedLensId = null;
           try { savedLensId = localStorage.getItem(LENS_KEY) || null; } catch (_) {}
+          let pendingZoom = null; // 렌즈를 바꿔 연 뒤 적용할 배율
 
           const ov = document.createElement("div");
           ov.id = "silentCamOverlay";
@@ -9990,6 +9992,11 @@ const originalBase64 = event.target.result;
             refreshZoom();
             updateLensBtn();
             renderCamInfo();
+            if (pendingZoom != null) {
+              const v = pendingZoom;
+              pendingZoom = null;
+              await setZoom(v);
+            }
           }
 
           /* getUserMedia 스트림은 기기에 따라 자동초점이 걸려 있지 않아 흐릿하게 나온다.
@@ -10046,8 +10053,17 @@ const originalBase64 = event.target.result;
             try { await t.applyConstraints({ advanced: [adv] }); } catch (_) {}
           }
 
-          // 기본(1배) 후면 렌즈 추정: iOS 는 "Back Camera", 안드로이드는 대개 목록 첫 번째가 기본.
-          // 초광각/망원/심도/접사로 보이는 것은 후보에서 뺀다.
+          /* 라벨에서 카메라 번호를 뽑는다. 안드로이드 크롬은 "camera 0, facing back" 처럼 준다.
+             ⚠ enumerateDevices() 의 순서는 카메라 번호 순이 아니다 — 실측한 기기에서
+               [camera 2(초광각), camera 0(기본)] 순으로 왔다. 그래서 "목록 첫 번째 = 기본"
+               으로 잡으면 초광각이 기본이 되어 화각이 넓고 왜곡돼 보인다. */
+          function camNo(d) {
+            const m = /camera\s*(\d+)/i.exec(String(d.label || ""));
+            return m ? Number(m[1]) : 999;
+          }
+
+          // 기본(1배) 후면 렌즈: 안드로이드는 관례적으로 번호가 가장 작은 후면 카메라가 기본이고
+          // 번호가 큰 쪽이 초광각·망원 같은 보조 렌즈다. iOS 는 "Back Camera" 라벨로 구분된다.
           function pickMainBackCameraId(list) {
             if (!list.length) return null;
             const label = (d) => String(d.label || "").toLowerCase();
@@ -10055,7 +10071,7 @@ const originalBase64 = event.target.result;
             if (exact) return exact.deviceId;
             const bad = /(ultra|초광각|tele|망원|depth|심도|macro|접사|mono|흑백)/;
             const good = list.filter((d) => !bad.test(label(d)));
-            return (good[0] || list[0]).deviceId;
+            return (good[0] || list[0]).deviceId; // list 는 이미 카메라 번호 오름차순
           }
 
           // 권한 승인 후 라벨이 채워진 목록으로 후면 렌즈를 확정.
@@ -10069,7 +10085,9 @@ const originalBase64 = event.target.result;
             }
             flipBtn.style.display = cams.length >= 2 ? "" : "none";
 
-            backCams = cams.filter((d) => /back|rear|environment|후면/i.test(d.label || ""));
+            backCams = cams
+              .filter((d) => /back|rear|environment|후면/i.test(d.label || ""))
+              .sort((a, b) => camNo(a) - camNo(b)); // 0번(기본 렌즈)이 앞에 오도록
             if (facing !== "environment" || backCams.length < 2) {
               updateLensBtn();
               return false;
@@ -10093,7 +10111,8 @@ const originalBase64 = event.target.result;
           }
 
           function updateLensBtn() {
-            const show = facing === "environment" && backCams.length >= 2;
+            // 후면 렌즈가 3개 이상일 때만 순환 버튼을 둔다 (2개면 배율 줄의 "광각"으로 충분)
+            const show = facing === "environment" && backCams.length >= 3;
             lensBtn.style.display = show ? "" : "none";
             if (show) lensBtn.textContent = `렌즈 ${backIdx + 1}/${backCams.length}`;
             lensRow.style.display = show || !zoomsEl.hidden ? "flex" : "none";
@@ -10138,44 +10157,73 @@ const originalBase64 = event.target.result;
             return (Number.isInteger(shown) ? shown : Number(shown.toFixed(1))) + "x";
           }
 
+          /* 축소(광각)는 zoom 으로 못 한다 — 기기가 min:1 을 보고하므로 1배 아래가 없다.
+             더 넓게 가려면 보조 후면 렌즈(초광각)로 갈아타야 한다. 그래서 렌즈 전환을
+             배율 줄 왼쪽 "광각" 버튼으로 합쳐 카메라 앱처럼 한 줄에서 고르게 한다. */
           function refreshZoom() {
             zoomsEl.innerHTML = "";
+            const hasWide = facing === "environment" && backCams.length >= 2;
+
+            if (hasWide) {
+              const wb = document.createElement("button");
+              wb.type = "button";
+              wb.className = "sc-zoombtn sc-widebtn";
+              wb.textContent = "광각";
+              wb.onclick = () => selectLens(1, null);
+              zoomsEl.appendChild(wb);
+            }
+
             let z = null;
             try { z = videoTrack()?.getCapabilities?.().zoom || null; } catch (_) {}
-            if (!z || !Number.isFinite(z.min) || !Number.isFinite(z.max) || z.max <= z.min) {
-              zoomsEl.hidden = true;
-              updateLensBtn();
-              return;
+            const hasZoom = !!(z && Number.isFinite(z.min) && Number.isFinite(z.max) && z.max > z.min);
+
+            if (hasZoom) {
+              const { values, ratioMode } = buildZoomValues(z);
+              values.forEach((v) => {
+                const b = document.createElement("button");
+                b.type = "button";
+                b.className = "sc-zoombtn";
+                b.textContent = zoomLabel(v, z, ratioMode);
+                b.dataset.zoom = String(v);
+                // 광각 렌즈에 있을 때 배율을 누르면 기본 렌즈로 돌아간 뒤 그 배율을 적용한다
+                b.onclick = () => (backIdx === 0 ? setZoom(v) : selectLens(0, v));
+                zoomsEl.appendChild(b);
+              });
             }
-            zoomsEl.hidden = false;
 
-            const { values, ratioMode } = buildZoomValues(z);
-            values.forEach((v) => {
-              const b = document.createElement("button");
-              b.type = "button";
-              b.className = "sc-zoombtn";
-              b.textContent = zoomLabel(v, z, ratioMode);
-              b.dataset.zoom = String(v);
-              b.onclick = () => setZoom(v);
-              zoomsEl.appendChild(b);
-            });
-
-            let cur = z.min;
-            try { cur = Number(videoTrack().getSettings().zoom) || z.min; } catch (_) {}
+            zoomsEl.hidden = !hasWide && !hasZoom;
+            let cur = z ? z.min : 1;
+            try { cur = Number(videoTrack().getSettings().zoom) || cur; } catch (_) {}
             markActiveZoom(cur);
             updateLensBtn();
           }
 
-          // 현재 배율과 가장 가까운 버튼을 활성 표시
+          // 렌즈를 골라 다시 연다. afterZoom 이 있으면 열린 뒤 그 배율을 적용한다.
+          function selectLens(idx, afterZoom) {
+            if (!backCams[idx] || idx === backIdx) {
+              if (afterZoom != null) setZoom(afterZoom);
+              return;
+            }
+            backIdx = idx;
+            savedLensId = backCams[idx].deviceId;
+            try { localStorage.setItem(LENS_KEY, savedLensId); } catch (_) {}
+            pendingZoom = afterZoom;
+            start();
+          }
+
+          // 활성 표시: 보조(광각) 렌즈면 "광각", 기본 렌즈면 현재 배율에 가장 가까운 버튼
           function markActiveZoom(cur) {
+            const wideBtn = zoomsEl.querySelector(".sc-widebtn");
             let best = null;
             let bestGap = Infinity;
             zoomsEl.querySelectorAll(".sc-zoombtn").forEach((b) => {
               b.classList.remove("on");
+              if (!b.dataset.zoom) return; // 광각 버튼은 배율 비교 대상이 아니다
               const gap = Math.abs(Number(b.dataset.zoom) - cur);
               if (gap < bestGap) { bestGap = gap; best = b; }
             });
-            if (best) best.classList.add("on");
+            if (backIdx !== 0 && wideBtn) wideBtn.classList.add("on");
+            else if (best) best.classList.add("on");
           }
 
           /* 카메라 진단 정보. 기기가 실제로 뭘 보고하는지 봐야 배율·화각·초점 문제를
@@ -10372,11 +10420,7 @@ const originalBase64 = event.target.result;
           };
           lensBtn.onclick = () => {
             if (backCams.length < 2) return;
-            backIdx = (backIdx + 1) % backCams.length;
-            savedLensId = backCams[backIdx].deviceId;
-            try { localStorage.setItem(LENS_KEY, savedLensId); } catch (_) {}
-            updateLensBtn();
-            start(); // 고른 렌즈는 다음에 열 때도 그대로 쓴다
+            selectLens((backIdx + 1) % backCams.length, null); // 고른 렌즈는 다음에 열 때도 그대로
           };
           torchBtn.onclick = async () => {
             const t = videoTrack();
