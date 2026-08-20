@@ -10089,10 +10089,44 @@ const originalBase64 = event.target.result;
             lensRow.style.display = show || !zoomsEl.hidden ? "flex" : "none";
           }
 
-          /* 배율 프리셋 버튼 (1x / 2x / …).
-             zoom capability 의 min 을 1배 기준으로 본다 — 기기마다 값의 단위가 달라
-             (1 기준 / 100 기준) 절대값을 그대로 배율로 쓸 수 없기 때문이다. */
+          /* 배율 프리셋 버튼.
+             기기가 보고하는 zoom 값의 단위가 두 가지라 구분해서 다뤄야 한다.
+             ① 실제 배율을 보고하는 기기 (min <= 1 <= max)
+                예: {min:0.5, max:10} — 0.5 는 초광각, 1 이 기본 화각.
+                값을 그대로 배율로 쓴다. min 을 1배로 잡아버리면 초광각이 "1x" 로
+                표시돼 실제보다 넓게 나오고, 1배 아래로 내려갈 방법도 사라진다.
+             ② 임의 단위를 보고하는 기기 (예: min:100, max:800)
+                min 을 1배로 보고 배수로 환산한다. */
           const ZOOM_STEPS = [1, 2, 3, 5];
+
+          function buildZoomValues(z) {
+            const ratioMode = z.min <= 1.001 && z.max >= 1;
+            let vals;
+            if (ratioMode) {
+              // 축소(초광각) 프리셋 포함. z.min 이 1 미만이면 그게 가장 넓은 배율이다.
+              vals = [z.min, 0.5, 1, 2, 3, 5].filter((v) => v >= z.min - 1e-6 && v <= z.max + 1e-6);
+            } else {
+              vals = ZOOM_STEPS.map((m) => z.min * m).filter((v) => v <= z.max + 1e-6);
+            }
+            if (!vals.length) vals = [z.min];
+            vals.sort((a, b) => a - b);
+
+            // 최대 배율이 프리셋 사이에 걸치면 최대치도 하나 더 준다
+            const last = vals[vals.length - 1];
+            const gate = ratioMode ? 0.4 : z.min * 0.4;
+            if (z.max - last > gate) vals.push(z.max);
+
+            const out = [];
+            vals.forEach((v) => {
+              if (!out.some((o) => Math.abs(o - v) < 1e-3)) out.push(v);
+            });
+            return { values: out, ratioMode };
+          }
+
+          function zoomLabel(v, z, ratioMode) {
+            const shown = ratioMode ? v : v / z.min;
+            return (Number.isInteger(shown) ? shown : Number(shown.toFixed(1))) + "x";
+          }
 
           function refreshZoom() {
             zoomsEl.innerHTML = "";
@@ -10105,19 +10139,14 @@ const originalBase64 = event.target.result;
             }
             zoomsEl.hidden = false;
 
-            const maxMult = z.max / z.min;
-            const mults = ZOOM_STEPS.filter((m) => m <= maxMult + 1e-6);
-            if (!mults.length) mults.push(1);
-            // 최대 배율이 프리셋 사이에 걸치면 최대치도 하나 더 준다
-            if (maxMult - mults[mults.length - 1] > 0.4) mults.push(Math.round(maxMult * 10) / 10);
-
-            mults.forEach((m) => {
+            const { values, ratioMode } = buildZoomValues(z);
+            values.forEach((v) => {
               const b = document.createElement("button");
               b.type = "button";
               b.className = "sc-zoombtn";
-              b.textContent = (Number.isInteger(m) ? m : m.toFixed(1)) + "x";
-              b.dataset.zoom = String(Math.min(z.max, z.min * m));
-              b.onclick = () => setZoom(Number(b.dataset.zoom));
+              b.textContent = zoomLabel(v, z, ratioMode);
+              b.dataset.zoom = String(v);
+              b.onclick = () => setZoom(v);
               zoomsEl.appendChild(b);
             });
 
