@@ -14454,14 +14454,15 @@ const originalBase64 = event.target.result;
       }
 
       // 지연 후 워커 시작(연속 저장 코얼레싱). 로그인 전이면 대기 — 로그인 시 __gdriveOnSignedIn 이 kick.
-      function __dqKick(delayMs) {
+      function __dqKick(delayMs, opts) {
+        if (opts?.reset) { __dq.retryAt = 0; clearTimeout(__dq.retryTimer); }
         clearTimeout(__dq.kickTimer);
         __dq.kickTimer = setTimeout(() => { __dqRun().catch((e) => console.warn('[dq] run 오류:', e)); }, delayMs || 0);
       }
       // 온라인·화면 복귀: 큐 재개 + 중단됐던 이관도 재개(로그인 상태일 때만, 이관 함수는 아래 정의·호이스팅)
       let __dqMigResumeTimer = null;
       function __dqResumeAll() {
-        __dqKick(500);
+        __dqKick(500, { reset: true }); // 온라인·화면 복귀는 백오프를 풀고 바로 재시도
         clearTimeout(__dqMigResumeTimer);
         __dqMigResumeTimer = setTimeout(() => {
           try {
@@ -14674,6 +14675,7 @@ const originalBase64 = event.target.result;
 
       async function __dqRun() {
         if (__dq.running) return;
+        if (__dq.retryAt && Date.now() < __dq.retryAt) return; // 실패·한도 백오프 중 — 타이머가 retryAt 을 지우고 다시 부른다 (2026-09-20: 1초마다 재시도되던 문제)
         await __dqLoad();
         if (__dq.items.size === 0) { __dqEmit(); return; }
         if (!window.__gdriveReady || !window.__gdriveAccessToken) {            // 로그인 시 재개
@@ -14718,19 +14720,22 @@ const originalBase64 = event.target.result;
                 __dq.lastError = '드라이브 요청 한도 — 잠시 후 재시도';
                 console.warn(`[dq] 요청 한도(429/403) — ${Math.round(wait / 1000)}초 후 재개`);
                 clearTimeout(__dq.retryTimer);
-                __dq.retryTimer = setTimeout(() => __dqKick(0), wait);
+                __dq.retryAt = Date.now() + wait;
+                __dq.retryTimer = setTimeout(() => { __dq.retryAt = 0; __dqKick(0); }, wait);
                 stop = 'rate';
               } else {
                 __dq.rateHits = 0;
                 __dq.failures++;
-                __dq.lastError = e?.message || String(e);
+                __dq.lastError = __dqErrText(e);
                 const wait = Math.min(8, 2 ** (__dq.failures - 1)) * 60 * 1000;
+                console.warn('[dq] 실패 상세:', e);
                 console.warn(`[dq] ${key} 업로드 실패(${__dq.failures}회) — ${Math.round(wait / 60000)}분 후 재시도:`, __dq.lastError);
                 try { window.hongbuDebugLog?.('ERR', '[dq] 업로드 실패', `${key} ${__dq.lastError}`); } catch (_) {}
                 // 실패 항목은 뒤로 보내 다른 항목을 먼저 시도
                 __dq.items.delete(key); __dq.items.set(key, item);
                 clearTimeout(__dq.retryTimer);
-                __dq.retryTimer = setTimeout(() => __dqKick(0), wait);
+                __dq.retryAt = Date.now() + wait;
+                __dq.retryTimer = setTimeout(() => { __dq.retryAt = 0; __dqKick(0); }, wait);
                 stop = 'fail';
               }
             } finally { inFlight.delete(key); }
@@ -14745,6 +14750,16 @@ const originalBase64 = event.target.result;
         }
       }
       const __DQ_PAR = 3; // 업로드 큐 동시 작업자 수
+      // gapi 오류(plain object)·fetch 오류를 한 줄 문자열로 (2026-09-20: 폴리곤 업로드 실패가 "[object Object]" 로만 찍히던 문제)
+      function __dqErrText(e) {
+        if (!e) return String(e);
+        if (typeof e === 'string') return e;
+        if (e instanceof Error) return e.message || String(e);
+        const g = e?.result?.error;
+        if (g) return `Drive ${g.code || e.status || ''} ${g.status || ''} ${g.message || ''}`.trim();
+        if (e?.status) return `HTTP ${e.status} ${e.statusText || ''} ${typeof e.body === 'string' ? e.body.slice(0, 200) : ''}`.trim();
+        try { return JSON.stringify(e).slice(0, 300); } catch (_) { return String(e); }
+      }
 
       // ── 드라이브 폴더/목록 캐시 ──
       // 캐시는 "진행 중인 promise" 를 저장한다 — 병렬 호출이 같은 폴더를 두 번 만들거나 두 번 조회하지 않게.
