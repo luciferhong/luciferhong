@@ -19584,7 +19584,7 @@ const originalBase64 = event.target.result;
             }
             aptMemoImageList[id] = cleanImgs;
 
-            const renderImgItem = (item, imageDataUrl) => {
+            const renderImgItem = (item, imageDataUrl, slot) => { // slot: 미리 만들어 둔 자리(목록 순서 유지용, 2026-09-19)
               const wrapper = document.createElement("div");
               wrapper.style.position = "relative";
               wrapper.style.display = "inline-block";
@@ -19614,7 +19614,7 @@ const originalBase64 = event.target.result;
               canvas.onclick = (e) => {
                 e.stopPropagation();
                 const list = aptMemoImageList[id] || [];
-                const dataList = list.map(__getImgData);
+                const dataList = list.map(__getImgData).filter((d) => d); // (2026-09-19) 아직 안 받은 자리표시자는 넘기기 목록에서 제외
                 const idx = dataList.indexOf(imageDataUrl);
                 openModalImage(imageDataUrl, dataList, idx);
               };
@@ -19646,7 +19646,15 @@ const originalBase64 = event.target.result;
 
               wrapper.appendChild(canvas);
               wrapper.appendChild(deleteBtn);
-              preview.appendChild(wrapper);
+              if (slot && slot.parentNode === preview) slot.replaceWith(wrapper); else preview.appendChild(wrapper);
+            };
+            // (2026-09-19) 드라이브에서 받을 사진 자리: 목록 순서대로 먼저 칸을 만들어 두어 도착 순서와 상관없이 화면 순서 = 목록 순서
+            const makeSlot = () => {
+              const sl = document.createElement("div");
+              sl.style.cssText = "position:relative;display:inline-block;margin-right:6px;width:60px;height:60px;border:1px dashed #cbd5e1;border-radius:4px;box-sizing:border-box;background:#f8fafc;color:#94a3b8;font-size:11px;line-height:58px;text-align:center;";
+              sl.textContent = "⏳"; sl.title = "드라이브에서 받는 중";
+              preview.appendChild(sl);
+              return sl;
             };
 
             const noteSgg5 = String(result.sgg5 || '').trim();
@@ -19659,6 +19667,8 @@ const originalBase64 = event.target.result;
               } else if (addedAt && noteSgg5 && window.__gdriveReady && window.__gdriveAptImagesFolderId) {
                 // [파일명 기반] addedAt + sgg5로 filename 유도 → Drive lazy 다운로드
                 const filename = __aptImgFilename({ sgg5: noteSgg5, id }, addedAt);
+                const slot = makeSlot();
+                preview.style.display = "flex";
                 (async () => {
                   try {
                     let blob = null;
@@ -19671,22 +19681,23 @@ const originalBase64 = event.target.result;
                       const fid = nameMap?.get?.(filename);
                       if (!fid) {
                         console.warn(`[lazy] 단지메모 이미지 Drive에 없음: ${filename}`);
-                        return;
+                        slot.textContent = "✕"; slot.title = "드라이브에 없음"; return;
                       }
                       blob = await __driveDownloadImageAsBlob(fid);
                     }
                     const dataUrl = await __blobToDataUrl(blob);
-                    if (!dataUrl) { console.warn('[lazy] 단지메모 dataUrl 변환 실패', id, filename); return; }
+                    if (!dataUrl) { console.warn('[lazy] 단지메모 dataUrl 변환 실패', id, filename); slot.textContent = "✕"; return; }
                     // 인메모리 업데이트
                     const idx = aptMemoImageList[id].findIndex((i) => i?.addedAt === addedAt);
                     if (idx >= 0) aptMemoImageList[id][idx] = { data: dataUrl, addedAt };
                     // (2026-09-19) 도착 즉시 그리고, IndexedDB 저장은 모아서 한 번에 — 저장을 기다린 뒤 그리면 같은 레코드 쓰기가
                     // 직렬화되어(그리고 레코드가 커질수록 느려져) 사진이 한 장씩 차례로 나타나던 문제
-                    renderImgItem({ data: dataUrl, addedAt }, dataUrl);
+                    renderImgItem({ data: dataUrl, addedAt }, dataUrl, slot);
                     preview.style.display = "flex";
                     __lazyImgWriteBack(id, addedAt, dataUrl);
                   } catch (e) {
                     console.warn('[lazy] 단지메모 이미지 Drive 로드 실패:', id, filename, e);
+                    try { slot.textContent = "✕"; slot.title = "불러오기 실패"; } catch (_) {}
                   }
                 })();
               }
