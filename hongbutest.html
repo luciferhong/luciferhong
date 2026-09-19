@@ -1501,7 +1501,7 @@
         <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px; flex:none;">
           <button id="netAskGo" onclick="__netAnswer('selected')" style="padding:11px 14px; border:none; border-radius:8px; background:#fff; color:#1e293b; font-weight:700; font-size:15px; cursor:pointer;">선택 항목 지금 동기화</button>
           <div style="display:flex; gap:8px;">
-            <button onclick="__netAnswer('wifi')" style="flex:1; padding:9px 8px; border:1px solid #475569; border-radius:8px; background:#0f172a; color:#f1f5f9; font-size:13px; cursor:pointer;">와이파이 연결 시<br><span style="color:#94a3b8;font-size:11px;">(다시 묻지 않음)</span></button>
+            <button id="netAskWifiBtn" onclick="__netAnswer('wifi')" style="flex:1; padding:9px 8px; border:1px solid #475569; border-radius:8px; background:#0f172a; color:#f1f5f9; font-size:13px; cursor:pointer;">와이파이 연결 시<br><span style="color:#94a3b8;font-size:11px;">(다시 묻지 않음)</span></button>
             <button onclick="__netAnswer('always')" style="flex:1; padding:9px 8px; border:1px solid #475569; border-radius:8px; background:#0f172a; color:#f1f5f9; font-size:13px; cursor:pointer;">항상 동기화<br><span style="color:#94a3b8;font-size:11px;">(다시 묻지 않음)</span></button>
           </div>
         </div>
@@ -14413,13 +14413,16 @@ const originalBase64 = event.target.result;
       // 내려받기 대상은 원본 지역만(설정값 auto, 미설정이면 기본값 판정이 auto). 썸네일 지역은 대상에서 제외.
       // Wi-Fi·유선·판정 불가(iOS 등)는 묻지 않고 진행.
       const __NET_KEY = '__hongbuNetPolicy_v1'; // '' 물어보기(기본) | 'always' | 'wifi'
-      const __net = { asking: false, waitWifi: false, pendingFetch: [], allowSgg: new Set(), declined: new Set(), plan: null, building: false };
-      function __netIsCellular() { // true 셀룰러·데이터절약 / false Wi-Fi·유선 / null 모름
-        const c = navigator.connection; if (!c) return null;
+      const __net = { asking: false, waitWifi: false, pendingFetch: [], allowSgg: new Set(), declined: new Set(), plan: null, building: false, skipSession: false };
+      // iOS(아이폰·아이패드, 크롬/엣지 포함)는 네트워크 정보 API 가 없어 판정 불가 → 셀룰러라는 전제로 묻는다 (2026-09-19 사용자 결정).
+      // 'Wi-Fi에서만' 은 iOS 에서 감지가 안 되므로 쓰지 않고(설정 창에서 숨김), 질문 창의 둘째 단추는 "지금은 안 함(다음 접속 때 다시 물음)" 이 된다.
+      const __NET_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      function __netIsCellular() { // true 셀룰러·데이터절약(또는 iOS 판정 불가) / false Wi-Fi·유선 / null 모름(데스크톱 등 → 진행)
+        const c = navigator.connection; if (!c) return __NET_IOS ? true : null;
         if (c.saveData) return true;
-        const t = c.type; if (t === 'cellular') return true; if (t === 'wifi' || t === 'ethernet') return false; return null;
+        const t = c.type; if (t === 'cellular') return true; if (t === 'wifi' || t === 'ethernet') return false; return __NET_IOS ? true : null;
       }
-      function __netPolicy() { try { return localStorage.getItem(__NET_KEY) || ''; } catch (_) { return ''; } }
+      function __netPolicy() { try { const v = localStorage.getItem(__NET_KEY) || ''; return (v === 'wifi' && __NET_IOS) ? '' : v; } catch (_) { return ''; } }
       function __netLimited() { return __netIsCellular() === true && __netPolicy() !== 'always'; } // 셀룰러이고 '항상' 아님
       function __netSetPolicy(v) {
         try { if (v) localStorage.setItem(__NET_KEY, v); else localStorage.removeItem(__NET_KEY); } catch (_) {}
@@ -14440,7 +14443,7 @@ const originalBase64 = event.target.result;
         if (!__netLimited()) { if (__net.waitWifi) { __net.waitWifi = false; __dqEmit(); } return true; }
         let anyAllowed = false, needAsk = false;
         for (const it of __dq.items.values()) { const k = String(it.sgg5 || ''); if (__net.allowSgg.has(k)) anyAllowed = true; else if (!__net.declined.has(k)) needAsk = true; }
-        if (__netPolicy() === 'wifi') needAsk = false;
+        if (__netPolicy() === 'wifi' || __net.skipSession) needAsk = false;
         if (needAsk) __netAsk();
         if (!anyAllowed) { if (!__net.waitWifi) { __net.waitWifi = true; __dqEmit(); } }
         return anyAllowed;
@@ -14520,6 +14523,10 @@ const originalBase64 = event.target.result;
         __net.asking = true; __net.building = true;
         body.innerHTML = '<div style="color:#94a3b8;">용량 계산 중…</div>';
         const go = document.getElementById('netAskGo'); if (go) { go.disabled = true; go.textContent = '선택 항목 지금 동기화'; }
+        const wb = document.getElementById('netAskWifiBtn');
+        if (wb) wb.innerHTML = __NET_IOS ? '지금은 안 함<br><span style="color:#94a3b8;font-size:11px;">(다음 접속 때 다시 물음)</span>' : '와이파이 연결 시<br><span style="color:#94a3b8;font-size:11px;">(다시 묻지 않음)</span>';
+        const tx = document.getElementById('netAskText');
+        if (tx) tx.textContent = __NET_IOS ? '이 기기는 Wi-Fi 연결 여부를 알 수 없어 모바일 데이터로 간주합니다. 지금 동기화할 지역을 고르세요.' : '모바일 데이터에 연결되어 있습니다. 지금 동기화할 지역을 고르세요. 고르지 않은 것은 Wi-Fi에 연결되면 자동으로 처리합니다.';
         o.style.display = 'flex';
         try {
           const up = await __netUploadPlan();
@@ -14559,7 +14566,14 @@ const originalBase64 = event.target.result;
         const o = document.getElementById('netAskOverlay'); if (o) o.style.display = 'none';
         __net.asking = false;
         if (choice === 'always') { __netSetPolicy('always'); try { showToast('📶 모바일 데이터에서도 항상 동기화합니다 (동기화 설정에서 변경 가능)', 5000); } catch (_) {} return; }
-        if (choice === 'wifi') { __netSetPolicy('wifi'); try { showToast('📶 Wi-Fi에 연결되면 자동으로 동기화합니다 (동기화 설정에서 변경 가능)', 5000); } catch (_) {} return; }
+        if (choice === 'wifi') {
+          if (__NET_IOS) { // 감지 불가 → 이번 접속에는 동기화하지 않고 다음 접속 때 다시 묻는다
+            __net.skipSession = true; __net.waitWifi = true; __dqEmit();
+            try { showToast('📶 이번에는 동기화하지 않습니다. 다음 접속 때 다시 물어봅니다', 5000); } catch (_) {}
+            return;
+          }
+          __netSetPolicy('wifi'); try { showToast('📶 Wi-Fi에 연결되면 자동으로 동기화합니다 (동기화 설정에서 변경 가능)', 5000); } catch (_) {} return;
+        }
         // 선택 항목만 지금
         const upSel = new Set(), downSel = [];
         document.querySelectorAll('#netAskBody input[data-up]').forEach((c) => { const k = c.dataset.up; if (c.checked) { upSel.add(k); __net.declined.delete(k); } else __net.declined.add(k); });
@@ -15984,7 +15998,7 @@ const originalBase64 = event.target.result;
           const hold = list.filter((s) => !__net.allowSgg.has(String(s)));
           for (const s of hold) if (!__net.pendingFetch.includes(s)) __net.pendingFetch.push(s);
           if (hold.length) { console.log('[net] 원본 내려받기 Wi-Fi 대기:', hold.join(', ')); __net.waitWifi = true; __dqEmit(); }
-          if (__netPolicy() !== 'wifi' && hold.some((s) => !__net.declined.has(String(s)))) __netAsk();
+          if (__netPolicy() !== 'wifi' && !__net.skipSession && hold.some((s) => !__net.declined.has(String(s)))) __netAsk();
           list = go; if (!list.length) return;
         }
         for (const sgg5 of list) {
@@ -16067,7 +16081,11 @@ const originalBase64 = event.target.result;
           }
           ul.appendChild(group);
         }
-        try { const v = __netPolicy(); document.querySelectorAll('#smNetRow input[name=netPolicy]').forEach((r) => { r.checked = r.value === v; }); } catch (_) {}
+        try {
+          const v = __netPolicy();
+          document.querySelectorAll('#smNetRow input[name=netPolicy]').forEach((r) => { r.checked = r.value === v; if (r.value === 'wifi' && __NET_IOS) r.closest('label').style.display = 'none'; });
+          const nr = document.getElementById('smNetRow'); if (nr && __NET_IOS) nr.title = '이 기기는 Wi-Fi 연결 여부를 알 수 없어 항상 모바일 데이터로 간주합니다';
+        } catch (_) {}
         const note = document.getElementById('smNote');
         if (note) note.textContent = `기본값: 이 기기에 메모가 있거나(📱) 최근 30일 안에 업데이트된 지역 = 원본 · ❔ 미설정 · 날짜 = 마지막 업데이트 · 삭제 = 이 기기와 드라이브에서 완전 삭제(복구 불가)${unsetCount ? ` · 미설정 ${unsetCount}개` : ''}`;
         o.style.display = 'flex';
@@ -16193,9 +16211,10 @@ const originalBase64 = event.target.result;
       async function __rdClearLocalCore(sgg5, progress) {
         const say = (m) => { try { progress && progress(m); } catch (_) {} };
         {
-          say('드라이브와 대조 중…');
-          __lz.doneAt.delete(sgg5);
-          await __lzIndexSgg(sgg5); // 로컬-새것은 여기서 큐에
+          say('드라이브 확인 중…');
+          // (2026-09-19) 지역 전체 대조(__lzIndexSgg)는 하지 않는다 — 폴더 4개 목록·메타·썸네일 내려받기가 따라와 "썸네일로 전환" 이
+          // 대량 내려받기처럼 보였다(사용자 지적). 기기에서 비우기는 아래 photos/·aptImages/ 목록으로 "드라이브에 있는 파일만" 지우면 충분하고,
+          // 화면에서 저장한 것은 이미 큐에 있으므로 큐만 먼저 비운다.
           const up = __dqPrioritize(sgg5) || __dqCountSgg(sgg5);
           if (up > 0) {
             const deadline = Date.now() + 10 * 60 * 1000;
@@ -16353,8 +16372,8 @@ const originalBase64 = event.target.result;
             click = () => __gdriveShowAuthOverlay();
           }
         } else if (__net.waitWifi && (s.pending > 0 || __net.pendingFetch.length > 0)) {
-          html = `<span style="color:#f59e0b;">📶 Wi-Fi 대기 ${s.pending + __net.pendingFetch.length}</span>`;
-          title = '모바일 데이터라서 동기화를 미뤘습니다. Wi-Fi에 연결되면 자동으로 진행합니다. 누르면 지금 동기화할지 선택';
+          html = `<span style="color:#f59e0b;">📶 ${__NET_IOS ? '동기화 보류' : 'Wi-Fi 대기'} ${s.pending + __net.pendingFetch.length}</span>`;
+          title = __NET_IOS ? '모바일 데이터로 간주해 동기화를 미뤘습니다(이 기기는 Wi-Fi 여부를 알 수 없음). 누르면 지금 동기화할지 선택' : '모바일 데이터라서 동기화를 미뤘습니다. Wi-Fi에 연결되면 자동으로 진행합니다. 누르면 지금 동기화할지 선택';
           click = () => { __net.asking = false; __netAsk(); };
         } else if (s.running) { html = `☁ 올리는 중 ${s.pending}`; title = '저장한 메모·사진을 드라이브에 올리는 중'; }
         else if (s.fetching > 0) { html = `⬇ 내려받는 중 ${s.fetching}`; title = '선택한 지역의 글·사진 원본을 이 기기에 내려받는 중'; }
