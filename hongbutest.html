@@ -15390,18 +15390,26 @@ const originalBase64 = event.target.result;
           const [nL, pL, gL, tL, aL, phL] = await Promise.all([nF, pF, gF, tF, aF, phF].map((f) => (f ? __dqList(f, true) : Promise.resolve(new Map()))));
           __lz.imgIds.set(sgg5, { apt: aL, photo: phL, at: Date.now() }); // (2026-09-19 ②) 클릭 시 목록 조회 없이 바로 내려받기 위한 파일 id
           const rNotes = __lzNewest(nL), rPhotos = __lzNewest(pL), rPolys = __lzNewest(gL);
-          // 이 지역에 살아있는(삭제 표시 아닌) 레코드가 있는지 기억 — 완전 삭제한 지역(.del 만 남음)을 목록에서 빼기 위해.
-          // 브라우저에도 저장해 다음 접속의 초기 목록부터 적용(2026-09-19: 새로고침 직후 관악구가 잠깐 보이던 문제)
-          const liveAll = [...rNotes.values(), ...rPhotos.values(), ...rPolys.values()].filter((r) => !r.deleted);
-          __lz.alive.set(sgg5, liveAll.length > 0);
-          __lz.lastUpd.set(sgg5, liveAll.reduce((m, r) => Math.max(m, r.updatedAt || 0), 0)); // 지역별 마지막 업데이트(모드 기본값용)
-          try { localStorage.setItem('__hongbuSggAlive_v1', JSON.stringify(Object.fromEntries(__lz.alive))); localStorage.setItem('__hongbuSggLastUpd_v1', JSON.stringify(Object.fromEntries(__lz.lastUpd))); } catch (_) {}
 
           await initMemoIndexedDB();
           const db = await __openHongbuMemoDb();
           let local;
           try { local = await __sggLoadLocalForSgg(db, sgg5); } finally { try { db.close(); } catch (_) {} }
           const { localNotes, localPhotos, localPolygons } = local;
+          // 이 지역에 살아있는(삭제 표시 아닌) 레코드가 있는지 기억 — 완전 삭제한 지역(.del 만 남음)을 목록에서 빼기 위해.
+          // 브라우저에도 저장해 다음 접속의 초기 목록부터 적용(2026-09-19: 새로고침 직후 관악구가 잠깐 보이던 문제)
+          // (2026-09-20) 드라이브엔 아직 살아있어도 **이 기기에 더 새 삭제 표시가 있으면**(큐가 곧 .del 을 올릴 것) 살아있는 것으로 세지 않는다
+          //   — 완전 삭제 직후 새로고침하면 .del 업로드 전에 선로드가 돌아 광명시가 썸네일로 되살아나던 문제
+          const tombPhoto = new Map();
+          for (const l of Object.values(localPhotos)) { if (l && l.deletedAt) { try { tombPhoto.set(__photoImgFilename({ ...l, sgg5 }).replace(/\.jpg$/, ''), l); } catch (_) {} } }
+          const tombNewer = (l, r) => !!(l && l.deletedAt && (Number(l.updatedAt) || 0) >= (r.updatedAt || 0));
+          const liveAll = [];
+          for (const [prefix, r] of rNotes) { if (!r.deleted && !tombNewer(localNotes[prefix.slice(`note_${sgg5}_`.length)], r)) liveAll.push(r); }
+          for (const [prefix, r] of rPhotos) { if (!r.deleted && !tombNewer(tombPhoto.get(prefix), r)) liveAll.push(r); }
+          for (const [prefix, r] of rPolys) { if (!r.deleted && !tombNewer(localPolygons[prefix.slice('polygon_'.length)], r)) liveAll.push(r); }
+          __lz.alive.set(sgg5, liveAll.length > 0);
+          __lz.lastUpd.set(sgg5, liveAll.reduce((m, r) => Math.max(m, r.updatedAt || 0), 0)); // 지역별 마지막 업데이트(모드 기본값용)
+          try { localStorage.setItem('__hongbuSggAlive_v1', JSON.stringify(Object.fromEntries(__lz.alive))); localStorage.setItem('__hongbuSggLastUpd_v1', JSON.stringify(Object.fromEntries(__lz.lastUpd))); } catch (_) {}
           // (2026-09-19) 지역이 드라이브·이 기기 모두에서 비었으면 이 기기의 동기화 설정도 지운다 — 다른 기기가 완전 삭제한 지역이
           // 나중에 되살아났을 때 옛 설정(원본)이 남아 묻지 않고 받던 문제(덕양구 사례). 완전 삭제는 실행한 기기에서만 __smSet('') 했었다.
           if (!liveAll.length && __smGet(sgg5)) {
@@ -16531,6 +16539,8 @@ const originalBase64 = event.target.result;
           const msg = remain ? `🗑 ${name}: 삭제 표시 ${total}건 완료, 드라이브 반영 ${remain}건은 뒤에서 계속` : `🗑 ${name}: ${total}건 완전 삭제 완료 (드라이브 반영 포함)`;
           console.log('[rd]', msg); try { showToast(msg, 6000); } catch (_) {}
           try { __smSet(sgg5, ''); } catch (_) {} // 완전 삭제 → 동기화 모드 설정 제거
+          // (2026-09-20) 살아있음 판정을 즉시 '비어 있음' 으로 — 새로고침 직후 목록·설정 창에 다시 나타나지 않게
+          try { __lz.alive.set(sgg5, false); __lz.lastUpd.delete(sgg5); localStorage.setItem('__hongbuSggAlive_v1', JSON.stringify(Object.fromEntries(__lz.alive))); localStorage.setItem('__hongbuSggLastUpd_v1', JSON.stringify(Object.fromEntries(__lz.lastUpd))); } catch (_) {}
           __rfRefreshPicker(sgg5).catch(() => {});
           return { total, remain };
         } catch (e) {
