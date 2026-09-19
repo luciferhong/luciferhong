@@ -1520,6 +1520,10 @@
       #syncModePanel .sm-ex .ic{font-size:17px;line-height:1.2;flex:none;}
       #syncModePanel .sm-ex b{color:#0c4a6e;font-size:14px;}
       #syncModePanel .sm-note{color:#64748b;font-size:12px;margin:0 0 10px;flex:none;line-height:1.5;}
+      #syncModePanel .sm-reason{display:flex;gap:10px;align-items:flex-start;margin:0 0 10px;padding:10px 12px;border-radius:10px;background:#fffbeb;border:1px solid #fcd34d;color:#78350f;font-size:13px;line-height:1.55;flex:none;}
+      #syncModePanel .sm-reason .ic{font-size:18px;line-height:1.2;flex:none;}
+      #syncModePanel .sm-reason b{color:#78350f;}
+      #smList .sm-row.sm-hi{background:#fffbeb;box-shadow:inset 4px 0 0 #f59e0b;}
       #syncModePanel .sm-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;flex:none;}
       #syncModePanel .sm-pill{font-size:13px;padding:6px 14px;border:1px solid #cbd5e1;border-radius:999px;background:#fff;color:#1e293b;cursor:pointer;}
       #syncModePanel .sm-pill:hover{background:#f0f9ff;border-color:#7dd3fc;}
@@ -1572,10 +1576,11 @@
             <div style="display:flex; gap:8px;"><span class="ic">✅</span><div><b>썸네일</b> · 메모 아이콘 표시와 포토메모의 썸네일만 내려받고, 단지를 클릭하거나 포토메모를 클릭했을 때 실제 데이터를 내려받음. 저장공간을 줄일 수 있는 장점이 있으나, 단지와 포토메모를 클릭했을 때 데이터를 가져오는 시간 동안 대기가 필요</div></div>
           </div>
         </div>
+        <div id="smReason" class="sm-reason" style="display:none;"></div>
         <div id="smNote" class="sm-note"></div>
         <div class="sm-bar">
           <button class="sm-pill" onclick="__smSetAllRadios('auto')">모두 🔁 원본</button>
-          <button class="sm-pill" onclick="__smSetAllRadios('thumb')">모두 🖼 썸네일</button>
+          <button class="sm-pill" onclick="__smSetAllRadios('thumb')">모두 썸네일</button>
         </div>
         <div id="smNetRow" class="sm-net" title="셀룰러(모바일 데이터)에 연결되어 있을 때 메모·사진을 올리고 원본을 내려받을지">
           <span>📶 모바일 데이터에서 동기화</span>
@@ -15261,6 +15266,14 @@ const originalBase64 = event.target.result;
           let local;
           try { local = await __sggLoadLocalForSgg(db, sgg5); } finally { try { db.close(); } catch (_) {} }
           const { localNotes, localPhotos, localPolygons } = local;
+          // (2026-09-19) 지역이 드라이브·이 기기 모두에서 비었으면 이 기기의 동기화 설정도 지운다 — 다른 기기가 완전 삭제한 지역이
+          // 나중에 되살아났을 때 옛 설정(원본)이 남아 묻지 않고 받던 문제(덕양구 사례). 완전 삭제는 실행한 기기에서만 __smSet('') 했었다.
+          if (!liveAll.length && __smGet(sgg5)) {
+            const localLive = Object.values(localNotes).some((n) => n && !n.deletedAt && !n.lazy && ((n.memo || '').trim() || (n.images || []).some((it) => __getImgData(it))))
+              || Object.values(localPhotos).some((ph) => ph && !ph.deletedAt)
+              || Object.values(localPolygons).some((g) => g && !g.deletedAt);
+            if (!localLive) { __smSet(sgg5, ''); console.log('[mode] 지역이 비어 이 기기의 동기화 설정 제거:', sgg5); }
+          }
 
           const toFetch = []; // {kind, remote, local} — 메타 JSON 을 받아야 하는 것
           const direct = [];  // {kind, meta, local} — 파일명만으로 처리(삭제 표시·글 자리표시자), 요청 없음
@@ -16009,6 +16022,16 @@ const originalBase64 = event.target.result;
         try { if (typeof __syncAptIndex !== 'undefined' && __syncAptIndex.size === 0) await __loadAptIndexForSync(); } catch (_) {}
         const deviceSet = await __smDeviceSet();
         const all = Array.from(new Set([...(list || []), ...(await __smAllRegions())]));
+        // 자동으로 뜬 경우(미설정 지역 목록이 있음): 왜 떴는지·어느 지역인지 위에 보여 준다 (2026-09-19 사용자 지적)
+        const hiSet = new Set((list || []).map(String));
+        const reason = document.getElementById('smReason');
+        if (reason) {
+          if (hiSet.size) {
+            const names = Array.from(hiSet).map((x) => __syncSigunguNameByCode5.get(x) || x).join(', ');
+            reason.innerHTML = `<span class="ic">📥</span><div><b>새 지역이 발견되어 설정을 묻습니다.</b><br>다른 기기에서 저장한 메모가 있는 지역: <b>${names}</b><br>이 기기에서 원본까지 받을지, 썸네일만 둘지 정하고 확인을 누르세요. 아래 노란 줄이 해당 지역입니다.</div>`;
+            reason.style.display = 'flex';
+          } else reason.style.display = 'none';
+        }
         ul.innerHTML = '';
         const bySido = new Map();
         for (const sgg5 of all) { const sd = String(sgg5).slice(0, 2); if (!bySido.has(sd)) bySido.set(sd, []); bySido.get(sd).push(String(sgg5)); }
@@ -16019,7 +16042,7 @@ const originalBase64 = event.target.result;
           const group = document.createElement('div'); group.className = 'sm-group';
           const head = document.createElement('div'); head.className = 'sm-head'; // 행과 같은 그리드 → '모두' 단추가 토글 열 위에 정렬
           head.innerHTML = `<b>${sidoName(sd)}</b>` +
-            `<span class="sm-mini"><button type="button" data-sido="${sd}" data-mode="auto">모두 🔁</button><button type="button" data-sido="${sd}" data-mode="thumb">모두 🖼</button></span>` +
+            `<span class="sm-mini"><button type="button" data-sido="${sd}" data-mode="auto">모두 🔁 원본</button><button type="button" data-sido="${sd}" data-mode="thumb">모두 썸네일</button></span>` +
             `<span></span><span></span>`;
           head.querySelectorAll('button').forEach((b) => { b.onclick = () => __smSetSidoRadios(b.dataset.sido, b.dataset.mode); });
           group.appendChild(head);
@@ -16033,10 +16056,10 @@ const originalBase64 = event.target.result;
             const last = __lz.lastUpd.get(sgg5) || 0;
             const lastTxt = last ? new Date(last).toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' }).replace(/\s/g, '').replace(/\.$/, '') : '';
             const row = document.createElement('div');
-            row.className = 'sm-row'; // 이름 칸 폭 고정(9~12em) → 토글이 모든 행에서 같은 x. 좁으면 목록이 가로 스크롤
+            row.className = 'sm-row' + (hiSet.has(sgg5) ? ' sm-hi' : ''); // 이름 칸 폭 고정(9~12em) → 토글이 모든 행에서 같은 x. 좁으면 목록이 가로 스크롤
             row.dataset.sgg5 = sgg5; row.dataset.sido = sd; row.dataset.prev = cur;
             row.innerHTML = `<span class="sm-name" title="${name}${lastTxt ? ' · ' + lastTxt + ' 업데이트' : ''}${cur ? '' : ' · 미설정'}"><b>${name}</b>${cur ? '' : '<span class="sm-unset" title="미설정">❔</span>'}<span class="sm-meta">${lastTxt}${deviceSet.has(sgg5) ? ' 📱' : ''}</span>${c ? `<span class="sm-new">새 ${c.notes + c.photos}</span>` : ''}</span>` +
-              `<span class="sm-seg"><label><input type="radio" name="sm_${sgg5}" value="auto" ${sel === 'auto' ? 'checked' : ''}><span>🔁 원본</span></label><label><input type="radio" name="sm_${sgg5}" value="thumb" ${sel === 'thumb' ? 'checked' : ''}><span>🖼 썸네일</span></label></span>` +
+              `<span class="sm-seg"><label><input type="radio" name="sm_${sgg5}" value="auto" ${sel === 'auto' ? 'checked' : ''}><span>🔁 원본</span></label><label><input type="radio" name="sm_${sgg5}" value="thumb" ${sel === 'thumb' ? 'checked' : ''}><span>썸네일</span></label></span>` +
               `<span></span>` +
               `<button type="button" data-del="${sgg5}" class="sm-del-btn" title="완전 삭제 — 이 지역의 메모·사진·면적그리기를 이 기기와 구글드라이브에서 모두 삭제. 다른 기기도 로그인하면 함께 제거. 되돌릴 수 없음">삭제</button>`;
             row.querySelector('button[data-del]').onclick = () => { __smDeleteOne(sgg5, row).catch((e) => console.warn('[mode] 완전 삭제 실패:', e?.message || e)); };
