@@ -1470,6 +1470,8 @@
           <b style="color:#f1f5f9;">HongbuMemo</b> 폴더에 자동으로 백업됩니다.<br>
           <span style="color:#64748b; font-size:12px;">로그인 없이 쓰면 이 기기에만 저장되어 브라우저 데이터가 지워지면 복구할 수 없습니다.</span>
         </p>
+        <!-- (2026-09-19) 데이터 사용 안내: 첫 로그인 때 이 기기 사진 업로드 + 원본 지역 내려받기로 수백 MB 가 나갈 수 있음을 로그인 전에 알린다 -->
+        <p id="gdriveDataWarn" style="display:none; margin:-10px 0 18px; padding:10px 12px; background:#3b2a12; border:1px solid #a16207; border-radius:8px; color:#fde68a; font-size:12px; line-height:1.55; text-align:left;"></p>
         <button id="gdriveSignInBtn" style="display:flex; align-items:center; gap:10px;
                 margin:0 auto; padding:12px 22px; background:#fff; color:#1e293b; border:none;
                 border-radius:8px; font-size:14px; font-weight:600; cursor:pointer;
@@ -2058,7 +2060,7 @@
         <span id="driveRegionFetchWrap" style="display:none; align-items:center; gap:3px; margin-left:6px;"
               title="저장 즉시 자동으로 백업됩니다. 지역별로 원본까지 받을지(🔁 원본) 썸네일만 둘지(🖼 썸네일) 정하려면 동기화 설정을 누르세요">
           <!-- (2026-09-19) 시도·시군구 셀렉트 + 🔄 수동 동기화 단추 제거 — 동기화 설정(자동 = 지금 내려받기)으로 대체. 콘솔 window.__lazy.fetchRegion(sgg5) 는 유지 -->
-          <button onclick="__smOpenAll()" title="지역별 동기화 설정: 🔁 원본(드라이브 변경 시 원본까지 내려받기) / 🖼 썸네일(아이콘·썸네일만, 원본은 클릭 시) / 🗑 완전 삭제" style="font-size:11px; padding:2px 7px;">⚙ 동기화 설정</button>
+          <button onclick="__smOpenAll()" title="지역별 동기화 설정: 🔁 원본(드라이브 변경 시 원본까지 내려받기) / 🖼 썸네일(아이콘·썸네일만, 원본은 클릭 시) / 🗑 완전 삭제">⚙ 동기화 설정</button>
         </span>
       </div>
 
@@ -12190,10 +12192,40 @@ const originalBase64 = event.target.result;
       }
 
       // 로그인 오버레이 표시 (사용자 제스처로만 호출 — 로드 시 자동 표시 금지)
+      // 이 기기에 있는 사진 원본(포토메모 + 단지메모 이미지) 총량(바이트)·장수 — 첫 로그인 업로드 예상치
+      async function __gdriveLocalPhotoBytes() {
+        let bytes = 0, count = 0;
+        try {
+          await initMemoIndexedDB();
+          const db = await __openHongbuMemoDb();
+          const scan = (store, fn) => new Promise((resolve) => {
+            if (!db.objectStoreNames.contains(store)) { resolve(); return; }
+            const req = db.transaction([store], 'readonly').objectStore(store).openCursor();
+            req.onsuccess = (e) => { const c = e.target.result; if (!c) { resolve(); return; } try { fn(c.value); } catch (_) {} c.continue(); };
+            req.onerror = () => resolve();
+          });
+          const sz = (d) => (typeof d === 'string' && d.startsWith('data:')) ? Math.round(d.length * 0.75) : 0;
+          await scan('photoMemos', (ph) => { if (ph && !ph.deletedAt) { const b = sz(ph.imageDataUrl); if (b) { bytes += b; count++; } } });
+          await scan('apartmentNotes', (n) => { if (n && !n.deletedAt && Array.isArray(n.images)) for (const it of n.images) { const b = sz(__getImgData(it)); if (b) { bytes += b; count++; } } });
+          try { db.close(); } catch (_) {}
+        } catch (e) { console.warn('[gdrive] 로컬 사진 용량 계산 실패(무시):', e?.message || e); }
+        return { bytes, count };
+      }
+      async function __gdriveFillDataWarn() {
+        const el = document.getElementById('gdriveDataWarn');
+        if (!el) return;
+        let seeded = false, synced = false;
+        try { seeded = localStorage.getItem(__DQ_SEED_KEY) === '1'; synced = !!localStorage.getItem(__PF_TOKEN_KEY); } catch (_) {}
+        if (seeded && synced) { el.style.display = 'none'; return; } // 이미 한 번 동기화한 기기 — 이후는 변경분만이라 안내 불필요
+        // 문안은 사용자가 준 문장 그대로 (2026-09-19)
+        el.innerHTML = `⚠ <b>데이터 사용 안내</b><br>로그인을 하면 동기화 하는 과정에 경우에 따라 <b>수백 MB</b>의 데이터가 사용될 수 있습니다. 데이터가 부족한 경우 로그인 없이 핸드폰에 메모를 작성하고 <b>와이파이 환경에서 로그인</b>하여 동기화하시기 바랍니다.`;
+        el.style.display = 'block';
+      }
       function __gdriveShowAuthOverlay() {
         const overlay = document.getElementById("gdriveAuthOverlay");
         if (!overlay) return;
         overlay.style.display = "flex";
+        __gdriveFillDataWarn().catch(() => {});
         const hasAutoLogin = (() => {
           try { return localStorage.getItem("__hongbuDriveAutoLogin") === "1"; } catch (_) { return false; }
         })();
