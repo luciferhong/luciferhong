@@ -14410,8 +14410,9 @@ const originalBase64 = event.target.result;
       // 최초 1회: 로컬에만 있던 레코드(큐 도입 전 저장분)를 전부 큐에 넣는다. 드라이브에 이미 있는 것은
       // 큐가 이름 대조로 건너뛰므로(목록 캐시, 네트워크 없음) 없는 것만 실제로 올라간다.
       const __DQ_SEED_KEY = '__hongbuDqSeeded_v4';
-      async function __dqSeedFromLocal() {
-        try { if (localStorage.getItem(__DQ_SEED_KEY) === '1') return; } catch (_) {}
+      async function __dqSeedFromLocal(opts) {
+        // opts.force: 이미 적재한 기기여도 다시 (메모 복원 뒤 — 2026-09-19). 드라이브에 같은 판이 있으면 처리 단계에서 목록 대조로 건너뛴다.
+        if (!opts?.force) { try { if (localStorage.getItem(__DQ_SEED_KEY) === '1') return; } catch (_) {} }
         await __dqLoad();
         await initMemoIndexedDB();
         const stores = [['apartmentNotes', 'note'], ['photoMemos', 'photo'], ['polygonMemos', 'polygon']];
@@ -14446,7 +14447,7 @@ const originalBase64 = event.target.result;
           };
         });
         try { localStorage.setItem(__DQ_SEED_KEY, '1'); } catch (_) {}
-        console.log(`[dq] 로컬 레코드 초기 적재 ${added}건 (대기 ${__dq.items.size}건)`);
+        console.log(`[dq] 로컬 레코드 ${opts?.force ? '재' : '초기 '}적재 ${added}건 (대기 ${__dq.items.size}건)`);
         __dqSave(); __dqEmit();
         if (added) __dqKick(500);
       }
@@ -14875,8 +14876,16 @@ const originalBase64 = event.target.result;
         if (!rec.sgg5) rec.sgg5 = sgg5; // 파일명 규칙용(로컬 레코드는 건드리지 않음)
         const updatedAt = Number(rec.updatedAt) || Date.now();
         const t0 = performance.now();
+        // (2026-09-19) 드라이브에 이 레코드의 더 새 판이 있으면 아무것도 올리지 않는다 — 복원(옛 백업)·재적재 때 옛 메타·사진이 되살아나는 것 방지
+        const __newerOnDrive = async (root, name) => {
+          const pre = __parseMetaFilename(name)?.prefix; if (!pre) return false;
+          const newest = __dqNewestMetaTs(await __dqList(await __dqSggFolder(root, sgg5)), pre);
+          if (newest > updatedAt) { console.log(`[dq] ${item.kind} ${item.id} — 드라이브가 더 새 판(${newest} > ${updatedAt}) → 건너뜀`); return true; }
+          return false;
+        };
 
         if (item.kind === 'note') {
+          if (await __newerOnDrive('notes', __noteMetaFilename({ ...rec, sgg5, updatedAt }))) return;
           const imgFolder = await __dqSggFolder('aptImages', sgg5);
           const imgs = (typeof __sanitizeImages === 'function' ? __sanitizeImages(rec.images) : (rec.images || []));
           const imageNames = [];
@@ -14931,6 +14940,7 @@ const originalBase64 = event.target.result;
               if (ts) { rec.addedAt = ts; rec.createdAt = rec.createdAt || ts; console.log(`[dq] 삭제 표시 시각 복구 ${rec.id} → ${ts}`); }
             } catch (e) { console.warn('[dq] 삭제 표시 시각 복구 실패(무시):', e?.message || e); }
           }
+          if (await __newerOnDrive('photoMeta', __photoMetaFilename({ ...rec, sgg5, updatedAt }))) return;
           const base = __photoImgFilename({ ...rec, sgg5 });
           if (!rec.deletedAt) {
             const img = rec.imageDataUrl;
@@ -14972,6 +14982,7 @@ const originalBase64 = event.target.result;
           const meta = { schemaVersion: __DQ_SCHEMA, kind: 'polygon', sgg5, ...rec, updatedAt, deletedAt: rec.deletedAt || null };
           const metaFolder = await __dqSggFolder('polygons', sgg5);
           const name = __polygonMetaFilename({ ...rec, updatedAt });
+          if (await __newerOnDrive('polygons', name)) return;
           await __dqUploadIfMissing(metaFolder, name, JSON.stringify(meta), 'application/json');
           await __dqDeleteOlderMeta(metaFolder, __parseMetaFilename(name).prefix, updatedAt, name);
         }
@@ -19993,6 +20004,13 @@ const originalBase64 = event.target.result;
               hongbuDebugLog("WARN", "일부 포토메모는 이미지 데이터가 없어 복원에서 제외됨");
             }
             hongbuDebugToast(`✅ 복원 완료! 메모 ${totalNoteOk}개, 포토 ${totalPhotoOk}개`, 5000);
+            // (2026-09-19) 복원한 레코드를 드라이브 업로드 큐에 — 이미 같은 판이 드라이브에 있으면 목록 대조로 건너뛰고, 더 새 판이 있으면 올리지 않는다
+            try {
+              if (typeof __dqSeedFromLocal === 'function') {
+                __dqSeedFromLocal({ force: true }).catch((e) => console.warn('[dq] 복원 후 큐 적재 실패:', e?.message || e));
+                hongbuDebugLog("INFO", "☁ 복원한 메모를 드라이브 백업 큐에 넣었습니다 (드라이브에 없는 것만 올라감)");
+              }
+            } catch (_) {}
 
             hongbuDebugLog("INFO", "⏳ 2초 후 마커 새로고침...");
 
