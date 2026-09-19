@@ -14332,10 +14332,11 @@ const originalBase64 = event.target.result;
 
       // 드라이브 요청 간격 제한(지연 로드·선로드 전용): 최소 120ms 간격 → 분당 500회 안팎. 프로젝트 합산 할당량 보호.
       let __driveSlotAt = 0;
+      const __DRIVE_SLOT_MS = 50; // (2026-09-19) 120→50ms: 초당 20건, 분당 1,200건 = 한도(12,000/분)의 10%. 429 는 60초 쉼으로 처리
       async function __driveSlot() {
         const now = Date.now();
-        const wait = Math.max(0, __driveSlotAt + 120 - now);
-        __driveSlotAt = Math.max(now, __driveSlotAt) + 120;
+        const wait = Math.max(0, __driveSlotAt + __DRIVE_SLOT_MS - now);
+        __driveSlotAt = Math.max(now, __driveSlotAt) + __DRIVE_SLOT_MS;
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       }
       // 403 userRateLimitExceeded / 429 → 할당량 초과. 인증 오류와 구분해 "쉬었다가 재시도".
@@ -14685,25 +14686,32 @@ const originalBase64 = event.target.result;
         console.log(`[dq] 시작 ${__dq.items.size}건`);
         __dq.running = true;
         __dqEmit();
-        try {
-          while (__dq.items.size > 0) {
-            if (!window.__gdriveReady || navigator.onLine === false || window.__sggSyncBusy) break;
-            let picked = null;
-            for (const ent of __dq.items.entries()) { if (__netItemAllowed(ent[1])) { picked = ent; break; } }
-            if (!picked) { console.log(`[dq] 나머지 ${__dq.items.size}건 — 모바일 데이터(Wi-Fi 대기)`); __net.waitWifi = true; break; }
-            const [key, item] = picked;
+        // (2026-09-19) 작업자 3개 병렬 — 한 건씩 직렬이던 업로드를 겹친다(첫 로그인 전체 업로드가 특히 길었음).
+        // 폴더·목록 캐시는 promise 라 병렬 호출이 같은 폴더를 두 번 만들지 않는다. 인증/한도/실패 시 첫 작업자가 stop 을 정하고 나머지는 하던 건만 마친다.
+        const inFlight = new Set();
+        let stop = '';
+        const takeNext = () => {
+          if (stop) return null;
+          if (!window.__gdriveReady || navigator.onLine === false || window.__sggSyncBusy) { stop = 'pause'; return null; }
+          for (const ent of __dq.items.entries()) { if (!inFlight.has(ent[0]) && __netItemAllowed(ent[1])) return ent; }
+          return null;
+        };
+        const worker = async () => {
+          for (;;) {
+            const picked = takeNext(); if (!picked) return;
+            const [key, item] = picked; inFlight.add(key);
             try {
               await __dqProcess(item);
               __dq.items.delete(key);
-              __dq.failures = 0; __dq.lastError = '';
+              if (!stop) { __dq.failures = 0; __dq.lastError = ''; } // 다른 작업자의 실패 기록은 지우지 않는다
               __dqSave(); __dqEmit();
             } catch (e) {
-              if (__isAuthError(e)) {
+              if (stop) { /* 다른 작업자가 이미 멈춤을 정함 — 이 건은 다음 재개 때 다시 */ }
+              else if (__isAuthError(e)) {
                 console.warn('[dq] 인증 오류 — 토큰 갱신 후 재개');
                 __handleAuthExpired({ silent: true });      // refresh 성공 시 __gdriveOnSignedIn → kick
-                break;
-              }
-              if (__isRateLimitError(e)) {
+                stop = 'auth';
+              } else if (__isRateLimitError(e)) {
                 // 할당량 초과: 실패 횟수로 세지 않고 30초→1분→2분→4분 쉬었다가 같은 항목부터 재개
                 __dq.rateHits = (__dq.rateHits || 0) + 1;
                 const wait = Math.min(4, 2 ** (__dq.rateHits - 1)) * 30 * 1000;
@@ -14711,26 +14719,32 @@ const originalBase64 = event.target.result;
                 console.warn(`[dq] 요청 한도(429/403) — ${Math.round(wait / 1000)}초 후 재개`);
                 clearTimeout(__dq.retryTimer);
                 __dq.retryTimer = setTimeout(() => __dqKick(0), wait);
-                break;
+                stop = 'rate';
+              } else {
+                __dq.rateHits = 0;
+                __dq.failures++;
+                __dq.lastError = e?.message || String(e);
+                const wait = Math.min(8, 2 ** (__dq.failures - 1)) * 60 * 1000;
+                console.warn(`[dq] ${key} 업로드 실패(${__dq.failures}회) — ${Math.round(wait / 60000)}분 후 재시도:`, __dq.lastError);
+                try { window.hongbuDebugLog?.('ERR', '[dq] 업로드 실패', `${key} ${__dq.lastError}`); } catch (_) {}
+                // 실패 항목은 뒤로 보내 다른 항목을 먼저 시도
+                __dq.items.delete(key); __dq.items.set(key, item);
+                clearTimeout(__dq.retryTimer);
+                __dq.retryTimer = setTimeout(() => __dqKick(0), wait);
+                stop = 'fail';
               }
-              __dq.rateHits = 0;
-              __dq.failures++;
-              __dq.lastError = e?.message || String(e);
-              const wait = Math.min(8, 2 ** (__dq.failures - 1)) * 60 * 1000;
-              console.warn(`[dq] ${key} 업로드 실패(${__dq.failures}회) — ${Math.round(wait / 60000)}분 후 재시도:`, __dq.lastError);
-              try { window.hongbuDebugLog?.('ERR', '[dq] 업로드 실패', `${key} ${__dq.lastError}`); } catch (_) {}
-              // 실패 항목은 뒤로 보내 다른 항목을 먼저 시도
-              __dq.items.delete(key); __dq.items.set(key, item);
-              clearTimeout(__dq.retryTimer);
-              __dq.retryTimer = setTimeout(() => __dqKick(0), wait);
-              break;
-            }
+            } finally { inFlight.delete(key); }
           }
+        };
+        try {
+          await Promise.all(Array.from({ length: __DQ_PAR }, worker));
+          if (!stop && __dq.items.size > 0) { console.log(`[dq] 나머지 ${__dq.items.size}건 — 모바일 데이터(Wi-Fi 대기)`); __net.waitWifi = true; }
         } finally {
           __dq.running = false;
           __dqEmit();
         }
       }
+      const __DQ_PAR = 3; // 업로드 큐 동시 작업자 수
 
       // ── 드라이브 폴더/목록 캐시 ──
       // 캐시는 "진행 중인 promise" 를 저장한다 — 병렬 호출이 같은 폴더를 두 번 만들거나 두 번 조회하지 않게.
@@ -14889,6 +14903,7 @@ const originalBase64 = event.target.result;
           const imgFolder = await __dqSggFolder('aptImages', sgg5);
           const imgs = (typeof __sanitizeImages === 'function' ? __sanitizeImages(rec.images) : (rec.images || []));
           const imageNames = [];
+          const imgTasks = [];
           for (const it of imgs) {
             const addedAt = typeof it === 'object' ? it.addedAt : null;
             if (!addedAt) continue;
@@ -14897,10 +14912,13 @@ const originalBase64 = event.target.result;
             if (rec.deletedAt) continue;
             const data = __getImgData(it);
             if (!data || !data.startsWith('data:')) continue; // 데이터 없음(지연 로드 자리표시자) → 드라이브에 이미 있음
-            const list = await __dqList(imgFolder);
-            if (list.has(name)) continue;
-            await __dqUploadIfMissing(imgFolder, name, __dataUrlToBlob(data), 'image/jpeg');
+            imgTasks.push((async () => {
+              const list = await __dqList(imgFolder);
+              if (list.has(name)) return;
+              await __dqUploadIfMissing(imgFolder, name, __dataUrlToBlob(data), 'image/jpeg');
+            })());
           }
+          await Promise.all(imgTasks); // (2026-09-19) 이미지 여러 장 동시에 올림
           const meta = {
             schemaVersion: __DQ_SCHEMA, kind: 'note', id: String(rec.id), sgg5,
             memo: rec.deletedAt ? '' : (rec.memo || ''), images: rec.deletedAt ? [] : imageNames,
@@ -14943,16 +14961,16 @@ const originalBase64 = event.target.result;
           if (await __newerOnDrive('photoMeta', __photoMetaFilename({ ...rec, sgg5, updatedAt }))) return;
           const base = __photoImgFilename({ ...rec, sgg5 });
           if (!rec.deletedAt) {
+            const ups = [];
             const img = rec.imageDataUrl;
             if (typeof img === 'string' && img.startsWith('data:')) {
-              const f = await __dqSggFolder('photos', sgg5);
-              await __dqUploadIfMissing(f, base, __dataUrlToBlob(img), 'image/jpeg');
+              ups.push((async () => { const f = await __dqSggFolder('photos', sgg5); await __dqUploadIfMissing(f, base, __dataUrlToBlob(img), 'image/jpeg'); })());
             }
             const th = rec.thumbDataUrl;
             if (typeof th === 'string' && th.startsWith('data:')) {
-              const f = await __dqSggFolder('photoThumb', sgg5);
-              await __dqUploadIfMissing(f, __photoThumbFilename({ ...rec, sgg5 }), __dataUrlToBlob(th), 'image/jpeg');
+              ups.push((async () => { const f = await __dqSggFolder('photoThumb', sgg5); await __dqUploadIfMissing(f, __photoThumbFilename({ ...rec, sgg5 }), __dataUrlToBlob(th), 'image/jpeg'); })());
             }
+            await Promise.all(ups); // (2026-09-19) 원본·썸네일 동시에 올린 뒤 메타
           }
           const meta = {
             schemaVersion: __DQ_SCHEMA, kind: 'photo', id: String(rec.id), sgg5,
@@ -15195,7 +15213,9 @@ const originalBase64 = event.target.result;
         const k = `${rootName}/${sgg5}`;
         if (__dq.sggIds.has(k)) { try { return await __dq.sggIds.get(k); } catch (_) {} }
         let c = __lz.rootKids.get(rootName);
-        if (!c || Date.now() - c.at > __LZ_TTL_MS) {
+        // (2026-09-19) 선로드 중에는 선로드 시작 뒤에 읽은 루트 목록을 60초가 지나도 재사용(루트 목록 재조회 절약). 그 외엔 60초 TTL.
+        const keep = c && typeof __pf !== 'undefined' && __pf.running && c.at >= __pf.startedAt;
+        if (!c || (!keep && Date.now() - c.at > __LZ_TTL_MS)) {
           const p = (async () => {
             const rootId = await __dqRootFolder(rootName);
             const { nameMap } = await __driveListFolderNameMap(rootId);
@@ -15648,7 +15668,7 @@ const originalBase64 = event.target.result;
       // 접속(페이지 로드)마다 1회 돈다(2026-09-18 사용자 결정). 두 번째 접속부터는 시군구별 목록 4회 + 새 파일만 받아 가볍다
       // (20개 지역 ≈ 80요청 ≈ 10초). 중단됐을 때만 온라인·화면 복귀 시 이어서 한다.
       // 순서: 현재 화면 시군구 → 나머지. 실시간 큐 우선, 화면이 숨겨지면 일시정지, 요청 간격 제한(__driveSlot).
-      const __pf = { running: false, total: 0, done: 0, completed: false, newBy: new Map() /* sgg5 → {notes, photos} 다른 기기에서 온 살아있는 신규·변경 */ };
+      const __pf = { running: false, startedAt: 0, total: 0, done: 0, completed: false, newBy: new Map() /* sgg5 → {notes, photos} 다른 기기에서 온 살아있는 신규·변경 */ };
       // ── 드라이브 변경 로그(Changes API, 2026-09-19 사용자 결정 C안) ──
       // 마지막 확인 토큰(localStorage) 이후 바뀐 파일 목록을 1~2요청으로 받아 "바뀐 시군구" 만 선로드한다.
       // 토큰이 없거나(첫 접속) 만료됐으면 전체 선로드 1회 후 토큰 저장. 자기 업로드도 로그에 나오지만 그 지역은 "동일" 로 빨리 끝난다.
@@ -15702,7 +15722,7 @@ const originalBase64 = event.target.result;
       async function __pfStart() {
         if (__pf.running || __pf.completed) return;
         if (!__dqMigAlive()) return;
-        __pf.running = true;
+        __pf.running = true; __pf.startedAt = Date.now();
         __dqEmit();
         try {
           let order = null, newToken = null, mode = '전체';
@@ -15743,18 +15763,25 @@ const originalBase64 = event.target.result;
             try { __smAfterPrefetch(mode).catch(() => {}); } catch (_) {} // 미설정 지역이 있으면 팝업
             return;
           }
-          console.log(`[prefetch] 시작(${mode}) — 시군구 ${order.length}개`);
-          for (const sgg5 of order) {
-            while (document.visibilityState === 'hidden') await __dqSleep(5000); // 화면 안 볼 때는 쉼
-            if (!__dqMigAlive()) { console.log('[prefetch] 연결 끊김 — 중단(다음에 재개)'); return; }
-            await __dqYieldToQueue();
-            while (__lz.rateUntil && Date.now() < __lz.rateUntil) await __dqSleep(5000);
-            if (Date.now() - (__lz.doneAt.get(sgg5) || 0) > __LZ_TTL_MS) {
-              const r = await __lzIndexSgg(sgg5);
-              if (mode === '변경분' && r && (r.liveNotes || r.livePhotos)) __pf.newBy.set(sgg5, { notes: r.liveNotes, photos: r.livePhotos });
+          console.log(`[prefetch] 시작(${mode}) — 시군구 ${order.length}개 (3개 병렬)`);
+          // (2026-09-19) 시군구 3개 병렬 — 지역마다 드는 폴더 목록 고정 비용(0.5~1초)을 겹친다. 파일 내려받기는 전역 간격(__driveSlot)이 계속 제한
+          let cursor = 0, aborted = false;
+          const worker = async () => {
+            while (cursor < order.length && !aborted) {
+              const sgg5 = order[cursor++];
+              while (document.visibilityState === 'hidden') await __dqSleep(5000); // 화면 안 볼 때는 쉼
+              if (!__dqMigAlive()) { if (!aborted) console.log('[prefetch] 연결 끊김 — 중단(다음에 재개)'); aborted = true; return; }
+              await __dqYieldToQueue();
+              while (__lz.rateUntil && Date.now() < __lz.rateUntil) await __dqSleep(5000);
+              if (Date.now() - (__lz.doneAt.get(sgg5) || 0) > __LZ_TTL_MS) {
+                const r = await __lzIndexSgg(sgg5);
+                if (mode === '변경분' && r && (r.liveNotes || r.livePhotos)) __pf.newBy.set(sgg5, { notes: r.liveNotes, photos: r.livePhotos });
+              }
+              __pf.done++; __dqEmit();
             }
-            __pf.done++; __dqEmit();
-          }
+          };
+          await Promise.all(Array.from({ length: Math.min(3, order.length) }, worker));
+          if (aborted) return;
           // 썸네일 큐가 비면 완료로 기록
           let guard = 0;
           while ((__lz.thumbQ.length > 0 || __lz.thumbBusy > 0) && guard++ < 600) await __dqSleep(1000);
