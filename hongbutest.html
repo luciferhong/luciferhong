@@ -1493,6 +1493,18 @@
     </div>
 
     <!-- 🔁 지역별 동기화 모드 설정 창 (2026-09-19) — 미설정 지역이 있으면 접속 시 표시 -->
+    <!-- 📶 모바일 데이터 동기화 질문 창 (2026-09-19) -->
+    <div id="netAskOverlay" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(15,23,42,0.8); backdrop-filter:blur(3px); justify-content:center; align-items:center;">
+      <div style="background:#1e293b; border-radius:14px; padding:20px 18px 16px; max-width:420px; width:94%; color:#f1f5f9; box-shadow:0 20px 60px rgba(0,0,0,0.5); font-family:'Malgun Gothic','Noto Sans KR',sans-serif; font-size:14px; line-height:1.55;">
+        <h3 style="margin:0 0 10px; font-size:17px;">📶 모바일 데이터 사용 안내</h3>
+        <p id="netAskText" style="margin:0 0 16px; color:#fde68a;"></p>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          <button onclick="__netAnswer('always')" style="padding:11px 14px; border:none; border-radius:8px; background:#fff; color:#1e293b; font-weight:700; font-size:15px; cursor:pointer;">항상 동기화 (다시 묻지 않음)</button>
+          <button onclick="__netAnswer('wifi')" style="padding:11px 14px; border:1px solid #475569; border-radius:8px; background:#0f172a; color:#f1f5f9; font-size:15px; cursor:pointer;">와이파이 연결 시 (다시 묻지 않음)</button>
+        </div>
+        <p style="margin:12px 0 0; color:#64748b; font-size:12px;">언제든 ⚙ 동기화 설정에서 바꿀 수 있습니다.</p>
+      </div>
+    </div>
     <style>
       #smList .sm-del-btn:hover:not(:disabled){color:#fca5a5;background:#1f0a0a;border-color:#7f1d1d;}
       #smList .sm-radio{font-size:16px;}
@@ -1515,6 +1527,12 @@
         <div style="display:flex; gap:6px; margin-bottom:6px; flex:none;">
           <button onclick="__smSetAllRadios('auto')" style="font-size:14px; padding:5px 12px; border:1px solid #475569; border-radius:8px; background:#0f172a; color:#f1f5f9; cursor:pointer;">모두 🔁 원본</button>
           <button onclick="__smSetAllRadios('thumb')" style="font-size:14px; padding:5px 12px; border:1px solid #475569; border-radius:8px; background:#0f172a; color:#f1f5f9; cursor:pointer;">모두 🖼 썸네일</button>
+        </div>
+        <div id="smNetRow" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 8px; padding:6px 8px; border:1px solid #334155; border-radius:8px; font-size:13px; flex:none;" title="셀룰러(모바일 데이터)에 연결되어 있을 때 메모·사진을 올리고 원본을 내려받을지">
+          <span>📶 모바일 데이터에서 동기화:</span>
+          <label style="cursor:pointer;"><input type="radio" name="netPolicy" value="" onchange="__netSetPolicy('')"> 물어보기</label>
+          <label style="cursor:pointer;"><input type="radio" name="netPolicy" value="always" onchange="__netSetPolicy('always')"> 항상</label>
+          <label style="cursor:pointer;"><input type="radio" name="netPolicy" value="wifi" onchange="__netSetPolicy('wifi')"> Wi-Fi에서만</label>
         </div>
         <div id="smList" style="flex:1 1 auto; min-height:80px; overflow:auto; margin-bottom:10px; -webkit-overflow-scrolling:touch;"></div>
         <div style="display:flex; gap:8px; justify-content:flex-end; flex:none;">
@@ -14360,6 +14378,62 @@ const originalBase64 = event.target.result;
       window.addEventListener('online', __dqResumeAll);
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') __dqResumeAll(); });
 
+      // ── 📶 모바일 데이터 게이트 (2026-09-19 사용자 결정) ──
+      // 셀룰러에서 올릴 것(첫 로그인 대량 + 건건이 저장 모두)이나 원본 내려받을 지역이 생기면 한 번 묻는다:
+      //   [항상 동기화] → 'always' / [와이파이 연결 시] → 'wifi'. 둘 다 localStorage 에 영구 저장되어 다시 묻지 않는다(설정 창에서 변경).
+      // Wi-Fi·이더넷·판정 불가(iOS 등)는 묻지 않고 진행. 설정 창에서 물어보기/항상/Wi-Fi에서만 을 바꿀 수 있다.
+      const __NET_KEY = '__hongbuNetPolicy_v1'; // '' 물어보기(기본) | 'always' | 'wifi'
+      const __net = { asking: false, waitWifi: false, pendingFetch: [] };
+      function __netIsCellular() { // true 셀룰러·데이터절약 / false Wi-Fi·유선 / null 모름
+        const c = navigator.connection; if (!c) return null;
+        if (c.saveData) return true;
+        const t = c.type; if (t === 'cellular') return true; if (t === 'wifi' || t === 'ethernet') return false; return null;
+      }
+      function __netPolicy() { try { return localStorage.getItem(__NET_KEY) || ''; } catch (_) { return ''; } }
+      function __netSessionWifi() { try { return sessionStorage.getItem(__NET_KEY) === 'wifi'; } catch (_) { return false; } }
+      function __netSetPolicy(v) {
+        try { if (v) localStorage.setItem(__NET_KEY, v); else localStorage.removeItem(__NET_KEY); } catch (_) {}
+        try { sessionStorage.removeItem(__NET_KEY); } catch (_) {}
+        console.log('[net] 정책:', v || '물어보기');
+        if (v === 'wifi' && __netIsCellular() === true) { __net.waitWifi = true; __dqEmit(); }
+        else __netResume();
+      }
+      // true = 진행 / false = Wi-Fi 대기(묻는 중 포함)
+      function __netGate(count, what) {
+        if (__netIsCellular() !== true) { if (__net.waitWifi) { __net.waitWifi = false; __dqEmit(); } return true; }
+        const pol = __netPolicy();
+        if (pol === 'always') return true;
+        if (pol !== 'wifi' && !__netSessionWifi()) __netAsk(count, what);
+        if (!__net.waitWifi) { __net.waitWifi = true; __dqEmit(); }
+        return false;
+      }
+      function __netAsk(count, what) {
+        const o = document.getElementById('netAskOverlay'); if (!o || __net.asking) return;
+        __net.asking = true;
+        const t = document.getElementById('netAskText');
+        if (t) t.textContent = `지금 ${what || '동기화할 항목'} ${count}건이 있고 모바일 데이터에 연결되어 있습니다. 모바일 데이터로 동기화하면 경우에 따라 수백 MB가 사용될 수 있습니다.`;
+        o.style.display = 'flex';
+      }
+      function __netAnswer(choice) {
+        const o = document.getElementById('netAskOverlay'); if (o) o.style.display = 'none';
+        __net.asking = false;
+        if (choice === 'always') { __netSetPolicy('always'); try { showToast('📶 모바일 데이터에서도 항상 동기화합니다 (동기화 설정에서 변경 가능)', 5000); } catch (_) {} }
+        else { __netSetPolicy('wifi'); try { showToast('📶 Wi-Fi에 연결되면 자동으로 동기화합니다 (동기화 설정에서 변경 가능)', 5000); } catch (_) {} } // (2026-09-19) 와이파이 선택도 영구 — 다시 묻지 않음
+      }
+      function __netResume() {
+        __net.waitWifi = false; __dqEmit();
+        __dqKick(300);
+        const list = __net.pendingFetch.splice(0);
+        if (list.length) { console.log('[net] 대기하던 원본 내려받기 재개:', list.join(', ')); __rfRunMany(list); }
+      }
+      try {
+        navigator.connection?.addEventListener?.('change', () => {
+          const c = __netIsCellular(); console.log('[net] 연결 변경:', navigator.connection?.type, c === true ? '셀룰러' : c === false ? 'Wi-Fi/유선' : '모름');
+          if (c !== true && __net.waitWifi) __netResume(); else __dqEmit();
+        });
+      } catch (_) {}
+      window.__net = { state: __net, isCellular: __netIsCellular, policy: __netPolicy, set: __netSetPolicy, ask: () => { __net.asking = false; __netAsk(__dq.items.size + __net.pendingFetch.length, '동기화할 항목'); } };
+
       async function __dqRun() {
         if (__dq.running) return;
         await __dqLoad();
@@ -14369,6 +14443,7 @@ const originalBase64 = event.target.result;
           return;
         }
         if (navigator.onLine === false) { console.log(`[dq] 대기 ${__dq.items.size}건 — 오프라인`); return; } // online 이벤트가 재개
+        if (!__netGate(__dq.items.size, '올릴 메모·사진')) { console.log(`[dq] 대기 ${__dq.items.size}건 — 모바일 데이터(Wi-Fi 대기)`); return; } // 연결 변경 이벤트가 재개
         if (window.__sggSyncBusy) { console.log(`[dq] 대기 ${__dq.items.size}건 — 수동 동기화 진행 중`); __dqKick(5000); return; }
         console.log(`[dq] 시작 ${__dq.items.size}건`);
         __dq.running = true;
@@ -15737,6 +15812,11 @@ const originalBase64 = event.target.result;
         return set;
       }
       async function __rfRunMany(list) {
+        if (!list || !list.length) return;
+        if (!__netGate(list.length, '원본을 내려받을 지역')) {
+          for (const s of list) if (!__net.pendingFetch.includes(s)) __net.pendingFetch.push(s);
+          console.log('[net] 원본 내려받기 Wi-Fi 대기:', list.join(', ')); __dqEmit(); return;
+        }
         for (const sgg5 of list) {
           let guard = 0;
           while (__rf.running && guard++ < 1200) await __dqSleep(500); // 앞 지역이 끝날 때까지
@@ -15811,6 +15891,7 @@ const originalBase64 = event.target.result;
             ul.appendChild(row);
           }
         }
+        try { const v = __netPolicy(); document.querySelectorAll('#smNetRow input[name=netPolicy]').forEach((r) => { r.checked = r.value === v; }); } catch (_) {}
         const hint = document.getElementById('smHint');
         if (hint) hint.textContent = `🔁 원본: 다른 기기에서 기록하면 접속할 때 글·사진 원본까지 받아 클릭 시 기다림이 없습니다. 🖼 썸네일: 아이콘·썸네일만 두고 원본은 클릭할 때 받습니다(용량 절약, 받아 둔 원본은 비움). 행 끝 🗑 단추(완전 삭제): 현재 기기와 구글드라이브에서 삭제하고 다른 기기도 로그인하면 함께 제거됩니다(복구 불가). 기본값: 이 기기에 메모가 있거나(📱) 최근 30일 안에 업데이트된 지역 = 원본. 날짜 = 마지막 업데이트, ❔ = 미설정.${unsetCount ? ` 미설정 ${unsetCount}개 지역이 있습니다.` : ''}`;
         o.style.display = 'flex';
@@ -16095,6 +16176,10 @@ const originalBase64 = event.target.result;
             title = '한 번만 로그인하면 메모·사진이 구글드라이브에 자동 백업됩니다';
             click = () => __gdriveShowAuthOverlay();
           }
+        } else if (__net.waitWifi && (s.pending > 0 || __net.pendingFetch.length > 0)) {
+          html = `<span style="color:#f59e0b;">📶 Wi-Fi 대기 ${s.pending + __net.pendingFetch.length}</span>`;
+          title = '모바일 데이터라서 동기화를 미뤘습니다. Wi-Fi에 연결되면 자동으로 진행합니다. 누르면 지금 동기화할지 선택';
+          click = () => { __net.asking = false; __netAsk(s.pending + __net.pendingFetch.length, '동기화할 항목'); };
         } else if (s.running) { html = `☁ 올리는 중 ${s.pending}`; title = '저장한 메모·사진을 드라이브에 올리는 중'; }
         else if (s.fetching > 0) { html = `⬇ 내려받는 중 ${s.fetching}`; title = '선택한 지역의 글·사진 원본을 이 기기에 내려받는 중'; }
         else if (s.migrating > 0) { html = `☁ 정리 중 ${s.migrating}`; title = '드라이브의 예전 파일을 새 구조로 정리하는 중 (자동)'; }
