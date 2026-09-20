@@ -14342,7 +14342,15 @@ const originalBase64 = event.target.result;
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
       }
       // 403 userRateLimitExceeded / 429 → 할당량 초과. 인증 오류와 구분해 "쉬었다가 재시도".
+      // 드라이브 저장 용량 초과 (403 storageQuotaExceeded) — 요청 한도와 달리 기다려도 풀리지 않는다 (2026-09-20)
+      function __isQuotaFullError(e) {
+        const code = e?.result?.error?.code || e?.status;
+        if (code !== 403) return false;
+        const msg = (e?.result?.error?.message || '') + ' ' + (e?.message || '') + ' ' + (e?.result?.error?.errors?.[0]?.reason || '');
+        return /storageQuotaExceeded|storage quota/i.test(msg);
+      }
       function __isRateLimitError(e) {
+        if (__isQuotaFullError(e)) return false;
         const code = e?.result?.error?.code || e?.status;
         if (code === 429) return true;
         if (code === 403) {
@@ -14707,7 +14715,7 @@ const originalBase64 = event.target.result;
             try {
               await __dqProcess(item);
               __dq.items.delete(key);
-              if (!stop) { __dq.failures = 0; __dq.lastError = ''; } // 다른 작업자의 실패 기록은 지우지 않는다
+              if (!stop) { __dq.failures = 0; __dq.lastError = ''; __dq.quotaFull = 0; } // 다른 작업자의 실패 기록은 지우지 않는다
               __dqSave(); __dqEmit();
             } catch (e) {
               if (stop) { /* 다른 작업자가 이미 멈춤을 정함 — 이 건은 다음 재개 때 다시 */ }
@@ -14715,6 +14723,20 @@ const originalBase64 = event.target.result;
                 console.warn('[dq] 인증 오류 — 토큰 갱신 후 재개');
                 __handleAuthExpired({ silent: true });      // refresh 성공 시 __gdriveOnSignedIn → kick
                 stop = 'auth';
+              } else if (__isQuotaFullError(e)) {
+                // 드라이브 용량이 가득 참: 올릴 수 없으니 30분 뒤에만 다시 시도. 메모는 이 기기에 그대로 있고, 내려받기는 계속 된다.
+                __dq.quotaFull = Date.now();
+                __dq.lastError = '구글드라이브 저장 용량 부족';
+                const wait = 30 * 60 * 1000;
+                console.warn('[dq] 드라이브 저장 용량 부족 — 30분 후 재시도. 드라이브 정리 또는 저장 용량 추가 필요');
+                if (!__dq.quotaToastAt || Date.now() - __dq.quotaToastAt > 60 * 60 * 1000) {
+                  __dq.quotaToastAt = Date.now();
+                  try { showToast('⚠️ 구글드라이브 저장 용량이 가득 차서 백업을 올리지 못합니다. 메모는 이 기기에 남아 있습니다. 드라이브를 정리하거나 용량을 늘려 주세요.', 9000); } catch (_) {}
+                }
+                clearTimeout(__dq.retryTimer);
+                __dq.retryAt = Date.now() + wait;
+                __dq.retryTimer = setTimeout(() => { __dq.retryAt = 0; __dqKick(0); }, wait);
+                stop = 'quota';
               } else if (__isRateLimitError(e)) {
                 // 할당량 초과: 실패 횟수로 세지 않고 30초→1분→2분→4분 쉬었다가 같은 항목부터 재개
                 __dq.rateHits = (__dq.rateHits || 0) + 1;
@@ -16598,6 +16620,11 @@ const originalBase64 = event.target.result;
         else if (s.fetching > 0) { html = `⬇ 내려받는 중 ${s.fetching}`; title = '선택한 지역의 글·사진 원본을 이 기기에 내려받는 중'; }
         else if (s.migrating > 0) { html = `☁ 정리 중 ${s.migrating}`; title = '드라이브의 예전 파일을 새 구조로 정리하는 중 (자동)'; }
         else if (s.prefetching > 0) { html = `☁ 준비 중 ${s.prefetching}`; title = '드라이브의 메모·썸네일을 이 기기에 미리 받는 중 (처음 한 번, 자동)'; }
+        else if (__dq.quotaFull && s.pending > 0) {
+          html = `<span style="color:#ef4444;">☁ 드라이브 용량 부족 ${s.pending}</span>`;
+          title = '구글드라이브 저장 용량이 가득 차서 올리지 못한 메모·사진입니다. 이 기기에는 남아 있습니다. 누르면 드라이브 저장 용량 관리 페이지를 엽니다';
+          click = () => { try { window.open('https://one.google.com/storage', '_blank'); } catch (_) {} };
+        }
         else if (s.pending > 0) { html = `<span style="color:#f59e0b;">☁ 대기 ${s.pending}</span>`; title = s.lastError ? `잠시 후 다시 시도: ${s.lastError}` : (navigator.onLine === false ? '오프라인 — 온라인이 되면 자동으로 올립니다' : '잠시 후 자동으로 올립니다'); }
         else { html = '<span style="color:#4ade80;">☁ 백업됨</span>'; title = '메모·사진이 구글드라이브에 백업되어 있습니다'; }
         el.innerHTML = html; el.title = title; el.style.display = 'inline-flex';
