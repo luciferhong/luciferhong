@@ -2139,6 +2139,7 @@
               title="저장 즉시 자동으로 백업됩니다. 지역별로 원본까지 받을지(🔁 원본) 썸네일만 둘지(🖼 썸네일) 정하려면 동기화 설정을 누르세요">
           <!-- (2026-09-19) 시도·시군구 셀렉트 + 🔄 수동 동기화 단추 제거 — 동기화 설정(자동 = 지금 내려받기)으로 대체. 콘솔 window.__lazy.fetchRegion(sgg5) 는 유지 -->
           <button onclick="__smOpenAll()" title="지역별 동기화 설정: 🔁 원본(드라이브 변경 시 원본까지 내려받기) / 🖼 썸네일(아이콘·썸네일만, 원본은 클릭 시) / 🗑 완전 삭제">⚙ 동기화 설정</button>
+          <span id="driveSyncStatus" style="font-size:11px; color:#475569; margin-left:6px; white-space:nowrap;"></span>
         </span>
       </div>
 
@@ -12295,7 +12296,7 @@ const originalBase64 = event.target.result;
               console.warn("OAuth 팝업 오류:", err?.type || err);
             },
           });
-        })();
+        })().catch((e) => { window.__gdriveInitPromise = null; throw e; }); // (2026-09-20) 실패(디스커버리 로드 등)하면 다음 호출에서 다시 초기화
         return window.__gdriveInitPromise;
       }
 
@@ -12398,9 +12399,27 @@ const originalBase64 = event.target.result;
         if (el) { el.style.display = "none"; el.textContent = ""; }
       }
 
+      // (2026-09-20) gapi.client.drive 가 준비됐는지 보장 — 오랜만에 열 때 디스커버리 로드가 실패·지연되면 저장 토큰 복원이 먼저 달려
+      // "Cannot read properties of undefined (reading 'files')" 로 로그인 후 초기화가 깨지던 문제. 없으면 초기화를 다시 시도하고 드라이브 API 만 따로 로드.
+      async function __gdriveEnsureDriveApi() {
+        const ok = () => !!(window.gapi && gapi.client && gapi.client.drive && gapi.client.drive.files);
+        if (ok()) return true;
+        for (let attempt = 0; attempt < 2 && !ok(); attempt++) {
+          try { await __gdriveInit(); } catch (e) { console.warn('[gdrive] 초기화 재시도 실패:', e?.message || e); await new Promise((r) => setTimeout(r, 1500)); }
+        }
+        if (!ok()) {
+          try {
+            await new Promise((resolve) => gapi.load("client", resolve));
+            await gapi.client.load("https://www.googleapis.com/discovery/v1/apis/drive/v3/rest");
+          } catch (e) { console.warn('[gdrive] Drive API 로드 실패:', e?.message || e); }
+        }
+        if (window.__gdriveAccessToken) { try { gapi.client.setToken({ access_token: window.__gdriveAccessToken }); } catch (_) {} }
+        return ok();
+      }
       async function __gdriveOnSignedIn() {
         const overlay = document.getElementById("gdriveAuthOverlay");
         if (overlay) overlay.style.display = "none";
+        if (!(await __gdriveEnsureDriveApi())) throw new Error("Drive API 준비 실패 — 네트워크 확인 후 새로고침해 주세요");
 
         __syncProgressShow("☁️ Drive 연결 중...");
         await __ensureDriveStructure();
@@ -12646,6 +12665,11 @@ const originalBase64 = event.target.result;
                   (async () => {
                     try { await __gdriveOnSignedIn(); }
                     catch (e) {
+                      if (/Drive API 준비 실패/.test(e?.message || '')) { // (2026-09-20) 토큰 문제가 아니라 API 로드 문제 → 토큰 유지, 20초 뒤 재시도
+                        console.warn("[gdrive] Drive API 준비 실패 — 20초 뒤 재시도:", e?.message || e);
+                        setTimeout(() => { if (!window.__gdriveReady && window.__gdriveAccessToken) __gdriveOnSignedIn().catch((e2) => console.warn("[gdrive] 재시도 실패:", e2?.message || e2)); }, 20000);
+                        return;
+                      }
                       console.warn("[gdrive] 복원 토큰 연결 실패 — 삭제:", e);
                       try { localStorage.removeItem("__hongbuDriveToken"); } catch (_) {}
                       // 오버레이는 자동으로 띄우지 않음 — 사용자가 로그인 버튼을 눌렀을 때만 표시
@@ -16040,7 +16064,7 @@ const originalBase64 = event.target.result;
         const sName = __syncSigunguNameByCode5.get(sgg5) || sgg5;
         __rf.running = true; __rf.sgg5 = sgg5; __rf.total = 0; __rf.done = 0; __rf.fail = 0;
         __dqEmit();
-        try { showToast(`🔄 ${sName} 동기화 시작 — 목록 확인 중`); } catch (_) {}
+        __syncStatus(`🔄 ${sName} 동기화 시작 — 목록 확인 중`);
         const t0 = performance.now();
         try {
           // 1) 최신 인덱스 — 이 지역에서 로컬이 새 것/드라이브에 없는 것은 여기서 큐에 들어간다
@@ -16049,7 +16073,7 @@ const originalBase64 = event.target.result;
           // 1-2) 이 지역의 올릴 것을 큐 맨 앞으로 → 자동 업로드가 진행 중이어도 이 지역부터 올린다. 다 올라갈 때까지 대기(최대 10분)
           const up = __dqPrioritize(sgg5) || __dqCountSgg(sgg5);
           if (up > 0) {
-            try { showToast(`🔄 ${sName}: 먼저 ${up}건 올리는 중…`); } catch (_) {}
+            __syncStatus(`🔄 ${sName}: 먼저 ${up}건 올리는 중…`);
             const deadline = Date.now() + 10 * 60 * 1000;
             while (__dqCountSgg(sgg5) > 0 && Date.now() < deadline) {
               if (!window.__gdriveReady) throw new Error('연결 끊김');
@@ -16077,8 +16101,8 @@ const originalBase64 = event.target.result;
           for (const p of photos) tasks.push({ kind: 'photo', id: String(p.id), rec: p });
           __rf.total = lazyNotes.length + tasks.length;
           __dqEmit();
-          if (__rf.total === 0) { __rfRefreshPicker().catch(() => {}); try { showToast(`✅ ${sName}: 동기화 완료 — 내려받을 원본 없음`); } catch (_) {} return; }
-          try { showToast(`⬇ ${sName}: 글 ${lazyNotes.length}건 · 사진 원본 ${tasks.length}장 내려받는 중…`); } catch (_) {}
+          if (__rf.total === 0) { __rfRefreshPicker().catch(() => {}); __syncStatus(`✅ ${sName}: 동기화 완료 — 내려받을 원본 없음`, 15000); return; }
+          __syncStatus(`⬇ ${sName}: 글 ${lazyNotes.length}건 · 사진 원본 ${tasks.length}장 내려받는 중…`);
 
           // 3) 글 자리표시자 → 메타 (5 병렬)
           if (lazyNotes.length) {
@@ -16147,11 +16171,11 @@ const originalBase64 = event.target.result;
           const sec = Math.round((performance.now() - t0) / 1000);
           const msg = `✅ ${sName} 동기화 완료 — 내려받음 ${__rf.done - __rf.fail}건 (${sec}초)${__rf.fail ? ` · 실패 ${__rf.fail}` : ''}`;
           console.log('[fetch]', msg);
-          try { showToast(msg, 5000); } catch (_) {}
+          __syncStatus(msg, 15000);
           try { window.reportStorage?.(); } catch (_) {}
         } catch (e) {
-          if (__isAuthError(e)) { __handleAuthExpired({ silent: true }); try { showToast('🔑 연결이 끊겨 중단됐어요. 다시 눌러 주세요.'); } catch (_) {} }
-          else { console.warn('[fetch] 오류:', e?.message || e); try { showToast('❌ 지역 동기화 중단: ' + (e?.message || e)); } catch (_) {} }
+          if (__isAuthError(e)) { __handleAuthExpired({ silent: true }); __syncStatus('🔑 연결이 끊겨 중단됐어요. 다시 눌러 주세요.', 15000); }
+          else { console.warn('[fetch] 오류:', e?.message || e); __syncStatus('❌ 지역 동기화 중단: ' + (e?.message || e), 15000); }
         } finally {
           __rf.running = false;
           __dqEmit();
@@ -16211,6 +16235,16 @@ const originalBase64 = event.target.result;
         } catch (e) { console.warn('[mode] 기기 메모 지역 집합 실패(무시):', e?.message || e); }
         return set;
       }
+      // (2026-09-20) 지역 동기화 진행 상황은 지도 위 토스트 대신 ⚙ 동기화 설정 단추 오른쪽에 표시 (사용자: 스크롤 안 내리면 안 보이게)
+      function __syncStatus(msg, holdMs) {
+        const el = document.getElementById('driveSyncStatus');
+        if (!el) return;
+        clearTimeout(__syncStatus._t);
+        el.textContent = msg || '';
+        el.title = msg || '';
+        if (msg && holdMs) __syncStatus._t = setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, holdMs);
+        try { console.log('[sync]', msg); } catch (_) {}
+      }
       async function __rfRunMany(list, bypassNet) {
         if (!list || !list.length) return;
         if (!bypassNet && __netLimited()) {
@@ -16243,7 +16277,7 @@ const originalBase64 = event.target.result;
         const autoNow = Array.from(new Set([...Array.from(changed).filter((s) => __smGet(s) === 'auto'), ...newAuto]));
         if (autoNow.length) {
           console.log('[mode] 자동 동기화:', autoNow.join(', '));
-          try { showToast(`📥 ${autoNow.map((s) => __syncSigunguNameByCode5.get(s) || s).join(', ')}: 원본 내려받는 중`, 4000); } catch (_) {}
+          __syncStatus(`📥 ${autoNow.map((s) => __syncSigunguNameByCode5.get(s) || s).join(', ')}: 원본 내려받는 중`);
           __rfRunMany(autoNow);
         }
       }
@@ -16359,11 +16393,11 @@ const originalBase64 = event.target.result;
                 try { const r = await __rdClearLocalCore(sgg5, (m) => { if (m) __badgeRender(); }); total += r.cleared; }
                 catch (e) { console.warn('[mode] 기기에서 삭제 실패:', sgg5, e?.message || e); }
               }
-              try { showToast(`🧹 ${toClear.length}개 지역 썸네일로 전환 — 사진 원본 ${total}장 비움`, 5000); } catch (_) {}
+              __syncStatus(`🧹 ${toClear.length}개 지역 썸네일로 전환 — 사진 원본 ${total}장 비움`, 15000);
             } finally { __rd.busy = false; }
           }
         }
-        if (toFetch.length) { try { showToast(`📥 ${toFetch.length}개 지역 원본 내려받기 시작`, 3000); } catch (_) {} __rfRunMany(toFetch); }
+        if (toFetch.length) { __syncStatus(`📥 ${toFetch.length}개 지역 원본 내려받기 시작`); __rfRunMany(toFetch); }
       }
       // 🗑 완전 삭제 단추 (2026-09-19 사용자 결정: 라디오가 아닌 버튼 + 복구 불가 경고). 창은 열어 둔 채 그 행만 처리.
       async function __smDeleteOne(sgg5, row) {
