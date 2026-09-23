@@ -8991,8 +8991,120 @@ const originalBase64 = event.target.result;
           });
           return (layers[id] = { polylines, stations, color: line.color });
         }
+        // ── 노선 강조 (2026-09-23 사용자 요청) ────────────────────────────────
+        // 마우스가 올라간 노선만 남기고 **다른 지하철 노선은 감춘다**(역 마커·경계·아파트는 그대로).
+        // 2026-09-23: 처음엔 흐리게(0.15)였으나 사용자 지시로 아예 감추는 쪽으로 바꿨다.
+        // ⚠ 폴리라인에 마우스 이벤트를 걸지 않는다 — `clickable:true` 로 바꾸면 4px 선이라 잘 안 잡히고,
+        //   선이 지도 클릭을 가로채 Ctrl+클릭 시군구 고정이 선 위에서 먹지 않는다.
+        //   대신 커서 좌표에서 **가장 가까운 노선**을 직접 찾는다(전체 10,756점, 60ms 로 묶어 처리).
+        const HOVER_PX = 12;          // 이 화면 거리 안에 선이 있으면 그 노선으로 본다
+        const DIM_OPACITY = 0;        // 다른 노선은 감춘다(0 = 선이 안 보인다)
+        let __hoverLine = null;
+        // 역명 블록·종점 배지도 함께 감춘다(2026-09-23 사용자 요청 — 선만 사라지면 다른 노선 역명이 떠 있어 어지럽다).
+        // 블록이 종점 배지와 함께 relative 래퍼에 들어 있으면 그 래퍼째 감춰야 배지도 같이 사라진다.
+        function __applyMarkerHover(id) {
+          document.querySelectorAll('#map [data-metro-line]').forEach((el) => {
+            const par = el.parentElement;
+            const row = par && par.style && par.style.position === "relative" ? par : el;
+            row.style.display = (!id || el.getAttribute("data-metro-line") === id) ? "" : "none";
+          });
+        }
+        function __applyLineHover(id) {
+          if (id === __hoverLine) return;
+          __hoverLine = id;
+          try { __applyMarkerHover(id); } catch (e) {}
+          Object.entries(layers).forEach(([lid, L]) => {
+            const on = selected.has(lid);
+            if (!on) return;
+            const isHit = !!id && lid === id;
+            const opt = id
+              ? { strokeOpacity: isHit ? 1 : DIM_OPACITY, strokeWeight: isHit ? 5 : 4, zIndex: isHit ? 5 : 3 }
+              : { strokeOpacity: 0.9, strokeWeight: 4, zIndex: 3 };
+            L.polylines.forEach((p) => { try { p.setOptions(opt); } catch (e) {} });
+          });
+        }
+        // 커서(화면 좌표) → 가장 가까운 노선 id. 그리기와 같은 bounds 공식을 써야 화면과 판정이 어긋나지 않는다.
+        function __lineAtClientPoint(cx, cy, onlyId) {
+          const mapEl = document.getElementById("map");
+          if (!mapEl || !window.map || !data) return null;
+          const r = mapEl.getBoundingClientRect();
+          const ox = cx - r.left, oy = cy - r.top;
+          if (ox < 0 || oy < 0 || ox > r.width || oy > r.height) return null;
+          const b = window.map.getBounds();
+          if (!b) return null;
+          const sw = b.getSW(), ne = b.getNE();
+          const mY = (la) => Math.log(Math.tan(Math.PI / 4 + (la * Math.PI / 180) / 2));
+          const mSW = mY(sw.lat()), mNE = mY(ne.lat()), lngRange = ne.lng() - sw.lng();
+          const toX = (lng) => ((lng - sw.lng()) / lngRange) * r.width;
+          const toY = (lat) => ((mNE - mY(lat)) / (mNE - mSW)) * r.height;
+          let best = null, bestD = HOVER_PX * HOVER_PX;
+          for (const line of data.DATA) {
+            const id = lineIdOf(line);
+            if (!selected.has(id)) continue;
+            if (onlyId && id !== onlyId) continue;   // 해제 판정 — 지금 보이는 그 노선만 본다
+            for (const nd of (line.node || [])) {
+              for (const path of (nd.NewVia || [])) {
+                let px = null, py = null;
+                for (let i = 0; i < path.length; i++) {
+                  const x = toX(path[i][1]), y = toY(path[i][0]);
+                  // 화면 밖 구간은 건너뛴다(빠르게)
+                  if (px !== null) {
+                    const d = __segDistSq(ox, oy, px, py, x, y);
+                    if (d < bestD) { bestD = d; best = id; }
+                  }
+                  px = x; py = y;
+                }
+              }
+            }
+          }
+          window.__metroHoverLast = { id: best, px: best ? Math.sqrt(bestD).toFixed(1) : null };
+          return best;
+        }
+        // 콘솔 진단용 — 커서 근처에서 어느 노선이 몇 px 로 잡히는지
+        window.__metroHoverDbg = (cx, cy) => {
+          const p = (cx == null) ? window.__metroHoverPt : { x: cx, y: cy };
+          if (!p) return "마우스 위치 없음";
+          const id = __lineAtClientPoint(p.x, p.y);
+          return { 점: p, 잡힌노선: id, 거리px: window.__metroHoverLast?.px, 선택된노선: [...selected] };
+        };
+        // 점과 선분의 거리의 제곱
+        function __segDistSq(px, py, x1, y1, x2, y2) {
+          const dx = x2 - x1, dy = y2 - y1;
+          if (dx === 0 && dy === 0) return (px - x1) ** 2 + (py - y1) ** 2;
+          let t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const qx = x1 + t * dx, qy = y1 + t * dy;
+          return (px - qx) ** 2 + (py - qy) ** 2;
+        }
+        // 클릭으로 노선 하나만 보기 (2026-09-23 사용자 지시로 마우스오버 → 클릭 방식으로 변경)
+        // · 노선을 클릭하면 그 노선만 남고 다른 지하철 노선과 그 역명은 사라진다
+        // · 그 노선을 한 번 더 클릭해야 풀린다. 지도의 다른 곳을 눌러도 풀리지 않는다.
+        // ⚠ Ctrl+클릭은 시군구 고정용이라 건드리지 않는다. 지도를 끌고 난 뒤의 클릭(5px 이상 이동)은 무시한다.
+        (() => {
+          let down = null;
+          document.addEventListener("mousedown", (ev) => { down = { x: ev.clientX, y: ev.clientY }; }, true);
+          document.addEventListener("click", (ev) => {
+            if (!window.__metroLinesReady) return;
+            if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;   // 시군구 고정 등 다른 기능
+            if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) return;   // 드래그였다
+            const mapEl = document.getElementById("map");
+            if (!mapEl || !mapEl.contains(ev.target)) return;
+            window.__metroHoverPt = { x: ev.clientX, y: ev.clientY };
+            if (__hoverLine) {
+              // 해제는 **그 노선을 한 번 더 눌렀을 때만**. 다른 곳을 눌러도 풀리지 않는다(2026-09-23 사용자 지시).
+              if (__lineAtClientPoint(ev.clientX, ev.clientY, __hoverLine)) { __applyLineHover(null); ev.stopPropagation(); }
+              return;
+            }
+            const id = __lineAtClientPoint(ev.clientX, ev.clientY);
+            if (!id) return;                                       // 선에서 멀면 아무 일도 하지 않는다
+            __applyLineHover(id);
+            ev.stopPropagation();
+          }, true);
+        })();
+
         function redraw() {
           if (!data || !window.map) return;
+          __hoverLine = null;   // 다시 그리면 강조 상태를 초기화(폴리라인 설정이 기본값으로 돌아간다)
           stationMarkers.forEach((m) => m.setMap(null));
           stationMarkers = [];
           // 역명 → [{lat, lng, colors[]}, …]. 환승역은 지나는 노선 색을 순서대로 모아 블록으로 쌓는다(2026-09-22 사용자 요청)
@@ -9047,7 +9159,7 @@ const originalBase64 = event.target.result;
             // 흰 점 구역·좌우 등분·진회색/흰 배경 통일안을 거쳐 사용자 지시로 이 방식으로 확정(2026-09-22).
             // 종점 배지 HTML. abs=true 면 이름 블록 오른쪽에 **흐름 밖으로** 띄우고, false 면 그 자체로 한 줄이 된다
             const mkBadge = (c, lineName, abs) =>
-              `<div title="${lineName} 종점 (${name})" style="${abs ? "position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;" : ""}background:${c};color:#fff;border:2px solid #fff;border-radius:999px;padding:0 9px;font-size:${STA_FONT - 4}px;line-height:${STA_FONT + 1}px;font-weight:bold;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.3);text-shadow:0 1px 2px rgba(0,0,0,.4);pointer-events:auto;cursor:default">${__metroShortName(lineName)}</div>`;
+              `<div data-metro-line="${lineName}" title="${lineName} 종점 (${name})" style="${abs ? "position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;" : ""}background:${c};color:#fff;border:2px solid #fff;border-radius:999px;padding:0 9px;font-size:${STA_FONT - 4}px;line-height:${STA_FONT + 1}px;font-weight:bold;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.3);text-shadow:0 1px 2px rgba(0,0,0,.4);pointer-events:auto;cursor:default">${__metroShortName(lineName)}</div>`;
             const blocks = e.colors
               .map((c, i) => {
                 const lineName = e.lines[i];
@@ -9060,7 +9172,7 @@ const originalBase64 = event.target.result;
                 // ⚠ 테두리는 블록 **바깥**으로 3px 번져 나가는데 블록을 세로로 쌓으면 다음 블록이 그 위에 그려져
                 //   윗블록 테두리 아래쪽이 잘려 보인다(2026-09-22 사용자 보고, 이수 4호선). 아래 여백 3px 로 자리를 비운다.
                 const expRing = isExp ? "box-shadow:0 0 0 3px #ff2424,2px 2px 4px rgba(0,0,0,.35);margin-bottom:3px;" : "";
-                const block = `<div title="${lineName} · ${name}${isExp ? " · 급행 정차" : ""}" style="${expRing}background:${c};min-width:${STA_FONT * STA_MIN_CHARS}px;text-align:center;padding:2px ${STA_PAD_X}px;border:2px solid #fff;border-radius:6px;font-size:${STA_FONT}px;line-height:${STA_FONT + 4}px;font-weight:bold;color:#fff;white-space:nowrap;${isExp ? "" : "box-shadow:2px 2px 4px rgba(0,0,0,.35);"}text-shadow:0 1px 2px rgba(0,0,0,.45);pointer-events:auto;cursor:default">${name}</div>`;
+                const block = `<div data-metro-line="${lineName}" title="${lineName} · ${name}${isExp ? " · 급행 정차" : ""}" style="${expRing}background:${c};min-width:${STA_FONT * STA_MIN_CHARS}px;text-align:center;padding:2px ${STA_PAD_X}px;border:2px solid #fff;border-radius:6px;font-size:${STA_FONT}px;line-height:${STA_FONT + 4}px;font-weight:bold;color:#fff;white-space:nowrap;${isExp ? "" : "box-shadow:2px 2px 4px rgba(0,0,0,.35);"}text-shadow:0 1px 2px rgba(0,0,0,.45);pointer-events:auto;cursor:default">${name}</div>`;
                 // 이 역이 그 노선의 종점이면 **그 블록 오른쪽에** 노선명 배지를 붙인다(2026-09-22 사용자 요청 — 마커 아래가 아니라 옆)
                 if (!isEnd) return block;
                 // ⚠ 배지는 **흐름에서 빼서**(position:absolute) 붙인다. 인라인으로 두면 그 줄만 넓어지고,
@@ -9075,6 +9187,7 @@ const originalBase64 = event.target.result;
               icon: { content: `<div title="${name} (${e.lines.join(", ")})" style="transform:translate(-50%,-50%);display:inline-flex;flex-direction:column;align-items:center;gap:1px;pointer-events:auto">${blocks}</div>`, anchor: new naver.maps.Point(0, 0) },
             }));
           }));
+          window.__metroLinesReady = selected.size > 0;
           updateBtn();
           applyMode();
         }
