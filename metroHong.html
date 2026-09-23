@@ -156,9 +156,23 @@ const observer = new MutationObserver(() => {
 });
 observer.observe(document.getElementById('map'), { childList: true, subtree: true });
 
-// 데이터 불러오기
-fetch('data-metro-line-1.0.0.json')
-  .then(res => res.json())
+// 데이터 불러오기 — 홍부테스트와 같은 OSM 스냅 판(급행 정보 포함). 없으면 옛 손수 찍은 판으로 폴백
+const METRO_DATA_URL = 'data-metro-line-osm.json';
+const METRO_DATA_FALLBACK = 'data-metro-line-1.0.0.json';
+
+// 역명 블록 모양 (홍부테스트와 동일)
+const STA_FONT = 16, STA_PAD_X = 6, STA_MIN_CHARS = 3;
+const __metroShortName = (n) => String(n || '').replace(/호선$/, '').replace(/^(수도권 전철|서울 지하철)\s*/, '');
+// 급행 강조는 노선별로 켠다. 기본값은 9호선만(홍부테스트와 동일 — 사실상 1·9호선만 의미가 있다)
+const EXPRESS_DEFAULT = ['9호선'];
+const expressOn = new Set(EXPRESS_DEFAULT);
+const expChecks = {};
+const lineIdOf = (line) => line.line || (line.node && line.node[0] && line.node[0].station && line.node[0].station[0] && line.node[0].station[0].line) || '노선';
+const hasExpress = (line) => Array.isArray(line.express) && line.express.length > 0;
+
+fetch(METRO_DATA_URL)
+  .then(res => { if (!res.ok) throw new Error('osm 판 없음'); return res.json(); })
+  .catch(() => fetch(METRO_DATA_FALLBACK).then(res => res.json()))
   .then(data => {
     lastLoadedData = data;
     const lines = data.DATA;
@@ -171,6 +185,18 @@ fetch('data-metro-line-1.0.0.json')
     allLabel.appendChild(allCheckbox);
     allLabel.append(' 전체 선택 / 해제');
     container.appendChild(allLabel);
+
+    // 급행 전체 선택/해제 — 글자에 지도와 같은 빨간 테두리를 둘러 그 자체가 범례가 되게 한다
+    const exAllLabel = document.createElement('label');
+    exAllLabel.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;';
+    const exAll = document.createElement('input');
+    exAll.type = 'checkbox';
+    const exAllText = document.createElement('span');
+    exAllText.textContent = '급행 전체 선택 / 해제';
+    exAllText.style.cssText = 'display:inline-block;margin:2px 3px;padding:0 5px;border:2px solid #fff;border-radius:6px;box-shadow:0 0 0 2px #ff2424;line-height:1.4;';
+    exAllLabel.appendChild(exAll);
+    exAllLabel.appendChild(exAllText);
+    container.appendChild(exAllLabel);
     container.appendChild(document.createElement('hr'));
 
     allCheckbox.addEventListener('click', () => {
@@ -181,61 +207,76 @@ fetch('data-metro-line-1.0.0.json')
       });
       updateMarkers(lastLoadedData);
     });
+    exAll.addEventListener('change', () => {
+      lines.forEach((l) => {
+        if (!hasExpress(l)) return;
+        const id = lineIdOf(l);
+        if (exAll.checked) expressOn.add(id); else expressOn.delete(id);
+        if (expChecks[id]) expChecks[id].checked = exAll.checked;
+      });
+      updateMarkers(lastLoadedData);
+    });
 
     // 노선별 UI 및 레이어
     lines.forEach(line => {
-      const sections = line.node;
-      const firstStation = sections[0]?.station[0];
-      const lineId = firstStation?.line || '노선';
+      const sections = line.node || [];
+      const lineId = lineIdOf(line);
 
       if (!lineLayers[lineId]) {
         lineLayers[lineId] = [];
 
         const label = document.createElement('label');
-label.style.display = 'flex';
-label.style.alignItems = 'center';
-label.style.gap = '6px';  // 체크박스와 네모 사이 간격
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
+        label.style.gap = '6px';
 
-const checkbox = document.createElement('input');
-checkbox.type = 'checkbox';
-checkbox.checked = true;
-checkbox.dataset.line = lineId;
-lineCheckboxes[lineId] = checkbox;
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.dataset.line = lineId;
+        lineCheckboxes[lineId] = checkbox;
 
-// 색상 박스
-const colorBox = document.createElement('span');
-colorBox.style.width = '12px';
-colorBox.style.height = '12px';
-colorBox.style.backgroundColor = line.color || '#000';
-colorBox.style.borderRadius = '2px';
-colorBox.style.flexShrink = '0';
+        const colorBox = document.createElement('span');
+        colorBox.style.cssText = 'width:12px;height:12px;border-radius:2px;flex-shrink:0;background:' + (line.color || '#000');
 
-// 노선 텍스트
-const labelText = document.createElement('span');
-labelText.textContent = `${lineId}`;
+        const labelText = document.createElement('span');
+        labelText.textContent = lineId;
 
-// 조립
-label.appendChild(checkbox);
-label.appendChild(colorBox);
-label.appendChild(labelText);
-container.appendChild(label);
+        label.appendChild(checkbox);
+        label.appendChild(colorBox);
+        label.appendChild(labelText);
 
-
+        // 급행 자료가 있는 노선에만 오른쪽 끝에 [급행] 체크박스
+        if (hasExpress(line)) {
+          const wrap = document.createElement('span');
+          wrap.style.cssText = 'margin-left:auto;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#555;';
+          wrap.title = lineId + ' 급행 정차역 ' + line.express.length + '곳을 빨간 테두리로 표시';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = expressOn.has(lineId);
+          cb.addEventListener('click', (e) => e.stopPropagation());
+          cb.addEventListener('change', (e) => {
+            e.stopPropagation();
+            if (cb.checked) expressOn.add(lineId); else expressOn.delete(lineId);
+            exAll.checked = lines.every((l) => !hasExpress(l) || expressOn.has(lineIdOf(l)));
+            updateMarkers(lastLoadedData);
+          });
+          expChecks[lineId] = cb;
+          wrap.appendChild(cb);
+          wrap.appendChild(document.createTextNode('급행'));
+          label.appendChild(wrap);
+        }
+        container.appendChild(label);
 
         checkbox.addEventListener('change', () => {
           const isVisible = checkbox.checked;
           lineLayers[lineId].forEach(obj => obj.setMap(isVisible ? map : null));
-
-          // 전체 선택 상태 반영
           allCheckbox.checked = Object.values(lineCheckboxes).every(cb => cb.checked);
-
-          // 마커 갱신
           updateMarkers(lastLoadedData);
         });
       }
 
       sections.forEach(section => {
-        // 선 (NewVia 기준)
         if (Array.isArray(section.NewVia)) {
           section.NewVia.forEach(pathArray => {
             const path = pathArray.map(([lat, lng]) => new naver.maps.LatLng(lat, lng));
@@ -244,7 +285,7 @@ container.appendChild(label);
               map: map,
               strokeColor: line.color || '#000000',
               strokeWeight: 4,
-              strokeOpacity: 1
+              strokeOpacity: 0.9
             });
             lineLayers[lineId].push(polyline);
           });
@@ -252,60 +293,96 @@ container.appendChild(label);
       });
     });
 
-    // 최초 마커 표시
+    exAll.checked = lines.some(hasExpress) && lines.every((l) => !hasExpress(l) || expressOn.has(lineIdOf(l)));
     updateMarkers(lastLoadedData);
   });
 
 
-// 마커 갱신 함수
+// 마커 갱신 — 홍부테스트와 같은 방식
+// · 환승역은 지나는 노선 수만큼 블록을 세로로 쌓고 각 블록을 그 노선 색으로 칠한다
+// · 종점에는 그 블록 오른쪽에 노선명 배지 (경로 끝점이 역 반경 250m 안에 하나뿐인 역)
+// · 급행 정차역은 블록 밖에 빨간 테두리
+// · 같은 이름이라도 600m 넘게 떨어지면 다른 역으로 본다 (5호선 양평 ↔ 경의중앙선 양평 53km)
 function updateMarkers(data) {
   markers.forEach(({ marker }) => marker.setMap(null));
   markers.length = 0;
+  if (!data) return;
 
   const showStations = stationCheckbox.checked;
+  const SAME_M = 600, END_R = 250;
+  const dist = (a, b) => Math.hypot((a.lat - b.lat) * 111000, (a.lng - b.lng) * 88000);
+  const staMap = new Map();
 
-  Object.entries(lineCheckboxes).forEach(([lineId, checkbox]) => {
-    if (checkbox.checked) {
-      const line = data.DATA.find(l => l.node[0]?.station[0]?.line === lineId);
-      if (line) {
-        line.node.forEach(section => {
-          section.station.forEach(station => {
-            const isDuplicate = markers.some(m => m.name === station.name);
-            if (!isDuplicate && showStations) {
-              const marker = new naver.maps.Marker({
-                position: new naver.maps.LatLng(station.lat, station.lng),
-                map: map,
-                icon: {
-                  content: `
-                    <div style="
-                      background: white;
-                      padding: 2px 6px;
-                      border: 1px solid #555;
-                      border-radius: 3px;
-                      font-size: 12px;
-                      font-weight: bold;
-                      color: black;
-                      white-space: nowrap;
-                      box-shadow: 1px 1px 2px rgba(0,0,0,0.3);
-                    ">${station.name}</div>`,
-                  size: new naver.maps.Size(80, 20),
-                  anchor: new naver.maps.Point(40, 10)
-                }
-              });
-              markers.push({ marker, name: station.name });
-            }
-          });
-        });
-      }
-    }
+  data.DATA.forEach((line) => {
+    const id = lineIdOf(line);
+    const cb = lineCheckboxes[id];
+    if (!cb || !cb.checked) return;
+    const col = line.color || '#333';
+
+    const endPts = [];
+    (line.node || []).forEach((nd) => (nd.NewVia || []).forEach((pth) => {
+      if (!pth || pth.length < 2) return;
+      endPts.push(pth[0], pth[pth.length - 1]);
+    }));
+    const endNear = (la, ln) => endPts.reduce((n, q) =>
+      n + (Math.hypot((q[0] - la) * 111000, (q[1] - ln) * 88000) <= END_R ? 1 : 0), 0);
+    const ends = new Set();
+    (line.node || []).forEach((nd) => (nd.station || []).forEach((s) => {
+      if (endNear(Number(s.lat), Number(s.lng)) === 1) ends.add(s.name);
+    }));
+    const exSet = new Set(Array.isArray(line.express) ? line.express : []);
+
+    (line.node || []).forEach((nd) => (nd.station || []).forEach((s) => {
+      const la = Number(s.lat), ln = Number(s.lng);
+      let arr = staMap.get(s.name);
+      if (!arr) { arr = []; staMap.set(s.name, arr); }
+      let e = arr.find((x) => dist(x, { lat: la, lng: ln }) <= SAME_M);
+      if (!e) { e = { lat: la, lng: ln, colors: [], lines: [], endLines: [], expLines: [] }; arr.push(e); }
+      if (!e.lines.includes(id)) { e.colors.push(col); e.lines.push(id); }
+      if (ends.has(s.name) && !e.endLines.some((b) => b.name === id)) e.endLines.push({ name: id, color: col });
+      if (exSet.has(s.name) && !e.expLines.includes(id)) e.expLines.push(id);
+    }));
   });
+
+  staMap.forEach((arr, name) => arr.forEach((e) => {
+    const mkBadge = (c, lineName, abs) =>
+      '<div title="' + lineName + ' 종점 (' + name + ')" style="' + (abs ? 'position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;' : '') +
+      'background:' + c + ';color:#fff;border:2px solid #fff;border-radius:999px;padding:0 9px;font-size:' + (STA_FONT - 4) + 'px;line-height:' + (STA_FONT + 1) +
+      'px;font-weight:bold;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.3);text-shadow:0 1px 2px rgba(0,0,0,.4)">' + __metroShortName(lineName) + '</div>';
+    const blocks = e.colors.map((c, i) => {
+      const lineName = e.lines[i];
+      const isEnd = (e.endLines || []).some((b) => b.name === lineName);
+      const isExp = expressOn.has(lineName) && (e.expLines || []).includes(lineName);
+      if (!showStations) return isEnd ? mkBadge(c, lineName, false) : '';
+      // 급행 테두리는 블록 밖으로 3px 번지므로 아래 여백을 줘야 다음 블록에 가려지지 않는다
+      const expRing = isExp ? 'box-shadow:0 0 0 3px #ff2424,2px 2px 4px rgba(0,0,0,.35);margin-bottom:3px;' : '';
+      const block = '<div title="' + lineName + ' · ' + name + (isExp ? ' · 급행 정차' : '') + '" style="' + expRing +
+        'background:' + c + ';min-width:' + (STA_FONT * STA_MIN_CHARS) + 'px;text-align:center;padding:2px ' + STA_PAD_X +
+        'px;border:2px solid #fff;border-radius:6px;font-size:' + STA_FONT + 'px;line-height:' + (STA_FONT + 4) +
+        'px;font-weight:bold;color:#fff;white-space:nowrap;' + (isExp ? '' : 'box-shadow:2px 2px 4px rgba(0,0,0,.35);') +
+        'text-shadow:0 1px 2px rgba(0,0,0,.45)">' + name + '</div>';
+      if (!isEnd) return block;
+      return '<div style="position:relative;display:inline-flex;align-items:center">' + block + mkBadge(c, lineName, true) + '</div>';
+    }).join('');
+    if (!blocks) return;
+    const marker = new naver.maps.Marker({
+      position: new naver.maps.LatLng(e.lat, e.lng),
+      map: map,
+      clickable: false,
+      zIndex: 4,
+      icon: {
+        content: '<div title="' + name + ' (' + e.lines.join(', ') + ')" style="transform:translate(-50%,-50%);display:inline-flex;flex-direction:column;align-items:center;gap:1px">' + blocks + '</div>',
+        anchor: new naver.maps.Point(0, 0)
+      }
+    });
+    markers.push({ marker, name });
+  }));
 }
 
 // 역명 표기 토글 시 마커 갱신
 stationCheckbox.addEventListener('change', () => {
   updateMarkers(lastLoadedData);
 });
-
 
 /// 좌표구하기
 let isRecording = false;
@@ -908,6 +985,196 @@ async function ensureEmdLayerBoundToMap() {
   scheduleEmdRedraw();
 }
 
+// ── 시군구 하이라이트(스포트라이트) — 홍부테스트 이식 (2026-09-23) ─────────────────
+// 마우스를 올린 시군구만 원래 색으로 두고 나머지를 어둡게 덮는다. Ctrl+클릭으로 여러 개 고정.
+// ⚠ 덮개 캔버스는 **지도 안쪽**(타일 층과 오버레이 층 사이)에 넣는다. 지도 바깥에 두면 z-index 를 아무리 낮춰도
+//   지도 전체(경계선·역 마커 포함) 위에 그려진다 — 지도 안쪽이 독립 스태킹 맥락이기 때문.
+const HL_DIM = 'rgba(0,0,0,0.35)';
+let __hlCanvas = null, __hoverSgg5 = null, __hoverPt = null, __hoverDragging = false;
+const __pinnedSgg = new Set();
+
+function __hlOn() {
+  const cb = document.getElementById('toggleSggHighlight');
+  return !!(cb && cb.checked) && isBoundaryCheckboxOn();
+}
+function __hlHost() {
+  try {
+    const pane = map && map.getPanes && map.getPanes().overlayLayer;
+    const box = pane && pane.parentElement;          // 오버레이 묶음
+    const host = box && box.parentElement;           // 타일 층과 형제
+    const mapEl = document.getElementById('map');
+    if (host && mapEl && mapEl.contains(host)) return { host, before: box, z: 50 };
+  } catch (e) {}
+  return { host: document.getElementById('map'), before: null, z: 0 };
+}
+function __hlEnsureCanvas() {
+  if (__hlCanvas && __hlCanvas.isConnected) return __hlCanvas;
+  const { host, before, z } = __hlHost();
+  if (!host) return null;
+  const c = document.createElement('canvas');
+  c.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:' + z + ';';
+  if (before) host.insertBefore(c, before); else host.appendChild(c);
+  __hlCanvas = c;
+  return c;
+}
+function __hlClear() {
+  if (!__hlCanvas) return;
+  const ctx = __hlCanvas.getContext('2d');
+  if (ctx) ctx.clearRect(0, 0, __hlCanvas.width, __hlCanvas.height);
+}
+// 점이 폴리곤 안에 있는지 (ray casting, MultiPolygon 지원)
+function __hlPointIn(lat, lng, geometry) {
+  const polys = geometry.type === 'MultiPolygon' ? geometry.coordinates : [geometry.coordinates];
+  for (const poly of polys) {
+    const ring = poly[0];
+    if (!ring || ring.length < 3) continue;
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+      if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
+}
+function __sggAtLatLng(lat, lng) {
+  try { prepareSigPreparedOnce(); } catch (e) {}
+  for (const f of sigPrepared || []) {
+    const b = f.bbox;
+    if (lng < b[0] || lng > b[2] || lat < b[1] || lat > b[3]) continue;
+    if (!__hlPointIn(lat, lng, f.geometry)) continue;
+    const code = String(f.properties && (f.properties.sgg_cd || f.properties.SIG_CD) || '').substring(0, 5);
+    if (code) return code;
+  }
+  return null;
+}
+// 화면 좌표 → 시군구 코드. **덮개를 그릴 때와 같은 bounds 공식**을 써야 화면과 판정이 어긋나지 않는다.
+function __sggAtClientPoint(cx, cy) {
+  const mapEl = document.getElementById('map');
+  if (!mapEl || !map) return null;
+  const r = mapEl.getBoundingClientRect();
+  const ox = cx - r.left, oy = cy - r.top;
+  if (ox < 0 || oy < 0 || ox > r.width || oy > r.height) return null;
+  const b = map.getBounds();
+  if (!b) return null;
+  const sw = b.getSW(), ne = b.getNE();
+  const fx = ox / r.width, fy = oy / r.height;
+  const lng = sw.lng() + fx * (ne.lng() - sw.lng());
+  const mY = (la) => Math.log(Math.tan(Math.PI / 4 + (la * Math.PI / 180) / 2));
+  const mSW = mY(sw.lat()), mNE = mY(ne.lat());
+  const my = mNE - fy * (mNE - mSW);
+  const lat = (2 * Math.atan(Math.exp(my)) - Math.PI / 2) * 180 / Math.PI;
+  return __sggAtLatLng(lat, lng);
+}
+function __hlDraw() {
+  const mapEl = document.getElementById('map');
+  if (!map || !mapEl) return;
+  const canvas = __hlEnsureCanvas();
+  if (!canvas) return;
+  const w = mapEl.offsetWidth, h = mapEl.offsetHeight, dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  }
+  // 부모가 지도를 끌 때 함께 움직이므로 그릴 때마다 지도 기준으로 다시 맞춘다
+  const host = canvas.parentElement;
+  if (host) {
+    const hr = host.getBoundingClientRect(), mr = mapEl.getBoundingClientRect();
+    canvas.style.left = Math.round(mr.left - hr.left) + 'px';
+    canvas.style.top = Math.round(mr.top - hr.top) + 'px';
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!__hlOn()) return;
+  const keep = __pinnedSgg.size ? __pinnedSgg : (__hoverSgg5 ? new Set([__hoverSgg5]) : null);
+  if (!keep) return;
+  try { prepareSigPreparedOnce(); } catch (e) {}
+  const feats = (sigPrepared || []).filter((f) =>
+    keep.has(String(f.properties && (f.properties.sgg_cd || f.properties.SIG_CD) || '').substring(0, 5)));
+  if (!feats.length) return;
+  const b = map.getBounds();
+  if (!b) return;
+  const sw = b.getSW(), ne = b.getNE();
+  const mY = (la) => Math.log(Math.tan(Math.PI / 4 + (la * Math.PI / 180) / 2));
+  const mSW = mY(sw.lat()), mNE = mY(ne.lat()), lngRange = ne.lng() - sw.lng();
+  const toXY = (lat, lng) => [((lng - sw.lng()) / lngRange) * w, ((mNE - mY(lat)) / (mNE - mSW)) * h];
+  ctx.save();
+  ctx.fillStyle = HL_DIM;
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.fillStyle = '#000';
+  for (const f of feats) {
+    const polys = f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates : [f.geometry.coordinates];
+    for (const poly of polys) {
+      const ring = poly[0];
+      if (!ring || ring.length < 3) continue;
+      ctx.beginPath();
+      const p0 = toXY(ring[0][1], ring[0][0]);
+      ctx.moveTo(p0[0], p0[1]);
+      for (let i = 1; i < ring.length; i++) { const p = toXY(ring[i][1], ring[i][0]); ctx.lineTo(p[0], p[1]); }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+// 마우스 추적: document 에 붙인다(지도 위 마커 위에서도 잡히고, 지도 내부 DOM 이 바뀌어도 위치를 잃지 않는다)
+(() => {
+  let last = 0, timer = null;
+  const setHover = (code) => {
+    if (code === __hoverSgg5) return;
+    __hoverSgg5 = code;
+    if (__pinnedSgg.size) return;      // 고정이 있으면 호버로 다시 그리지 않는다
+    try { __hlDraw(); } catch (e) {}
+  };
+  const process = () => {
+    if (!__hoverPt || !map || !__hlOn() || __hoverDragging) { setHover(null); return; }
+    setHover(__sggAtClientPoint(__hoverPt.x, __hoverPt.y));
+  };
+  window.__hlProcess = process;
+  document.addEventListener('mousemove', (ev) => {
+    __hoverPt = { x: ev.clientX, y: ev.clientY };
+    if (__hoverDragging) return;
+    const now = Date.now(), wait = 80 - (now - last);
+    if (wait <= 0) { last = now; process(); }
+    else if (!timer) { timer = setTimeout(() => { timer = null; last = Date.now(); process(); }, wait); }
+  }, { passive: true, capture: true });
+  // Ctrl(⌘)+클릭 = 고정 토글 / 그냥 클릭 = 전부 해제. 끌고 난 뒤의 클릭은 무시(5px)
+  let down = null;
+  document.addEventListener('mousedown', (ev) => { down = { x: ev.clientX, y: ev.clientY }; }, true);
+  document.addEventListener('click', (ev) => {
+    if (!__hlOn()) return;
+    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) return;
+    const mapEl = document.getElementById('map');
+    if (!mapEl || !mapEl.contains(ev.target)) return;
+    if (ev.ctrlKey || ev.metaKey) {
+      const code = __sggAtClientPoint(ev.clientX, ev.clientY);
+      if (!code) return;
+      if (__pinnedSgg.has(code)) __pinnedSgg.delete(code); else __pinnedSgg.add(code);
+      ev.preventDefault(); ev.stopPropagation();
+    } else if (__pinnedSgg.size) {
+      __pinnedSgg.clear();
+    } else return;
+    try { __hlDraw(); } catch (e) {}
+  }, true);
+})();
+// 지도 이동·줌 뒤에도 마지막 마우스 위치로 다시 판정한다
+(() => {
+  let bound = null;
+  setInterval(() => {
+    if (!map || map === bound || !window.__hlProcess) return;
+    bound = map;
+    const again = (d) => setTimeout(() => { if (!__hoverDragging) { window.__hlProcess(); try { __hlDraw(); } catch (e) {} } }, d || 80);
+    try {
+      naver.maps.Event.addListener(map, 'dragstart', () => { __hoverDragging = true; });
+      naver.maps.Event.addListener(map, 'dragend', () => { __hoverDragging = false; again(120); });
+      naver.maps.Event.addListener(map, 'idle', () => again(80));
+      naver.maps.Event.addListener(map, 'zoom_changed', () => again(150));
+    } catch (e) {}
+  }, 1000);
+})();
+
 // ✅ 경계선 체크박스 추가
 const boundaryLabel = document.createElement('label');
 boundaryLabel.style.marginTop = '10px';
@@ -921,6 +1188,40 @@ boundaryCheckbox.style.marginRight = '4px';
 boundaryLabel.appendChild(boundaryCheckbox);
 boundaryLabel.appendChild(document.createTextNode('시군구경계'));
 container.appendChild(boundaryLabel);
+
+// ✅ 하이라이트 체크박스 — [시군구경계] 를 켜야 쓸 수 있고, 처음 켤 때만 자동으로 켜진다
+const hlLabel = document.createElement('label');
+hlLabel.id = 'sggHighlightWrap';
+hlLabel.style.cssText = 'display:block;opacity:0.45;';
+hlLabel.title = '시군구경계를 켜야 사용할 수 있습니다';
+const hlCheckbox = document.createElement('input');
+hlCheckbox.type = 'checkbox';
+hlCheckbox.id = 'toggleSggHighlight';
+hlCheckbox.style.marginRight = '4px';
+hlLabel.appendChild(hlCheckbox);
+hlLabel.appendChild(document.createTextNode('하이라이트'));
+container.appendChild(hlLabel);
+
+function __hlUpdateVis() {
+  const on = isBoundaryCheckboxOn();
+  hlLabel.style.opacity = on ? '' : '0.45';
+  hlLabel.title = on ? '마우스를 올린 시군구만 원래 색으로 두고 나머지를 어둡게 · Ctrl+클릭으로 여러 개 고정, 그냥 클릭하면 해제'
+                     : '시군구경계를 켜야 사용할 수 있습니다';
+  hlCheckbox.disabled = !on;
+  if (on && !hlCheckbox.dataset.inited) {   // 처음 켤 때만 기본값 켬
+    hlCheckbox.dataset.inited = '1';
+    if (!hlCheckbox.checked) hlCheckbox.checked = true;
+  }
+  if (!on) { __hoverSgg5 = null; __pinnedSgg.clear(); }
+  try { __hlDraw(); } catch (e) {}
+}
+hlCheckbox.addEventListener('change', () => {
+  if (!hlCheckbox.checked) { __hoverSgg5 = null; __pinnedSgg.clear(); }
+  try { window.__hlProcess && window.__hlProcess(); __hlDraw(); } catch (e) {}
+});
+boundaryCheckbox.addEventListener('change', __hlUpdateVis);
+__hlUpdateVis();
+
 
 boundaryCheckbox.addEventListener('change', () => {
   scheduleEmdRedraw();
