@@ -2056,6 +2056,9 @@
       <span id="boundaryGroup" style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px;padding:2px 8px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;">
         <label><input type="checkbox" id="toggleEmdBoundary" />법정동경계</label>
         <label><input type="checkbox" id="toggleAdminBoundary" />행정동경계</label>
+        <label id="boundaryLevelWrap" style="opacity:0.45;display:inline-flex;align-items:center;gap:3px;" title="법정동경계나 행정동경계를 켜야 사용할 수 있습니다">경계단위:
+          <select id="boundaryLevelSel" style="font-size:11px;padding:1px 2px;"><option value="auto">자동</option><option value="sgg">시군구</option></select>
+        </label>
         <label id="sggHighlightWrap" style="opacity:0.45" title="법정동경계나 행정동경계를 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleSggHighlight" />하이라이트</label>
       </span>
       <label class="only-pc"><input type="checkbox" id="toggleFindWay" />업무지구 길찾기</label>
@@ -4340,6 +4343,17 @@
       // canvas 전체를 어둡게 칠하고 호버 시군구 폴리곤만 destination-out 으로 지운다.
       // 선·라벨은 이 덮개 위에 그려지므로 어두운 영역에서도 경계와 동 이름은 계속 읽힌다.
       let __hoverSgg5 = null;   // 현재 마우스가 올라간 시군구 코드(5자리)
+      // Ctrl+클릭으로 **여러 시군구를 고정**해 둘 수 있다(2026-09-22 사용자 요청).
+      // 고정이 하나라도 있으면 마우스 호버는 무시하고 고정된 것만 밝게 둔다. 그냥 클릭하면 전부 풀린다.
+      const __pinnedSgg = new Set();
+      // 확대해도 시군구 경계만 보는 **1회성 고정**(2026-09-22 사용자 요청). 저장하지 않고,
+      // 법정동경계·행정동경계 체크가 바뀌면 자동으로 풀린다. 고정 중에는 읍면동·행정동 경계를 그리지 않는다.
+      // 경계단위 셀렉트: 자동(줌 13~14 시군구 / 15+ 읍면동) ↔ 시군구(확대해도 시군구만, 읍면동 숨김)
+      // ⚠ **하이라이트와는 무관**하다(2026-09-22 사용자 지정). 경계 체크가 켜져 있기만 하면 쓸 수 있다.
+      function __sigLockOn() {
+        const sel = document.getElementById("boundaryLevelSel");
+        return !!(sel && sel.value === "sgg") && __hlBoundaryOn();
+      }
       const DIM_COLOR = "rgba(0,0,0,0.35)";
 
       // 하이라이트는 법정동경계·행정동경계 중 하나라도 켜져 있고 [하이라이트] 체크가 켜졌을 때만 동작한다
@@ -4358,12 +4372,33 @@
         if (w) {
           w.style.display = "";
           w.style.opacity = on ? "" : "0.45";
-          w.title = on ? "마우스를 올린 시군구만 원래 색으로 두고 나머지를 어둡게" : "법정동경계나 행정동경계를 켜야 사용할 수 있습니다";
+          w.title = on ? "마우스를 올린 시군구만 원래 색으로 두고 나머지를 어둡게 · Ctrl+클릭으로 여러 시군구 고정, 그냥 클릭하면 해제" : "법정동경계나 행정동경계를 켜야 사용할 수 있습니다";
         }
         if (cb) cb.disabled = !on;
+        // 경계를 **처음 켜는 순간**에는 하이라이트를 기본으로 켜 준다(2026-09-22 사용자 요청).
+        // 그 뒤로는 uiState(`uiState_v1`)가 저장한 마지막 값이 그대로 복원되므로 여기서 건드리지 않는다.
+        // uiState 는 체크박스를 전부 저장해서 "끈 것"과 "한 번도 안 건드린 것"을 구분하지 못한다 → 별도 표시를 남긴다.
+        if (on && cb) {
+          let first = false;
+          try { first = !localStorage.getItem("hongbuSggHlInit_v1"); } catch (e) {}
+          if (first) {
+            try { localStorage.setItem("hongbuSggHlInit_v1", "1"); } catch (e) {}
+            if (!cb.checked) { cb.checked = true; cb.dispatchEvent(new Event("change", { bubbles: true })); }
+          }
+        }
+        // [시군구 고정] 도 같은 조건에서만 활성. **경계 체크가 바뀔 때마다 푼다**(1회성, 2026-09-22 사용자 지정)
+        const lw = document.getElementById("boundaryLevelWrap");
+        const lsel = document.getElementById("boundaryLevelSel");
+        if (lw) {
+          lw.style.opacity = on ? "" : "0.45";
+          lw.title = on ? "자동 = 줌 13~14 시군구 / 15 이상 읍면동 · 시군구 = 확대해도 시군구만(읍면동 숨김). 경계 체크를 바꾸면 자동으로 돌아온다"
+                        : "법정동경계나 행정동경계를 켜야 사용할 수 있습니다";
+        }
+        if (lsel) lsel.disabled = !on;
         if (!w) return;
-        if (!on && __hoverSgg5) {
+        if (!on && (__hoverSgg5 || __pinnedSgg.size)) {
           __hoverSgg5 = null;
+          __pinnedSgg.clear();
           try { drawBoundaryCanvas(); } catch (e) {}
         }
       }
@@ -4371,10 +4406,21 @@
         try {
           __updateHighlightToggleVis();
           ["toggleEmdBoundary", "toggleAdminBoundary"].forEach((id) => {
-            document.getElementById(id)?.addEventListener("change", __updateHighlightToggleVis);
+            document.getElementById(id)?.addEventListener("change", () => {
+              // 경계가 바뀌면 시군구 고정은 푼다(1회성)
+              const lsel = document.getElementById("boundaryLevelSel");
+              if (lsel) lsel.value = "auto";     // 1회성 — 경계가 바뀌면 자동으로 되돌린다
+              __updateHighlightToggleVis();
+              try { redrawBoundaryByZoom(); } catch (e) {}
+            });
+          });
+          // ⚠ 그리기만 호출하면 안 된다 — 줌 15+ 에서는 `sigPrepared` 가 null 이라 아무것도 안 그려진다.
+          //   `redrawBoundaryByZoom()` 이 필요한 경계 데이터를 로드한 뒤 그린다(실측: 호출 후 sigPrepared 252개).
+          document.getElementById("boundaryLevelSel")?.addEventListener("change", () => {
+            try { redrawBoundaryByZoom(); } catch (e) {}
           });
           document.getElementById("toggleSggHighlight")?.addEventListener("change", () => {
-            if (!document.getElementById("toggleSggHighlight").checked) __hoverSgg5 = null;
+            if (!document.getElementById("toggleSggHighlight").checked) { __hoverSgg5 = null; __pinnedSgg.clear(); }
             if (window.__hoverProcess) window.__hoverProcess();
             try { drawBoundaryCanvas(); } catch (e) {}
           });
@@ -4385,8 +4431,9 @@
       // ⚠ 줌 15+ 에서는 sigPrepared 가 로드되지 않을 수 있다(2026-09-22 실사고: 덮개가 안 그려졌다)
       //   → 각 줌 구간이 자기 데이터(시군구/법정동)를 넘겨 그 code5 폴리곤을 지운다.
       function __dimOutsideHover(ctx, toXY, bounds, w, h, features, codeOf) {
-        if (!__hoverSgg5) return;
-        const feats = (features || []).filter((f) => String(codeOf(f) || "").substring(0, 5) === __hoverSgg5);
+        const keep = __pinnedSgg.size ? __pinnedSgg : (__hoverSgg5 ? new Set([__hoverSgg5]) : null);
+        if (!keep) return;
+        const feats = (features || []).filter((f) => keep.has(String(codeOf(f) || "").substring(0, 5)));
         if (!feats.length) return;
         ctx.save();
         ctx.fillStyle = DIM_COLOR;
@@ -4448,6 +4495,47 @@
         return null;
       }
 
+      // 화면 좌표(clientX/Y) → 시군구 코드. 호버·클릭이 **같은 공식**을 써야 화면과 판정이 어긋나지 않는다.
+      function __sggAtClientPoint(cx, cy) {
+        const mapEl = document.getElementById("map");
+        if (!mapEl || !window.map) return null;
+        const r = mapEl.getBoundingClientRect();
+        const ox = cx - r.left, oy = cy - r.top;
+        if (ox < 0 || oy < 0 || ox > r.width || oy > r.height) return null;
+        const b = window.map.getBounds();
+        if (!b) return null;
+        const sw = b.getSW(), ne = b.getNE();
+        const fx = ox / r.width, fy = oy / r.height;
+        const lng = sw.lng() + fx * (ne.lng() - sw.lng());
+        const _mercY = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+        const mSW = _mercY(sw.lat()), mNE = _mercY(ne.lat());
+        const mY = mNE - fy * (mNE - mSW);
+        const lat = (2 * Math.atan(Math.exp(mY)) - Math.PI / 2) * 180 / Math.PI;
+        return __sggAtLatLng(lat, lng);
+      }
+
+      // Ctrl(또는 ⌘)+클릭 = 시군구 고정 토글 / 그냥 클릭 = 고정 전부 해제 (2026-09-22 사용자 요청)
+      // ⚠ 지도를 끌고 난 뒤에도 click 이 뜨는 브라우저가 있어 **누른 자리에서 5px 이상 움직였으면 무시**한다.
+      (() => {
+        let down = null;
+        document.addEventListener("mousedown", (ev) => { down = { x: ev.clientX, y: ev.clientY }; }, true);
+        document.addEventListener("click", (ev) => {
+          if (!__hlOn() || !window.map || window.map.getZoom() <= 12) return;
+          if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) return;   // 드래그였다
+          const mapEl = document.getElementById("map");
+          if (!mapEl || !mapEl.contains(ev.target)) return;
+          if (ev.ctrlKey || ev.metaKey) {
+            const code = __sggAtClientPoint(ev.clientX, ev.clientY);
+            if (!code) return;
+            __pinnedSgg.has(code) ? __pinnedSgg.delete(code) : __pinnedSgg.add(code);
+            ev.preventDefault(); ev.stopPropagation();
+          } else if (__pinnedSgg.size) {
+            __pinnedSgg.clear();
+          } else return;
+          try { drawBoundaryCanvas(); } catch (e) {}
+        }, true);
+      })();
+
       // 마우스 추적: **document 에 붙인다**. 지도 위 오버레이(마커 등) 위에서도 잡히고,
       // 지도가 이동하며 내부 DOM 이 바뀔 때 튀는 mouseleave 로 위치를 잃지 않는다
       // (2026-09-22 실사고: mouseleave 가 pending 을 지워 호버가 null 로 고정됐다).
@@ -4460,6 +4548,7 @@
         const setHover = (code) => {
           if (code === __hoverSgg5) return;
           __hoverSgg5 = code;
+          if (__pinnedSgg.size) return;        // 고정이 있으면 호버로 다시 그리지 않는다
           try { drawBoundaryCanvas(); } catch (e) {}
         };
         const process = () => {
@@ -4507,7 +4596,7 @@
       }
       setInterval(__bindHoverMapEvents, 1000);
       // 진단용 — 콘솔에서 __hoverDbg()
-      window.__hoverDbg = () => ({ hover: __hoverSgg5, pt: __hoverPt, dragging: __hoverDragging, bound: __hoverBoundMap === window.map, boundaryOn: isBoundaryCheckboxOn(), zoom: window.map && window.map.getZoom(), data: { sig: sigPrepared ? sigPrepared.length : null, emd: emdPrepared ? emdPrepared.length : null, raw: sigGeojsonRaw && sigGeojsonRaw.features ? sigGeojsonRaw.features.length : null } });
+      window.__hoverDbg = () => ({ hover: __hoverSgg5, pinned: [...__pinnedSgg], pt: __hoverPt, dragging: __hoverDragging, bound: __hoverBoundMap === window.map, boundaryOn: isBoundaryCheckboxOn(), zoom: window.map && window.map.getZoom(), data: { sig: sigPrepared ? sigPrepared.length : null, emd: emdPrepared ? emdPrepared.length : null, raw: sigGeojsonRaw && sigGeojsonRaw.features ? sigGeojsonRaw.features.length : null } });
 
       function _drawFeatureOnCanvas(ctx, toXY, geometry, isSelected, defaultColor, lineWidth) {
         const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
@@ -4612,8 +4701,8 @@
           ? new Set([...selectedSigunguSet].map((c) => String(c).substring(0, 5)))
           : null;
 
-        // ── SIG (줌 13~14) ──────────────────────────────────────────
-        if (z > 12 && z <= 14) {
+        // ── SIG (줌 13~14, 또는 [시군구 고정] 켠 동안 전 줌) ────────────
+        if (z > 12 && (z <= 14 || __sigLockOn())) {
           if (!sigPrepared) return;
           const isAdminStyle = adminOn && !boundaryOn;
           const lineColor = isAdminStyle ? "#1e40af" : "#000000";
@@ -4654,7 +4743,7 @@
         }
 
         // ── EMD (줌 15+, 법정동 ON) ──────────────────────────────────
-        if (boundaryOn && z >= 15) {
+        if (boundaryOn && z >= 15 && !__sigLockOn()) {
           if (!emdPrepared || !emdPopulationMap) return;
 
           // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
@@ -4692,7 +4781,7 @@
         }
 
         // ── ADM (줌 15+, 행정동 ON) ──────────────────────────────────
-        if (adminOn && z >= 15) {
+        if (adminOn && z >= 15 && !__sigLockOn()) {
           if (!admPrepared || !admPopulationMap) return;
 
           // 호버 시군구 스포트라이트 (행정동 경계에도 적용, 2026-09-22 사용자 요청)
@@ -5163,21 +5252,21 @@
 
         // 필요한 데이터 로드 후 canvas 렌더링
         const loaders = [];
-        if (z > 12 && z <= 14 && (boundaryOn || adminOn)) {
+        if (z > 12 && (z <= 14 || __sigLockOn()) && (boundaryOn || adminOn)) {
           sigStyleMode = adminOn && !boundaryOn ? "admin" : "default";
           loaders.push(
             loadSigBoundaryOnce()
               .then(() => { try { prepareSigPreparedOnce(); } catch (e) {} })
           );
         }
-        if (z >= 15 && boundaryOn) {
+        if (z >= 15 && boundaryOn && !__sigLockOn()) {
           loaders.push(
             loadEmdBoundaryOnce()
               .then(() => { try { prepareEmdPreparedOnce(); } catch (e) {} })
               .then(() => loadEmdPopulationOnce())
           );
         }
-        if (z >= 15 && adminOn) {
+        if (z >= 15 && adminOn && !__sigLockOn()) {
           loaders.push(
             loadAdmBoundaryOnce()
               .then(() => { try { prepareAdmPreparedOnce(); } catch (e) {} })
@@ -6512,9 +6601,9 @@
         markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
         const markerIcon = document.createElement("img");
         markerIcon.src = "eliSchool.png";
-        // 로고 PNG 는 배경이 투명이라 **밑에 깔린 경계선이 비쳐 보인다**(2026-09-22 사용자 보고
-        //   "라벨보다 낮은 건 통과인데 로고보다 위로 나온다"). 흰 바탕을 깔아 마커가 경계를 가리게 한다.
-        markerIcon.style = "width: 32px; height: 32px; background: #fff; border-radius: 6px; box-shadow: 1px 1px 3px rgba(0,0,0,0.3);";
+        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
+        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
+        markerIcon.style = "width: 32px; height: 32px;";
         const infoBox = document.createElement("div");
         infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
         const rawPerClass = school.studentCountPerClassroom;
@@ -6949,6 +7038,9 @@
         window.__schoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
         window.__middleSchoolMarkerPool?.forEach(({ marker }) => markers.push(marker));
         window.__middleSchoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
+        // 고등학교는 2026-09-22 에 추가한 마커라 목록에서 빠져 있었다(사용자 확인 후 2026-09-23 추가). 지하철 역명은 제외.
+        window.__highSchoolMarkerPool?.forEach(({ marker }) => markers.push(marker));
+        window.__highSchoolMarkerCache?.forEach(({ marker }) => markers.push(marker));
         window.__facilityMarkerPool?.forEach(({ marker }) => markers.push(marker));
         window.__facilityMarkerCache?.forEach(({ marker }) => markers.push(marker));
         window.__starbucksMarkerPool?.forEach(({ marker }) => markers.push(marker));
@@ -6974,8 +7066,10 @@
           { priority: 0, markers: Object.values(apartmentMarkers) },
           { priority: 1, markers: collectFromPoolAndCache(window.__schoolMarkerPool, window.__schoolMarkerCache) },
           { priority: 2, markers: collectFromPoolAndCache(window.__middleSchoolMarkerPool, window.__middleSchoolMarkerCache) },
-          { priority: 3, markers: collectFromPoolAndCache(window.__facilityMarkerPool, window.__facilityMarkerCache) },
-          { priority: 4, markers: collectFromPoolAndCache(window.__starbucksMarkerPool, window.__starbucksMarkerCache) },
+          // 고등학교는 중학교 다음 우선순위(2026-09-23 사용자 지시로 추가). 지하철 역명 마커는 노선 위에 붙어야 해서 제외.
+          { priority: 3, markers: collectFromPoolAndCache(window.__highSchoolMarkerPool, window.__highSchoolMarkerCache) },
+          { priority: 4, markers: collectFromPoolAndCache(window.__facilityMarkerPool, window.__facilityMarkerCache) },
+          { priority: 5, markers: collectFromPoolAndCache(window.__starbucksMarkerPool, window.__starbucksMarkerCache) },
         ];
 
         markerGroups.forEach(({markers}) => markers.forEach(m => {
@@ -8559,9 +8653,9 @@ const originalBase64 = event.target.result;
         markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
         const markerIcon = document.createElement("img");
         markerIcon.src = "midSchool.png";
-        // 로고 PNG 는 배경이 투명이라 **밑에 깔린 경계선이 비쳐 보인다**(2026-09-22 사용자 보고
-        //   "라벨보다 낮은 건 통과인데 로고보다 위로 나온다"). 흰 바탕을 깔아 마커가 경계를 가리게 한다.
-        markerIcon.style = "width: 32px; height: 32px; background: #fff; border-radius: 6px; box-shadow: 1px 1px 3px rgba(0,0,0,0.3);";
+        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
+        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
+        markerIcon.style = "width: 32px; height: 32px;";
         const infoBox = document.createElement("div");
         infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
         // 2026-09-22 사용자 요청: 설립유형(국립/공립/사립) 접두 — 신네부 fin 크롤로 채운 `설립` 필드(없으면 접두 생략)
@@ -8767,9 +8861,9 @@ const originalBase64 = event.target.result;
         markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
         const markerIcon = document.createElement("img");
         markerIcon.src = "highSchool.png";
-        // 로고 PNG 는 배경이 투명이라 **밑에 깔린 경계선이 비쳐 보인다**(2026-09-22 사용자 보고
-        //   "라벨보다 낮은 건 통과인데 로고보다 위로 나온다"). 흰 바탕을 깔아 마커가 경계를 가리게 한다.
-        markerIcon.style = "width: 32px; height: 32px; background: #fff; border-radius: 6px; box-shadow: 1px 1px 3px rgba(0,0,0,0.3);";
+        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
+        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
+        markerIcon.style = "width: 32px; height: 32px;";
         const infoBox = document.createElement("div");
         infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
         infoBox.textContent = _highSchoolLabel(school);
@@ -8849,7 +8943,7 @@ const originalBase64 = event.target.result;
         const LS_KEY = "hongbuMetroLines_v1";
         const btn = document.getElementById("metroLinesBtn");
         if (!btn) return;
-        setTimeout(() => { try { if (!__expV2) save(); } catch (e) {} }, 0);   // 이관 표시 남기기
+        setTimeout(() => { try { if (!__expV) save(); } catch (e) {} }, 0);   // 새 판수 표시 남기기
         let panel = null, data = null, loading = null;
         const layers = {}; // lineId -> {polylines, stations, color}
         const checks = {}; // lineId -> checkbox
@@ -8864,16 +8958,16 @@ const originalBase64 = event.target.result;
         const saved = (() => { try { return JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) { return null; } })();
         const selected = new Set(Array.isArray(saved?.lines) ? saved.lines : []);
         if (saved && typeof saved.stations === "boolean") showStations = saved.stations;
-        // 기본값은 **1호선·9호선만 켬**(2026-09-22 사용자 지정 — "사실상 9호선과 1호선이 아니면 중요하지 않다").
+        // 기본값은 **9호선만 켬**(2026-09-22 사용자 지정, 전체해제 → 1·9호선 → 9호선으로 두 번 변경).
         // ⚠ 기본값을 바꿔도 저장된 값이 남아 있으면 그대로 복원된다(사용자 보고 "기본값은 전체해제인데 왜 체크되어 있지").
-        //   `expressV2` 표시가 없는 옛 저장값은 무시하고 **한 번만 기본값으로 되돌린다**.
-        const EXPRESS_DEFAULT = ["1호선", "9호선"];
-        const __expV2 = !!(saved && saved.expressV2);
-        if (__expV2 && Array.isArray(saved.express)) saved.express.forEach((x) => expressOn.add(x));
+        //   그래서 `expressV` 판수를 둔다 — 기본값을 바꿀 때 이 숫자를 올리면 저장값을 무시하고 **한 번만** 새 기본값으로 되돌린다.
+        const EXPRESS_DEFAULT = ["9호선"], EXPRESS_V = 3;
+        const __expV = saved && saved.expressV === EXPRESS_V;
+        if (__expV && Array.isArray(saved.express)) saved.express.forEach((x) => expressOn.add(x));
         else EXPRESS_DEFAULT.forEach((x) => expressOn.add(x));
 
 
-        function save() { try { localStorage.setItem(LS_KEY, JSON.stringify({ lines: [...selected], stations: showStations, express: [...expressOn], expressV2: true })); } catch (e) {} }
+        function save() { try { localStorage.setItem(LS_KEY, JSON.stringify({ lines: [...selected], stations: showStations, express: [...expressOn], expressV: EXPRESS_V })); } catch (e) {} }
         const hasExpress = (line) => Array.isArray(line.express) && line.express.length > 0;
         function lineIdOf(line) { return line.line || line.node?.[0]?.station?.[0]?.line || "노선"; }
         async function load() {
@@ -8917,16 +9011,21 @@ const originalBase64 = event.target.result;
             // 종점 판정: **경로(NewVia)의 끝 좌표가 1번만 등장**하면 선형의 끝이다.
             // (역 이름 등장 횟수로 세면 8호선 node0 처럼 한 node 에 역 8개가 든 예외에서 중간 역이 전부 종점으로 오판된다
             //  — 2026-09-22 사용자 보고 "모든 마커에 노선번호가 붙었다". 경로 양끝은 endcap 으로 역 좌표에 정확히 붙어 있다.)
-            const ptKey = (q) => q[0].toFixed(5) + "," + q[1].toFixed(5);
-            const endCnt = new Map();
+            // ⚠ 좌표 키로 세면 안 된다 — **같은 역이 계통마다 다른 좌표로 들어 있는 경우**가 있다.
+            //   1호선 서울역은 지하(37.55546,126.97246)와 지상 경부선(37.55434,126.97113)이 180m 떨어져 있어
+            //   각각 끝점 1회로 세어져 종점으로 잡혔다(2026-09-23 사용자 보고 "서울역에 1 배지가 붙은 이유는?").
+            //   → 역 좌표에서 **반경 END_R 안의 경로 끝점 개수**로 센다(역 간격 최소 500m 보다 작게 잡는다).
+            const END_R = 250;
+            const endPts = [];
             (line.node || []).forEach((nd) => (nd.NewVia || []).forEach((pth) => {
               if (!pth || pth.length < 2) return;
-              [pth[0], pth[pth.length - 1]].forEach((q) => endCnt.set(ptKey(q), (endCnt.get(ptKey(q)) || 0) + 1));
+              endPts.push(pth[0], pth[pth.length - 1]);
             }));
-            const endKeys = new Set([...endCnt.entries()].filter(([, c]) => c === 1).map(([k]) => k));
+            const __endNear = (la, ln) => endPts.reduce((n, q) =>
+              n + (Math.hypot((q[0] - la) * 111000, (q[1] - ln) * 88000) <= END_R ? 1 : 0), 0);
             const ends = new Set();
             (line.node || []).forEach((nd) => (nd.station || []).forEach((s2) => {
-              if (endKeys.has(Number(s2.lat).toFixed(5) + "," + Number(s2.lng).toFixed(5))) ends.add(s2.name);
+              if (__endNear(Number(s2.lat), Number(s2.lng)) === 1) ends.add(s2.name);
             }));
             // 급행 정차역: 데이터의 `express` 배열(= `_tools/_metro_express_merge.py` 가 OSM 급행·특급·직통 계통에서 뽑음)
             const exSet = new Set(Array.isArray(line.express) ? line.express : []);
@@ -9027,6 +9126,16 @@ const originalBase64 = event.target.result;
             });
             save(); redraw();
           });
+          // 라벨 글자에 **지도와 같은 빨간 테두리**를 둘러 그 자체가 범례가 되게 한다
+          // (2026-09-22 사용자 요청 "이게 급행 뜻이구나 알 수 있게"). 역 블록과 같은 흰 테두리 + 빨간 링.
+          (() => {
+            const tn = exAll.label.lastChild;
+            if (!tn || tn.nodeType !== 3) return;
+            const sp = document.createElement("span");
+            sp.textContent = tn.textContent;
+            sp.style.cssText = "display:inline-block;margin:2px 3px;padding:0 5px;border:2px solid #fff;border-radius:6px;box-shadow:0 0 0 2px #ff2424;line-height:1.4;";
+            exAll.label.replaceChild(sp, tn);
+          })();
           panel.appendChild(all.label);
           panel.appendChild(st.label);
           panel.appendChild(exAll.label);
@@ -9170,9 +9279,9 @@ const originalBase64 = event.target.result;
         markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
         const markerIcon = document.createElement("img");
         markerIcon.src = iconSrc;
-        // 로고 PNG 는 배경이 투명이라 **밑에 깔린 경계선이 비쳐 보인다**(2026-09-22 사용자 보고
-        //   "라벨보다 낮은 건 통과인데 로고보다 위로 나온다"). 흰 바탕을 깔아 마커가 경계를 가리게 한다.
-        markerIcon.style = "width: 32px; height: 32px; background: #fff; border-radius: 6px; box-shadow: 1px 1px 3px rgba(0,0,0,0.3);";
+        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
+        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
+        markerIcon.style = "width: 32px; height: 32px;";
         const infoBox = document.createElement("div");
         infoBox.style = "background:white;border:1px solid gray;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;text-align:center;";
         infoBox.textContent = facility.category === 10 ? `${facility.description} (${facility.name})` : facility.name;
@@ -19739,7 +19848,8 @@ const originalBase64 = event.target.result;
           type === "file" ||
           el.id === "gpxFileInput" ||
           el.id === "memoRestoreInput" ||
-          el.id === "apartmentSearchInput"
+          el.id === "apartmentSearchInput" ||
+          el.id === "boundaryLevelSel"   // 경계단위는 1회성 — 저장/복원하지 않는다(2026-09-22 사용자 지정)
         );
       }
 
@@ -21965,6 +22075,125 @@ const originalBase64 = event.target.result;
             if (typeof stopTracking === "function") stopTracking();
           });
         }
+
+        try { __initFloatBtnDrag(); } catch (e) {}
+      }
+
+      // ── 지도 왼쪽 떠 있는 단추(현재 위치·사진 메모·추적 중지) 길게 눌러 옮기기 (2026-09-23 사용자 요청, **모바일 전용**) ──
+      // 세 단추는 한 덩어리로 움직인다(추적 중지는 사진 메모 바로 아래에 붙어 있어 따로 옮기면 겹친다 — 사용자 지정).
+      // 위치는 지도 크기 대비 **비율**로 저장한다. 화면을 돌리거나 다른 기기에서 열어도 비슷한 자리에 뜬다.
+      const FLOAT_BTN_KEY = "hongbuMapBtnPos_v2";
+      // ⚠ **두 덩어리로 나눈다**(2026-09-23 사용자 지정): 현재 위치 ↔ 위치 추적 중지는 한 짝(추적을 켜면 바로 아래에 뜬다),
+      //   사진 메모는 따로 움직인다. 각 덩어리의 자리는 지도 크기 대비 비율로 따로 저장한다.
+      const FLOAT_BTN_GROUPS = [{ key: "loc", ids: ["mapLocateBtn", "mapStopBtn"] },
+                                { key: "photo", ids: ["mapPhotoBtn"] }];
+      let __floatBtnBase = null;                       // id → {left, top} (CSS 원래 자리)
+      let __floatBtnOff = { loc: { rx: 0, ry: 0 }, photo: { rx: 0, ry: 0 } };
+      let __floatBtnDragged = false;                   // 드래그로 끝났으면 클릭 동작을 막는다
+
+      function __isTouchDevice() {
+        try { return window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window; } catch (e) { return false; }
+      }
+      // ⚠ 추적 중지 단추는 평소 `display:none` 이라 offsetLeft/Top 이 0 이다(그대로 쓰면 옮긴 뒤 좌상단에 나타난다).
+      //   CSS 에 적힌 값을 읽는 getComputedStyle 로 원래 자리를 잡는다.
+      function __floatBtnBaseOf(el) {
+        const cs = getComputedStyle(el);
+        const l = parseFloat(cs.left), t = parseFloat(cs.top);
+        return { left: Number.isFinite(l) ? l : el.offsetLeft, top: Number.isFinite(t) ? t : el.offsetTop };
+      }
+      function __floatGroupEls(g) {
+        return g.ids.map((id) => document.getElementById(id)).filter(Boolean);
+      }
+      function __floatBtnApplyGroup(g) {
+        const mapEl = document.getElementById("map");
+        const els = __floatGroupEls(g);
+        if (!mapEl || !__floatBtnBase || !els.length) return;
+        const off = __floatBtnOff[g.key] || { rx: 0, ry: 0 };
+        let dx = off.rx * mapEl.offsetWidth, dy = off.ry * mapEl.offsetHeight;
+        // 화면 밖으로 나가지 않게 덩어리 전체를 지도 안으로 당긴다
+        const b = els.map((el) => __floatBtnBase[el.id]).filter(Boolean);
+        const size = (el) => ({ w: el.offsetWidth || 40, h: el.offsetHeight || 40 });
+        const minL = Math.min(...b.map((x) => x.left)), minT = Math.min(...b.map((x) => x.top));
+        const maxR = Math.max(...els.map((el, i) => b[i].left + size(el).w));
+        const maxB = Math.max(...els.map((el, i) => b[i].top + size(el).h));
+        dx = Math.max(-minL + 4, Math.min(dx, mapEl.offsetWidth - maxR - 4));
+        dy = Math.max(-minT + 4, Math.min(dy, mapEl.offsetHeight - maxB - 4));
+        els.forEach((el) => {
+          const base = __floatBtnBase[el.id];
+          if (!base) return;
+          el.style.left = Math.round(base.left + dx) + "px";
+          el.style.top = Math.round(base.top + dy) + "px";
+        });
+      }
+      function __floatBtnApply() { FLOAT_BTN_GROUPS.forEach(__floatBtnApplyGroup); }
+
+      function __initFloatBtnDrag() {
+        if (!__isTouchDevice()) return;          // 모바일 전용
+        const mapEl = document.getElementById("map");
+        if (!mapEl) return;
+        const all = FLOAT_BTN_GROUPS.flatMap(__floatGroupEls);
+        if (!all.length) return;
+        if (!__floatBtnBase) {
+          __floatBtnBase = {};
+          try {
+            const sv = JSON.parse(localStorage.getItem(FLOAT_BTN_KEY) || "null");
+            if (sv) FLOAT_BTN_GROUPS.forEach((g) => {
+              if (sv[g.key] && typeof sv[g.key].rx === "number") __floatBtnOff[g.key] = sv[g.key];
+            });
+          } catch (e) {}
+          window.addEventListener("resize", () => { try { __floatBtnApply(); } catch (e) {} });
+        }
+        all.forEach((el) => { if (!__floatBtnBase[el.id]) __floatBtnBase[el.id] = __floatBtnBaseOf(el); });
+        __floatBtnApply();
+
+        FLOAT_BTN_GROUPS.forEach((g) => {
+          const els = __floatGroupEls(g);
+          els.forEach((el) => {
+            if (el.__floatDragBound) return;
+            el.__floatDragBound = true;
+            el.style.touchAction = "none";
+            el.style.webkitTouchCallout = "none";
+            el.style.userSelect = "none";
+            let timer = null, dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+            const end = () => {
+              if (timer) { clearTimeout(timer); timer = null; }
+              if (!dragging) return;
+              dragging = false;
+              __floatGroupEls(g).forEach((e2) => { e2.style.opacity = ""; });
+              try { localStorage.setItem(FLOAT_BTN_KEY, JSON.stringify(__floatBtnOff)); } catch (e) {}
+              setTimeout(() => { __floatBtnDragged = false; }, 400);   // 뒤따라오는 click·touchend 무시
+            };
+            el.addEventListener("pointerdown", (ev) => {
+              if (ev.pointerType !== "touch") return;
+              sx = ev.clientX; sy = ev.clientY;
+              const mm = document.getElementById("map");
+              const off = __floatBtnOff[g.key] || { rx: 0, ry: 0 };
+              ox = off.rx * mm.offsetWidth; oy = off.ry * mm.offsetHeight;
+              timer = setTimeout(() => {
+                dragging = true;
+                __floatBtnDragged = true;
+                try { el.setPointerCapture(ev.pointerId); } catch (e) {}
+                try { navigator.vibrate && navigator.vibrate(15); } catch (e) {}
+                __floatGroupEls(g).forEach((e2) => { e2.style.opacity = "0.75"; });
+              }, 450);
+            }, { passive: true });
+            el.addEventListener("pointermove", (ev) => {
+              if (!dragging) {
+                if (timer && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 8) { clearTimeout(timer); timer = null; }
+                return;
+              }
+              ev.preventDefault(); ev.stopPropagation();
+              const mm = document.getElementById("map");
+              __floatBtnOff[g.key] = { rx: (ox + ev.clientX - sx) / mm.offsetWidth, ry: (oy + ev.clientY - sy) / mm.offsetHeight };
+              __floatBtnApplyGroup(g);
+            }, { passive: false });
+            ["pointerup", "pointercancel", "lostpointercapture"].forEach((t) => el.addEventListener(t, end));
+            // 드래그로 끝났으면 버튼 동작을 막는다(사진 메모는 click·touchend·pointerup 세 곳에 걸려 있다)
+            ["click", "touchend", "pointerup"].forEach((t) => el.addEventListener(t, (ev) => {
+              if (__floatBtnDragged) { ev.preventDefault(); ev.stopImmediatePropagation(); }
+            }, true));
+          });
+        });
       }
 
       // ✅ 가짜 전체화면 진입/해제 시 UI 상태만 관리
