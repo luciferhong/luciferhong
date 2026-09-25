@@ -22679,13 +22679,21 @@ const originalBase64 = event.target.result;
       // ── 지도 왼쪽 떠 있는 단추(현재 위치·사진 메모·추적 중지) 길게 눌러 옮기기 (2026-09-23 사용자 요청, **모바일 전용**) ──
       // 세 단추는 한 덩어리로 움직인다(추적 중지는 사진 메모 바로 아래에 붙어 있어 따로 옮기면 겹친다 — 사용자 지정).
       // 위치는 지도 크기 대비 **비율**로 저장한다. 화면을 돌리거나 다른 기기에서 열어도 비슷한 자리에 뜬다.
-      const FLOAT_BTN_KEY = "hongbuMapBtnPos_v2";
+      // v3: 자리를 **가장 가까운 모서리 기준 절대 거리(px)** 로 적는다.
+      // v2 는 "CSS 기본자리(left:8px)에서 옮긴 거리 ÷ 지도 폭" 이라는 비율이라, 화면 폭이 바뀌면
+      // 모서리와의 간격이 폭에 비례해 벌어졌다 — 폴드 커버(좁은 화면)에서 오른쪽 끝에 붙여 둔 단추가
+      // 펼친 화면에서 한참 안쪽으로 들어오던 원인(2026-09-26 사용자 보고, 실측: 폭 450에서 여백 8px 로
+      // 맞추면 폭 1400 에서 156px, 2000 에서 249px 로 벌어진다). v2 값은 첫 로드 때 한 번 변환한다.
+      const FLOAT_BTN_KEY = "hongbuMapBtnPos_v3";
+      const FLOAT_BTN_KEY_V2 = "hongbuMapBtnPos_v2";
       // ⚠ **두 덩어리로 나눈다**(2026-09-23 사용자 지정): 현재 위치 ↔ 위치 추적 중지는 한 짝(추적을 켜면 바로 아래에 뜬다),
       //   사진 메모는 따로 움직인다. 각 덩어리의 자리는 지도 크기 대비 비율로 따로 저장한다.
       const FLOAT_BTN_GROUPS = [{ key: "loc", ids: ["mapLocateBtn", "mapStopBtn"] },
                                 { key: "photo", ids: ["mapPhotoBtn"] }];
       let __floatBtnBase = null;                       // id → {left, top} (CSS 원래 자리)
-      let __floatBtnOff = { loc: { rx: 0, ry: 0 }, photo: { rx: 0, ry: 0 } };
+      // null 이면 CSS 기본자리 그대로. 값이 있으면 {ax:"left"|"right", dx, ay:"top"|"bottom", dy} (px)
+      let __floatBtnOff = { loc: null, photo: null };
+      let __floatBtnV2Pending = null;                  // v2 → v3 변환 대기(base 가 준비된 뒤 처리)
       let __floatBtnDragged = false;                   // 드래그로 끝났으면 클릭 동작을 막는다
       window.__floatBtnDragged = false;                // 단추 동작 코드에서 보는 값(등록 순서와 무관하게 막기 위해)
       window.__floatBtnDragging = false;
@@ -22705,26 +22713,73 @@ const originalBase64 = event.target.result;
       function __floatGroupEls(g) {
         return g.ids.map((id) => document.getElementById(id)).filter(Boolean);
       }
+      // 덩어리가 CSS 기본자리에서 차지하는 사각형(이동량 0 기준)
+      function __floatGroupBox(g) {
+        if (!__floatBtnBase) return null;
+        const pairs = __floatGroupEls(g)
+          .map((el) => ({ el, base: __floatBtnBase[el.id] }))
+          .filter((p) => p.base);
+        if (!pairs.length) return null;
+        const w = (el) => el.offsetWidth || 40;
+        const h = (el) => el.offsetHeight || 40;
+        return {
+          minL: Math.min(...pairs.map((p) => p.base.left)),
+          minT: Math.min(...pairs.map((p) => p.base.top)),
+          maxR: Math.max(...pairs.map((p) => p.base.left + w(p.el))),
+          maxB: Math.max(...pairs.map((p) => p.base.top + h(p.el))),
+        };
+      }
+
+      // 기본자리로부터의 이동량(px) → 가장 가까운 모서리 기준 거리로 환산해 저장 형태로 만든다.
+      // 단추를 오른쪽에 두면 오른쪽 모서리에서 잰 거리를 적으므로, 화면이 넓어져도 그 간격 그대로 붙는다.
+      function __floatBtnOffFromDelta(g, dx, dy) {
+        const mapEl = document.getElementById("map");
+        const box = __floatGroupBox(g);
+        if (!mapEl || !box) return null;
+        const W = mapEl.offsetWidth, H = mapEl.offsetHeight;
+        const gL = box.minL + dx, gR = box.maxR + dx;
+        const gT = box.minT + dy, gB = box.maxB + dy;
+        const ax = (gL + gR) / 2 < W / 2 ? "left" : "right";
+        const ay = (gT + gB) / 2 < H / 2 ? "top" : "bottom";
+        return {
+          ax, dx: Math.round(ax === "left" ? gL : W - gR),
+          ay, dy: Math.round(ay === "top" ? gT : H - gB),
+        };
+      }
+
       function __floatBtnApplyGroup(g) {
         const mapEl = document.getElementById("map");
         const els = __floatGroupEls(g);
-        if (!mapEl || !__floatBtnBase || !els.length) return;
-        const off = __floatBtnOff[g.key] || { rx: 0, ry: 0 };
-        let dx = off.rx * mapEl.offsetWidth, dy = off.ry * mapEl.offsetHeight;
+        const box = __floatGroupBox(g);
+        if (!mapEl || !box || !els.length) return;
+        const W = mapEl.offsetWidth, H = mapEl.offsetHeight;
+        const off = __floatBtnOff[g.key];
+        let dx = 0, dy = 0;
+        if (off && typeof off.dx === "number") {
+          dx = off.ax === "right" ? W - off.dx - box.maxR : off.dx - box.minL;
+          dy = off.ay === "bottom" ? H - off.dy - box.maxB : off.dy - box.minT;
+        }
         // 화면 밖으로 나가지 않게 덩어리 전체를 지도 안으로 당긴다
-        const b = els.map((el) => __floatBtnBase[el.id]).filter(Boolean);
-        const size = (el) => ({ w: el.offsetWidth || 40, h: el.offsetHeight || 40 });
-        const minL = Math.min(...b.map((x) => x.left)), minT = Math.min(...b.map((x) => x.top));
-        const maxR = Math.max(...els.map((el, i) => b[i].left + size(el).w));
-        const maxB = Math.max(...els.map((el, i) => b[i].top + size(el).h));
-        dx = Math.max(-minL + 4, Math.min(dx, mapEl.offsetWidth - maxR - 4));
-        dy = Math.max(-minT + 4, Math.min(dy, mapEl.offsetHeight - maxB - 4));
+        dx = Math.max(-box.minL + 4, Math.min(dx, W - box.maxR - 4));
+        dy = Math.max(-box.minT + 4, Math.min(dy, H - box.maxB - 4));
         els.forEach((el) => {
           const base = __floatBtnBase[el.id];
           if (!base) return;
           el.style.left = Math.round(base.left + dx) + "px";
           el.style.top = Math.round(base.top + dy) + "px";
         });
+      }
+
+      // 지금 화면에 적용돼 있는 이동량(px)을 읽는다. 드래그 시작점으로 쓴다.
+      function __floatBtnCurrentDelta(g) {
+        const el = __floatGroupEls(g)[0];
+        const base = el && __floatBtnBase ? __floatBtnBase[el.id] : null;
+        if (!el || !base) return { x: 0, y: 0 };
+        const l = parseFloat(el.style.left), t = parseFloat(el.style.top);
+        return {
+          x: (Number.isFinite(l) ? l : base.left) - base.left,
+          y: (Number.isFinite(t) ? t : base.top) - base.top,
+        };
       }
       function __floatBtnApply() { FLOAT_BTN_GROUPS.forEach(__floatBtnApplyGroup); }
 
@@ -22738,13 +22793,29 @@ const originalBase64 = event.target.result;
           __floatBtnBase = {};
           try {
             const sv = JSON.parse(localStorage.getItem(FLOAT_BTN_KEY) || "null");
-            if (sv) FLOAT_BTN_GROUPS.forEach((g) => {
-              if (sv[g.key] && typeof sv[g.key].rx === "number") __floatBtnOff[g.key] = sv[g.key];
-            });
+            if (sv) {
+              FLOAT_BTN_GROUPS.forEach((g) => {
+                if (sv[g.key] && typeof sv[g.key].dx === "number") __floatBtnOff[g.key] = sv[g.key];
+              });
+            } else {
+              // 예전 비율 저장(v2)이 남아 있으면 지금 화면 기준으로 한 번 환산한다 → 자리를 다시 잡을 필요 없음
+              const old = JSON.parse(localStorage.getItem(FLOAT_BTN_KEY_V2) || "null");
+              if (old) __floatBtnV2Pending = old;
+            }
           } catch (e) {}
           window.addEventListener("resize", () => { try { __floatBtnApply(); } catch (e) {} });
         }
         all.forEach((el) => { if (!__floatBtnBase[el.id]) __floatBtnBase[el.id] = __floatBtnBaseOf(el); });
+        if (__floatBtnV2Pending) {
+          const mapEl = document.getElementById("map");
+          FLOAT_BTN_GROUPS.forEach((g) => {
+            const o = __floatBtnV2Pending[g.key];
+            if (!o || typeof o.rx !== "number" || !mapEl) return;
+            __floatBtnOff[g.key] = __floatBtnOffFromDelta(g, o.rx * mapEl.offsetWidth, o.ry * mapEl.offsetHeight);
+          });
+          __floatBtnV2Pending = null;
+          try { localStorage.setItem(FLOAT_BTN_KEY, JSON.stringify(__floatBtnOff)); } catch (e) {}
+        }
         __floatBtnApply();
 
         FLOAT_BTN_GROUPS.forEach((g) => {
@@ -22774,9 +22845,8 @@ const originalBase64 = event.target.result;
               const t0 = ev.touches && ev.touches[0];
               if (!t0) return;
               sx = t0.clientX; sy = t0.clientY;
-              const mm = document.getElementById("map");
-              const off = __floatBtnOff[g.key] || { rx: 0, ry: 0 };
-              ox = off.rx * mm.offsetWidth; oy = off.ry * mm.offsetHeight;
+              const cur = __floatBtnCurrentDelta(g);
+              ox = cur.x; oy = cur.y;
               if (timer) clearTimeout(timer);
               timer = setTimeout(() => {
                 timer = null;
@@ -22796,8 +22866,7 @@ const originalBase64 = event.target.result;
                 return;
               }
               ev.preventDefault(); ev.stopPropagation();
-              const mm = document.getElementById("map");
-              __floatBtnOff[g.key] = { rx: (ox + t0.clientX - sx) / mm.offsetWidth, ry: (oy + t0.clientY - sy) / mm.offsetHeight };
+              __floatBtnOff[g.key] = __floatBtnOffFromDelta(g, ox + t0.clientX - sx, oy + t0.clientY - sy);
               __floatBtnApplyGroup(g);
               if (safety) clearTimeout(safety);
               safety = setTimeout(end, 4000);
