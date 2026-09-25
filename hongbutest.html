@@ -8159,8 +8159,18 @@
         panel.style.bottom = "auto";
         // 내용이 적어도 지도 영역 세로를 꽉 채우는 사이드패널(고정 높이 = 보이는 지도 높이).
         // base CSS `max-height: 80vh`가 인라인을 잘라내므로 !important로 강제. 넘치면 내부 스크롤.
-        panel.style.setProperty("height", h + "px", "important");
-        panel.style.setProperty("max-height", h + "px", "important");
+        // ⚠ 패널은 content-box(전역 box-sizing 규칙이 없다) — height 는 내용 영역 높이라
+        // 상하 패딩(14+14)·테두리만큼 실제 높이가 더 커져 지도 아래 버튼줄을 덮었다.
+        // 폭(PC 400px, 표 8열 기준)을 건드리지 않으려고 box-sizing 대신 세로 여백만 빼서 맞춘다.
+        const cs = getComputedStyle(panel);
+        const chrome =
+          (parseFloat(cs.paddingTop) || 0) +
+          (parseFloat(cs.paddingBottom) || 0) +
+          (parseFloat(cs.borderTopWidth) || 0) +
+          (parseFloat(cs.borderBottomWidth) || 0);
+        const inner = Math.max(0, h - chrome);
+        panel.style.setProperty("height", inner + "px", "important");
+        panel.style.setProperty("max-height", inner + "px", "important");
       }
       // 스크롤/리사이즈/방향전환 시 재도킹(패널 열려 있을 때만 동작)
       (function __bindDockListeners() {
@@ -8168,6 +8178,11 @@
         window.addEventListener("scroll", relayout, { passive: true });
         window.addEventListener("resize", relayout);
         window.addEventListener("orientationchange", relayout);
+        // 툴바 줄 수가 바뀌면(체크박스를 켜고 끄면 2줄↔3줄) 지도 높이만 변하고 window resize 는 오지 않는다.
+        try {
+          const mapEl = document.getElementById("map");
+          if (mapEl && window.ResizeObserver) new ResizeObserver(relayout).observe(mapEl);
+        } catch (e) {}
       })();
 
       // ?focus=<네이버단지id> 딥링크: 지도를 해당 단지로 이동 + 상세 모달 열기(미매칭 확인용 바로가기)
