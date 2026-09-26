@@ -525,7 +525,62 @@ function deriveSggName(rows){
   return set.size === 1 ? Array.from(set)[0] : '';
 }
 
-  function downloadExcel(){
+  // ── 미그룹핑(평형별 원본) 시트용 데이터 ─────────────────────────────────────
+  // aptCntApartments.json 은 (전용면적·구조·방·욕실) 로 묶어 세대수를 합산한 것이다.
+  // 예: 어떤 단지의 84㎡ 459세대는 원래 76 + 79 + 304 세 줄이었다.
+  // 홍부 아파트 모달이 보여주는 그 원본 줄은 aptDetail1/2.json 의 '타입정보' 에 있다.
+  // gzip 합계 1.75MB 라 **엑셀 다운로드를 처음 누를 때만** 받는다.
+  let aptDetail = null;      // { 단지코드: { 타입정보:[...] } }
+  let aptDetailLoading = null;
+
+  function loadAptDetail(){
+    if(aptDetail) return Promise.resolve(aptDetail);
+    if(aptDetailLoading) return aptDetailLoading;
+    aptDetailLoading = Promise.all([
+      fetch('aptDetail1.json').then(r=>r.json()),
+      fetch('aptDetail2.json').then(r=>r.json()),
+    ]).then(([a,b])=>{ aptDetail = Object.assign({}, a, b); return aptDetail; });
+    return aptDetailLoading;
+  }
+
+  // 그룹핑된 행 하나를 원본 평형 줄들로 되돌린다(같은 전용면적·구조·방·욕실인 타입정보 전부).
+  // aptDetail 에 없는 단지(약 0.7%)나 일치하는 타입이 없으면 그룹핑 행을 그대로 한 줄 남겨 누락을 막는다.
+  function expandRow(r){
+    const base = {
+      시도명:r['시도명']||'', 시군구:r['시군구']||'', 읍면동:r['읍면동']||'', 유형:r['유형']||'',
+      단지코드:r['단지코드']||'', 단지명:r['단지명']||'', 사용승인일:r['사용승인일']||'', 총세대수:r['총세대수'],
+    };
+    const d = aptDetail && aptDetail[String(r['단지코드'])];
+    const types = (d && d['타입정보']) || [];
+    const area = toNum(r['전용면적']);
+    const hit = types.filter(t =>
+      toNum(t['전용면적'])===area &&
+      String(t['구조']||'')===String(r['구조']||'') &&
+      toNum(t['방 갯수'])===toNum(r['방수']) &&
+      toNum(t['화장실 갯수'])===toNum(r['욕실수'])
+    );
+    if(!hit.length){
+      return [Object.assign({}, base, {
+        공급평수:'', 공급면적:'', 전용면적:r['전용면적'], 구조:r['구조']||'',
+        방수:r['방수'], 욕실수:r['욕실수'], 타입:r['평형명']||'', '평형별 세대수':r['평형별 세대수'],
+      })];
+    }
+    return hit.map(t => Object.assign({}, base, {
+      공급평수:t['공급평수'], 공급면적:t['공급면적'], 전용면적:t['전용면적'], 구조:t['구조']||'',
+      방수:t['방 갯수'], 욕실수:t['화장실 갯수'], 타입:t['타입']||'', '평형별 세대수':t['평형 세대수'],
+    }));
+  }
+
+  const GROUPED_HEADERS = ['시도명','시군구','읍면동','유형','단지코드','단지명','사용승인일','총세대수','전용면적','구조','방수','욕실수','평형명','평형별 세대수'];
+  const RAW_HEADERS     = ['시도명','시군구','읍면동','유형','단지코드','단지명','사용승인일','총세대수','공급평수','공급면적','전용면적','구조','방수','욕실수','타입','평형별 세대수'];
+
+  function sheetOf(rows, headers){
+    const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+    headers.forEach((h,i)=>{ const c = XLSX.utils.encode_col(i)+'1'; if(ws[c]) ws[c].v = h; });
+    return ws;
+  }
+
+  async function downloadExcel(){
   const rows = (filteredDetail.length ? filteredDetail : apartments);
   if(!rows.length){ alert('다운로드할 데이터가 없습니다.'); return; }
 
@@ -536,12 +591,25 @@ function deriveSggName(rows){
   }
   const filename = sggName ? `${sggName}.xlsx` : 'apartments_all.xlsx';
 
-  const headers=['시도명','시군구','읍면동','유형','단지코드','단지명','사용승인일','총세대수','전용면적', '구조', '방수', '욕실수', '평형명', '평형별 세대수'];
-  const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
-  headers.forEach((h,i)=>{ const c = XLSX.utils.encode_col(i)+'1'; if(ws[c]) ws[c].v = h; });
+  // 평형 원본 데이터를 받는 동안 버튼을 잠근다(처음 한 번만 실제로 받는다)
+  const label = downloadBtn.textContent;
+  downloadBtn.disabled = true;
+  downloadBtn.textContent = '평형 원본 불러오는 중…';
+  let raw = [];
+  try{
+    await loadAptDetail();
+    for(const r of rows) raw.push(...expandRow(r));
+  }catch(e){
+    console.warn('aptDetail 로드 실패 — 미그룹핑 시트는 그룹핑 값으로 채운다:', e);
+    for(const r of rows) raw.push(...expandRow(r)); // aptDetail 이 없으면 폴백 경로로 들어간다
+  }finally{
+    downloadBtn.disabled = false;
+    downloadBtn.textContent = label;
+  }
 
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '아파트단지');
+  XLSX.utils.book_append_sheet(wb, sheetOf(rows, GROUPED_HEADERS), '그룹핑');
+  XLSX.utils.book_append_sheet(wb, sheetOf(raw,  RAW_HEADERS),     '평형원본');
   XLSX.writeFile(wb, filename);
 }
 

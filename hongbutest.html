@@ -2183,6 +2183,8 @@
         <label><input type="checkbox" id="over85Filter" />대형포함</label>
         <label><input type="checkbox" id="excludePresale" />분양권 제외</label>
       </span>
+      <!-- 임장지 단지수 뷰어(aptCnt.html)를 오버레이 iframe 으로 띄운다 (2026-09-26). 지하철 노선 단추와 같은 모양 -->
+      <button id="aptCntOpenBtn" type="button" onclick="__aptCntOpen()" title="시군구별 단지수·평형 상세 (aptCnt.html)" style="font-size:11px;font-weight:bold;padding:2px 9px;cursor:pointer;color:#333333 !important;background:#ffffff !important;border:1px solid #bbbbbb;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.2);">🏢 단지 리스트</button>
       <button id="metroLinesBtn" type="button" title="지하철 노선 표시(metroHong 이식)" style="font-size:11px;font-weight:bold;padding:2px 9px;cursor:pointer;color:#fff;background:#a83c12;border:1px solid #8a300d;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.2);">🚆 지하철 노선</button>
       <!-- 초등학교 묶음 (2026-09-23 사용자 요청: 고등학교 묶음과 같은 방식) -->
       <span id="elemGroup" style="display:inline-flex;align-items:center;gap:5px;padding:2px 8px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;">
@@ -3628,6 +3630,9 @@
         // 🔄 idle 이벤트 중복 등록 방지
         if (!window.__mapIdleListenerReady) {
           naver.maps.Event.addListener(window.map, "idle", () => {
+            // ⚠ 맨 앞에 둔다 — 아래 updateMarkers() 등이 예외를 내면 콜백이 거기서 끊겨
+            //   뒤에 있던 호출이 영영 실행되지 않는다(2026-09-26 첫 로드에서 실제로 안 떴다).
+            try { __bcUpdate(); } catch (e) {} // 상단 중앙 시도 > 시군구 표기
             updateMarkers(window.map.getBounds());
             // (☁ 지연 로드의 지도 이동 갱신은 제거 — 2026-09-18 사용자 결정: 접속 시 선로드 + 탭 복귀 시 1회 + 단지 클릭으로 충분)
             if (window.__schoolsReady) updateSchoolMarkers();
@@ -3695,6 +3700,8 @@
           }
           window.__mapIdleListenerReady = true;
         }
+        // 첫 화면에서도 바로 표기 — idle 을 기다리지 않는다(지도 재생성 시에도 같이 갱신)
+        try { __bcUpdate(); } catch (e) {}
         if (window.mapHandler) {
           naver.maps.Event.clearListeners(window.map, "rightclick"); // 이전 이벤트 제거
         }
@@ -21964,6 +21971,215 @@ const originalBase64 = event.target.result;
           console.error("❌ 삭제 중 오류:", e);
           alert("❌ 메모 삭제 중 오류가 발생했습니다.");
         }
+      }
+
+      // ───────────────────────────────────────────────────────────────────────────
+      // 지도 상단 중앙 "시도 › 시군구" 표기 (2026-09-26, 카카오맵 방식)
+      //   판정은 이미 있는 __sggAtLatLng() 를 그대로 쓴다 — sigPrepared → emdPrepared →
+      //   admPrepared → sigGeojsonRaw 순으로 보고, 아무것도 없으면 loadSigBoundaryOnce() 를
+      //   알아서 시작한다(fetchWithETagCache = IndexedDB 캐시라 브라우저당 1회).
+      //   이름은 시도=코드 앞 2자리 맵, 시군구=경계 피처의 이름 필드(sig:sgg_nm / adm:sggnm).
+      // ───────────────────────────────────────────────────────────────────────────
+      const __BC = { el: null, lastKey: "", lastCode: "", loadTried: false };
+
+      // ⚠ 시도 이름은 전용 맵을 쓴다. __SYNC_SIDO_CODE_NAME_MAP 은 상수처럼 보이지만
+      //   런타임에 apt.json 의 sidoNm 으로 덮어써져 '인천시'·'부산시'·'전남광주시' 같은
+      //   비표준 이름이 들어간다(2026-09-26 실측: 8곳 중 6곳이 틀리게 나왔다).
+      const __BC_SIDO = {
+        "11": "서울특별시", "26": "부산광역시", "27": "대구광역시", "28": "인천광역시",
+        "29": "광주광역시", "30": "대전광역시", "31": "울산광역시", "36": "세종특별자치시",
+        "41": "경기도", "42": "강원특별자치도", "43": "충청북도", "44": "충청남도",
+        "45": "전북특별자치도", "46": "전라남도", "47": "경상북도", "48": "경상남도",
+        "50": "제주특별자치도", "51": "강원특별자치도", "52": "전북특별자치도",
+      };
+
+      // 시군구 코드 5자리로 이름을 찾는다. 메모리에 올라온 경계에서만 뽑는다(추가 다운로드 없음).
+      function __bcSggName(code5) {
+        if (!code5) return "";
+        try {
+          for (const f of sigPrepared || []) {
+            if (String(f.properties?.sgg_cd || "").substring(0, 5) === code5) return f.properties.sgg_nm || "";
+          }
+          for (const f of (sigGeojsonRaw && sigGeojsonRaw.features) || []) {
+            if (String(f.properties?.sgg_cd || "").substring(0, 5) === code5) return f.properties.sgg_nm || "";
+          }
+          for (const f of admPrepared || []) {
+            if (String(f.properties?.sgg || "").substring(0, 5) === code5) return f.properties.sggnm || "";
+          }
+        } catch (e) {}
+        // 드라이브 동기화용 인덱스가 올라와 있으면 그것도 본다(법정동만 로드된 경우의 폴백)
+        try {
+          return __syncSigunguNameByCode5.get(code5) || "";
+        } catch (e) {
+          return "";
+        }
+      }
+
+      function __bcBuild() {
+        if (__BC.el) return __BC.el;
+        const st = document.createElement("style");
+        st.id = "mapBreadcrumbStyle";
+        st.textContent = `
+#mapBreadcrumb{position:fixed;z-index:9000;display:none;align-items:center;gap:2px;
+  padding:7px 14px;background:#fff;border:1px solid #e2e5e9;border-radius:10px;
+  box-shadow:0 2px 10px rgba(0,0,0,.16);font-size:15px;font-weight:600;color:#1f2328;
+  white-space:nowrap;pointer-events:none;user-select:none;letter-spacing:-.2px}
+#mapBreadcrumb.on{display:inline-flex}
+#mapBreadcrumb .bc-sep{color:#9aa3ad;font-weight:300;margin:0 9px;font-size:1.45em;line-height:1;position:relative;top:1px}
+@media (max-width:700px){#mapBreadcrumb{font-size:13px;padding:5px 11px}}
+`;
+        document.head.appendChild(st);
+        const el = document.createElement("div");
+        el.id = "mapBreadcrumb";
+        document.body.appendChild(el); // ⚠ body 직속 + fixed (지도 DOM 에 끼우지 않는다)
+        __BC.el = el;
+        if (!window.__bcPlaceReady) {
+          window.__bcPlaceReady = true;
+          window.addEventListener("resize", () => __bcPlace());
+          window.addEventListener("orientationchange", () => __bcPlace());
+          try {
+            new ResizeObserver(() => __bcPlace()).observe(document.getElementById("map"));
+          } catch (e) {}
+        }
+        return el;
+      }
+
+      // 지도 영역의 상단 가운데에 놓는다 (사이드바·툴바 높이가 바뀌어도 따라간다)
+      function __bcPlace() {
+        const el = __BC.el;
+        if (!el || !el.classList.contains("on")) return;
+        const r = document.getElementById("map")?.getBoundingClientRect();
+        if (!r || !r.width) return;
+        el.style.top = Math.round(r.top + 12) + "px";
+        el.style.left = Math.round(r.left + r.width / 2 - el.offsetWidth / 2) + "px";
+      }
+
+      function __bcUpdate() {
+        if (!window.map || typeof __sggAtLatLng !== "function") return;
+        const c = window.map.getCenter();
+        if (!c) return;
+        const code = __sggAtLatLng(c.lat(), c.lng()); // 경계가 없으면 내부에서 로드를 시작하고 null
+        const el = __bcBuild();
+        if (!code) {
+          // ⚠ 첫 로드에서는 idle 이 한 번뿐이라 여기서 끝내면 영영 안 뜬다.
+          //   (2026-09-26 실측: 2초 시점 경계 0개 → 숨김, 4초에 252개가 도착해도 다시 그릴 트리거가 없어
+          //    지도를 움직이기 전까지 계속 숨김이었다.)
+          //   → 폴링하지 말고 **경계 로드가 끝나는 시점에 딱 한 번** 다시 그린다.
+          if (!__BC.lastCode) el.classList.remove("on");
+          if (!__BC.loadTried && typeof loadSigBoundaryOnce === "function") {
+            __BC.loadTried = true;
+            loadSigBoundaryOnce()
+              .catch(() => {})
+              .finally(() => {
+                try {
+                  __bcUpdate();
+                } catch (e) {}
+              });
+          }
+          return;
+        }
+        const sido = __BC_SIDO[code.substring(0, 2)] || "";
+        let sgg = __bcSggName(code);
+        if (sgg === sido) sgg = ""; // 세종처럼 시도=시군구인 곳은 한 번만 적는다
+        const key = sido + "|" + sgg;
+        __BC.lastCode = code;
+        if (key === __BC.lastKey && el.classList.contains("on")) return; // 같은 지역이면 다시 그리지 않는다
+        __BC.lastKey = key;
+        if (!sido && !sgg) {
+          el.classList.remove("on");
+          return;
+        }
+        el.innerHTML =
+          (sido ? `<span>${sido}</span>` : "") +
+          (sido && sgg ? `<span class="bc-sep">›</span>` : "") +
+          (sgg ? `<span>${sgg}</span>` : "");
+        el.classList.add("on");
+        __bcPlace();
+      }
+
+      // ───────────────────────────────────────────────────────────────────────────
+      // 임장지 단지수 뷰어 (aptCnt.html) 오버레이 — 2026-09-26
+      //   같은 오리진의 Pages 파일이라 iframe 삽입에 제약이 없다(X-Frame-Options·CSP 없음 실측).
+      //   코드를 합치지 않고 iframe 으로 띄우는 이유: aptCnt.html 이 `*{box-sizing}`·`body`·
+      //   `input[type=checkbox]`·`table` 같은 전역 CSS 19개를 쓰기 때문에 그대로 합치면
+      //   홍부 툴바·모달·표가 전부 영향을 받는다. iframe 은 문서가 격리돼 그 위험이 0이다.
+      //   데이터(aptCntApartments.json)는 gzip 전송 1.4MB + ETag 304 라 부담이 적고,
+      //   **처음 열 때까지 요청하지 않는다**(src 를 그때 넣는다). 한 번 열면 그대로 두어 재방문이 즉시다.
+      // ───────────────────────────────────────────────────────────────────────────
+      const __APTCNT = { overlay: null, frame: null, loaded: false };
+
+      function __aptCntBuild() {
+        if (__APTCNT.overlay) return __APTCNT.overlay;
+
+        const st = document.createElement("style");
+        st.id = "aptCntStyle";
+        st.textContent = `
+#aptCntOverlay{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;
+  background:rgba(15,23,42,.55);backdrop-filter:blur(2px)}
+#aptCntOverlay.on{display:flex}
+#aptCntOverlay .ac-box{display:flex;flex-direction:column;width:min(1700px,96vw);height:min(1000px,94vh);
+  background:#f5f4f2;border-radius:14px;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.4)}
+#aptCntOverlay .ac-head{display:flex;align-items:center;gap:10px;padding:9px 14px;background:#fff;
+  border-bottom:1px solid #e8e4df;flex:0 0 auto}
+#aptCntOverlay .ac-title{font-weight:700;font-size:14px;color:#1a1a1a;margin-right:auto}
+#aptCntOverlay .ac-hint{font-size:11px;color:#8a8a8a}
+#aptCntOverlay .ac-btn{border:1px solid #d4cec7;background:#fff;color:#1a1a1a;border-radius:8px;
+  padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+#aptCntOverlay .ac-btn:hover{background:#faf7f4}
+#aptCntOverlay .ac-close{border:0;background:#e07b39;color:#fff;border-radius:8px;padding:5px 12px;
+  font-size:13px;font-weight:700;cursor:pointer}
+#aptCntOverlay iframe{flex:1 1 auto;width:100%;border:0;background:#f5f4f2}
+@media (max-width:700px){#aptCntOverlay .ac-box{width:100vw;height:100vh;border-radius:0}}
+`;
+        document.head.appendChild(st);
+
+        const ov = document.createElement("div");
+        ov.id = "aptCntOverlay";
+        ov.innerHTML = `
+<div class="ac-box">
+  <div class="ac-head">
+    <span class="ac-title">🏢 임장지 단지 몇 개지?</span>
+    <span class="ac-hint">Esc 또는 바깥을 눌러도 닫힙니다</span>
+    <button type="button" class="ac-btn ac-new">새 탭으로 열기</button>
+    <button type="button" class="ac-close">닫기</button>
+  </div>
+</div>`;
+        const frame = document.createElement("iframe");
+        frame.id = "aptCntFrame";
+        frame.title = "임장지 단지수";
+        ov.querySelector(".ac-box").appendChild(frame);
+        document.body.appendChild(ov); // ⚠ 지도 DOM 에 끼우지 않는다 (body 직속 + fixed)
+
+        ov.querySelector(".ac-close").addEventListener("click", __aptCntClose);
+        ov.querySelector(".ac-new").addEventListener("click", () => window.open("aptCnt.html", "_blank"));
+        // 바깥(어두운 배경) 클릭으로 닫기 — 상자 안 클릭은 무시
+        ov.addEventListener("click", (e) => {
+          if (e.target === ov) __aptCntClose();
+        });
+
+        __APTCNT.overlay = ov;
+        __APTCNT.frame = frame;
+        return ov;
+      }
+
+      function __aptCntOpen() {
+        const ov = __aptCntBuild();
+        // 처음 열 때만 로드한다(그 전에는 1.4MB 를 받지 않는다). 이후엔 그대로 둬 상태·스크롤이 유지된다.
+        if (!__APTCNT.loaded) {
+          __APTCNT.frame.src = "aptCnt.html";
+          __APTCNT.loaded = true;
+        }
+        ov.classList.add("on");
+        if (!window.__aptCntEscReady) {
+          window.__aptCntEscReady = true;
+          document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && __APTCNT.overlay?.classList.contains("on")) __aptCntClose();
+          });
+        }
+      }
+
+      function __aptCntClose() {
+        __APTCNT.overlay?.classList.remove("on");
       }
 
       // ───────────────────────────────────────────────────────────────────────────
