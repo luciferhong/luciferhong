@@ -2222,7 +2222,7 @@
       <label><input type="checkbox" id="toggleRouteMemo" checked />경로 보기</label>
       <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기 보기</label>
       <!-- 지도 상단 가운데 "시도 › 시군구" 표기 (2026-09-26). id 가 있어 uiState_v1 에 자동 저장·복원된다 -->
-      <label title="지도 위쪽 가운데에 보고 있는 시도·시군구 이름을 표시합니다. 그 이름을 누르면 다른 지역으로 이동합니다(GPS 현재 위치와는 무관)"><input type="checkbox" id="toggleBreadcrumb" checked />지역표시줄 보기</label>
+      <label title="지도 위쪽 가운데에 보고 있는 시도·시군구 이름을 표시합니다. 그 이름을 누르면 다른 지역으로 이동합니다(GPS 현재 위치와는 무관)"><input type="checkbox" id="toggleBreadcrumb" checked />지역 이동창 표시</label>
       <label style="margin-left:2px;"><span style="color:#cbd5e1;margin-right:4px;">|</span>🏢 아파트경계
         <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
           <option value="none">표시 안함</option>
@@ -4611,6 +4611,13 @@
 
       // ⚠ 줌 15+ 에서는 sigPrepared 가 로드되지 않을 수 있다(2026-09-22 실사고: 덮개가 안 그려졌다)
       //   → 각 줌 구간이 자기 데이터(시군구/법정동)를 넘겨 그 code5 폴리곤을 지운다.
+      // 하이라이트 대상(고정된 것이 있으면 그것, 없으면 마우스가 올라간 시군구).
+      // 경계선을 굵게 그릴지 판정할 때도 같은 규칙을 쓴다(2026-09-26 사용자 요청).
+      function __hlKeepSet() {
+        if (!__hlOn()) return null;
+        return __pinnedSgg.size ? __pinnedSgg : (__hoverSgg5 ? new Set([__hoverSgg5]) : null);
+      }
+
       function __dimOutsideHover(ctx, toXY, bounds, w, h, features, codeOf) {
         const keep = __pinnedSgg.size ? __pinnedSgg : (__hoverSgg5 ? new Set([__hoverSgg5]) : null);
         if (!keep) return;
@@ -4903,6 +4910,7 @@
 
           // 호버 시군구 스포트라이트 (법정동·행정동 어느 쪽이든 [하이라이트] 체크 시 적용)
           if (__hlOn()) __dimOutsideHover(ctx, toXY, bounds, w, h, sigPrepared, (f) => f.properties?.sgg_cd);
+          const __keep = __hlKeepSet(); // 하이라이트된 구역만 테두리를 굵게
 
           // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
           ctx.globalAlpha = 0.9;
@@ -4910,13 +4918,13 @@
             if (!bboxIntersects(bounds, f.bbox)) continue;
             const code5 = String(f.properties?.sgg_cd ?? "");
             if (_selCodes5 && _selCodes5.has(code5)) continue; // 선택은 스킵
-            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, lineColor, 2.5);
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, lineColor, __keep && __keep.has(code5) ? 3.2 : 1.6);
           }
           for (const f of sigPrepared) {
             if (!bboxIntersects(bounds, f.bbox)) continue;
             const code5 = String(f.properties?.sgg_cd ?? "");
             if (!(_selCodes5 && _selCodes5.has(code5))) continue; // 비선택은 스킵
-            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, lineColor, 2.5);
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, lineColor, __keep && __keep.has(code5) ? 3.2 : 1.6);
           }
           ctx.globalAlpha = 1;
 
@@ -4943,19 +4951,20 @@
           // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
           // 호버 시군구 스포트라이트 (2026-09-22 사용자 요청)
           if (__hlOn()) __dimOutsideHover(ctx, toXY, bounds, w, h, emdPrepared, (f) => getEmdCodeFromProps(f.properties));
+          const __keep = __hlKeepSet(); // 하이라이트된 구역만 테두리를 굵게
 
           ctx.globalAlpha = 0.9;
           for (const f of emdPrepared) {
             if (!bboxIntersects(bounds, f.bbox)) continue;
             const code5 = getEmdCodeFromProps(f.properties).substring(0, 5);
             if (_selCodes5 && _selCodes5.has(code5)) continue;
-            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, "#000000", 1.5);
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, "#000000", __keep && __keep.has(code5) ? 2.4 : 1);
           }
           for (const f of emdPrepared) {
             if (!bboxIntersects(bounds, f.bbox)) continue;
             const code5 = getEmdCodeFromProps(f.properties).substring(0, 5);
             if (!(_selCodes5 && _selCodes5.has(code5))) continue;
-            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, "#000000", 1.5);
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, "#000000", __keep && __keep.has(code5) ? 2.4 : 1);
           }
           ctx.globalAlpha = 1;
 
@@ -4980,6 +4989,7 @@
 
           // 호버 시군구 스포트라이트 (행정동 경계에도 적용, 2026-09-22 사용자 요청)
           if (__hlOn()) __dimOutsideHover(ctx, toXY, bounds, w, h, admPrepared, (f) => getAdmCodeFromProps(f.properties));
+          const __keep = __hlKeepSet(); // 하이라이트된 구역만 테두리를 굵게
 
           // 비선택 먼저 → 선택(핑크) 나중에 그려서 핑크가 항상 위
           ctx.globalAlpha = 0.9;
@@ -4987,13 +4997,13 @@
             if (!bboxIntersects(bounds, f.bbox)) continue;
             const code5 = getAdmCodeFromProps(f.properties).substring(0, 5);
             if (_selCodes5 && _selCodes5.has(code5)) continue;
-            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, "#1e40af", 1.5);
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, false, "#1e40af", __keep && __keep.has(code5) ? 2.4 : 1);
           }
           for (const f of admPrepared) {
             if (!bboxIntersects(bounds, f.bbox)) continue;
             const code5 = getAdmCodeFromProps(f.properties).substring(0, 5);
             if (!(_selCodes5 && _selCodes5.has(code5))) continue;
-            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, "#1e40af", 1.5);
+            _drawFeatureOnCanvas(ctx, toXY, f.geometry, true, "#1e40af", __keep && __keep.has(code5) ? 2.4 : 1);
           }
           ctx.globalAlpha = 1;
 
