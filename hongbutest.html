@@ -21986,7 +21986,8 @@ const originalBase64 = event.target.result;
         candIdx: 0,            // 선택한 목적지의 후보 경로 번호
         seq: 0,                // 모드 전환·재요청 시 옛 응답 무시용
         paneHidden: false,     // 마커 층을 가려 둔 상태인지
-        dep: { iso: "", label: "" }, // 출발 시각(다음 평일 오전 9시)
+        dep: { iso: "", label: "" }, // 출발 시각(기본: 공휴일 아닌 가장 가까운 월요일 07:30)
+        savedView: null,       // 길찾기를 열기 직전의 지도 중심·줌 (닫을 때 되돌린다)
       };
 
       function __wrApiBase() {
@@ -22280,6 +22281,32 @@ const originalBase64 = event.target.result;
         __wrClearOverlays();
         __WR.panel?.classList.remove("on");
         __WR.selId = null;
+        __wrRestoreView();
+      }
+
+      // 길찾기를 열기 직전의 지도 위치·줌을 기억했다가 닫을 때 되돌린다 (2026-09-26 사용자 요청).
+      // 경로를 그리면 fitBounds 로 화면이 통째로 움직이기 때문.
+      function __wrSaveView() {
+        // 패널이 열린 채 다시 우클릭해 여는 경우까지 덮어쓰면 '원래 자리'를 잃는다 — 처음 것만 남긴다
+        if (__WR.savedView) return;
+        try {
+          if (!window.map) return;
+          __WR.savedView = { center: window.map.getCenter(), zoom: window.map.getZoom() };
+        } catch (_) {
+          __WR.savedView = null;
+        }
+      }
+
+      function __wrRestoreView() {
+        const v = __WR.savedView;
+        __WR.savedView = null;
+        if (!v || !window.map) return;
+        try {
+          window.map.setZoom(v.zoom);
+          window.map.setCenter(v.center);
+        } catch (e) {
+          console.warn("지도 원위치 복원 실패:", e);
+        }
       }
 
       // 지도 재생성(백지도 토글 등) 후 옛 map 에 붙은 오버레이를 새 map 으로 옮긴다.
@@ -22695,6 +22722,7 @@ const originalBase64 = event.target.result;
           alert("적어도 하나의 목적지를 선택하세요.");
           return;
         }
+        __wrSaveView(); // 닫을 때 되돌릴 지도 상태를 먼저 기억한다
         __WR.start = { lat: Number(startLat), lng: Number(startLng) };
         __WR.dests = dests.slice();
         const hm = __wrDepartHM(); // 마지막으로 고른 시·분(기본 07:30)
