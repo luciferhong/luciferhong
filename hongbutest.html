@@ -2221,6 +2221,8 @@
       <label><input type="checkbox" id="togglePhotoMemo" checked />포토메모 보기</label>
       <label><input type="checkbox" id="toggleRouteMemo" checked />경로 보기</label>
       <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기 보기</label>
+      <!-- 지도 상단 가운데 "시도 › 시군구" 표기 (2026-09-26). id 가 있어 uiState_v1 에 자동 저장·복원된다 -->
+      <label><input type="checkbox" id="toggleBreadcrumb" checked />현재 시군구 표시</label>
       <label style="margin-left:2px;"><span style="color:#cbd5e1;margin-right:4px;">|</span>🏢 아파트경계
         <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
           <option value="none">표시 안함</option>
@@ -22151,8 +22153,14 @@ const originalBase64 = event.target.result;
         return false;
       }
 
+      // 툴바 [현재 시군구 표시] 체크 상태 (기본 켜짐). uiState_v1 에 자동 저장된다.
+      function __bcEnabled() {
+        const cb = document.getElementById("toggleBreadcrumb");
+        return !cb || cb.checked;
+      }
+
       function __bcSyncModalHide() {
-        const on = __bcModalOpen();
+        const on = __bcModalOpen() || !__bcEnabled();
         __BC.el?.classList.toggle("bc-hidden", on);
         document.getElementById("bcMenu")?.classList.toggle("bc-hidden", on);
       }
@@ -22313,19 +22321,31 @@ const originalBase64 = event.target.result;
         __bcRender(prefix);
       }
 
+      // 지도 안에 넣는다 — 지도와 한 몸으로 움직여야 스크롤·리사이즈에도 어긋나지 않는다
+      // (2026-09-26 사용자 지정: "보정하지 말고 지도 영역 안에").
+      // 전체화면 버튼(#mapMaxBtn)도 같은 방식으로 #map 안에 들어간다.
+      function __bcAttach() {
+        const mapEl = document.getElementById("map");
+        if (mapEl && __BC.el && __BC.el.parentElement !== mapEl) mapEl.appendChild(__BC.el);
+      }
+
       function __bcBuild() {
-        if (__BC.el) return __BC.el;
+        if (__BC.el) {
+          __bcAttach(); // 지도를 다시 만들면 #map 안이 비워지므로 다시 붙인다
+          return __BC.el;
+        }
         const st = document.createElement("style");
         st.id = "mapBreadcrumbStyle";
         st.textContent = `
 /* ⚠ z-index 는 전체화면 래퍼(#mapWrapper.fullscreen = 900000) 보다 위여야 한다.
    9000 으로 뒀더니 전체화면에서 래퍼에 가려 안 보였다(2026-09-26 사용자 보고). 팝업(999999) 보다는 아래. */
-#mapBreadcrumb{position:fixed;z-index:999000;display:none;align-items:center;gap:2px;
+#mapBreadcrumb{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:999000;display:none;align-items:center;gap:2px;
   padding:7px 14px;background:#fff;border:1.5px solid #c9b88f;border-radius:10px;
   box-shadow:0 2px 10px rgba(0,0,0,.16);font-size:15px;font-weight:600;color:#1f2328;
   white-space:nowrap;pointer-events:none;user-select:none;letter-spacing:-.2px}
 #mapBreadcrumb.on{display:inline-flex}
 #mapBreadcrumb.on.bc-hidden,#bcMenu.on.bc-hidden{display:none !important}
+#mapBreadcrumb.on.bc-offscreen{display:none !important}
 /* 글자만 클릭을 받는다 — 알약 전체가 받으면 그 위에서 지도 드래그가 막힌다 */
 #mapBreadcrumb .bc-go{pointer-events:auto;cursor:pointer;border-radius:5px;padding:1px 3px;margin:-1px -3px;
   transition:background .12s,color .12s}
@@ -22351,8 +22371,8 @@ const originalBase64 = event.target.result;
         document.head.appendChild(st);
         const el = document.createElement("div");
         el.id = "mapBreadcrumb";
-        document.body.appendChild(el); // ⚠ body 직속 + fixed (지도 DOM 에 끼우지 않는다)
         __BC.el = el;
+        __bcAttach();
         __bcWatchModals(); // 모달이 뜨면 감추도록 감시 시작
         try {
           __bcSyncModalHide(); // 페이지 시작부터 모달이 떠 있는 경우도 반영
@@ -22361,6 +22381,18 @@ const originalBase64 = event.target.result;
           window.__bcPlaceReady = true;
           window.addEventListener("resize", () => __bcPlace());
           window.addEventListener("orientationchange", () => __bcPlace());
+          // 목록은 body 직속 fixed 라 **페이지** 스크롤을 따라가지 않는다 → 그때만 닫는다.
+          // ⚠ 목록 **안**을 휠·화살표로 스크롤하는 것도 capture 로 잡혀 닫혔다
+          //   (2026-09-26 사용자 보고) — 스크롤된 대상이 목록이면 무시한다.
+          window.addEventListener(
+            "scroll",
+            (ev) => {
+              const menu = document.getElementById("bcMenu");
+              if (menu && (ev.target === menu || menu.contains(ev.target))) return;
+              __bcMenuClose();
+            },
+            { passive: true, capture: true },
+          );
           try {
             document.fonts?.ready?.then(() => __bcPlace()); // 글꼴이 바뀌면 글자 폭도 바뀐다
           } catch (e) {}
@@ -22372,23 +22404,13 @@ const originalBase64 = event.target.result;
       }
 
       // 지도 영역의 상단 가운데에 놓는다 (사이드바·툴바 높이가 바뀌어도 따라간다)
+      // 위치는 CSS(absolute + translateX(-50%)) 가 정한다 — 지도 안에 들어 있어
+      // 스크롤·리사이즈·전체화면에 **지도와 함께 움직인다**(좌표 보정 없음).
+      // 남은 일은 지도 밖으로 붙어 뜨는 목록(#bcMenu)을 닫는 것뿐.
       function __bcPlace() {
         const el = __BC.el;
-        if (!el || !el.classList.contains("on")) return;
-        const r = document.getElementById("map")?.getBoundingClientRect();
-        if (!r || !r.width) return;
-        // ⚠ offsetWidth 는 정수라 반올림 오차가 쌓이고, 방금 보이게 한 직후엔 0 으로 잡히기도 한다.
-        //   0 으로 재면 left = 지도중앙 이 되어 **오른쪽으로 치우쳐** 보인다(2026-09-26 사용자 보고).
-        const w = el.getBoundingClientRect().width || el.offsetWidth;
-        el.style.top = Math.round(r.top + 12) + "px";
-        el.style.left = Math.round(r.left + r.width / 2 - w / 2) + "px";
-        if (!w && !__BC.placing) {
-          __BC.placing = true;
-          requestAnimationFrame(() => {
-            __BC.placing = false;
-            __bcPlace();
-          });
-        }
+        if (!el) return;
+        __bcAttach();
       }
 
       function __bcUpdate() {
@@ -22450,6 +22472,7 @@ const originalBase64 = event.target.result;
         });
         __bcMenuClose(); // 지역이 바뀌면 열려 있던 목록은 닫는다
         el.classList.add("on");
+        el.classList.toggle("bc-hidden", !__bcEnabled() || __bcModalOpen());
         __bcPlace();
         requestAnimationFrame(() => {
           try {
@@ -23311,6 +23334,14 @@ const originalBase64 = event.target.result;
         __wrLoad();
       }
       window.__wrOpen = __wrOpen;
+
+      // [현재 시군구 표시] 체크 변경 → 바로 반영 (켜면 아직 그린 적 없을 때를 위해 한 번 갱신)
+      document.getElementById("toggleBreadcrumb")?.addEventListener("change", () => {
+        try {
+          __bcSyncModalHide();
+          if (__bcEnabled()) __bcUpdate();
+        } catch (e) {}
+      });
       window.__WR = __WR; // 콘솔·검증 스크립트에서 상태를 들여다보기 위한 노출
 
       async function findWay() {
