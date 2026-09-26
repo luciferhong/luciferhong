@@ -86,6 +86,18 @@
       body.map-fullscreen > #routeDrawHelp {
         display: none !important;
       }
+      /* 전체화면일 때 지도 아래 버튼줄(경로/면적/GPX·링크·메모·Drive)도 감춘다.
+         예전에는 이것만 남아 화면 아래에 스크롤이 생겼다(2026-09-26 사용자 요청).
+         #map 이 100dvh 라 버튼줄이 문서를 그만큼 넘기게 만드는 것이 스크롤의 원인이므로,
+         숨기는 것과 함께 문서 스크롤 자체도 막는다. */
+      body.fullscreen-active > #routeControls,
+      body.map-fullscreen > #routeControls {
+        display: none !important;
+      }
+      body.fullscreen-active,
+      body.map-fullscreen {
+        overflow: hidden !important;
+      }
 
       html,
       body {
@@ -697,6 +709,13 @@
       /* ✅ 마커 단지명 hover 확장 (즉시 나타남, 딜레이 없음) */
       .apartment-marker-container {
         display: inline-block;
+        /* ⚠ position 은 **모든** 아파트 마커에 똑같이 준다. 예전에는 S/L 배지가 붙는 마커에만
+           JS 로 relative 를 걸었는데, 그러면 그 마커만 positioned 로 승격돼 static 인 옆 마커보다
+           **항상 위에** 그려진다(네이버가 두 마커 컨테이너를 같은 부모에 z-index:auto 로 나란히 둔다).
+           그래서 배지뿐 아니라 그 마커 전체가 옆 단지를 덮었다(2026-09-26 사용자 보고 → 실측 확인).
+           isolation 은 배지(z-index:1)가 마커 밖과 겨루지 않도록 stacking context 를 만든다. */
+        position: relative;
+        isolation: isolate;
       }
       .apartment-marker-container.expanded .apartment-name-marker {
         max-width: none !important;
@@ -2672,74 +2691,83 @@
         }
 
         initUI() {
-          document.getElementById("startPolyline").addEventListener("click", () => this.startPolylineMode());
-          document.getElementById("undoLastPointButton").addEventListener("click", () => this.undoLastPoint());
-          document.getElementById("completePolyline").addEventListener("click", () => this.completePolyline()); // ✅ 추가됨*
-          document.getElementById("continuePolyline").addEventListener("click", () => this.continuePolylineMode());
-          document.getElementById("downloadGPX").addEventListener("click", () => this.downloadGPX());
-          // ✅ 시세지도Ver2 가져오기 (임포트)
-          document.getElementById("siseVer2ImportBtn").addEventListener("click", () => {
-            const input = document.createElement("input");
-            input.type = "file";
-            input.accept = "application/json";
-            input.onchange = function (event) {
-              const file = event.target.files[0];
-              if (file) {
-                importFromSiseVer2JSON(file);
-              }
-            };
-            input.click();
-          });
+          // ⚠ 아래 DOM·document 리스너는 **최초 1회만** 건다. initUI() 는 new MapHandler() 를 타고
+          //   createMap() 재호출(백지도 토글 등)마다 다시 도는데, 예전에는 같은 버튼에 리스너가 한 벌씩
+          //   쌓여 [지도 지우기] 한 번에 clearMap() 이 여러 번 실행됐다(2026-09-25 CDP 실측: 재생성 2회 뒤 3벌).
+          //   그래서 콜백은 this 가 아니라 window.mapHandler 로 위임한다 — 리스너는 한 벌이지만 언제나
+          //   **가장 최근에 만들어진 MapHandler** 로 간다. 지도 인스턴스에 거는 아래 naver.maps.Event 는
+          //   map 마다 새로 걸어야 하므로 이 가드 밖에 둔다.
+          if (!window.__mapHandlerUIReady) {
+            window.__mapHandlerUIReady = true;
+            document.getElementById("startPolyline").addEventListener("click", () => window.mapHandler?.startPolylineMode());
+            document.getElementById("undoLastPointButton").addEventListener("click", () => window.mapHandler?.undoLastPoint());
+            document.getElementById("completePolyline").addEventListener("click", () => window.mapHandler?.completePolyline()); // ✅ 추가됨*
+            document.getElementById("continuePolyline").addEventListener("click", () => window.mapHandler?.continuePolylineMode());
+            document.getElementById("downloadGPX").addEventListener("click", () => window.mapHandler?.downloadGPX());
+            // ✅ 시세지도Ver2 가져오기 (임포트)
+            document.getElementById("siseVer2ImportBtn").addEventListener("click", () => {
+              const input = document.createElement("input");
+              input.type = "file";
+              input.accept = "application/json";
+              input.onchange = function (event) {
+                const file = event.target.files[0];
+                if (file) {
+                  importFromSiseVer2JSON(file);
+                }
+              };
+              input.click();
+            });
 
-          // ☁️ 드라이브에서 siseVer2 시세 가져오기
-          document.getElementById("siseVer2DriveImportBtn").addEventListener("click", () => {
-            importSiseVer2FromDrive();
-          });
+            // ☁️ 드라이브에서 siseVer2 시세 가져오기
+            document.getElementById("siseVer2DriveImportBtn").addEventListener("click", () => {
+              importSiseVer2FromDrive();
+            });
 
-          document.getElementById("siseVer2ResetBtn").addEventListener("click", () => {
-            const confirmReset = confirm(
-              "⚠️ 시세지도Ver2 데이터를 초기화하면 복구할 수 없습니다. 시세지도Ver2에서 백업을 권장드립니다. \n계속하시겠습니까?",
-            );
-            if (!confirmReset) return;
+            document.getElementById("siseVer2ResetBtn").addEventListener("click", () => {
+              const confirmReset = confirm(
+                "⚠️ 시세지도Ver2 데이터를 초기화하면 복구할 수 없습니다. 시세지도Ver2에서 백업을 권장드립니다. \n계속하시겠습니까?",
+              );
+              if (!confirmReset) return;
 
-            initIndexedDB()
-              .then((db) => {
-                const transaction = db.transaction(["importSiseVer2"], "readwrite");
-                const store = transaction.objectStore("importSiseVer2");
+              initIndexedDB()
+                .then((db) => {
+                  const transaction = db.transaction(["importSiseVer2"], "readwrite");
+                  const store = transaction.objectStore("importSiseVer2");
 
-                const clearRequest = store.clear(); // ✅ 전체 삭제
+                  const clearRequest = store.clear(); // ✅ 전체 삭제
 
-                clearRequest.onsuccess = function () {
-                  alert("✅ 시세지도Ver2 데이터가 초기화되었습니다.");
-                };
+                  clearRequest.onsuccess = function () {
+                    alert("✅ 시세지도Ver2 데이터가 초기화되었습니다.");
+                  };
 
-                clearRequest.onerror = function (event) {
-                  console.error("❌ 시세지도 초기화 실패:", event.target.error);
+                  clearRequest.onerror = function (event) {
+                    console.error("❌ 시세지도 초기화 실패:", event.target.error);
+                    alert("❌ 초기화 중 오류가 발생했습니다.");
+                  };
+                })
+                .catch((e) => {
+                  console.error("❌ IndexedDB 열기 실패:", e);
                   alert("❌ 초기화 중 오류가 발생했습니다.");
-                };
-              })
-              .catch((e) => {
-                console.error("❌ IndexedDB 열기 실패:", e);
-                alert("❌ 초기화 중 오류가 발생했습니다.");
-              });
-          });
+                });
+            });
 
-          document
-            .getElementById("uploadGPX")
-            .addEventListener("click", () => document.getElementById("gpxFileInput").click());
+            document
+              .getElementById("uploadGPX")
+              .addEventListener("click", () => document.getElementById("gpxFileInput").click());
 
-          // 🔹 `this`를 `MapHandler` 인스턴스로 유지
-          document.getElementById("gpxFileInput").addEventListener("change", this.handleFileChange.bind(this));
+            // 🔹 `this`를 `MapHandler` 인스턴스로 유지
+            document.getElementById("gpxFileInput").addEventListener("change", (ev) => window.mapHandler?.handleFileChange(ev));
 
-          document.getElementById("clearMap").addEventListener("click", () => this.clearMap({ forgetStoredGpx: true }));
+            document.getElementById("clearMap").addEventListener("click", () => window.mapHandler?.clearMap({ forgetStoredGpx: true }));
 
-          document.addEventListener("keydown", (e) => {
-            if (e.key === "Escape") {
-              this.completePolyline();
-            } else if (e.key === "Backspace") {
-              this.undoLastPoint();
-            }
-          });
+            document.addEventListener("keydown", (e) => {
+              if (e.key === "Escape") {
+                window.mapHandler?.completePolyline();
+              } else if (e.key === "Backspace") {
+                window.mapHandler?.undoLastPoint();
+              }
+            });
+          }
 
           naver.maps.Event.addListener(this.map, "click", (e) => {
             if (!this.currentPolyline) {
@@ -3615,12 +3643,12 @@
                 _boundaryShowTimer = setTimeout(() => {
                   _boundaryZoomClearing = false;
                   try { drawBoundaryCanvas(); } catch (e) {}
-                  if (_boundaryCanvas) _boundaryCanvas.style.display = '';
+                  for (const c of _boundaryCanvasAll()) c.style.display = '';
                 }, 80);
               } else {
                 // 일반 드래그/패닝 — 즉시 갱신
                 try { drawBoundaryCanvas(); } catch (e) {}
-                if (_boundaryCanvas) _boundaryCanvas.style.display = '';
+                for (const c of _boundaryCanvasAll()) c.style.display = '';
               }
             } catch (e) {}
             // ✅ 메모 캐시 정리는 updateMarkers() 내부에서 keepIds 기준으로 이미 수행하므로
@@ -3630,7 +3658,8 @@
           // 드래그 중 canvas를 타일과 함께 transform으로 이동 (깜박임 방지)
           naver.maps.Event.addListener(window.map, "drag", () => {
             try {
-              const c = _boundaryCanvas;
+              const cs = _boundaryCanvasAll();
+              const c = cs[0];
               const a = window._boundaryCanvasAnchor;
               if (!c || !a) return;
               // 지도 내부(pane 층)에 끼운 경우 **부모가 지도와 함께 이미 움직인다** → 여기서 또 옮기면 두 배로 밀린다
@@ -3642,7 +3671,7 @@
               const _mY = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
               const dx = -((sw1.lng() - a.swLng) / a.lngRange) * a.w;
               const dy = ((_mY(sw1.lat()) - a.mercSW) / a.mercRange) * a.h;
-              c.style.transform = `translate(${dx}px, ${dy}px)`;
+              for (const cc of cs) cc.style.transform = `translate(${dx}px, ${dy}px)`;
             } catch (e) {}
           });
 
@@ -3652,12 +3681,18 @@
           });
 
           // wheel/터치 핀치 시작 즉시 canvas 숨김 (document 캐처 페이즈 — Naver Maps보다 먼저 실행)
-          document.addEventListener("wheel", () => {
-            try { _startBoundaryZoomClear(); } catch (e) {}
-          }, { passive: true, capture: true });
-          document.addEventListener("touchstart", (ev) => {
-            if (ev.touches.length >= 2) try { _startBoundaryZoomClear(); } catch (e) {}
-          }, { passive: true, capture: true });
+          // ⚠ 이 둘은 map 이 아니라 document 에 걸리므로 지도 인스턴스와 수명이 다르다. createMap() 재호출
+          //   (백지도 토글 등)마다 __mapIdleListenerReady 가 false 로 리셋돼 이 블록에 다시 들어오는데,
+          //   예전에는 여기서 같은 리스너가 한 벌씩 그대로 쌓였다(제거 코드 없음). 자체 가드로 최초 1회만 등록.
+          if (!window.__docZoomClearListenerReady) {
+            document.addEventListener("wheel", () => {
+              try { _startBoundaryZoomClear(); } catch (e) {}
+            }, { passive: true, capture: true });
+            document.addEventListener("touchstart", (ev) => {
+              if (ev.touches.length >= 2) try { _startBoundaryZoomClear(); } catch (e) {}
+            }, { passive: true, capture: true });
+            window.__docZoomClearListenerReady = true;
+          }
           window.__mapIdleListenerReady = true;
         }
         if (window.mapHandler) {
@@ -4275,11 +4310,6 @@
         };
       }
 
-      // 하위 호환용 래퍼
-      function getLabelLatLngByPolylabel(geometry, bbox) {
-        return getLabelDataByPolylabel(geometry, bbox).latlng;
-      }
-
       /* === LABEL AUTO-FIT (bbox → pixel → font-size) === */
       function _label_getBboxPixelSize(bbox, map) {
         try {
@@ -4386,6 +4416,13 @@
 
       // ─── Canvas 경계선 레이어 ───────────────────────────────────────
       let _boundaryCanvas = null;
+      // 읍면동·시군구 **라벨 전용** 캔버스. 선·채색은 마커 아래(z=50)에 깔지만 라벨은 마커 위(z=150)에
+      // 그려야 아파트·학교 마커에 가리지 않는다(2026-09-26 사용자 요청 "읍면동 라벨이 잘 보여야 한다").
+      // 두 캔버스 모두 pointer-events:none 이라 위에 있어도 마커 클릭을 막지 않는다.
+      let _boundaryLabelCanvas = null;
+      function _boundaryCanvasAll() {
+        return [_boundaryCanvas, _boundaryLabelCanvas].filter(Boolean);
+      }
 
       // 지도 크기가 바뀌면 다시 그린다 (2026-09-22 사용자 보고 "지도 이동시 하이라이트가 또 깨진다")
       // ⚠ 캔버스 크기·하이라이트 dim 사각형은 그릴 때의 `#map` 크기로 고정된다. **툴바 줄 수가 바뀌면**(체크박스를
@@ -4411,46 +4448,54 @@
       //   (사용자 3회 보고: "경계가 마커들을 가린다" → 200→100→99 로 낮춰도 그대로. 음수로 내리면 타일 뒤라 안 보인다).
       // → 네이버 pane 의 할아버지 DIV(z=1) 안에 넣고 z-index 50 을 준다. 타일 층(z=1)보다 위, 오버레이 층(z=100)보다 아래.
       //   그 DIV 는 드래그 때 transform 이 걸리지 않아(실측) 기존 앵커 이동 로직도 그대로 쓴다.
-      function _boundaryCanvasHost() {
+      function _boundaryCanvasHost(forLabel) {
         try {
           const pane = window.map && window.map.getPanes && window.map.getPanes().overlayLayer;
-          const overlayBox = pane && pane.parentElement;          // z=100 오버레이 묶음
+          const overlayBox = pane && pane.parentElement;          // z=100 오버레이 묶음(마커들)
           const host = overlayBox && overlayBox.parentElement;    // z=1, 타일 층과 형제
           const mapEl = document.getElementById("map");
-          if (host && mapEl && mapEl.contains(host)) return { host, before: overlayBox, z: 50 };
+          if (host && mapEl && mapEl.contains(host)) {
+            // 선·채색은 마커 **아래**(overlayBox 앞, z=50) / 라벨은 마커 **위**(overlayBox 뒤, z=150)
+            return forLabel
+              ? { host, before: overlayBox.nextSibling, z: 150 }
+              : { host, before: overlayBox, z: 50 };
+          }
         } catch (e) {}
-        return { host: document.getElementById("mapWrapper"), before: null, z: 99 };   // 폴백(예전 방식)
+        return { host: document.getElementById("mapWrapper"), before: null, z: forLabel ? 150 : 99 }; // 폴백(예전 방식)
       }
 
-      function _ensureBoundaryCanvas() {
-        if (_boundaryCanvas && _boundaryCanvas.isConnected) {
+      function __ensureBoundaryCanvasOf(forLabel) {
+        const cur = forLabel ? _boundaryLabelCanvas : _boundaryCanvas;
+        if (cur && cur.isConnected) {
           // 지도 준비 전에 만들어져 폴백(#mapWrapper)에 붙었다면, pane 이 생긴 뒤 지도 안쪽으로 옮긴다
           const mapEl = document.getElementById("map");
-          if (mapEl && !mapEl.contains(_boundaryCanvas)) {
-            const h = _boundaryCanvasHost();
+          if (mapEl && !mapEl.contains(cur)) {
+            const h = _boundaryCanvasHost(forLabel);
             if (h.host && mapEl.contains(h.host)) {
-              _boundaryCanvas.style.zIndex = h.z;
-              if (h.before) h.host.insertBefore(_boundaryCanvas, h.before); else h.host.appendChild(_boundaryCanvas);
+              cur.style.zIndex = h.z;
+              if (h.before) h.host.insertBefore(cur, h.before); else h.host.appendChild(cur);
             }
           }
-          return _boundaryCanvas;
+          return cur;
         }
-        const { host: wrapper, before, z: hostZ } = _boundaryCanvasHost();
+        const { host: wrapper, before, z: hostZ } = _boundaryCanvasHost(forLabel);
         if (!wrapper) return null;
-        if (_boundaryCanvas) { try { _boundaryCanvas.remove(); } catch (e) {} }
+        if (cur) { try { cur.remove(); } catch (e) {} }
         const c = document.createElement("canvas");
         c.style.cssText = `position:absolute;top:0;left:0;pointer-events:none;z-index:${hostZ};`;
         if (_boundaryZoomClearing) c.style.display = 'none';
         if (before) wrapper.insertBefore(c, before); else wrapper.appendChild(c);
-        _boundaryCanvas = c;
+        if (forLabel) _boundaryLabelCanvas = c; else _boundaryCanvas = c;
         return c;
       }
+      function _ensureBoundaryCanvas() { return __ensureBoundaryCanvasOf(false); }
+      function _ensureBoundaryLabelCanvas() { return __ensureBoundaryCanvasOf(true); }
 
       function clearBoundaryCanvas() {
-        const c = _boundaryCanvas;
-        if (!c) return;
-        const ctx = c.getContext("2d");
-        if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+        for (const c of _boundaryCanvasAll()) {
+          const ctx = c.getContext("2d");
+          if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+        }
       }
 
       // 줌 애니메이션 중 canvas를 숨기는 처리 (clear + visibility 동시 적용)
@@ -4461,7 +4506,7 @@
         // 예약된 show 타이머 취소 — 연속 wheel tick 사이 idle에서 표시되는 것 방지
         if (_boundaryShowTimer) { clearTimeout(_boundaryShowTimer); _boundaryShowTimer = null; }
         // canvas를 즉시 DOM에서 숨김 (display:none — 렌더 트리에서 완전 제거)
-        if (_boundaryCanvas) _boundaryCanvas.style.display = 'none';
+        for (const c of _boundaryCanvasAll()) c.style.display = 'none';
         try { clearBoundaryCanvas(); } catch (e) {}
       }
 
@@ -4782,6 +4827,7 @@
         const canvas = _ensureBoundaryCanvas();
         if (!canvas) return;
 
+        const labelCanvas = _ensureBoundaryLabelCanvas();
         const mapEl = document.getElementById("map");
         const w = mapEl.offsetWidth;
         const h = mapEl.offsetHeight;
@@ -4792,22 +4838,34 @@
           canvas.style.width = w + 'px';
           canvas.style.height = h + 'px';
         }
+        if (labelCanvas && (labelCanvas.width !== Math.round(w * dpr) || labelCanvas.height !== Math.round(h * dpr))) {
+          labelCanvas.width = Math.round(w * dpr);
+          labelCanvas.height = Math.round(h * dpr);
+          labelCanvas.style.width = w + 'px';
+          labelCanvas.style.height = h + 'px';
+        }
         // ⚠ 지도 내부에 끼운 캔버스의 부모 DIV 는 **지도를 끌면 같이 움직이고 그대로 남는다**(실측: 드래그 후 부모가
         //   (-525,+120) 으로 이동). top/left 를 0 으로 두면 경계가 그만큼 어긋난 채 그려진다
         //   (2026-09-22 사용자 보고 "지도 이동하면 경계가 깨진다" — 화면 일부만 덮는 띠·엉뚱한 위치의 시군구).
         //   → 그릴 때마다 부모와 #map 의 화면 좌표 차이를 보정한다.
-        const hostEl = canvas.parentElement;
-        if (hostEl) {
-          const hr = hostEl.getBoundingClientRect();
-          const mr = mapEl.getBoundingClientRect();
-          const lx = Math.round(mr.left - hr.left), ly = Math.round(mr.top - hr.top);
-          if (canvas.style.left !== lx + 'px') canvas.style.left = lx + 'px';
-          if (canvas.style.top !== ly + 'px') canvas.style.top = ly + 'px';
-        }
-        const ctx = canvas.getContext("2d");
-        canvas.style.transform = ''; // 드래그 중 적용된 transform 초기화
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // DPR 스케일 적용
-        ctx.clearRect(0, 0, w, h);
+        const __alignCanvas = (cv) => {
+          const hostEl = cv.parentElement;
+          if (hostEl) {
+            const hr = hostEl.getBoundingClientRect();
+            const mr = mapEl.getBoundingClientRect();
+            const lx = Math.round(mr.left - hr.left), ly = Math.round(mr.top - hr.top);
+            if (cv.style.left !== lx + 'px') cv.style.left = lx + 'px';
+            if (cv.style.top !== ly + 'px') cv.style.top = ly + 'px';
+          }
+          const c2 = cv.getContext("2d");
+          cv.style.transform = ''; // 드래그 중 적용된 transform 초기화
+          c2.setTransform(dpr, 0, 0, dpr, 0, 0); // DPR 스케일 적용
+          c2.clearRect(0, 0, w, h);
+          return c2;
+        };
+        const ctx = __alignCanvas(canvas);
+        // 라벨은 마커 위 캔버스에 그린다. 만들지 못했으면 예전처럼 같은 캔버스에 그린다(기능 유지).
+        const lctx = labelCanvas ? __alignCanvas(labelCanvas) : ctx;
 
         const bounds = window.map.getBounds();
         if (!bounds) return;
@@ -4862,7 +4920,7 @@
             if (lx < -50 || ly < -50 || lx > w + 50 || ly > h + 50) continue;
             const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 8, max: 18, hideIfTooSmall: true });
             if (fs <= 0) continue;
-            _drawTextOnCanvas(ctx, name, "", lx, ly, fs, isAdminStyle ? "#1e40af" : "#000000");
+            _drawTextOnCanvas(lctx, name, "", lx, ly, fs, isAdminStyle ? "#1e40af" : "#000000");
           }
           // 드래그 추적용 기준점 저장 (SIG 블록에서 return하므로 여기서도 저장)
           window._boundaryCanvasAnchor = { swLng: sw.lng(), swLat: sw.lat(), mercSW, lngRange, mercRange, w, h };
@@ -4903,7 +4961,7 @@
             const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 8, max: 18, hideIfTooSmall: true });
             if (fs <= 0) continue;
             const subline = formatEmdSublineByCode(code8);
-            _drawTextOnCanvas(ctx, name, subline, lx, ly, fs, "#000000");
+            _drawTextOnCanvas(lctx, name, subline, lx, ly, fs, "#000000");
           }
         }
 
@@ -4942,7 +5000,7 @@
             const fs = _label_calcFitFontSize({ bbox: polylabelBbox, text: name, map: window.map, paddingPx: 4, min: 8, max: 18, hideIfTooSmall: true });
             if (fs <= 0) continue;
             const subline = formatAdmSublineByCode(code10);
-            _drawTextOnCanvas(ctx, name, subline, lx, ly, fs, "#1e40af");
+            _drawTextOnCanvas(lctx, name, subline, lx, ly, fs, "#1e40af");
           }
         }
         // 드래그 추적용 기준점 저장
@@ -5501,6 +5559,13 @@
 
         if (!searchInput || !resultsContainer) return;
 
+        // ⚠ 아래는 **최초 1회만**. 이 함수는 아파트 데이터를 불러올 때마다(= createMap 재호출마다) 호출되는데,
+        //   예전에는 검색창 input·document click·window scroll/resize 리스너가 한 벌씩 그대로 쌓였다.
+        //   내부가 전부 DOM 과 전역(window.map·apartmentData) 기반이라 다시 걸 이유가 없다.
+        //   ※ 플래그는 위의 early return 뒤에 세운다 — 요소가 아직 없어 돌아간 경우까지 등록을 막으면 안 된다.
+        if (window.__aptSearchListenersReady) return;
+        window.__aptSearchListenersReady = true;
+
         // 검색 결과 위치 업데이트 함수
         function updateResultsPosition() {
           const rect = searchInput.getBoundingClientRect();
@@ -5907,7 +5972,8 @@
           if (types.length === 0) return;
           const minArea = Math.min(...types.map((t) => Number(t["전용면적"]) || 0).filter((a) => a > 0));
           if (!Number.isFinite(minArea) || minArea <= 85) return;
-          markerElement.style.position = "relative";
+          // position/isolation 은 .apartment-marker-container 에서 모든 마커에 동일하게 준다
+          // (일부에만 걸면 그 마커가 옆 마커 위로 올라간다 — 위 CSS 주석 참고)
           const badge = document.createElement("span");
           badge.textContent = "L";
           badge.style = `
@@ -5926,7 +5992,7 @@
 			justify-content: center;
 			line-height: 1;
 			pointer-events: none;
-			z-index: 10;
+			z-index: 1;
 		`;
           markerElement.appendChild(badge);
         })();
@@ -5937,7 +6003,7 @@
           if (types.length === 0) return;
           const maxArea = Math.max(...types.map((t) => Number(t["전용면적"]) || 0).filter((a) => a > 0));
           if (!Number.isFinite(maxArea) || maxArea > 49) return;
-          markerElement.style.position = "relative";
+          // position/isolation 은 위 'L' 배지와 마찬가지로 CSS 에서 모든 마커에 동일하게 준다
           const badge = document.createElement("span");
           badge.textContent = "S";
           badge.style = `
@@ -5956,7 +6022,7 @@
 			justify-content: center;
 			line-height: 1;
 			pointer-events: none;
-			z-index: 10;
+			z-index: 1;
 		`;
           markerElement.appendChild(badge);
         })();
@@ -6939,9 +7005,15 @@
         }
 
         // ✅ OS의 자동 eviction 방지 (저장공간 부족 시 IndexedDB 삭제 예방)
-        if (navigator.storage && navigator.storage.persist) {
-          const granted = await navigator.storage.persist();
-          if (!granted) console.warn("⚠️ 영구 저장 권한 없음 - OS가 저장 데이터를 삭제할 수 있습니다.");
+        // ⚠ persist() 는 시크릿 모드/정책 차단 시 reject 한다. 감싸지 않으면 여기서 DOMContentLoaded 핸들러가
+        //   끊겨 아래 createMap() 까지 못 가고 지도가 아예 안 뜬다(아래 initIndexedDB 등과 같은 이유로 try 로 감쌈).
+        try {
+          if (navigator.storage && navigator.storage.persist) {
+            const granted = await navigator.storage.persist();
+            if (!granted) console.warn("⚠️ 영구 저장 권한 없음 - OS가 저장 데이터를 삭제할 수 있습니다.");
+          }
+        } catch (e) {
+          console.warn("⚠️ 영구 저장 요청 실패 — 계속 진행합니다:", e);
         }
 
         // IndexedDB/UI 복원은 실패해도 지도는 올라와야 한다. 예전에는 blocked로 initIndexedDB가 pending되면 여기서 무한 대기해 지도가 아예 안 떴다.
@@ -9726,9 +9798,150 @@ const originalBase64 = event.target.result;
       document.removeEventListener("keydown", handleKeyDown);
       document.addEventListener("keydown", handleKeyDown);
 
+      // ===== 우클릭 반경 표시 도우미 (2026-09-26) =====================================
+      // 사용자 요청 두 가지를 처리한다.
+      //  ① 표기가 북쪽 고정이라 아파트 밀집지역 마커를 가린다 → 12방향 중 가장 덜 가리는 쪽을 고른다.
+      //  ② 1km 뿐 아니라 800m·500m 도 고를 수 있게 한다 → 라벨 자체를 선택 버튼으로 만든다.
+      const RADIUS_OPTIONS = [
+        { m: 1000, label: "반경 1km" },
+        { m: 800, label: "반경 800m" },
+        { m: 500, label: "반경 500m" },
+      ];
+      const RADIUS_LABEL_W = 90; // 선택 라벨 묶음의 대략 폭(px)
+      const RADIUS_LABEL_H = 68; // 3줄이라 대략 높이(px)
+
+      // 위경도 → 현재 화면(viewport) 좌표. 지도 중앙이 #map 요소의 중앙이라는 점을 이용한다.
+      function __latLngToScreen(latlng) {
+        const proj = window.map?.getProjection?.();
+        const el = document.getElementById("map");
+        if (!proj || !el) return null;
+        const r = el.getBoundingClientRect();
+        const oC = proj.fromCoordToOffset(window.map.getCenter());
+        const o = proj.fromCoordToOffset(latlng);
+        return { x: r.left + r.width / 2 + (o.x - oC.x), y: r.top + r.height / 2 + (o.y - oC.y) };
+      }
+
+      // 중심에서 bearing(도, 0=북·시계방향)으로 distM 떨어진 좌표.
+      // 위도 1도 = 약 111,320m. 경도는 위도에 따라 좁아지므로 cos(lat) 로 나눈다.
+      function __offsetLatLng(center, bearingDeg, distM) {
+        const rad = (bearingDeg * Math.PI) / 180;
+        const dLat = (distM * Math.cos(rad)) / 111320;
+        const dLng = (distM * Math.sin(rad)) / (111320 * Math.cos((center.lat() * Math.PI) / 180));
+        return new naver.maps.LatLng(center.lat() + dLat, center.lng() + dLng);
+      }
+
+      // 화면에 떠 있는 마커들의 사각형.
+      // ⚠ 마커 컬렉션(apartmentMarkers 등)을 순회하지 않는다 — 배열이 아니라 **id→마커 plain object** 라
+      //   Array.isArray 로 걸러 0건이 되고, 그러면 모든 방향 점수가 같아져 늘 북쪽이 뽑힌다
+      //   (2026-09-26 사용자 지적 "1시 방향이 비었는데 왜 12시에 그리나"의 원인).
+      //   컬렉션 구조에 기대지 않고 지도 위 DOM 을 직접 훑는다 — 아파트·학교·스벅은 물론
+      //   지하철 역명·포토메모처럼 나중에 늘어난 오버레이까지 자동으로 포함된다.
+      function __visibleMarkerRects() {
+        const mapEl = document.getElementById("map");
+        if (!mapEl) return [];
+        const out = [];
+        // 지도 타일은 <img> 라 여기 걸리지 않는다. 마커 라벨만 한 크기(≤260×60)만 추린다.
+        mapEl.querySelectorAll("div").forEach((d) => {
+          const rc = d.getBoundingClientRect();
+          if (rc.width > 0 && rc.height > 0 && rc.width <= 260 && rc.height <= 60) out.push(rc);
+        });
+        return out;
+      }
+
+      function __rectsOverlap(a, b) {
+        return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+      }
+
+      // 마커를 가장 덜 가리는 bearing 을 고른다(모두 나쁘면 점수가 가장 낮은 쪽).
+      function __pickRadiusBearing(center, radiusM) {
+        const rects = __visibleMarkerRects();
+        const mapEl = document.getElementById("map");
+        const mapRect = mapEl ? mapEl.getBoundingClientRect() : null;
+        const c = __latLngToScreen(center);
+        if (!c || !mapRect) return 0; // 계산 불가하면 종전처럼 북쪽
+
+        let best = 0;
+        let bestScore = Infinity;
+        for (let i = 0; i < 12; i++) {
+          const bearing = i * 30;
+          const pEdge = __latLngToScreen(__offsetLatLng(center, bearing, radiusM));
+          const pMid = __latLngToScreen(__offsetLatLng(center, bearing, radiusM / 2));
+          if (!pEdge || !pMid) continue;
+
+          let score = 0;
+          const lab = {
+            left: pMid.x - RADIUS_LABEL_W / 2,
+            right: pMid.x + RADIUS_LABEL_W / 2,
+            top: pMid.y - RADIUS_LABEL_H / 2,
+            bottom: pMid.y + RADIUS_LABEL_H / 2,
+          };
+          // 라벨이 지도 밖으로 나가면 아예 안 보인다 — 가장 큰 벌점
+          if (
+            lab.left < mapRect.left ||
+            lab.right > mapRect.right ||
+            lab.top < mapRect.top ||
+            lab.bottom > mapRect.bottom
+          ) {
+            score += 1000;
+          }
+          // 라벨을 덮는 마커는 치명적(10), 점선 위를 지나기만 하면 가볍게(1)
+          for (const rc of rects) {
+            if (__rectsOverlap(lab, rc)) score += 10;
+          }
+          const STEPS = 16;
+          for (let k = 1; k <= STEPS; k++) {
+            const x = c.x + ((pEdge.x - c.x) * k) / STEPS;
+            const y = c.y + ((pEdge.y - c.y) * k) / STEPS;
+            for (const rc of rects) {
+              if (x >= rc.left && x <= rc.right && y >= rc.top && y <= rc.bottom) {
+                score += 1;
+                break;
+              }
+            }
+          }
+          // 동점이면 북 → 남 → 나머지 순으로 잡히도록 아주 작은 선호도만 준다
+          score += bearing === 0 ? 0 : bearing === 180 ? 0.1 : 0.2;
+
+          if (score < bestScore) {
+            bestScore = score;
+            best = bearing;
+          }
+        }
+        return best;
+      }
+
+      // 선택 라벨 HTML — 선택된 항목만 배경을 빨강으로 채운다
+      function __radiusLabelHtml(selectedM) {
+        const rows = RADIUS_OPTIONS.map((o) => {
+          const on = o.m === selectedM;
+          return (
+            '<div data-radius="' +
+            o.m +
+            '" style="cursor:pointer; padding:1px 8px; text-align:center; border:1px solid #FF0000;' +
+            " border-radius:10px; font-size:12px; font-weight:700; line-height:16px; white-space:nowrap;" +
+            " box-shadow:0 1px 2px rgba(0,0,0,0.2); background:" +
+            (on ? "#FF0000" : "rgba(255,255,255,0.94)") +
+            "; color:" +
+            (on ? "#fff" : "#FF0000") +
+            ';">' +
+            o.label +
+            "</div>"
+          );
+        }).join("");
+        return (
+          '<div style="transform:translate(-50%,-50%); display:flex; flex-direction:column; gap:3px;">' +
+          rows +
+          "</div>"
+        );
+      }
+
       function setupRightClickEvent() {
         let radiusCircle = null; // ✅ 반경 원 객체
         let centerMarker = null; // ✅ 반경 중심 마커
+        let radiusLabel = null; // ✅ 반경 선택 라벨(1km/800m/500m)
+        let radiusLine = null; // ✅ 중심 → 테두리 반지름 점선
+        let radiusM = 1000; // ✅ 현재 선택된 반경(m). 라벨을 눌러 바꾸면 다음 우클릭에도 그대로 쓴다.
+        let radiusBearing = null; // ✅ 이번 원의 표기 방향(도). 원을 새로 그릴 때만 정하고 그 뒤로는 고정.
 
         // ✅ 지도에서 우클릭 시 (반경 1km 원 + 중심 빨간 점 추가)
         naver.maps.Event.addListener(window.map, "mousedown", function (e) {
@@ -9748,6 +9961,16 @@ const originalBase64 = event.target.result;
             radiusCircle = null;
           }
 
+          if (radiusLabel) {
+            radiusLabel.setMap(null);
+            radiusLabel = null;
+          }
+
+          if (radiusLine) {
+            radiusLine.setMap(null);
+            radiusLine = null;
+          }
+
           if (centerMarker) {
             centerMarker.setMap(null);
             centerMarker = null;
@@ -9756,11 +9979,12 @@ const originalBase64 = event.target.result;
 
           if (document.getElementById("toggleFindWay")?.checked) return;
 
-          // ✅ 반경 1km 원 추가
+          // ✅ 반경 원 추가 (방향은 아래에서 새로 고른다)
+          radiusBearing = null;
           radiusCircle = new naver.maps.Circle({
             map: window.map,
             center: clickedPosition,
-            radius: 1000, // ✅ 반경 1km
+            radius: radiusM, // ✅ 선택된 반경(기본 1km)
             strokeColor: "#FF0000",
             strokeOpacity: 0.8,
             strokeWeight: 2,
@@ -9778,14 +10002,108 @@ const originalBase64 = event.target.result;
             },
           });
 
+          // ✅ 반경 표기 — 중심에서 테두리까지 점선을 긋고 그 **중간**에 선택 라벨을 둔다.
+          //    · 라벨만 테두리에 붙이면 지름인지 반지름인지 헷갈린다(사용자 지적) → 점선 + 중간 라벨.
+          //    · 방향은 북쪽 고정이 아니라 __pickRadiusBearing() 이 마커를 가장 덜 가리는 쪽을 고른다.
+          //    · 라벨은 1km/800m/500m 선택 버튼이며, 누르면 원 반경이 바뀌고 방향도 다시 고른다.
+          //    ⚠ 아래 panTo 로 지도가 움직이면 마커의 화면 위치가 전부 바뀌므로, 방향 계산은
+          //      이동이 끝난 뒤(idle)에 해야 의미가 있다. 그래서 여기서는 예약만 한다.
+          const __drawRadiusUI = () => {
+            if (!radiusCircle) return; // 그 사이 지워졌으면 무시
+            if (radiusLine) {
+              radiusLine.setMap(null);
+              radiusLine = null;
+            }
+            if (radiusLabel) {
+              radiusLabel.setMap(null);
+              radiusLabel = null;
+            }
+
+            // ⚠ 방향은 **이 원을 처음 그릴 때 한 번만** 정한다. 반경을 바꿀 때마다 다시 고르면
+            //   1km 는 1시, 800m 는 12시, 500m 는 6시처럼 표기가 튀어 혼란스럽다
+            //   (2026-09-26 사용자 지적: "방향이 정해졌다는 건 그 곳이 비었다는 뜻인데
+            //    거리에 따라 비어 있는 게 달라질 리 없다"). 한 번 고른 빈 방향을 계속 쓴다.
+            if (radiusBearing === null) {
+              try {
+                radiusBearing = __pickRadiusBearing(clickedPosition, radiusM);
+              } catch (e) {
+                console.warn("반경 라벨 방향 계산 실패 — 북쪽으로 그립니다:", e);
+                radiusBearing = 0;
+              }
+            }
+            const bearing = radiusBearing;
+
+            radiusLine = new naver.maps.Polyline({
+              map: window.map,
+              path: [clickedPosition, __offsetLatLng(clickedPosition, bearing, radiusM)],
+              strokeColor: "#FF0000",
+              strokeOpacity: 0.9,
+              strokeWeight: 2,
+              strokeStyle: "shortdash",
+              zIndex: 99,
+            });
+
+            radiusLabel = new naver.maps.Marker({
+              position: __offsetLatLng(clickedPosition, bearing, radiusM / 2),
+              map: window.map,
+              icon: {
+                // transform 으로 중앙 정렬 — 글자 폭이 바뀌어도 점선 위 가운데에 온다
+                content: __radiusLabelHtml(radiusM),
+                anchor: new naver.maps.Point(0, 0),
+              },
+              zIndex: 100,
+            });
+
+            // 라벨의 각 항목에 클릭을 연결한다. 마커 DOM 이 늦게 붙는 경우가 있어 한 번 더 시도한다.
+            const __bind = () => {
+              let el = null;
+              try {
+                el = radiusLabel?.getElement?.();
+              } catch (e) {}
+              if (!el) return;
+              el.querySelectorAll("[data-radius]").forEach((b) => {
+                if (b.__radiusBound) return;
+                b.__radiusBound = true;
+                // 지도로 전파되면 우클릭 토글·지도 클릭이 같이 도니 눌림 계열은 전부 막는다
+                ["mousedown", "touchstart", "contextmenu"].forEach((t) =>
+                  b.addEventListener(t, (ev) => ev.stopPropagation(), true),
+                );
+                b.addEventListener("click", (ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  const v = Number(b.getAttribute("data-radius"));
+                  if (!v || v === radiusM) return;
+                  radiusM = v;
+                  try {
+                    radiusCircle.setRadius(v);
+                  } catch (e) {
+                    console.warn("반경 변경 실패:", e);
+                  }
+                  __drawRadiusUI(); // 반경이 바뀌면 가리는 정도도 달라지므로 방향부터 다시 고른다
+                });
+              });
+            };
+            __bind();
+            setTimeout(__bind, 60);
+          };
+
           // ✅ 지도 중심을 클릭한 위치로 이동
           window.map.panTo(clickedPosition);
+
+          // 이동이 끝난 화면 기준으로 방향을 고른다. idle 이 안 오는 경우를 대비해 타이머도 건다.
+          naver.maps.Event.once(window.map, "idle", __drawRadiusUI);
+          setTimeout(__drawRadiusUI, 700);
         });
 
         // ✅ 기본적인 우클릭 메뉴 방지
-        document.addEventListener("contextmenu", function (e) {
-          e.preventDefault();
-        });
+        // ⚠ document 에 거는 리스너라 지도 인스턴스와 수명이 다르다. 이 함수는 createMap() 재호출마다
+        //   다시 도므로(위의 map mousedown 은 그래서 매번 필요) 여기만 최초 1회로 막는다.
+        if (!window.__docContextMenuBlocked) {
+          window.__docContextMenuBlocked = true;
+          document.addEventListener("contextmenu", function (e) {
+            e.preventDefault();
+          });
+        }
 
         //console.log("✅ 지도 로드 완료 후 우클릭 이벤트 등록됨");
       }
@@ -21651,6 +21969,13 @@ const originalBase64 = event.target.result;
       async function findWay() {
         // ✅ 중복 실행 방지
         if (window.__findWayInitialized) {
+          // 지도가 다시 만들어졌으면 map 에 거는 우클릭 리스너만 새로 건다.
+          // (오버레이·길찾기 버튼·목적지 체크박스는 document 직속이라 그대로 살아 있다.)
+          try {
+            window.__findWayBindRightClick?.();
+          } catch (e) {
+            console.warn("길찾기 우클릭 재등록 실패:", e);
+          }
           return;
         }
         window.__findWayInitialized = true;
@@ -21792,67 +22117,77 @@ const originalBase64 = event.target.result;
         document.body.appendChild(checkboxContainer);
 
         // 우클릭 시 이벤트를 등록하여 "길찾기" 버튼을 표시
-        naver.maps.Event.addListener(window.map, "rightclick", function (e) {
-          if (!document.getElementById("toggleFindWay")?.checked) {
-            return;
-          }
-          // ✅ 면적 그리기 모드 중 우클릭은 "그리기 종료" 동작 — 길찾기 팝업을 띄우지 않는다
-          const __drawBtn = document.getElementById("drawPolygonBtn");
-          if (__drawBtn && __drawBtn.classList.contains("is-drawing")) {
-            return;
-          }
-          // ✅ 경로 그리기 중 우클릭은 "경로 완료" 동작 — 길찾기 팝업을 띄우지 않는다
-          if (window.mapHandler && window.mapHandler.currentPolyline) {
-            return;
-          }
-          // ✅ 같은 우클릭에서 MapHandler가 먼저 경로를 완료하면 currentPolyline이 이미 비워져
-          //    위 가드가 통과되므로, "방금 완료" 플래그로 한 번 더 차단
-          if (window.__pathJustCompletedAt && Date.now() - window.__pathJustCompletedAt < 500) {
-            return;
-          }
-          var latlng = e.coord; // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
-          var startX = latlng.lng(); // 우클릭한 위치의 경도
-          var startY = latlng.lat(); // 우클릭한 위치의 위도
+        // ⚠ createMap() 으로 지도를 다시 만들면 위쪽 clearListeners 로 rightclick 이 전부 지워지는데,
+        //   findWay() 는 __findWayInitialized 가드 때문에 두 번 돌지 않아 예전에는 그대로 죽었다
+        //   (2026-09-26 사용자 보고 "업무지구 길찾기 체크를 껐다 켜면 우클릭 메뉴가 안 뜬다" —
+        //    실제 방아쇠는 체크박스가 아니라 백지도 토글 등으로 일어난 지도 재생성이었다).
+        //   등록부를 함수로 빼 두고 findWay() 맨 앞에서 다시 부른다.
+        window.__findWayBindRightClick = function () {
+          if (window.__findWayRightClickMap === window.map) return; // 같은 map 에 두 번 걸지 않는다
+          window.__findWayRightClickMap = window.map;
+          naver.maps.Event.addListener(window.map, "rightclick", function (e) {
+            if (!document.getElementById("toggleFindWay")?.checked) {
+              return;
+            }
+            // ✅ 면적 그리기 모드 중 우클릭은 "그리기 종료" 동작 — 길찾기 팝업을 띄우지 않는다
+            const __drawBtn = document.getElementById("drawPolygonBtn");
+            if (__drawBtn && __drawBtn.classList.contains("is-drawing")) {
+              return;
+            }
+            // ✅ 경로 그리기 중 우클릭은 "경로 완료" 동작 — 길찾기 팝업을 띄우지 않는다
+            if (window.mapHandler && window.mapHandler.currentPolyline) {
+              return;
+            }
+            // ✅ 같은 우클릭에서 MapHandler가 먼저 경로를 완료하면 currentPolyline이 이미 비워져
+            //    위 가드가 통과되므로, "방금 완료" 플래그로 한 번 더 차단
+            if (window.__pathJustCompletedAt && Date.now() - window.__pathJustCompletedAt < 500) {
+              return;
+            }
+            var latlng = e.coord; // 우클릭한 위치의 좌표 (지도 상의 위도, 경도)
+            var startX = latlng.lng(); // 우클릭한 위치의 경도
+            var startY = latlng.lat(); // 우클릭한 위치의 위도
 
-          var mouseEvent = e.pointerEvent;
-          var mouseX = mouseEvent.clientX;
-          var mouseY = mouseEvent.clientY;
+            var mouseEvent = e.pointerEvent;
+            var mouseX = mouseEvent.clientX;
+            var mouseY = mouseEvent.clientY;
 
-          // 마우스 우클릭 위치에 "길찾기" 버튼과 체크박스 표시
-          routeButton.style.left = mouseX + "px";
-          routeButton.style.top = mouseY + "px";
-          routeButton.style.display = "block"; // 버튼을 화면에 표시
+            // 마우스 우클릭 위치에 "길찾기" 버튼과 체크박스 표시
+            routeButton.style.left = mouseX + "px";
+            routeButton.style.top = mouseY + "px";
+            routeButton.style.display = "block"; // 버튼을 화면에 표시
 
-          checkboxContainer.style.left = mouseX + 65 + "px";
-          checkboxContainer.style.top = mouseY + "px";
-          checkboxContainer.style.display = "block";
+            checkboxContainer.style.left = mouseX + 65 + "px";
+            checkboxContainer.style.top = mouseY + "px";
+            checkboxContainer.style.display = "block";
 
-          // "길찾기" 버튼 클릭 시 오버레이를 표시하고, iframe에 경로 표시
-          routeButton.onclick = function () {
-            var selectedDestinations = destinations.filter((dest) => document.getElementById(dest.id).checked);
+            // "길찾기" 버튼 클릭 시 오버레이를 표시하고, iframe에 경로 표시
+            routeButton.onclick = function () {
+              var selectedDestinations = destinations.filter((dest) => document.getElementById(dest.id).checked);
 
-            if (selectedDestinations.length > 0) {
-              var destinationIds = selectedDestinations.map((dest) => dest.id).join(",");
+              if (selectedDestinations.length > 0) {
+                var destinationIds = selectedDestinations.map((dest) => dest.id).join(",");
 
-              // URL에 선택된 목적지 id 추가
-              var url = `hongbuPublic.html?startX=${startX}&startY=${startY}&selected=${destinationIds}&_=${Date.now()}`;
+                // URL에 선택된 목적지 id 추가
+                var url = `hongbuPublic.html?startX=${startX}&startY=${startY}&selected=${destinationIds}&_=${Date.now()}`;
 
-              iframe.src = url;
-              overlay.style.display = "flex";
+                iframe.src = url;
+                overlay.style.display = "flex";
+                routeButton.style.display = "none";
+                checkboxContainer.style.display = "none";
+                //document.querySelector('.ctn_wrap.open').style.width = '0px';
+                //document.querySelector('.map_wrap').style.width = `calc(100% - 390px)`;
+                //document.querySelector('.map_wrap').style.height = '40%';
+              } else {
+                alert("적어도 하나의 목적지를 선택하세요.");
+              }
+
+              // 버튼과 체크박스를 다시 숨김
               routeButton.style.display = "none";
               checkboxContainer.style.display = "none";
-              //document.querySelector('.ctn_wrap.open').style.width = '0px';
-              //document.querySelector('.map_wrap').style.width = `calc(100% - 390px)`;
-              //document.querySelector('.map_wrap').style.height = '40%';
-            } else {
-              alert("적어도 하나의 목적지를 선택하세요.");
-            }
-
-            // 버튼과 체크박스를 다시 숨김
-            routeButton.style.display = "none";
-            checkboxContainer.style.display = "none";
-          };
-        });
+            };
+          });
+        };
+        window.__findWayBindRightClick();
 
         // 좌클릭 시 "길찾기" 버튼 숨기기 — 지도 element가 아닌 document 캡처 단계에 바인딩.
         // (지도 위 다른 레이어/드로잉이 클릭을 소비(stopPropagation)해도 확실히 닫히고,
@@ -22169,12 +22504,6 @@ const originalBase64 = event.target.result;
         });
       }
 
-      function getFilterEls() {
-        return {
-          sidoSel: document.getElementById("sidoFilter"),
-        };
-      }
-
       // ✅ 선택된 시군구/시도의 "첫 번째 아파트" 좌표로 지도 이동
       function focusMapToSelectedRegion(zoomLevel = 15) {
         if (!window.map || !Array.isArray(apartmentData)) return;
@@ -22350,13 +22679,21 @@ const originalBase64 = event.target.result;
       // ── 지도 왼쪽 떠 있는 단추(현재 위치·사진 메모·추적 중지) 길게 눌러 옮기기 (2026-09-23 사용자 요청, **모바일 전용**) ──
       // 세 단추는 한 덩어리로 움직인다(추적 중지는 사진 메모 바로 아래에 붙어 있어 따로 옮기면 겹친다 — 사용자 지정).
       // 위치는 지도 크기 대비 **비율**로 저장한다. 화면을 돌리거나 다른 기기에서 열어도 비슷한 자리에 뜬다.
-      const FLOAT_BTN_KEY = "hongbuMapBtnPos_v2";
+      // v3: 자리를 **가장 가까운 모서리 기준 절대 거리(px)** 로 적는다.
+      // v2 는 "CSS 기본자리(left:8px)에서 옮긴 거리 ÷ 지도 폭" 이라는 비율이라, 화면 폭이 바뀌면
+      // 모서리와의 간격이 폭에 비례해 벌어졌다 — 폴드 커버(좁은 화면)에서 오른쪽 끝에 붙여 둔 단추가
+      // 펼친 화면에서 한참 안쪽으로 들어오던 원인(2026-09-26 사용자 보고, 실측: 폭 450에서 여백 8px 로
+      // 맞추면 폭 1400 에서 156px, 2000 에서 249px 로 벌어진다). v2 값은 첫 로드 때 한 번 변환한다.
+      const FLOAT_BTN_KEY = "hongbuMapBtnPos_v3";
+      const FLOAT_BTN_KEY_V2 = "hongbuMapBtnPos_v2";
       // ⚠ **두 덩어리로 나눈다**(2026-09-23 사용자 지정): 현재 위치 ↔ 위치 추적 중지는 한 짝(추적을 켜면 바로 아래에 뜬다),
       //   사진 메모는 따로 움직인다. 각 덩어리의 자리는 지도 크기 대비 비율로 따로 저장한다.
       const FLOAT_BTN_GROUPS = [{ key: "loc", ids: ["mapLocateBtn", "mapStopBtn"] },
                                 { key: "photo", ids: ["mapPhotoBtn"] }];
       let __floatBtnBase = null;                       // id → {left, top} (CSS 원래 자리)
-      let __floatBtnOff = { loc: { rx: 0, ry: 0 }, photo: { rx: 0, ry: 0 } };
+      // null 이면 CSS 기본자리 그대로. 값이 있으면 {ax:"left"|"right", dx, ay:"top"|"bottom", dy} (px)
+      let __floatBtnOff = { loc: null, photo: null };
+      let __floatBtnV2Pending = null;                  // v2 → v3 변환 대기(base 가 준비된 뒤 처리)
       let __floatBtnDragged = false;                   // 드래그로 끝났으면 클릭 동작을 막는다
       window.__floatBtnDragged = false;                // 단추 동작 코드에서 보는 값(등록 순서와 무관하게 막기 위해)
       window.__floatBtnDragging = false;
@@ -22376,26 +22713,73 @@ const originalBase64 = event.target.result;
       function __floatGroupEls(g) {
         return g.ids.map((id) => document.getElementById(id)).filter(Boolean);
       }
+      // 덩어리가 CSS 기본자리에서 차지하는 사각형(이동량 0 기준)
+      function __floatGroupBox(g) {
+        if (!__floatBtnBase) return null;
+        const pairs = __floatGroupEls(g)
+          .map((el) => ({ el, base: __floatBtnBase[el.id] }))
+          .filter((p) => p.base);
+        if (!pairs.length) return null;
+        const w = (el) => el.offsetWidth || 40;
+        const h = (el) => el.offsetHeight || 40;
+        return {
+          minL: Math.min(...pairs.map((p) => p.base.left)),
+          minT: Math.min(...pairs.map((p) => p.base.top)),
+          maxR: Math.max(...pairs.map((p) => p.base.left + w(p.el))),
+          maxB: Math.max(...pairs.map((p) => p.base.top + h(p.el))),
+        };
+      }
+
+      // 기본자리로부터의 이동량(px) → 가장 가까운 모서리 기준 거리로 환산해 저장 형태로 만든다.
+      // 단추를 오른쪽에 두면 오른쪽 모서리에서 잰 거리를 적으므로, 화면이 넓어져도 그 간격 그대로 붙는다.
+      function __floatBtnOffFromDelta(g, dx, dy) {
+        const mapEl = document.getElementById("map");
+        const box = __floatGroupBox(g);
+        if (!mapEl || !box) return null;
+        const W = mapEl.offsetWidth, H = mapEl.offsetHeight;
+        const gL = box.minL + dx, gR = box.maxR + dx;
+        const gT = box.minT + dy, gB = box.maxB + dy;
+        const ax = (gL + gR) / 2 < W / 2 ? "left" : "right";
+        const ay = (gT + gB) / 2 < H / 2 ? "top" : "bottom";
+        return {
+          ax, dx: Math.round(ax === "left" ? gL : W - gR),
+          ay, dy: Math.round(ay === "top" ? gT : H - gB),
+        };
+      }
+
       function __floatBtnApplyGroup(g) {
         const mapEl = document.getElementById("map");
         const els = __floatGroupEls(g);
-        if (!mapEl || !__floatBtnBase || !els.length) return;
-        const off = __floatBtnOff[g.key] || { rx: 0, ry: 0 };
-        let dx = off.rx * mapEl.offsetWidth, dy = off.ry * mapEl.offsetHeight;
+        const box = __floatGroupBox(g);
+        if (!mapEl || !box || !els.length) return;
+        const W = mapEl.offsetWidth, H = mapEl.offsetHeight;
+        const off = __floatBtnOff[g.key];
+        let dx = 0, dy = 0;
+        if (off && typeof off.dx === "number") {
+          dx = off.ax === "right" ? W - off.dx - box.maxR : off.dx - box.minL;
+          dy = off.ay === "bottom" ? H - off.dy - box.maxB : off.dy - box.minT;
+        }
         // 화면 밖으로 나가지 않게 덩어리 전체를 지도 안으로 당긴다
-        const b = els.map((el) => __floatBtnBase[el.id]).filter(Boolean);
-        const size = (el) => ({ w: el.offsetWidth || 40, h: el.offsetHeight || 40 });
-        const minL = Math.min(...b.map((x) => x.left)), minT = Math.min(...b.map((x) => x.top));
-        const maxR = Math.max(...els.map((el, i) => b[i].left + size(el).w));
-        const maxB = Math.max(...els.map((el, i) => b[i].top + size(el).h));
-        dx = Math.max(-minL + 4, Math.min(dx, mapEl.offsetWidth - maxR - 4));
-        dy = Math.max(-minT + 4, Math.min(dy, mapEl.offsetHeight - maxB - 4));
+        dx = Math.max(-box.minL + 4, Math.min(dx, W - box.maxR - 4));
+        dy = Math.max(-box.minT + 4, Math.min(dy, H - box.maxB - 4));
         els.forEach((el) => {
           const base = __floatBtnBase[el.id];
           if (!base) return;
           el.style.left = Math.round(base.left + dx) + "px";
           el.style.top = Math.round(base.top + dy) + "px";
         });
+      }
+
+      // 지금 화면에 적용돼 있는 이동량(px)을 읽는다. 드래그 시작점으로 쓴다.
+      function __floatBtnCurrentDelta(g) {
+        const el = __floatGroupEls(g)[0];
+        const base = el && __floatBtnBase ? __floatBtnBase[el.id] : null;
+        if (!el || !base) return { x: 0, y: 0 };
+        const l = parseFloat(el.style.left), t = parseFloat(el.style.top);
+        return {
+          x: (Number.isFinite(l) ? l : base.left) - base.left,
+          y: (Number.isFinite(t) ? t : base.top) - base.top,
+        };
       }
       function __floatBtnApply() { FLOAT_BTN_GROUPS.forEach(__floatBtnApplyGroup); }
 
@@ -22409,13 +22793,29 @@ const originalBase64 = event.target.result;
           __floatBtnBase = {};
           try {
             const sv = JSON.parse(localStorage.getItem(FLOAT_BTN_KEY) || "null");
-            if (sv) FLOAT_BTN_GROUPS.forEach((g) => {
-              if (sv[g.key] && typeof sv[g.key].rx === "number") __floatBtnOff[g.key] = sv[g.key];
-            });
+            if (sv) {
+              FLOAT_BTN_GROUPS.forEach((g) => {
+                if (sv[g.key] && typeof sv[g.key].dx === "number") __floatBtnOff[g.key] = sv[g.key];
+              });
+            } else {
+              // 예전 비율 저장(v2)이 남아 있으면 지금 화면 기준으로 한 번 환산한다 → 자리를 다시 잡을 필요 없음
+              const old = JSON.parse(localStorage.getItem(FLOAT_BTN_KEY_V2) || "null");
+              if (old) __floatBtnV2Pending = old;
+            }
           } catch (e) {}
           window.addEventListener("resize", () => { try { __floatBtnApply(); } catch (e) {} });
         }
         all.forEach((el) => { if (!__floatBtnBase[el.id]) __floatBtnBase[el.id] = __floatBtnBaseOf(el); });
+        if (__floatBtnV2Pending) {
+          const mapEl = document.getElementById("map");
+          FLOAT_BTN_GROUPS.forEach((g) => {
+            const o = __floatBtnV2Pending[g.key];
+            if (!o || typeof o.rx !== "number" || !mapEl) return;
+            __floatBtnOff[g.key] = __floatBtnOffFromDelta(g, o.rx * mapEl.offsetWidth, o.ry * mapEl.offsetHeight);
+          });
+          __floatBtnV2Pending = null;
+          try { localStorage.setItem(FLOAT_BTN_KEY, JSON.stringify(__floatBtnOff)); } catch (e) {}
+        }
         __floatBtnApply();
 
         FLOAT_BTN_GROUPS.forEach((g) => {
@@ -22445,9 +22845,8 @@ const originalBase64 = event.target.result;
               const t0 = ev.touches && ev.touches[0];
               if (!t0) return;
               sx = t0.clientX; sy = t0.clientY;
-              const mm = document.getElementById("map");
-              const off = __floatBtnOff[g.key] || { rx: 0, ry: 0 };
-              ox = off.rx * mm.offsetWidth; oy = off.ry * mm.offsetHeight;
+              const cur = __floatBtnCurrentDelta(g);
+              ox = cur.x; oy = cur.y;
               if (timer) clearTimeout(timer);
               timer = setTimeout(() => {
                 timer = null;
@@ -22467,8 +22866,7 @@ const originalBase64 = event.target.result;
                 return;
               }
               ev.preventDefault(); ev.stopPropagation();
-              const mm = document.getElementById("map");
-              __floatBtnOff[g.key] = { rx: (ox + t0.clientX - sx) / mm.offsetWidth, ry: (oy + t0.clientY - sy) / mm.offsetHeight };
+              __floatBtnOff[g.key] = __floatBtnOffFromDelta(g, ox + t0.clientX - sx, oy + t0.clientY - sy);
               __floatBtnApplyGroup(g);
               if (safety) clearTimeout(safety);
               safety = setTimeout(end, 4000);
@@ -22549,61 +22947,6 @@ const originalBase64 = event.target.result;
       window.addEventListener("orientationchange", resizeMapToContainer);
       window.addEventListener("resize", resizeMapToContainer);
 
-      function onEnterPseudoFullscreen() {
-        pseudoFullscreenActive = true;
-        document.body.classList.add("fullscreen-active");
-        const btn = document.getElementById("mapMaxBtn");
-        if (btn) btn.textContent = "⛶";
-        resizeMapToContainer();
-
-        // ✅ 전체화면 상태 저장(앱 전환/새로고침 복원용)
-        try {
-          setHongbuSetting(MAP_FULLSCREEN_KEY, true);
-        } catch (e) {
-          console.warn(e);
-        }
-      }
-      function onExitPseudoFullscreen() {
-        pseudoFullscreenActive = false;
-        document.body.classList.remove("fullscreen-active");
-        const btn = document.getElementById("mapMaxBtn");
-        if (btn) btn.textContent = "⛶";
-        resizeMapToContainer();
-
-        // ✅ 전체화면 상태 저장(앱 전환/새로고침 복원용)
-        try {
-          setHongbuSetting(MAP_FULLSCREEN_KEY, false);
-        } catch (e) {
-          console.warn(e);
-        }
-      }
-      function resizeMapToContainer() {
-        const mapEl = document.getElementById("map");
-        if (mapEl && window.map) {
-          // inline style로 커지는 걸 방지
-          const __full = document.body.classList.contains("fullscreen-active") || mapEl.classList.contains("fullscreen");
-          if (!__full && __isPcDock()) {
-            const h = __mapDesiredHeight();
-            // CSS의 `height: calc(100svh - 150px) !important`를 이겨야 하므로 인라인도 important로 지정
-            mapEl.style.setProperty("height", h, "important");
-            mapEl.style.setProperty("max-height", h, "important");
-          } else {
-            // 모바일/전체화면: CSS(!important)에 맡김 (인라인 제거)
-            mapEl.style.removeProperty("height");
-            mapEl.style.removeProperty("max-height");
-          }
-
-          setTimeout(() => {
-            try {
-              window.map.setSize(new naver.maps.Size(mapEl.clientWidth, mapEl.clientHeight));
-            } catch (e) {}
-          }, 150);
-        }
-      }
-
-      window.addEventListener("orientationchange", resizeMapToContainer);
-      window.addEventListener("resize", resizeMapToContainer);
-
       // ===== EMD label position blend: polylabel + centroid (override) =====
       function _emd_lerp(a, b, t) {
         return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
@@ -22627,39 +22970,6 @@ const originalBase64 = event.target.result;
         return [cx / (6 * area), cy / (6 * area)];
       }
 
-      // New function used by redraw (same name as before to override)
-      function getLabelLatLngByPolylabel(geometry, bbox) {
-        const polys = geometry.type === "MultiPolygon" ? geometry.coordinates : [geometry.coordinates];
-        let bestPoly = polys[0],
-          bestArea = -1;
-        for (const p of polys) {
-          const ring = p[0];
-          let a = 0;
-          for (let i = 0; i < ring.length; i++) {
-            const [x1, y1] = ring[i],
-              [x2, y2] = ring[(i + 1) % ring.length];
-            a += x1 * y2 - x2 * y1;
-          }
-          a = Math.abs(a * 0.5);
-          if (a > bestArea) {
-            bestArea = a;
-            bestPoly = p;
-          }
-        }
-        const p = _emd_polylabel(bestPoly, 1e-5);
-        const c = _emd_ringCentroidLngLat(bestPoly[0]);
-        let lnglat = p;
-        if (p && c) {
-          const t = 0.35; // blend factor
-          lnglat = _emd_lerp(p, c, t);
-        }
-        if (!lnglat && bbox) {
-          const [minLng, minLat, maxLng, maxLat] = bbox;
-          lnglat = [(minLng + maxLng) / 2, (minLat + maxLat) / 2];
-        }
-        if (!lnglat) return null;
-        return new naver.maps.LatLng(lnglat[1], lnglat[0]);
-      }
     </script>
     <!-- ✅ 거리뷰 파노라마 오버레이 (toggleStreetView ON + 지도 클릭 시 상단 절반 표시) -->
     <div
