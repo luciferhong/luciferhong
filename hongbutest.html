@@ -576,11 +576,16 @@
         right: 7px;
         width: 34px;
         height: 34px;
+        /* 이모지(🗑)는 글리프가 advance box 안에서 치우쳐 그려져 가운데로 안 온다.
+           SVG 아이콘 + flex 정렬로 확실히 가운데에 둔다 (2026-09-27) */
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
         border: 1px solid #e0cdcb;
         border-radius: 6px;
         background: #fff;
         color: #b3261e;
-        font-size: 14px;
         line-height: 1;
         cursor: pointer;
         touch-action: manipulation;
@@ -646,7 +651,27 @@
       }
       #ljTab3 #ljForm input,
       #ljTab3 #ljForm select { height: 32px; }
-      #ljTab3 #ljForm textarea { height: 104px; padding: 6px; line-height: 1.55; font-size: 13px; resize: none; }
+      /* 메모는 여러 줄 글이라 가운데 정렬하면 읽기 어렵다 — 가로는 왼쪽, 세로는 가운데 (2026-09-27).
+         세로 가운데는 **상자를 글 길이에 맞춰 줄인 뒤** flex 로 가운데 두어 만든다.
+         상자를 칸 높이만큼 키워 두면 vertical-align 을 줘도 글은 늘 위에서 시작한다. */
+      #ljTab3 #ljForm .lj-memo-box {
+        display: flex;
+        align-items: center;
+        height: 110px;
+        box-sizing: border-box;
+        padding: 4px 0;
+      }
+      #ljTab3 #ljForm textarea {
+        height: auto;
+        min-height: 22px;
+        max-height: 100px;
+        padding: 0 7px;
+        line-height: 1.55;
+        font-size: 13px;
+        resize: none;
+        overflow-y: auto;
+        text-align: left;
+      }
       #ljTab3 #ljForm td.sel { position: relative; }
       #ljTab3 #ljForm td.sel::after {
         content: "▾";
@@ -8603,9 +8628,9 @@
         apartmentInfo.setAttribute("data-id", apartmentId);
 
         let infoHtml = `
-    <div style="display: flex; justify-content: space-between; align-items: center; position: relative;">
-      <h3 style="margin: 0; text-align: left;">${escapeHtml(apt.아파트명)}</h3>
-      <div style="display: flex; gap: 6px;">
+    <div style="display: flex; flex-wrap: wrap; gap: 6px 8px; justify-content: space-between; align-items: center; position: relative;">
+      <h3 style="margin: 0; text-align: left; flex: 1 1 auto; min-width: 7em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(apt.아파트명)}</h3>
+      <div style="display: flex; gap: 6px; flex: 0 0 auto;">
         ${__hasSiseData(apartmentId) ? `<button onclick="showSisePrice(${apartmentId}); event.stopPropagation();"
           style="padding: 8px; min-width: 59px; text-align: center; background: #27AE60; color: white; border: none; border-radius: 4px; cursor: pointer;">
           📈 시세
@@ -24968,15 +24993,19 @@ const originalBase64 = event.target.result;
       // 드라이브 → 이 기기. 다른 기기에서 적은 매물을 받아 온다(시군구 단위, 60초에 한 번).
       const __ljPulledAt = new Map();
       async function __ljPullRegion(sgg5, force) {
-        if (!sgg5 || !window.__gdriveReady) return 0;
+        const why = (m) => { console.log("[lj] 내려받기 건너뜀 —", m); return 0; };
+        if (!sgg5) return why("시군구를 모름");
+        if (!window.__gdriveReady) return why("드라이브 연결 전");
         const last = __ljPulledAt.get(sgg5) || 0;
-        if (!force && Date.now() - last < 60000) return 0;
+        if (!force && Date.now() - last < 60000) return why("방금 받아 옴 (__lj.pull() 로 지금 받기)");
         __ljPulledAt.set(sgg5, Date.now());
         let n = 0;
         try {
           const folder = await __lzFindSggFolder("listings", sgg5);
-          if (!folder) return 0;
-          const list = await __dqList(folder, !!force);
+          if (!folder) return why("드라이브에 이 시군구 폴더가 아직 없음");
+          // ⚠ 반드시 새로 받아 온다. __dqList 는 10분 캐시라, 그냥 부르면 다른 기기가 올린 것이
+          //    최대 10분간 안 보인다(2026-09-27 PC 에서 고친 메모가 모바일에 안 오던 원인).
+          const list = await __dqList(folder, true);
           const head = `listing_${sgg5}_`;
           const local = new Map((await __ljAll(true)).map((r) => [String(r.id), r]));
           // 같은 레코드의 파일이 여러 판 남아 있을 수 있어 prefix 별 최신만 본다
@@ -25005,7 +25034,7 @@ const originalBase64 = event.target.result;
             await __ljPut(rec); // 훅 없이 직접 — 되올리면 메아리가 된다
             n++;
           }
-          if (n) console.log(`[lj] 드라이브에서 ${n}건 받음 (${sgg5})`);
+          console.log(`[lj] 드라이브 대조 (${sgg5}): 파일 ${best.size}건 · 받음 ${n}건`);
         } catch (e) {
           console.warn("[lj] 드라이브 내려받기 실패(무시):", e?.result?.error?.message || e?.message || e);
         }
@@ -25059,14 +25088,19 @@ const originalBase64 = event.target.result;
       }
       // 구조·타입 선택지 = 그 단지 평형표에 실제로 있는 값 (중복 제거, 평형표 순서)
       // 드롭다운과 "한 가지뿐이면 미리 채우기" 가 같은 목록을 보도록 여기 하나로 모은다.
-      function __ljTypeOpts(ctx, k) {
+      // pyeong 을 주면 **그 평형의 값만** 추린다 (2026-09-27 사용자 요청).
+      // 24.8평이면 구조는 방2화1 하나뿐이라 고를 것도 없다.
+      function __ljTypeOpts(ctx, k, pyeong) {
+        const p = String(pyeong ?? "").trim();
+        const rows = (ctx?.types || []).filter((t) => !p || String(t["공급평수"] ?? "").trim() === p);
         const out = [];
         const seen = new Set();
-        for (const t of ctx?.types || []) {
+        for (const t of rows) {
           const v = k === "structure" ? __ljStructOf(t) : String(t["구조"] ?? "").trim();
           if (v && !seen.has(v)) { seen.add(v); out.push(v); }
         }
-        return out;
+        // 그 평형으로 걸렀더니 하나도 없으면(평형표가 이상하면) 단지 전체로 되돌린다
+        return out.length || !p ? out : __ljTypeOpts(ctx, k);
       }
       // 메모의 "34평" 을 단지의 34.8평에 맞춘다 — **소수점을 버리고** 비교한다(2026-09-27 사용자 요청).
       // 같은 정수로 떨어지는 평형이 둘 이상이면 어느 쪽인지 몰라 고르지 않는다.
@@ -25084,18 +25118,6 @@ const originalBase64 = event.target.result;
         const r = String(t["방 갯수"] ?? "").trim();
         const b = String(t["화장실 갯수"] ?? "").trim();
         return r && b ? `방${r}화${b}` : "";
-      }
-      // 평형을 고르면 그 평형의 방·화장실 수 → '구조', 평형표의 '구조'(복도식/계단식) → '타입'.
-      // 두 이름이 서로 엇갈려 있다(사진의 '구조'=방2화1, '타입'=복도식).
-      function __ljDeriveFromPyeong(ctx, pyeong) {
-        const row = ctx.types.find((t) => String(t["공급평수"] ?? "").trim() === String(pyeong).trim());
-        if (!row) return {};
-        const out = {};
-        const st = __ljStructOf(row);
-        if (st) out.structure = st;
-        const rt = String(row["구조"] ?? "").trim();
-        if (rt) out.roomType = rt;
-        return out;
       }
 
       // ── 숫자·계산 ──
@@ -25426,10 +25448,15 @@ const originalBase64 = event.target.result;
         // 모달은 `width:auto` 라 내용에 맞춰 늘어난다. 단지정보 탭에서는 평형표(8열·줄바꿈 없음)가
         // 폭을 정하는데, 그걸 숨기면 모달이 우리 표 폭으로 쪼그라든다.
         // → **숨기기 전에** 지금 폭을 재서 그대로 고정한다(PC 는 어차피 400px 고정이라 무해).
-        if (on) {
+        // ⚠ getComputedStyle().width 를 쓰면 안 된다 — 그건 **스크롤바를 뺀 콘텐츠 폭**이라,
+        //    content-box 인 이 모달의 style.width 에 넣으면 스크롤바가 다시 그 안을 파고들어
+        //    누를 때마다 ~15px 씩 줄어든다(2026-09-27 "누를 때마다 점점 작아진다").
+        //    테두리·패딩·스크롤바를 모두 포함한 getBoundingClientRect 로 재고 border-box 로 고정한다.
+        //    이미 고정해 둔 값이 있으면 다시 재지 않는다(재는 순간 또 줄어든다).
+        if (on && !infoDiv.dataset.ljW) {
           try {
-            const w = getComputedStyle(infoDiv).width; // box-sizing 과 무관한 실제 사용 폭
-            if (w && w !== "auto" && parseFloat(w) > 0) infoDiv.dataset.ljW = w;
+            const r = infoDiv.getBoundingClientRect();
+            if (r.width > 0) infoDiv.dataset.ljW = Math.round(r.width) + "px";
           } catch (_) {}
         }
         Array.from(host.children).forEach((el) => {
@@ -25446,9 +25473,13 @@ const originalBase64 = event.target.result;
         });
         panel.style.display = on ? "" : "none";
         if (on) {
-          if (infoDiv.dataset.ljW) infoDiv.style.width = infoDiv.dataset.ljW;
+          if (infoDiv.dataset.ljW) {
+            infoDiv.style.boxSizing = "border-box"; // 잰 값이 테두리 포함이므로 해석도 맞춰 준다
+            infoDiv.style.width = infoDiv.dataset.ljW;
+          }
         } else {
           infoDiv.style.width = ""; // 원래 규칙(내용에 맞춤 / PC 400px)으로 되돌린다
+          infoDiv.style.boxSizing = "";
           delete infoDiv.dataset.ljW;
         }
         __ljState.active = !!on;
@@ -25559,6 +25590,11 @@ const originalBase64 = event.target.result;
         bNew.className = "lj-btn pri";
         bNew.textContent = "＋ 새 매물 기록";
         bNew.onclick = () => __ljNew();
+        const bView = document.createElement("button");
+        bView.type = "button";
+        bView.className = "lj-btn";
+        bView.textContent = "📄 구글시트 보기";
+        bView.onclick = () => __ljViewSheet(); // 열기만 — 아무것도 쓰지 않는다
         const bExp = document.createElement("button");
         bExp.type = "button";
         bExp.className = "lj-btn";
@@ -25571,6 +25607,7 @@ const originalBase64 = event.target.result;
         bImp.textContent = "📥 시트와 수동 비교";
         bImp.onclick = () => __ljImport();
         foot.appendChild(bNew);
+        foot.appendChild(bView);
         foot.appendChild(bExp);
         foot.appendChild(bImp);
       }
@@ -25579,6 +25616,31 @@ const originalBase64 = event.target.result;
       function __ljSnippet(s, n) {
         const t = String(s || "").replace(/\s+/g, " ").trim();
         return t.length > n ? t.slice(0, n) + "…" : t;
+      }
+
+      // 두 글에서 **달라진 부분만** 잘라 낸다.
+      // ⚠ 앞부분만 잘라 보여 주면 긴 메모는 앞이 똑같아서 "…" 두 개만 보이고
+      //    정작 뭐가 바뀌었는지 알 수 없다(2026-09-27 사용자 보고).
+      //    같은 앞·뒤를 걷어내고 바뀐 자리 둘레만 남긴다.
+      function __ljDiffParts(from, to, pad, max) {
+        const norm = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
+        const a = norm(from);
+        const b = norm(to);
+        const P = pad || 8;
+        const M = max || 70;
+        let s = 0;
+        while (s < a.length && s < b.length && a[s] === b[s]) s++;
+        let e = 0;
+        while (e < a.length - s && e < b.length - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e++;
+        const cut = (t) => {
+          const st = Math.max(0, s - P);
+          const en = Math.min(t.length, t.length - e + P);
+          let mid = t.slice(st, en);
+          let tailCut = en < t.length;
+          if (mid.length > M) { mid = mid.slice(0, M); tailCut = true; }
+          return (st > 0 ? "…" : "") + mid + (tailCut ? "…" : "");
+        };
+        return { from: cut(a), to: cut(b) };
       }
 
       function __ljCardEl(r) {
@@ -25637,7 +25699,11 @@ const originalBase64 = event.target.result;
         del.type = "button";
         del.className = "lj-card-del";
         del.setAttribute("aria-label", (head || "이 매물") + " 삭제");
-        del.textContent = "🗑";
+        del.innerHTML =
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+          'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<path d="M4 7h16"/><path d="M10 4h4"/><path d="M6 7l1 13h10l1-13"/>' +
+          '<path d="M10 11v6"/><path d="M14 11v6"/></svg>';
         del.onclick = (e) => { e.stopPropagation(); __ljDelete(r.id); };
         wrap.appendChild(del);
         return wrap;
@@ -25674,12 +25740,11 @@ const originalBase64 = event.target.result;
           createdAt: now,
           updatedAt: now,
         };
-        Object.assign(rec, __ljDeriveFromPyeong(ctx, rec.pyeong));
-        // 그 단지에 한 가지뿐인 값은 고를 필요가 없다 — 미리 채워 둔다 (2026-09-27 사용자 요청).
-        // 예: 전 평형이 계단식인 단지면 '타입' 을 손대지 않아도 된다.
+        // 고를 것이 하나뿐인 값은 미리 채워 둔다 (2026-09-27 사용자 요청).
+        // 평형이 정해져 있으면 그 평형 기준, 아니면 단지 전체 기준.
         for (const k of ["structure", "roomType"]) {
           if (rec[k]) continue;
-          const o = __ljTypeOpts(ctx, k);
+          const o = __ljTypeOpts(ctx, k, rec.pyeong);
           if (o.length === 1) rec[k] = o[0];
         }
         __ljState.rec = rec;
@@ -25779,6 +25844,12 @@ const originalBase64 = event.target.result;
           rec[k] = got[k];
           filled.push(k);
         }
+        // 메모로 평형이 정해졌으면 그 평형의 구조·타입이 하나뿐일 때 같이 채운다
+        for (const k of ["structure", "roomType"]) {
+          if (String(rec[k] ?? "").trim()) continue;
+          const o = __ljTypeOpts(ctx, k, rec.pyeong);
+          if (o.length === 1) { rec[k] = o[0]; filled.push(k); }
+        }
         if (filled.length) rec.autoFilled = filled;
         // 새로 채웠거나 예전 것을 지웠으면 화면을 다시 그려야 한다
         return { filled, changed: filled.length > 0 || prev.length > 0 };
@@ -25811,7 +25882,7 @@ const originalBase64 = event.target.result;
         if (f.t === "area") {
           th.style.height = "110px";
           td.style.height = "110px";
-          td.style.verticalAlign = "top";
+          td.style.padding = "0"; // 안쪽 .lj-memo-box 가 높이·여백을 맡는다
         }
 
         if (f.t === "apt" || f.t === "auto") {
@@ -25825,17 +25896,27 @@ const originalBase64 = event.target.result;
           td.className = "sel";
           td.appendChild(__ljSelectEl(f, ctx, rec));
         } else if (f.t === "area") {
+          // 글이 짧으면 상자도 짧게 만들고, 그 상자를 칸 가운데에 둔다.
+          // (상자를 칸 높이만큼 키워 두면 vertical-align 을 줘도 글은 늘 위에서 시작한다)
+          const box = document.createElement("div");
+          box.className = "lj-memo-box";
           const ta = document.createElement("textarea");
           ta.setAttribute("aria-label", f.lb);
           ta.value = rec[f.k] || "";
-          ta.addEventListener("input", () => { rec[f.k] = ta.value; __ljTouch(); });
+          const fit = () => {
+            ta.style.height = "auto";
+            ta.style.height = Math.min(ta.scrollHeight, 100) + "px";
+          };
+          ta.addEventListener("input", () => { rec[f.k] = ta.value; fit(); __ljTouch(); });
           // 메모 칸을 벗어날 때 적힌 내용을 읽어 빈 칸을 채운다 (메모 자체는 절대 안 고친다)
           ta.addEventListener("blur", () => {
             if (!__ljApplyMemo(rec, ctx).changed) return;
             __ljTouch();
             __ljRenderForm();
           });
-          td.appendChild(ta);
+          box.appendChild(ta);
+          td.appendChild(box);
+          setTimeout(fit, 0); // DOM 에 붙은 뒤라야 scrollHeight 가 나온다
         } else {
           const ip = document.createElement("input");
           ip.type = f.t === "tel" ? "tel" : "text";
@@ -25881,7 +25962,7 @@ const originalBase64 = event.target.result;
           // 그 단지 평형표에 **실제로 있는 값만** 보여 준다 (2026-09-27 사용자 확정).
           // 목록이 짧아 고르기 쉽다. 평형표에 없는 값은 고를 수 없지만,
           // 이미 적어 둔 값은 아래에서 따로 살려 준다.
-          opts = __ljTypeOpts(ctx, f.k);
+          opts = __ljTypeOpts(ctx, f.k, rec.pyeong); // 고른 평형에 맞는 값만
           // 상세가 아직 안 왔거나 평형표가 비면 빈 드롭다운이 되므로 기본 목록으로 대신한다
           if (!opts.length) opts = (f.k === "structure" ? __LJ_STRUCTS : __LJ_ROOMTYPES).slice();
         }
@@ -25902,9 +25983,14 @@ const originalBase64 = event.target.result;
           rec[f.k] = sel.value;
           __ljUnmark(rec, f.k);
           if (f.k === "pyeong") {
-            // 비어 있는 칸만 채운다 — 손으로 고친 값은 건드리지 않는다
-            const d = __ljDeriveFromPyeong(ctx, sel.value);
-            for (const kk of Object.keys(d)) if (!rec[kk]) rec[kk] = d[kk];
+            // 구조·타입을 그 평형 기준으로 다시 맞춘다.
+            // 그 평형에 없는 값이면 버리고, 후보가 하나뿐이면 바로 넣는다.
+            for (const kk of ["structure", "roomType"]) {
+              const o = __ljTypeOpts(ctx, kk, sel.value);
+              if (!o.length) continue;
+              if (rec[kk] && !o.includes(rec[kk])) { rec[kk] = ""; __ljUnmark(rec, kk); }
+              if (!rec[kk] && o.length === 1) rec[kk] = o[0];
+            }
             __ljTouch();
             __ljRenderForm();
             return;
@@ -25956,6 +26042,12 @@ const originalBase64 = event.target.result;
         for (const sel of ["#ljTabBtn", "#ljTab3", "#ljSoloRow"]) {
           const el = infoDiv.querySelector(sel);
           if (el) { try { el.remove(); } catch (_) {} }
+        }
+        // 다른 단지를 연 것이면 고정해 둔 폭을 버린다 — 인라인 스타일은 innerHTML 을 갈아도 남는다
+        if (!(__ljState.active && String(__ljState.aptId) === String(aptId))) {
+          infoDiv.style.width = "";
+          infoDiv.style.boxSizing = "";
+          delete infoDiv.dataset.ljW;
         }
 
         const bar = infoDiv.querySelector("#__siseTabBar");
@@ -26148,6 +26240,32 @@ const originalBase64 = event.target.result;
         const calcs = recs.map(__ljCalc);
         return __ljGridFrom(recs.map((r, i) => __ljRecCol(r, calcs[i])));
       }
+      // 시트 열 정렬 — **같은 단지끼리 묶고, 가격 오름차순** (2026-09-27 사용자 요청).
+      // 단지의 자리는 그 단지에서 가장 싼 매물이 정한다. 가격이 없는 매물·단지는 맨 뒤.
+      // 기준가 = 매매가(없으면 협의매매가). 열 배열에서 바로 읽으므로 다른 단지 열(시트에서
+      // 살려 온 것)도 함께 정렬된다.
+      function __ljSortCols(cols) {
+        const iApt = __LJ_SHEET_ROWS.findIndex((f) => f.k === "aptName");
+        const iId = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
+        const iSale = __LJ_SHEET_ROWS.findIndex((f) => f.k === "priceSale");
+        const iNego = __LJ_SHEET_ROWS.findIndex((f) => f.k === "priceNego");
+        const price = (c) => {
+          const v = __ljMoney(c[iSale]) ?? __ljMoney(c[iNego]);
+          return v == null ? Infinity : v;
+        };
+        const keyOf = (c) => __ljOwnerOf(String(c[iId] ?? "")) || String(c[iApt] ?? "");
+        const groups = new Map();
+        for (const c of cols || []) {
+          const k = keyOf(c);
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(c);
+        }
+        const arr = Array.from(groups.values());
+        for (const g of arr) g.sort((a, b) => price(a) - price(b)); // 단지 안에서 싼 순
+        arr.sort((a, b) => price(a[0]) - price(b[0])); // 정렬했으니 g[0] 이 그 단지 최저가
+        return arr.flat();
+      }
+
       // 기록ID "L-{aptId}-{ts36}" 에서 단지 id 를 뽑는다 (단지명은 같은 이름이 있을 수 있어 못 믿는다)
       function __ljOwnerOf(id) {
         const m = String(id || "").match(/^L-([^-]+)-/);
@@ -26543,13 +26661,14 @@ const originalBase64 = event.target.result;
             p.className = "lj-diff-chg";
             const lb = document.createElement("b");
             lb.textContent = c.lb + " ";
+            const d = __ljDiffParts(c.from, c.to); // 달라진 자리만
             const o1 = document.createElement("span");
             o1.className = "old";
-            o1.textContent = __ljSnippet(c.from, 22) || "(빈칸)";
+            o1.textContent = d.from || "(빈칸)";
             const arrow = document.createTextNode(" → ");
             const n1 = document.createElement("span");
             n1.className = "new";
-            n1.textContent = __ljSnippet(c.to, 22) || "(빈칸)";
+            n1.textContent = d.to || "(빈칸)";
             p.appendChild(lb);
             p.appendChild(o1);
             p.appendChild(arrow);
@@ -26782,12 +26901,51 @@ const originalBase64 = event.target.result;
           return __ljAutoCheck(__ljState.ctx, { retried: true });
         },
         scan: () => __ljScanSheet(__ljState.ctx, {}),
+        // 드라이브에서 지금 바로 받아 오기(쓰로틀·캐시 무시) — 다른 기기 수정이 안 보일 때
+        pull: async () => {
+          const n = await __ljPullRegion(__ljState.ctx?.sgg5, true);
+          if (n) { try { await __ljRenderList(); __ljUpdateTabBadge(); } catch (_) {} }
+          return `${n}건 받음`;
+        },
         reset: () => {
           try { localStorage.removeItem(__ljAskedKey(String(__ljState.ctx?.aptId))); } catch (_) {}
           __ljAutoAt.clear();
           return "초기화 완료 — 탭을 다시 열어 보세요";
         },
       };
+
+      // 시트를 열기만 한다 — 아무것도 쓰지 않는다 (확인용)
+      async function __ljViewSheet() {
+        const ctx = __ljState.ctx;
+        if (!ctx?.sgg5) { alert("이 단지의 시군구를 알 수 없습니다."); return; }
+        let hasToken = !!window.__gdriveAccessToken;
+        try { hasToken = hasToken || !!localStorage.getItem("__hongbuDriveToken"); } catch (_) {}
+        if (!hasToken) { alert("구글 로그인이 먼저 필요합니다."); return; }
+
+        const url = (id) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
+        // 기억해 둔 시트가 있으면 바로 연다 — 클릭 직후 동기 호출이라야 팝업 차단에 안 걸린다
+        let sid = "";
+        try { sid = localStorage.getItem("__ljSheet_" + ctx.sgg5) || ""; } catch (_) {}
+        if (sid) { window.open(url(sid), "_blank"); return; }
+
+        // 기억이 없으면 찾아본다. 찾는 동안 빈 탭을 미리 열어 둬야 차단되지 않는다.
+        const win = window.open("", "_blank");
+        try {
+          if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
+          sid = await __ljFindSheetId(ctx.sgg5);
+          if (!sid) {
+            if (win) win.close();
+            alert("이 시군구의 시트가 아직 없습니다.\n먼저 한 번 내보내기를 해 주세요.");
+            return;
+          }
+          if (win) win.location.href = url(sid);
+          else window.open(url(sid), "_blank");
+        } catch (e) {
+          if (win) win.close();
+          console.error("[lj] 시트 열기 실패:", e);
+          alert("시트를 열지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+        }
+      }
 
       // 내보내기 범위 고르기 — 시군구 전체 / 이 단지만
       async function __ljExportChoose() {
@@ -26917,6 +27075,7 @@ const originalBase64 = event.target.result;
           }
           const calcs = rows.map(__ljCalc);
           cols = cols.concat(rows.map((r, i) => __ljRecCol(r, calcs[i])));
+          cols = __ljSortCols(cols); // 같은 단지끼리 묶고 가격 오름차순
 
           setB(`⏳ ${rows.length}건 올리는 중…`);
           const grid = __ljGridFrom(cols);
