@@ -626,6 +626,8 @@
       #ljTab3 #ljForm td.k { background: #daeff4; }    /* 단지명(자동) */
       #ljTab3 #ljForm td.a { background: #eef4f8; }    /* 연식·세대수(자동) */
       #ljTab3 #ljForm td.calc { background: #fffaf0; } /* 평단가·매전차이·전세가율(자동계산) */
+      /* 메모에서 자동으로 읽어 넣은 칸 — 검증하라고 표시를 남긴다 */
+      #ljTab3 #ljForm td.am { background: #fffbe6; box-shadow: inset 3px 0 0 #d9a441; }
       #ljTab3 #ljForm td.ro { text-align: center; font-size: 13px; color: #111; }
       #ljTab3 #ljForm input,
       #ljTab3 #ljForm select,
@@ -24838,6 +24840,9 @@ const originalBase64 = event.target.result;
         { k: "aptName",     lb: "단지명",           t: "apt" },
         { k: "buildYear",   lb: "연식(자동완성)",   t: "auto" },
         { k: "units",       lb: "세대수(자동완성)", t: "auto" },
+        // 임장 중 가장 많이 쓰는 칸이라 위로 올렸다 (2026-09-27 사용자 요청).
+        // alt = 예전에 쓰던 이름. 시트를 이름으로 찾으므로 옛 시트도 그대로 읽힌다.
+        { k: "memo",        lb: "메 모",            t: "area", alt: ["간단기록용"] },
         { k: "pyeong",      lb: "평형",             t: "sel" },
         { k: "dongho",      lb: "동호수",           t: "text" },
         { k: "structure",   lb: "구조",             t: "sel", red: true },
@@ -24846,7 +24851,6 @@ const originalBase64 = event.target.result;
         { k: "resident",    lb: "거주자",           t: "sel" },
         { k: "moveReason",  lb: "이사사유",         t: "text" },
         { k: "expiry",      lb: "만기일",           t: "text" },
-        { k: "memo",        lb: "간단기록용",       t: "area" },
         { k: "pyeongPrice", lb: "평단가",           t: "calc", beige: true },
         { k: "priceSale",   lb: "매매가",           t: "money", beige: true },
         { k: "priceNego",   lb: "협의매매가",       t: "money", beige: true },
@@ -24859,8 +24863,8 @@ const originalBase64 = event.target.result;
       // 합이 __LJ_ROWS.length 와 같아야 한다.
       const __LJ_GROUPS = [
         { g: "중개", n: 2 },
-        { g: "매물 정보", n: 8 },
-        { g: "상황", n: 4 },
+        { g: "매물 정보", n: 9 }, // 단지명·연식·세대수·메모·평형·동호수·구조·타입·방향
+        { g: "상황", n: 3 },      // 거주자·이사사유·만기일
         { g: "가격", n: 6 },
       ];
 
@@ -25048,6 +25052,29 @@ const originalBase64 = event.target.result;
         const exP = ex != null && ex > 0 ? Math.round(ex / 3.3058) : null;
         return exP ? `${v}평(전용 ${exP})` : `${v}평`;
       }
+      // 구조·타입 선택지 = 그 단지 평형표에 실제로 있는 값 (중복 제거, 평형표 순서)
+      // 드롭다운과 "한 가지뿐이면 미리 채우기" 가 같은 목록을 보도록 여기 하나로 모은다.
+      function __ljTypeOpts(ctx, k) {
+        const out = [];
+        const seen = new Set();
+        for (const t of ctx?.types || []) {
+          const v = k === "structure" ? __ljStructOf(t) : String(t["구조"] ?? "").trim();
+          if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+        }
+        return out;
+      }
+      // 메모의 "34평" 을 단지의 34.8평에 맞춘다 — **소수점을 버리고** 비교한다(2026-09-27 사용자 요청).
+      // 같은 정수로 떨어지는 평형이 둘 이상이면 어느 쪽인지 몰라 고르지 않는다.
+      function __ljMatchPyeong(opts, raw) {
+        const list = opts || [];
+        const s = String(raw ?? "").trim();
+        if (!s) return "";
+        if (list.includes(s)) return s; // 딱 맞으면 그대로
+        const n = parseFloat(s);
+        if (!Number.isFinite(n)) return "";
+        const hit = list.filter((o) => Math.floor(parseFloat(o)) === Math.floor(n));
+        return hit.length === 1 ? hit[0] : "";
+      }
       function __ljStructOf(t) {
         const r = String(t["방 갯수"] ?? "").trim();
         const b = String(t["화장실 갯수"] ?? "").trim();
@@ -25079,9 +25106,9 @@ const originalBase64 = event.target.result;
       //   기준가 = 협의매매가가 있으면 그 값, 없으면 매매가. 둘 다 "얼마가 들어가나"라 기준을 맞춘다.
       function __ljCalc(rec) {
         const py = __ljNum(rec.pyeong);
-        const sale = __ljNum(rec.priceSale);
-        const nego = __ljNum(rec.priceNego);
-        const jeon = __ljNum(rec.priceJeonse);
+        const sale = __ljMoney(rec.priceSale); // "12.5" 로 적혀 있어도 125000 으로 계산
+        const nego = __ljMoney(rec.priceNego);
+        const jeon = __ljMoney(rec.priceJeonse);
         const basis = nego != null ? nego : sale;
         return {
           pyeongPrice: sale != null && py ? Math.round(sale / py) : null,
@@ -25091,6 +25118,143 @@ const originalBase64 = event.target.result;
       }
       function __ljPct(n) {
         return n == null ? "" : n.toFixed(2) + "%";
+      }
+
+      // 임장 중에는 "12.5"(12억5천) 처럼 억 단위로 적는 일이 많다.
+      // 입력 중에는 건드리지 않고(고치는 중에 값이 바뀌면 더 정신없다), 다음에 열 때 만원으로 바꾼다.
+      // 판정 기준 = 1000 미만이면 억. 아파트 매매·전세가 1000만원 미만인 경우는 사실상 없고,
+      //             이 칸에 1000억 이상을 적을 일도 없다. "12.5" 같은 소수는 자동으로 여기 걸린다.
+      const __LJ_MONEY_KEYS = ["priceSale", "priceNego", "priceJeonse"];
+      function __ljEokToMan(v) {
+        const n = __ljNum(v);
+        if (n == null || n <= 0 || n >= 1000) return null; // 바꿀 필요 없음
+        return Math.round(n * 10000);
+      }
+      // 계산·내보내기·비교에 쓰는 '만원 단위 값'. 저장된 글자가 "12.5" 여도 125000 으로 본다.
+      function __ljMoney(v) {
+        const man = __ljEokToMan(v);
+        return man != null ? man : __ljNum(v);
+      }
+      // "12.5", "12억5천", "153,000" 등을 만원 정수로. 못 읽으면 null.
+      function __ljParseAmount(v) {
+        const t = String(v || "").replace(/,/g, "").trim();
+        if (!t) return null;
+        const eok = t.match(/^(\d+(?:\.\d+)?)\s*억(?:\s*(\d+)\s*천)?/);
+        if (eok) {
+          let n = parseFloat(eok[1]) * 10000;
+          if (eok[2]) n += parseInt(eok[2], 10) * 1000;
+          return Math.round(n);
+        }
+        const n = parseFloat(t);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        return n < 1000 ? Math.round(n * 10000) : Math.round(n); // 1000 미만은 억으로 본다
+      }
+
+      // ── 메모 → 선택 항목 자동 채움 (2026-09-27 사용자 요청) ──
+      // 원칙 ① 메모는 절대 고치지 않는다 ② 비어 있는 칸만 채운다
+      //      ③ 확실한 것만 — 애매하면 안 채운다 ④ 채운 칸은 표시를 남겨 나중에 검증하게 한다
+      function __ljParseMemo(text, ctx) {
+        const out = {};
+        let w = String(text || "").replace(/\s+/g, " ").trim();
+        if (!w) return out;
+        // 알아본 조각은 지워 나간다 — 남은 맨숫자만 가격 후보로 보기 위해서다.
+        // (안 지우면 "방3화2" 의 3, "24평" 의 24 가 가격으로 잡힌다)
+        const take = (re) => {
+          const m = w.match(re);
+          if (m) w = w.replace(m[0], " ");
+          return m;
+        };
+
+        // 거주자 — 딱 떨어지는 말만. '전세'·'월세' 는 가격 문맥과 겹쳐 쓰지 않는다
+        if (/주인\s*거주|집주인|자가\s*거주/.test(w)) out.resident = "주인";
+        else if (/세입자|임차인/.test(w)) out.resident = "세입자";
+        else if (/공실|비어\s*있|비었/.test(w)) out.resident = "공실";
+
+        // 연락처 — 숫자가 많아 먼저 걷어낸다
+        const tel = take(/01[016789][-. ]?\d{3,4}[-. ]?\d{4}/);
+        if (tel) out.tel = tel[0].replace(/[. ]/g, "-");
+
+        // 만기 — "27.5만기" · "27년 5월 만기" · "만기 27.5" · "27.5년" · "27년 5월"
+        for (const re of [
+          /(\d{4}|\d{2})\s*[.\-/년]\s*(\d{1,2})\s*월?\s*(?:[.\-/]?\s*(\d{1,2})\s*일?)?\s*(?:까지)?\s*만기/,
+          /만기\s*일?\s*[:：]?\s*(\d{4}|\d{2})\s*[.\-/년]\s*(\d{1,2})\s*월?\s*(?:[.\-/]?\s*(\d{1,2})\s*일?)?/,
+          /(\d{2})\s*[.\-/]\s*(\d{1,2})\s*년/,
+          /(\d{2})\s*년\s*(\d{1,2})\s*월/,
+        ]) {
+          const m = w.match(re);
+          if (!m) continue;
+          const mm = Number(m[2]);
+          if (!(mm >= 1 && mm <= 12)) continue;
+          const yy = m[1].length === 4 ? m[1].slice(2) : m[1];
+          const dd = m[3] ? Number(m[3]) : 0;
+          out.expiry = `${yy}년 ${mm}월` + (dd >= 1 && dd <= 31 ? ` ${dd}일` : "");
+          w = w.replace(m[0], " ");
+          break;
+        }
+
+        // 구조·평형·동호수 — 숫자를 품고 있어 가격 판별 전에 걷어낸다
+        const st = take(/방\s*(\d)\s*화\s*(\d)/);
+        if (st) out.structure = `방${st[1]}화${st[2]}`;
+        const py = take(/(\d+(?:\.\d+)?)\s*평/);
+        if (py) {
+          const v = __ljMatchPyeong(__ljPyeongOpts(ctx || {}), py[1]);
+          if (v) out.pyeong = v; // 못 맞춰도 "N평" 은 지운 상태 — 가격으로 오해하지 않게
+        }
+        const dh = take(/(\d{1,3})\s*동\s*((?:\d{3,4}\s*호)|고층|중층|저층|로얄층|탑층)?/);
+        if (dh) out.dongho = (dh[1] + "동" + (dh[2] ? " " + dh[2].replace(/\s+/g, "") : "")).trim();
+
+        // 방향·타입 — 다른 뜻으로 쓰일 일이 없는 말들
+        const dir = __LJ_DIRS.find((d) => w.includes(d));
+        if (dir) out.direction = dir;
+        const rt = __LJ_ROOMTYPES.find((d) => w.includes(d));
+        if (rt) out.roomType = rt;
+
+        // 부동산
+        const ag = w.match(/([가-힣A-Za-z0-9]{1,10}(?:공인중개사|공인|부동산))/);
+        if (ag) out.agency = ag[1];
+
+        // 가격 ① 무슨 값인지 적혀 있는 것부터
+        const AMT = "([0-9][0-9.,]*\\s*억(?:\\s*[0-9]+\\s*천)?|[0-9][0-9.,]*)";
+        const pick = (head, key) => {
+          const m = w.match(new RegExp(head + "\\s*가?\\s*[:：]?\\s*" + AMT));
+          if (!m) return;
+          const n = __ljParseAmount(m[1]);
+          if (n != null) out[key] = __ljComma(n);
+          w = w.replace(m[0], " ");
+        };
+        pick("(?:매매|매도|호가)", "priceSale");
+        pick("전세", "priceJeonse");
+        pick("(?:협의|네고)", "priceNego");
+
+        // 가격 ② 이름 없는 맨숫자 — 임장 속기 "12.5 임차인 6.5 27.5년" 형태.
+        //    단위가 붙은 숫자(24평·113동·3층·27.5년)는 위에서 이미 걷어냈다.
+        //    2개면 큰 쪽이 매매, 작은 쪽이 전세. 3개 이상이면 뭐가 뭔지 몰라 안 채운다.
+        if (!out.priceSale || !out.priceJeonse) {
+          // 공백으로 쪼개 **숫자만으로 된 토큰**을 고른다.
+          // (정규식으로 훑으면 구분 공백을 먹어 버려 두 번째 숫자를 놓친다 — 2026-09-27 실측)
+          // "2024년"·"3층"·"33평" 처럼 단위가 붙은 토큰은 자연히 걸러진다.
+          const bare = [];
+          for (const tk of w.split(/\s+/)) {
+            if (!/^(?:\d{1,3}(?:,\d{3})+|\d{1,7}(?:\.\d+)?)(?:억(?:\d{1,2}천)?)?$/.test(tk)) continue;
+            const n = __ljParseAmount(tk);
+            if (n != null && n >= 5000 && n <= 20000000) bare.push(n); // 5천만원 ~ 2천억
+          }
+          const put = (n, key) => { if (!out[key]) out[key] = __ljComma(Math.round(n)); };
+          if (bare.length === 1) put(bare[0], "priceSale");
+          else if (bare.length === 2) { put(Math.max(...bare), "priceSale"); put(Math.min(...bare), "priceJeonse"); }
+        }
+
+        return out;
+      }
+
+      // 입력칸에 보여 줄 글자. ⚠ 억 단위 입력은 그대로 둔다 —
+      // __ljComma(__ljNum("12.5")) 는 반올림해서 "13" 이 되어 값이 망가진다.
+      function __ljMoneyText(v) {
+        const raw = String(v ?? "").trim();
+        if (!raw) return "";
+        if (__ljEokToMan(raw) != null) return raw;
+        const n = __ljNum(raw);
+        return n == null ? "" : __ljComma(n);
       }
       function __ljWhen(ts) {
         if (!ts) return "";
@@ -25182,6 +25346,36 @@ const originalBase64 = event.target.result;
           __ljDraftClear();
         } catch (e) {
           console.warn("[lj] 드래프트 복구 실패:", e);
+        }
+      })();
+
+      // 억 단위로 적어 둔 금액을 만원 단위로 정리 (부팅 1회)
+      (async function __ljNormalizeMoney() {
+        try {
+          const all = await __ljAll();
+          let n = 0;
+          for (const r of all) {
+            const next = { ...r };
+            let changed = false;
+            for (const k of __LJ_MONEY_KEYS) {
+              const man = __ljEokToMan(r[k]);
+              if (man == null) continue;
+              next[k] = __ljComma(man);
+              changed = true;
+            }
+            if (!changed) continue;
+            next.updatedAt = Date.now();
+            await __ljPut(next);
+            __ljSync(next); // 값이 실제로 바뀐 것이므로 드라이브에도 전파
+            console.log(
+              `[lj] 억→만원 ${r.id}: ` +
+                __LJ_MONEY_KEYS.filter((k) => r[k] !== next[k]).map((k) => `${r[k]}→${next[k]}`).join(" · ")
+            );
+            n++;
+          }
+          if (n) console.log(`[lj] 억 단위로 적힌 금액 ${n}건을 만원 단위로 바꿨습니다`);
+        } catch (e) {
+          console.warn("[lj] 금액 단위 정리 실패(무시):", e);
         }
       })();
 
@@ -25369,7 +25563,7 @@ const originalBase64 = event.target.result;
         const bImp = document.createElement("button");
         bImp.type = "button";
         bImp.className = "lj-btn";
-        bImp.textContent = "📥 시트에서 이 단지 수정분 확인";
+        bImp.textContent = "📥 시트와 수동 비교";
         bImp.onclick = () => __ljImport();
         foot.appendChild(bNew);
         foot.appendChild(bExp);
@@ -25390,7 +25584,7 @@ const originalBase64 = event.target.result;
         el.type = "button";
         el.className = "lj-card-main";
 
-        // 제목: 동호수·평형이 있으면 그것, 없으면 간단기록용 앞부분
+        // 제목: 동호수·평형이 있으면 그것, 없으면 메모 앞부분
         // (동호수도 평형도 안 쓰고 메모만 남기는 경우가 있어 목록에서 사라지면 안 된다)
         const head = [r.dongho, r.pyeong ? r.pyeong + "평" : ""].filter(Boolean).join(" · ");
         const memoLong = __ljSnippet(r.memo, 44);
@@ -25476,6 +25670,13 @@ const originalBase64 = event.target.result;
           updatedAt: now,
         };
         Object.assign(rec, __ljDeriveFromPyeong(ctx, rec.pyeong));
+        // 그 단지에 한 가지뿐인 값은 고를 필요가 없다 — 미리 채워 둔다 (2026-09-27 사용자 요청).
+        // 예: 전 평형이 계단식인 단지면 '타입' 을 손대지 않아도 된다.
+        for (const k of ["structure", "roomType"]) {
+          if (rec[k]) continue;
+          const o = __ljTypeOpts(ctx, k);
+          if (o.length === 1) rec[k] = o[0];
+        }
         __ljState.rec = rec;
         __ljState.isNew = true;
         __ljState.savedOnce = false;
@@ -25511,7 +25712,13 @@ const originalBase64 = event.target.result;
         const back = q("#ljBack");
         if (back) back.style.display = "";
         const sub = q("#ljSub");
-        if (sub) sub.textContent = "칸을 채울 때마다 기기에 저장됩니다";
+        if (sub) {
+          const auto = (rec.autoFilled || []).length;
+          sub.textContent = auto
+            ? `메모에서 ${auto}칸을 채웠습니다(노란 칸) — 맞는지 확인해 주세요`
+            : "칸을 채울 때마다 기기에 저장됩니다";
+          sub.style.color = auto ? "#7a5410" : "";
+        }
 
         const body = q("#ljBody");
         if (!body) return;
@@ -25546,6 +25753,35 @@ const originalBase64 = event.target.result;
         foot.appendChild(bDel);
 
         __ljPaintCalc();
+      }
+
+      // 메모에서 읽은 값으로 **빈 칸만** 채우고, 채운 칸 이름을 돌려준다.
+      // 이미 적혀 있는 칸은 절대 안 건드린다(사람이 고른 값이 우선).
+      function __ljApplyMemo(rec, ctx) {
+        // ① 지난 메모에서 채웠던 칸을 먼저 비운다.
+        //    안 비우면 메모를 지우거나 고쳐도 옛 값이 그대로 남는다(2026-09-27 실측).
+        //    사람이 직접 손댄 칸은 표시가 이미 떨어져 있어 여기 안 걸린다.
+        const prev = Array.isArray(rec.autoFilled) ? rec.autoFilled.slice() : [];
+        for (const k of prev) if (__LJ_USER_KEYS.includes(k) && k !== "memo") rec[k] = "";
+        rec.autoFilled = [];
+
+        // ② 지금 메모로 다시 읽어 빈 칸만 채운다
+        const got = __ljParseMemo(rec.memo, ctx);
+        const filled = [];
+        for (const k of Object.keys(got)) {
+          if (!__LJ_USER_KEYS.includes(k) || k === "memo") continue;
+          if (String(rec[k] ?? "").trim()) continue;
+          rec[k] = got[k];
+          filled.push(k);
+        }
+        if (filled.length) rec.autoFilled = filled;
+        // 새로 채웠거나 예전 것을 지웠으면 화면을 다시 그려야 한다
+        return { filled, changed: filled.length > 0 || prev.length > 0 };
+      }
+      // 사람이 직접 손대면 '자동으로 넣음' 표시를 뗀다 (= 검증 끝)
+      function __ljUnmark(rec, k) {
+        if (!Array.isArray(rec.autoFilled) || !rec.autoFilled.includes(k)) return;
+        rec.autoFilled = rec.autoFilled.filter((x) => x !== k);
       }
 
       function __ljRowEl(f, ctx, rec, grp) {
@@ -25588,21 +25824,30 @@ const originalBase64 = event.target.result;
           ta.setAttribute("aria-label", f.lb);
           ta.value = rec[f.k] || "";
           ta.addEventListener("input", () => { rec[f.k] = ta.value; __ljTouch(); });
+          // 메모 칸을 벗어날 때 적힌 내용을 읽어 빈 칸을 채운다 (메모 자체는 절대 안 고친다)
+          ta.addEventListener("blur", () => {
+            if (!__ljApplyMemo(rec, ctx).changed) return;
+            __ljTouch();
+            __ljRenderForm();
+          });
           td.appendChild(ta);
         } else {
           const ip = document.createElement("input");
           ip.type = f.t === "tel" ? "tel" : "text";
           if (f.t === "money") ip.inputMode = "numeric";
           ip.setAttribute("aria-label", f.lb);
-          ip.value = f.t === "money" ? __ljComma(__ljNum(rec[f.k])) : rec[f.k] || "";
+          ip.value = f.t === "money" ? __ljMoneyText(rec[f.k]) : rec[f.k] || "";
           ip.addEventListener("input", () => {
             rec[f.k] = ip.value;
+            __ljUnmark(rec, f.k);
             __ljTouch();
             __ljPaintCalc();
           });
           if (f.t === "money") {
             ip.addEventListener("blur", () => {
-              const n = __ljNum(ip.value);
+              // 칸을 벗어날 때 "12.5"(억) → "125,000"(만원). 타이핑 중에는 건드리지 않는다.
+              const man = __ljEokToMan(ip.value);
+              const n = man != null ? man : __ljNum(ip.value);
               ip.value = __ljComma(n);
               rec[f.k] = ip.value;
               __ljTouch();
@@ -25610,6 +25855,10 @@ const originalBase64 = event.target.result;
             });
           }
           td.appendChild(ip);
+        }
+        if ((rec.autoFilled || []).includes(f.k)) {
+          td.classList.add("am");
+          td.title = "메모에서 자동으로 넣었습니다 — 맞는지 확인해 주세요";
         }
         tr.appendChild(th);
         tr.appendChild(td);
@@ -25621,16 +25870,15 @@ const originalBase64 = event.target.result;
         sel.setAttribute("aria-label", f.lb);
         let opts = [];
         if (f.k === "pyeong") opts = __ljPyeongOpts(ctx);
-        else if (f.k === "structure") opts = __LJ_STRUCTS.slice();
-        else if (f.k === "roomType") opts = __LJ_ROOMTYPES.slice();
         else if (f.k === "direction") opts = __LJ_DIRS.slice();
         else if (f.k === "resident") opts = __LJ_RESIDENTS.slice();
-        // 이 단지 평형표에 실제로 있는 값을 맨 앞으로
-        if (f.k === "structure" || f.k === "roomType") {
-          for (const t of ctx.types) {
-            const v = f.k === "structure" ? __ljStructOf(t) : String(t["구조"] ?? "").trim();
-            if (v && !opts.includes(v)) opts.unshift(v);
-          }
+        else if (f.k === "structure" || f.k === "roomType") {
+          // 그 단지 평형표에 **실제로 있는 값만** 보여 준다 (2026-09-27 사용자 확정).
+          // 목록이 짧아 고르기 쉽다. 평형표에 없는 값은 고를 수 없지만,
+          // 이미 적어 둔 값은 아래에서 따로 살려 준다.
+          opts = __ljTypeOpts(ctx, f.k);
+          // 상세가 아직 안 왔거나 평형표가 비면 빈 드롭다운이 되므로 기본 목록으로 대신한다
+          if (!opts.length) opts = (f.k === "structure" ? __LJ_STRUCTS : __LJ_ROOMTYPES).slice();
         }
         const cur = rec[f.k] || "";
         if (cur && !opts.includes(cur)) opts.unshift(cur);
@@ -25647,6 +25895,7 @@ const originalBase64 = event.target.result;
         sel.value = cur;
         sel.addEventListener("change", () => {
           rec[f.k] = sel.value;
+          __ljUnmark(rec, f.k);
           if (f.k === "pyeong") {
             // 비어 있는 칸만 채운다 — 손으로 고친 값은 건드리지 않는다
             const d = __ljDeriveFromPyeong(ctx, sel.value);
@@ -25863,10 +26112,10 @@ const originalBase64 = event.target.result;
           case "gap": return c.gap ?? "";
           case "jeonseRatio": return c.jeonseRatio != null ? Math.round(c.jeonseRatio * 100) / 100 : "";
           case "units":
-          case "pyeong":
+          case "pyeong": return __ljNum(r[k]) ?? "";
           case "priceSale":
           case "priceNego":
-          case "priceJeonse": return __ljNum(r[k]) ?? "";
+          case "priceJeonse": return __ljMoney(r[k]) ?? "";
           case "__when":
             return __ljWhenOut(r.updatedAt || r.createdAt);
           case "__id": return r.id || "";
@@ -26133,18 +26382,30 @@ const originalBase64 = event.target.result;
         });
         const vals = res.result.values || [];
         if (!vals.length) return { cols: [], noId: 0 };
-        if (vals.length < __LJ_SHEET_ROWS.length) return null;
-        // B열 항목명이 우리 표와 한 줄도 어긋나지 않아야 같은 배치로 본다
-        for (let i = 0; i < __LJ_SHEET_ROWS.length; i++) {
-          if (String(vals[i]?.[1] ?? "") !== __LJ_SHEET_ROWS[i].lb) return null;
+
+        // ⚠ 줄 순서로 맞추면 안 된다. 항목을 위아래로 옮기는 순간 이미 내보낸 시트가
+        //    전부 "형식 다름" 이 된다(2026-09-27 메모를 세대수 아래로 옮기며 겪음).
+        //    B열 **항목 이름으로 행을 찾는다** — 순서가 달라도, 옛 이름(alt)이어도 읽힌다.
+        const rowOf = new Map();
+        for (let i = 0; i < vals.length; i++) {
+          const lb = String(vals[i]?.[1] ?? "").trim();
+          if (lb && !rowOf.has(lb)) rowOf.set(lb, i);
         }
+        const at = __LJ_SHEET_ROWS.map((f) => {
+          if (rowOf.has(f.lb)) return rowOf.get(f.lb);
+          for (const a of f.alt || []) if (rowOf.has(a)) return rowOf.get(a);
+          return -1;
+        });
+        if (at.some((i) => i < 0)) return null; // 우리 표의 항목이 빠져 있다 → 다른 형식
+
         const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
         const width = vals.reduce((m, r) => Math.max(m, r.length), 0);
         const out = [];
         let noId = 0;
         for (let c = 2; c < width; c++) {
-          const col = __LJ_SHEET_ROWS.map((f, i) => vals[i]?.[c] ?? "");
-          const id = String(vals[idRow]?.[c] ?? "").trim();
+          // col 은 시트 순서가 아니라 **우리 표 순서**로 맞춰 담는다
+          const col = at.map((i) => vals[i]?.[c] ?? "");
+          const id = String(col[idRow] ?? "").trim();
           if (!id) {
             // 기록ID 없는 열 = 시트에서 손으로 만든 것. 완전히 빈 열은 세지 않는다.
             if (col.some((v) => String(v ?? "").trim() !== "")) noId++;
@@ -26167,6 +26428,7 @@ const originalBase64 = event.target.result;
       const __LJ_NUM_KEYS = new Set(["pyeong", "priceSale", "priceNego", "priceJeonse"]);
       // 비교용 정규화 — 시트는 숫자로, 홍부는 "153,000" 문자열로 들고 있어 그대로 비교하면 전부 다르게 보인다
       function __ljCmpVal(k, v) {
+        if (__LJ_MONEY_KEYS.includes(k)) { const n = __ljMoney(v); return n == null ? "" : String(n); }
         if (__LJ_NUM_KEYS.has(k)) { const n = __ljNum(v); return n == null ? "" : String(n); }
         return String(v ?? "").replace(/\r\n/g, "\n").trim();
       }
