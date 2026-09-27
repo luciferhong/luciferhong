@@ -25305,8 +25305,14 @@ const originalBase64 = event.target.result;
         bExp.id = "ljExportBtn";
         bExp.textContent = "📊 구글시트로 내보내기";
         bExp.onclick = () => __ljExportChoose();
+        const bImp = document.createElement("button");
+        bImp.type = "button";
+        bImp.className = "lj-btn";
+        bImp.textContent = "📥 시트에서 수정분 가져오기";
+        bImp.onclick = () => __ljImport();
         foot.appendChild(bNew);
         foot.appendChild(bExp);
+        foot.appendChild(bImp);
       }
 
       // 줄바꿈·연속 공백을 한 칸으로 줄이고 앞부분만 (목록 한 줄에 담기게)
@@ -25973,31 +25979,206 @@ const originalBase64 = event.target.result;
         return created.result.id;
       }
 
-      // 시트에서 지금 배치(세로)를 읽어 **다른 단지 열만** 남긴다.
-      // 배치를 못 알아보면 null — 이 단지 것만 새로 쓸지 물어본다.
-      async function __ljKeepOtherCols(sid, lastCol, lastRow, aptId) {
-        const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
+      // 시트를 세로 배치로 읽어 매물 열 목록을 돌려준다.
+      //   null = 우리 배치가 아니다(다른 형식) / [] = 빈 시트
+      //   각 항목 {id, col} — col 은 __LJ_SHEET_ROWS 순서의 값 배열
+      async function __ljReadSheet(sid, lastCol, lastRow) {
         const res = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: sid,
           range: `A1:${__ljColA1(lastCol)}${lastRow}`,
           valueRenderOption: "UNFORMATTED_VALUE",
         });
         const vals = res.result.values || [];
-        if (!vals.length) return []; // 아직 빈 시트 — 지킬 열이 없다(물어볼 것도 없다)
+        if (!vals.length) return [];
         if (vals.length < __LJ_SHEET_ROWS.length) return null;
-        // B열 항목명이 우리 표와 같아야 같은 배치로 본다
+        // B열 항목명이 우리 표와 한 줄도 어긋나지 않아야 같은 배치로 본다
         for (let i = 0; i < __LJ_SHEET_ROWS.length; i++) {
           if (String(vals[i]?.[1] ?? "") !== __LJ_SHEET_ROWS[i].lb) return null;
         }
+        const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
         const width = vals.reduce((m, r) => Math.max(m, r.length), 0);
-        const keep = [];
+        const out = [];
         for (let c = 2; c < width; c++) {
           const id = String(vals[idRow]?.[c] ?? "").trim();
-          if (!id) continue;                                     // 빈 열은 버린다
-          if (__ljOwnerOf(id) === String(aptId)) continue;       // 이 단지 열은 지우고 새로 쓴다
-          keep.push(__LJ_SHEET_ROWS.map((f, i) => vals[i]?.[c] ?? ""));
+          if (!id) continue; // 기록ID 없는 열은 우리 것이 아니다
+          out.push({ id, col: __LJ_SHEET_ROWS.map((f, i) => vals[i]?.[c] ?? "") });
         }
-        return keep;
+        return out;
+      }
+      // '이 단지만' 내보낼 때 — 다른 단지 열만 남긴다
+      async function __ljKeepOtherCols(sid, lastCol, lastRow, aptId) {
+        const cols = await __ljReadSheet(sid, lastCol, lastRow);
+        if (cols === null) return null;
+        return cols.filter((c) => __ljOwnerOf(c.id) !== String(aptId)).map((c) => c.col);
+      }
+
+      // ── 시트 → 홍부 (기존 매물의 수정분만) ──
+      // 새로 만드는 것은 홍부에서만 한다(단방향). 시트에서 고친 **기존 기록**만 되가져온다(2026-09-27 사용자 확정).
+      // 시트 셀에는 수정 시각이 안 찍혀 자동 병합이 위험하다 → **바뀐 항목을 보여 주고 확인받은 뒤** 반영한다.
+      const __LJ_NUM_KEYS = new Set(["pyeong", "priceSale", "priceNego", "priceJeonse"]);
+      // 비교용 정규화 — 시트는 숫자로, 홍부는 "153,000" 문자열로 들고 있어 그대로 비교하면 전부 다르게 보인다
+      function __ljCmpVal(k, v) {
+        if (__LJ_NUM_KEYS.has(k)) { const n = __ljNum(v); return n == null ? "" : String(n); }
+        return String(v ?? "").replace(/\r\n/g, "\n").trim();
+      }
+      // 시트 값 → 홍부에 저장할 모양
+      function __ljFromSheet(k, v) {
+        if (k === "pyeong") { const n = __ljNum(v); return n == null ? "" : String(n); }
+        if (__LJ_NUM_KEYS.has(k)) { const n = __ljNum(v); return n == null ? "" : __ljComma(n); }
+        return String(v ?? "").replace(/\r\n/g, "\n").trim();
+      }
+      async function __ljImportScan(sid, lastCol, lastRow) {
+        const cols = await __ljReadSheet(sid, lastCol, lastRow);
+        if (cols === null) return null;
+        const local = new Map((await __ljAll()).map((r) => [String(r.id), r]));
+        const rowIdx = {};
+        __LJ_SHEET_ROWS.forEach((f, i) => { rowIdx[f.k] = i; });
+        const diffs = [];
+        let unknown = 0;
+        for (const c of cols) {
+          const rec = local.get(c.id);
+          if (!rec) { unknown++; continue; } // 홍부에 없는 열 = 시트에서 손으로 만든 것 → 가져오지 않는다
+          const changes = [];
+          for (const f of __LJ_ROWS) {
+            if (!__LJ_USER_KEYS.includes(f.k)) continue; // 자동채움·자동계산 칸은 가져오지 않는다
+            const i = rowIdx[f.k];
+            if (i == null) continue;
+            const to = __ljFromSheet(f.k, c.col[i]);
+            if (__ljCmpVal(f.k, rec[f.k]) === __ljCmpVal(f.k, to)) continue;
+            changes.push({ k: f.k, lb: f.lb, from: rec[f.k] || "", to });
+          }
+          if (changes.length) diffs.push({ rec, changes });
+        }
+        return { diffs, unknown };
+      }
+
+      function __ljImportShow(r) {
+        const panel = __ljPanelEl();
+        if (!panel) return;
+        const q = (s) => panel.querySelector(s);
+        const ttl = q("#ljTitle");
+        if (ttl) ttl.textContent = "시트에서 가져오기";
+        const st = q("#ljStatus");
+        if (st) { st.textContent = `${r.diffs.length}건 변경`; st.style.color = "#8a6d1f"; }
+        const sub = q("#ljSub");
+        if (sub) {
+          sub.textContent = r.unknown
+            ? `아래를 홍부에 반영합니다 · 시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다`
+            : "아래를 홍부에 반영합니다";
+        }
+        const body = q("#ljBody");
+        if (!body) return;
+        body.innerHTML = "";
+        for (const d of r.diffs) {
+          const card = document.createElement("div");
+          card.className = "lj-card";
+          const inner = document.createElement("div");
+          inner.style.cssText = "padding:11px 12px";
+          const b = document.createElement("b");
+          b.textContent =
+            [d.rec.aptName, d.rec.dongho, d.rec.pyeong ? d.rec.pyeong + "평" : ""].filter(Boolean).join(" · ") || d.rec.id;
+          inner.appendChild(b);
+          for (const c of d.changes) {
+            const p = document.createElement("p");
+            p.className = "s";
+            p.style.whiteSpace = "normal";
+            p.textContent = `${c.lb}: ${__ljSnippet(c.from, 22) || "(빈칸)"} → ${__ljSnippet(c.to, 22) || "(빈칸)"}`;
+            inner.appendChild(p);
+          }
+          card.appendChild(inner);
+          body.appendChild(card);
+        }
+        const foot = q("#ljFoot");
+        if (!foot) return;
+        foot.innerHTML = "";
+        const ok = document.createElement("button");
+        ok.type = "button";
+        ok.className = "lj-btn pri";
+        ok.textContent = `홍부에 반영 (${r.diffs.length}건)`;
+        ok.onclick = () => __ljImportApply(r.diffs);
+        const no = document.createElement("button");
+        no.type = "button";
+        no.className = "lj-btn";
+        no.textContent = "취소";
+        no.onclick = () => { __ljRenderList().catch(() => {}); };
+        foot.appendChild(ok);
+        foot.appendChild(no);
+      }
+
+      async function __ljImportApply(diffs) {
+        const panel = __ljPanelEl();
+        const foot = panel ? panel.querySelector("#ljFoot") : null;
+        if (foot) foot.innerHTML = "";
+        let n = 0;
+        for (const d of diffs) {
+          try {
+            const next = { ...d.rec, updatedAt: Date.now() };
+            for (const c of d.changes) next[c.k] = c.to;
+            await __ljPut(next);
+            __ljSync(next); // 드라이브에도 전파
+            n++;
+          } catch (e) {
+            console.warn("[lj] 가져오기 반영 실패:", d.rec.id, e);
+          }
+        }
+        try { __ljUpdateTabBadge(); } catch (_) {}
+        alert(`시트의 수정분 ${n}건을 홍부에 반영했습니다.`);
+        await __ljRenderList();
+      }
+
+      async function __ljImport() {
+        const ctx = __ljState.ctx;
+        const panel = __ljPanelEl();
+        const foot = panel ? panel.querySelector("#ljFoot") : null;
+        let prog = null;
+        if (foot) {
+          foot.innerHTML = "";
+          prog = document.createElement("button");
+          prog.type = "button";
+          prog.className = "lj-btn";
+          prog.disabled = true;
+          foot.appendChild(prog);
+        }
+        const setB = (t) => { if (prog) prog.textContent = t; };
+        if (!ctx?.sgg5) {
+          alert("이 단지의 시군구를 알 수 없어 가져올 수 없습니다.");
+          await __ljRenderList();
+          return;
+        }
+        let hasToken = !!window.__gdriveAccessToken;
+        try { hasToken = hasToken || !!localStorage.getItem("__hongbuDriveToken"); } catch (_) {}
+        if (!hasToken) {
+          alert("구글 로그인이 먼저 필요합니다.");
+          await __ljRenderList();
+          return;
+        }
+        try {
+          setB("⏳ 시트 읽는 중…");
+          if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
+          const sid = await __ljEnsureSheet(ctx.sgg5, __ljSheetTitle(ctx));
+          const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+          const gp = meta.result.sheets[0].properties.gridProperties || {};
+          const r = await __ljImportScan(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30));
+          if (r === null) {
+            alert("시트 형식을 알아볼 수 없습니다.\n먼저 한 번 내보내기를 해 주세요.");
+            await __ljRenderList();
+            return;
+          }
+          if (!r.diffs.length) {
+            alert(
+              r.unknown
+                ? `시트에 바뀐 내용이 없습니다.\n(시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다)`
+                : "시트에 바뀐 내용이 없습니다."
+            );
+            await __ljRenderList();
+            return;
+          }
+          __ljImportShow(r);
+        } catch (e) {
+          console.error("[lj] 가져오기 실패:", e);
+          alert("가져오기에 실패했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+          await __ljRenderList();
+        }
       }
 
       // 내보내기 범위 고르기 — 시군구 전체 / 이 단지만
