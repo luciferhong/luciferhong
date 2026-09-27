@@ -25218,10 +25218,24 @@ const originalBase64 = event.target.result;
         }
       }
 
+      // 패널은 모달을 다시 그릴 때마다 사라진다. 어느 경로로 들어오든 있는지 먼저 확인한다.
+      function __ljPanelEl() {
+        const infoDiv = document.getElementById("apartmentInfo");
+        return infoDiv ? infoDiv.querySelector("#ljTab3") : null;
+      }
+
       async function __ljOpen(aptId) {
         try { if (typeof __loadAptIndexForSync === "function") await __loadAptIndexForSync(); } catch (_) {}
         __ljState.aptId = String(aptId);
         __ljState.ctx = __ljAptCtx(aptId);
+        // 버튼만 남고 패널이 없어진 상태에서 눌리면 렌더가 죽는다 → 여기서 되살린다 (2026-09-27)
+        if (!__ljPanelEl()) {
+          try { __ljMountTabButton(aptId); } catch (e) { console.warn("[lj] 패널 재생성 실패:", e); }
+        }
+        if (!__ljPanelEl()) {
+          alert("매물임장 화면을 열지 못했습니다.\n새로고침한 뒤 다시 시도해 주세요.");
+          return;
+        }
         __ljActivate(true);
         await __ljRenderList();
         // 다른 기기에서 적은 매물 받아 오기 — 화면은 먼저 띄우고 뒤에서 조용히
@@ -25244,20 +25258,30 @@ const originalBase64 = event.target.result;
         __ljState.isNew = false;
         __ljState.seed = null;
         const ctx = __ljState.ctx;
+        const panel = __ljPanelEl();
+        if (!panel || !ctx) return; // 모달이 다시 그려져 패널이 사라진 뒤 늦게 도착한 호출
+        const q = (sel) => panel.querySelector(sel);
         const rows = await __ljByApt(ctx.aptId);
-        const back = document.getElementById("ljBack");
+        const back = q("#ljBack");
         if (back) back.style.display = "none"; // 목록이 이 탭의 첫 화면 — 되돌아갈 곳이 없다
-        document.getElementById("ljTitle").textContent = "매물임장";
-        const st = document.getElementById("ljStatus");
-        st.textContent = `매물 ${rows.length}건`;
-        st.style.color = "#5a5a5a";
-        document.getElementById("ljSub").textContent = [
-          ctx.buildYear,
-          ctx.units ? ctx.units + "세대" : "",
-          [ctx.sidoName, ctx.sigunguName].filter(Boolean).join(" "),
-        ].filter(Boolean).join(" · ");
+        const ttl = q("#ljTitle");
+        if (ttl) ttl.textContent = "매물임장";
+        const st = q("#ljStatus");
+        if (st) {
+          st.textContent = `매물 ${rows.length}건`;
+          st.style.color = "#5a5a5a";
+        }
+        const sub = q("#ljSub");
+        if (sub) {
+          sub.textContent = [
+            ctx.buildYear,
+            ctx.units ? ctx.units + "세대" : "",
+            [ctx.sidoName, ctx.sigunguName].filter(Boolean).join(" "),
+          ].filter(Boolean).join(" · ");
+        }
 
-        const body = document.getElementById("ljBody");
+        const body = q("#ljBody");
+        if (!body) return;
         body.innerHTML = "";
         if (!rows.length) {
           const p = document.createElement("p");
@@ -25267,7 +25291,8 @@ const originalBase64 = event.target.result;
         }
         for (const r of rows) body.appendChild(__ljCardEl(r));
 
-        const foot = document.getElementById("ljFoot");
+        const foot = q("#ljFoot");
+        if (!foot) return;
         foot.innerHTML = "";
         const bNew = document.createElement("button");
         bNew.type = "button";
@@ -25411,12 +25436,18 @@ const originalBase64 = event.target.result;
         __ljState.view = "form";
         const ctx = __ljState.ctx;
         const rec = __ljState.rec;
-        document.getElementById("ljTitle").textContent = rec.dongho || "새 매물";
-        const back = document.getElementById("ljBack");
+        const panel = __ljPanelEl();
+        if (!panel || !ctx || !rec) return;
+        const q = (sel) => panel.querySelector(sel);
+        const ttl = q("#ljTitle");
+        if (ttl) ttl.textContent = rec.dongho || "새 매물";
+        const back = q("#ljBack");
         if (back) back.style.display = "";
-        document.getElementById("ljSub").textContent = "칸을 채울 때마다 기기에 저장됩니다";
+        const sub = q("#ljSub");
+        if (sub) sub.textContent = "칸을 채울 때마다 기기에 저장됩니다";
 
-        const body = document.getElementById("ljBody");
+        const body = q("#ljBody");
+        if (!body) return;
         body.innerHTML = "";
         const tbl = document.createElement("table");
         tbl.id = "ljForm";
@@ -25431,7 +25462,8 @@ const originalBase64 = event.target.result;
         tbl.appendChild(tb);
         body.appendChild(tbl);
 
-        const foot = document.getElementById("ljFoot");
+        const foot = q("#ljFoot");
+        if (!foot) return;
         foot.innerHTML = "";
         const bList = document.createElement("button");
         bList.type = "button";
@@ -25593,7 +25625,17 @@ const originalBase64 = event.target.result;
       function __ljMountTabButton(aptId) {
         const infoDiv = document.getElementById("apartmentInfo");
         if (!infoDiv || infoDiv.style.display !== "block") return;
-        if (infoDiv.querySelector("#ljTabBtn")) { __ljUpdateTabBadge(aptId); return; }
+        // ⚠ 버튼만 보고 넘기면 안 된다. 버튼은 남았는데 패널이 사라진 상태에서 탭을 누르면
+        //    렌더가 null 에 접근해 죽었다(2026-09-27). 둘 다 있을 때만 그대로 두고,
+        //    한쪽만 남아 있으면 전부 지우고 다시 만든다.
+        if (infoDiv.querySelector("#ljTabBtn") && infoDiv.querySelector("#ljTab3")) {
+          __ljUpdateTabBadge(aptId);
+          return;
+        }
+        for (const sel of ["#ljTabBtn", "#ljTab3", "#ljSoloRow"]) {
+          const el = infoDiv.querySelector(sel);
+          if (el) { try { el.remove(); } catch (_) {} }
+        }
 
         const bar = infoDiv.querySelector("#__siseTabBar");
         const btn = document.createElement("button");
@@ -25603,36 +25645,7 @@ const originalBase64 = event.target.result;
         btn.className = bar ? "sise-tab-btn" : "lj-solo-tab";
         btn.onclick = (e) => { e.stopPropagation(); __ljOpen(aptId); };
 
-        if (bar) {
-          bar.insertBefore(btn, bar.querySelector("#__siseTabAptName") || null);
-          // 단지정보·시세이력을 누르면 이 탭은 내려가야 한다.
-          // ⚠ 그쪽 click 에 리스너를 걸면 **모바일에서 안 걸린다** — hongbuSise 의 bindTap 이
-          //    touchend 에서 preventDefault() 를 해 합성 click 이 아예 발생하지 않는다(2026-09-27 실측).
-          //    그래서 이벤트가 아니라 **버튼의 active 클래스 변화**를 본다. 어떤 경로로 눌려도 확실하다.
-          const others = Array.from(bar.querySelectorAll(".sise-tab-btn")).filter((b) => b !== btn);
-          try { window.__ljTabObs?.disconnect(); } catch (_) {}
-          window.__ljTabObs = new MutationObserver(() => {
-            if (!__ljState.active) return;
-            // __ljActivate(true) 가 남의 active 를 떼는 것도 여기로 오지만, 그때는 아무도 active 가 아니라 무시된다
-            if (others.some((b) => b.classList.contains("active"))) __ljActivate(false);
-          });
-          for (const b of others) window.__ljTabObs.observe(b, { attributes: true, attributeFilter: ["class"] });
-        } else {
-          // 시세 애드온이 없을 때 — 같은 모양의 자체 탭 줄
-          const row = document.createElement("div");
-          row.id = "ljSoloRow";
-          row.style.cssText = "display:flex;gap:6px;padding:0 0 8px;margin:-2px 0 8px;border-bottom:1px solid #e2e8f0;";
-          const bInfo = document.createElement("button");
-          bInfo.type = "button";
-          bInfo.id = "ljSoloInfo";
-          bInfo.className = "lj-solo-tab on";
-          bInfo.textContent = "단지정보";
-          bInfo.onclick = (e) => { e.stopPropagation(); __ljActivate(false); };
-          row.appendChild(bInfo);
-          row.appendChild(btn);
-          infoDiv.insertBefore(row, infoDiv.firstChild);
-        }
-
+        // 패널을 **먼저** 만든다 — 중간에 무엇이 실패해도 "버튼만 있고 패널 없음" 상태가 생기지 않게.
         // 패널은 탭1 '안'에 (직속 자식이면 hongbuSise 의 MutationObserver 가 회수한다)
         const host = infoDiv.querySelector("#__siseTab1") || infoDiv;
         const panel = document.createElement("div");
@@ -25666,6 +25679,37 @@ const originalBase64 = event.target.result;
         panel.appendChild(body);
         panel.appendChild(foot);
         host.appendChild(panel);
+
+        // 패널이 붙은 뒤에 버튼을 끼운다
+        if (bar) {
+          bar.insertBefore(btn, bar.querySelector("#__siseTabAptName") || null);
+          // 단지정보·시세이력을 누르면 이 탭은 내려가야 한다.
+          // ⚠ 그쪽 click 에 리스너를 걸면 **모바일에서 안 걸린다** — hongbuSise 의 bindTap 이
+          //    touchend 에서 preventDefault() 를 해 합성 click 이 아예 발생하지 않는다(2026-09-27 실측).
+          //    그래서 이벤트가 아니라 **버튼의 active 클래스 변화**를 본다. 어떤 경로로 눌려도 확실하다.
+          const others = Array.from(bar.querySelectorAll(".sise-tab-btn")).filter((b) => b !== btn);
+          try { window.__ljTabObs?.disconnect(); } catch (_) {}
+          window.__ljTabObs = new MutationObserver(() => {
+            if (!__ljState.active) return;
+            // __ljActivate(true) 가 남의 active 를 떼는 것도 여기로 오지만, 그때는 아무도 active 가 아니라 무시된다
+            if (others.some((b) => b.classList.contains("active"))) __ljActivate(false);
+          });
+          for (const b of others) window.__ljTabObs.observe(b, { attributes: true, attributeFilter: ["class"] });
+        } else {
+          // 시세 애드온이 없을 때 — 같은 모양의 자체 탭 줄
+          const row = document.createElement("div");
+          row.id = "ljSoloRow";
+          row.style.cssText = "display:flex;gap:6px;padding:0 0 8px;margin:-2px 0 8px;border-bottom:1px solid #e2e8f0;";
+          const bInfo = document.createElement("button");
+          bInfo.type = "button";
+          bInfo.id = "ljSoloInfo";
+          bInfo.className = "lj-solo-tab on";
+          bInfo.textContent = "단지정보";
+          bInfo.onclick = (e) => { e.stopPropagation(); __ljActivate(false); };
+          row.appendChild(bInfo);
+          row.appendChild(btn);
+          infoDiv.insertBefore(row, infoDiv.firstChild);
+        }
 
         __ljUpdateTabBadge(aptId);
 
