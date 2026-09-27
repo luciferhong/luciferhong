@@ -534,7 +534,9 @@
         right: 0;
         bottom: 0;
         inset: 0;
-        z-index: 100050;
+        /* 단지 상세모달이 1000002, 사진 뷰어가 1000003 — 그 위로 올라와야 보인다
+           (처음에 100050 을 줬다가 모달 뒤에 깔렸다. 2026-09-27) */
+        z-index: 1000010;
         background: rgba(0, 0, 0, 0.45);
         display: flex;
         align-items: center;
@@ -26077,14 +26079,28 @@ const originalBase64 = event.target.result;
       // 기준 두 개를 따로 둔다.
       //  ① __ljSheetMod_{sgg5}  — '덮어쓰기 경고' 기준. **완전히 대조가 끝났을 때만** 갱신한다
       //     (시트에 손으로 만든 열이 남아 있으면 갱신하지 않아 경고가 계속 뜬다).
-      //  ② __ljScanMod_{aptId} — '자동 대조' 기준. 훑고 나면 결과와 무관하게 갱신해
-      //     같은 시트 상태로 매번 다시 읽거나 다시 묻지 않게 한다(= 나중에 누르면 조용해진다).
+      //  ② __ljAsked_{aptId}  — 자동 대조가 '이미 물어본 변경'. 시각이 아니라 **변경 내용의 서명**이다
+      //     (= 나중에 누르면 조용해지고, 시트를 또 고치면 다시 묻는다).
       function __ljModKey(sgg5) { return "__ljSheetMod_" + sgg5; }
       function __ljModGet(sgg5) { try { return localStorage.getItem(__ljModKey(sgg5)) || ""; } catch (_) { return ""; } }
       function __ljModSet(sgg5, v) { try { if (v) localStorage.setItem(__ljModKey(sgg5), v); } catch (_) {} }
-      function __ljScanKey(aptId) { return "__ljScanMod_" + aptId; }
-      function __ljScanGet(aptId) { try { return localStorage.getItem(__ljScanKey(aptId)) || ""; } catch (_) { return ""; } }
-      function __ljScanSet(aptId, v) { try { if (v) localStorage.setItem(__ljScanKey(aptId), v); } catch (_) {} }
+      // ⚠ '이미 물어본 변경' 은 **내용으로** 기억한다. 시트 파일의 modifiedTime 으로 판단하면 안 된다 —
+      //    구글 시트는 셀을 고쳐도 Drive 수정시각이 바로 갱신되지 않는다
+      //    (2026-09-27 실측: 시트를 고치고 두 번 확인하는 동안 02:07:45.960Z 로 계속 같았다).
+      //    그래서 자동 대조는 탭을 열 때마다 실제로 읽고, 같은 변경을 또 묻지만 않게 한다.
+      function __ljHash(s) {
+        let h = 5381;
+        for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+        return String(h);
+      }
+      function __ljDiffSig(diffs) {
+        return __ljHash(
+          (diffs || []).map((d) => d.rec.id + ":" + d.changes.map((c) => c.k + "=" + c.to).join("|")).sort().join("~")
+        );
+      }
+      function __ljAskedKey(aptId) { return "__ljAsked_" + aptId; }
+      function __ljAskedGet(aptId) { try { return localStorage.getItem(__ljAskedKey(aptId)) || ""; } catch (_) { return ""; } }
+      function __ljAskedSet(aptId, v) { try { localStorage.setItem(__ljAskedKey(aptId), v || ""); } catch (_) {} }
       function __ljModWhen(iso) {
         if (!iso) return "";
         const d = new Date(iso);
@@ -26119,7 +26135,7 @@ const originalBase64 = event.target.result;
             if (col.some((v) => String(v ?? "").trim() !== "")) noId++;
             continue;
           }
-          out.push({ id, col });
+          out.push({ id, col, ci: c });
         }
         return { cols: out, noId };
       }
@@ -26186,10 +26202,10 @@ const originalBase64 = event.target.result;
               `[lj] 홍부가 최신 ${c.id} — 홍부 ${__ljWhenOut(recTs)}(${recTs}) > 시트 ${__ljWhenOut(sheetTs)}(${sheetTs}) ` +
                 `[${changes.map((x) => x.lb).join(", ")}]`
             );
-            newer.push({ rec, changes, hongbuNewer: true });
+            newer.push({ rec, changes, ci: c.ci, hongbuNewer: true });
             continue;
           }
-          diffs.push({ rec, changes });
+          diffs.push({ rec, changes, ci: c.ci });
         }
         // noId 는 시트 전체 기준 — 손으로 만든 열이 남아 있으면 '덮어쓰기 경고' 를 살려 둬야 한다
         return { diffs, newer, missing, newerHere: newer.length, unknown: read.noId };
@@ -26287,15 +26303,40 @@ const originalBase64 = event.target.result;
       async function __ljImportApply(r) {
         const diffs = r.diffs || [];
         let n = 0;
+        const applied = [];
         for (const d of diffs) {
           try {
-            const next = { ...d.rec, updatedAt: Date.now() };
+            const ts = Date.now();
+            const next = { ...d.rec, updatedAt: ts };
             for (const c of d.changes) next[c.k] = c.to;
             await __ljPut(next);
             __ljSync(next); // 드라이브에도 전파
+            if (d.ci != null) applied.push({ ci: d.ci, ts });
             n++;
           } catch (e) {
             console.warn("[lj] 가져오기 반영 실패:", d.rec.id, e);
+          }
+        }
+
+        // ⚠ 시트의 기록일시도 같이 올려 준다.
+        // 가져오기는 updatedAt 을 '지금' 으로 올리는데 시트 기록일시는 내보낸 시점 그대로라,
+        // 안 맞춰 주면 그 뒤로 이 매물의 시트 수정이 전부 "홍부가 최신" 으로 걸러진다
+        // (2026-09-27 실측: 홍부 11:11:00 > 시트 11:06:42 로 4분 18초 차이가 나 영영 막혔다).
+        if (r.sid && applied.length) {
+          const row = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__when") + 1;
+          try {
+            await gapi.client.sheets.spreadsheets.values.batchUpdate({
+              spreadsheetId: r.sid,
+              resource: {
+                valueInputOption: "RAW",
+                data: applied.map((a) => ({
+                  range: `${__ljColA1(a.ci + 1)}${row}`,
+                  values: [[__ljWhenOut(a.ts)]],
+                })),
+              },
+            });
+          } catch (e) {
+            console.warn("[lj] 시트 기록일시 갱신 실패(무시):", e?.result?.error?.message || e?.message || e);
           }
         }
         // 대조 완료 — 시트에만 있는 열이 남아 있으면 덮어쓰기 경고는 살려 둔다
@@ -26330,13 +26371,12 @@ const originalBase64 = event.target.result;
         const sid = await __ljFindSheetId(ctx.sgg5);
         if (!sid) return null;
         const mod = await __ljSheetMod(sid);
-        // 파일 수정시각만 보고 끝내는 값싼 길 — 여기서 막히면 요청 1~2회로 끝난다
-        if (opts?.skipIfSame && mod && mod === __ljScanGet(ctx.aptId)) return { same: true, mod };
         const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
         const gp = meta.result.sheets[0].properties.gridProperties || {};
         const r = await __ljImportScan(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30), ctx.aptId, ctx.sgg5);
         if (!r) return null;
         r.mod = mod;
+        r.sid = sid;
         r.sgg5 = ctx.sgg5;
         r.aptId = ctx.aptId;
         r.aptName = ctx.aptName;
@@ -26355,7 +26395,7 @@ const originalBase64 = event.target.result;
       // 매물임장 탭을 열 때 자동으로 대조하고, 바뀐 게 있으면 팝업으로 묻는다
       // 건너뛸 때마다 이유를 남긴다 — 조용히 빠져나가면 왜 안 뜨는지 알 길이 없다(2026-09-27)
       const __ljAutoAt = new Map();
-      const __LJ_AUTO_GAP = 10000; // skipIfSame 게이트가 요청 1~2회로 끝나므로 짧게 잡아도 된다
+      const __LJ_AUTO_GAP = 10000; // 탭을 연속으로 여닫을 때만 막는 정도
       async function __ljAutoCheck(ctx, opts) {
         const why = (m) => { console.log("[lj] 자동 대조 건너뜀 —", m); };
         if (!ctx?.sgg5 || !ctx.aptId) return why("단지·시군구를 모름");
@@ -26368,19 +26408,21 @@ const originalBase64 = event.target.result;
         if (Date.now() - (__ljAutoAt.get(k) || 0) < __LJ_AUTO_GAP) return why("방금 확인함");
         __ljAutoAt.set(k, Date.now());
         try {
-          const r = await __ljScanSheet(ctx, { skipIfSame: true });
+          const r = await __ljScanSheet(ctx, {});
           if (!r) return why("시트를 못 찾았거나 형식이 다름");
-          if (r.same) return why(`시트가 지난번 확인 뒤로 안 바뀜 (수정시각 ${r.mod} · __lj.reset() 으로 초기화 가능)`);
           if (!r.diffs.length) {
-            // 보여 줄 게 없다고 확정 → 같은 시트 상태로 또 읽지 않게 기록
-            if (r.mod) __ljScanSet(k, r.mod);
+            __ljAskedSet(k, ""); // 없어졌으니 기억도 지운다
             return why(
               `가져올 변경 없음 (홍부가 최신 ${r.newerHere || 0}건 · 시트에만 있는 열 ${r.unknown || 0}개 · 홍부에 없는 열 ${r.missing || 0}개)`
             );
           }
-          // 못 보여 줬으면 기록하지 않는다 — 다음에 다시 묻게
+          const sig = __ljDiffSig(r.diffs);
+          if (sig === __ljAskedGet(k)) {
+            return why(`같은 변경을 이미 물어봄 — 📥 버튼이나 __lj.check() 로 다시 볼 수 있습니다`);
+          }
+          // 못 보여 줬으면 기억하지 않는다 — 다음에 다시 묻게
           if (String(__ljState.aptId) !== k) return why("그새 다른 단지로 이동함");
-          if (r.mod) __ljScanSet(k, r.mod);
+          __ljAskedSet(k, sig);
           __ljDiffPopup(r);
         } catch (e) {
           console.warn("[lj] 자동 대조 실패:", e?.result?.error?.message || e?.message || e, e);
@@ -26417,7 +26459,7 @@ const originalBase64 = event.target.result;
         try {
           const r = await __ljScanSheet(ctx, {});
           await __ljRenderList();
-          if (r?.mod) __ljScanSet(ctx.aptId, r.mod); // 수동 확인은 결과를 바로 보여 주므로 여기서 기록
+          if (r) __ljAskedSet(ctx.aptId, r.diffs.length ? __ljDiffSig(r.diffs) : ""); // 바로 보여 주므로 기억
           if (r === null) {
             alert("이 시군구의 시트를 찾지 못했습니다.\n먼저 한 번 내보내기를 해 주세요.");
           } else if (r.diffs.length || r.newer.length) {
@@ -26449,17 +26491,17 @@ const originalBase64 = event.target.result;
           드라이브준비: !!window.__gdriveReady,
           토큰: !!window.__gdriveAccessToken,
           시트수정기준: __ljModGet(__ljState.ctx?.sgg5 || ""),
-          지난확인: __ljScanGet(__ljState.ctx?.aptId || ""),
+          이미물어본변경: __ljAskedGet(__ljState.ctx?.aptId || ""),
         }),
         // 게이트(쓰로틀·'안 바뀜')를 모두 무시하고 지금 다시 본다 — reset 을 따로 부를 필요가 없다
         check: () => {
           __ljAutoAt.clear();
-          try { localStorage.removeItem(__ljScanKey(String(__ljState.ctx?.aptId))); } catch (_) {}
+          try { localStorage.removeItem(__ljAskedKey(String(__ljState.ctx?.aptId))); } catch (_) {}
           return __ljAutoCheck(__ljState.ctx, { retried: true });
         },
         scan: () => __ljScanSheet(__ljState.ctx, {}),
         reset: () => {
-          try { localStorage.removeItem(__ljScanKey(String(__ljState.ctx?.aptId))); } catch (_) {}
+          try { localStorage.removeItem(__ljAskedKey(String(__ljState.ctx?.aptId))); } catch (_) {}
           __ljAutoAt.clear();
           return "초기화 완료 — 탭을 다시 열어 보세요";
         },
