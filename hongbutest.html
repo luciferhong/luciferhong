@@ -25979,6 +25979,28 @@ const originalBase64 = event.target.result;
         return created.result.id;
       }
 
+      // ── 시트 수정 감지 ──
+      // Sheets API 는 **셀별 수정 시각을 주지 않는다**(리비전 이력도 시각·사용자만, 어느 셀인지는 없다).
+      // 대신 Drive 의 파일 단위 modifiedTime 은 쓸 수 있다. 우리가 쓴 직후의 값을 기억해 두면,
+      // 그 뒤에 값이 달라진 것 = 홍부 밖에서(사람이 시트에서) 고친 것이다.
+      async function __ljSheetMod(sid) {
+        try {
+          const r = await gapi.client.drive.files.get({ fileId: sid, fields: "modifiedTime" });
+          return String(r.result.modifiedTime || "");
+        } catch (e) {
+          console.warn("[lj] 시트 수정시각 확인 실패(무시):", e?.result?.error?.message || e?.message || e);
+          return "";
+        }
+      }
+      function __ljModKey(sgg5) { return "__ljSheetMod_" + sgg5; }
+      function __ljModGet(sgg5) { try { return localStorage.getItem(__ljModKey(sgg5)) || ""; } catch (_) { return ""; } }
+      function __ljModSet(sgg5, v) { try { if (v) localStorage.setItem(__ljModKey(sgg5), v); } catch (_) {} }
+      function __ljModWhen(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("ko-KR");
+      }
+
       // 시트를 세로 배치로 읽어 매물 열 목록을 돌려준다.
       //   null = 우리 배치가 아니다(다른 형식) / [] = 빈 시트
       //   각 항목 {id, col} — col 은 __LJ_SHEET_ROWS 순서의 값 배열
@@ -26062,9 +26084,11 @@ const originalBase64 = event.target.result;
         if (st) { st.textContent = `${r.diffs.length}건 변경`; st.style.color = "#8a6d1f"; }
         const sub = q("#ljSub");
         if (sub) {
-          sub.textContent = r.unknown
-            ? `아래를 홍부에 반영합니다 · 시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다`
-            : "아래를 홍부에 반영합니다";
+          sub.textContent = [
+            "아래를 홍부에 반영합니다",
+            r.mod ? `시트 수정: ${__ljModWhen(r.mod)}` : "",
+            r.unknown ? `시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다` : "",
+          ].filter(Boolean).join(" · ");
         }
         const body = q("#ljBody");
         if (!body) return;
@@ -26095,7 +26119,7 @@ const originalBase64 = event.target.result;
         ok.type = "button";
         ok.className = "lj-btn pri";
         ok.textContent = `홍부에 반영 (${r.diffs.length}건)`;
-        ok.onclick = () => __ljImportApply(r.diffs);
+        ok.onclick = () => __ljImportApply(r);
         const no = document.createElement("button");
         no.type = "button";
         no.className = "lj-btn";
@@ -26105,7 +26129,8 @@ const originalBase64 = event.target.result;
         foot.appendChild(no);
       }
 
-      async function __ljImportApply(diffs) {
+      async function __ljImportApply(r) {
+        const diffs = r.diffs || [];
         const panel = __ljPanelEl();
         const foot = panel ? panel.querySelector("#ljFoot") : null;
         if (foot) foot.innerHTML = "";
@@ -26121,6 +26146,7 @@ const originalBase64 = event.target.result;
             console.warn("[lj] 가져오기 반영 실패:", d.rec.id, e);
           }
         }
+        if (r.sgg5 && r.mod) __ljModSet(r.sgg5, r.mod); // 여기까지 대조 완료
         try { __ljUpdateTabBadge(); } catch (_) {}
         alert(`시트의 수정분 ${n}건을 홍부에 반영했습니다.`);
         await __ljRenderList();
@@ -26158,13 +26184,16 @@ const originalBase64 = event.target.result;
           const sid = await __ljEnsureSheet(ctx.sgg5, __ljSheetTitle(ctx));
           const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
           const gp = meta.result.sheets[0].properties.gridProperties || {};
+          const mod = await __ljSheetMod(sid);
           const r = await __ljImportScan(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30));
+          if (r) { r.mod = mod; r.sgg5 = ctx.sgg5; }
           if (r === null) {
             alert("시트 형식을 알아볼 수 없습니다.\n먼저 한 번 내보내기를 해 주세요.");
             await __ljRenderList();
             return;
           }
           if (!r.diffs.length) {
+            __ljModSet(ctx.sgg5, mod); // 대조 끝 — 다음 내보내기에서 헛경고가 안 나오게
             alert(
               r.unknown
                 ? `시트에 바뀐 내용이 없습니다.\n(시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다)`
@@ -26273,6 +26302,20 @@ const originalBase64 = event.target.result;
           const sheetId = props.sheetId;
           const gp = props.gridProperties || {};
 
+          // 홍부 밖에서 시트를 고친 흔적이 있으면 덮어쓰기 전에 알린다 (파일 단위 modifiedTime)
+          const modNow = await __ljSheetMod(sid);
+          const modKnown = __ljModGet(ctx.sgg5);
+          if (modNow && modKnown && modNow !== modKnown) {
+            const go = confirm(
+              `이 시트는 마지막 내보내기 뒤에 수정됐습니다.\n(시트 수정: ${__ljModWhen(modNow)})\n\n` +
+                (isApt
+                  ? "지금 내보내면 이 단지 열에 한 수정은 사라집니다.\n"
+                  : "지금 내보내면 시트에서 고친 내용이 모두 사라집니다.\n") +
+                "\n계속할까요?\n취소하고 '📥 시트에서 수정분 가져오기' 를 먼저 하시길 권합니다."
+            );
+            if (!go) { await __ljRenderList(); return; }
+          }
+
           // '이 단지만' 이면 시트에서 다른 단지 열은 살리고 이 단지 열만 갈아 끼운다.
           // 반드시 병합 해제·비우기 **전에** 읽어야 한다.
           let cols = [];
@@ -26340,6 +26383,9 @@ const originalBase64 = event.target.result;
             spreadsheetId: sid,
             resource: { requests: __ljFormatRequests(sheetId, cols.length) },
           });
+
+          // 방금 우리가 쓴 뒤의 값을 기억 — 이 뒤로 달라지면 사람이 시트에서 고친 것
+          __ljModSet(ctx.sgg5, await __ljSheetMod(sid));
 
           setB("✅ 내보내기 완료");
           const url = `https://docs.google.com/spreadsheets/d/${sid}/edit`;
