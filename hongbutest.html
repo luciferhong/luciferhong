@@ -25825,6 +25825,15 @@ const originalBase64 = event.target.result;
         return Number.isNaN(n) ? 0 : n;
       }
 
+      // ⚠ 시트 기록일시는 **초 단위까지만** 적힌다(밀리초가 없다).
+      // 그대로 비교하면 같은 시각인데도 홍부 쪽 밀리초 때문에 늘 "홍부가 최신" 이 되어
+      // 시트에서 고친 것을 하나도 못 가져온다(2026-09-27 실측: 10:47:01 > 10:47:01).
+      // 그래서 둘 다 초로 내려서 비교한다.
+      function __ljHongbuNewer(recTs, sheetTs) {
+        if (!recTs || !sheetTs) return false;
+        return Math.floor(recTs / 1000) > Math.floor(sheetTs / 1000);
+      }
+
       function __ljColA1(n) {
         let s = "";
         while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); }
@@ -26145,32 +26154,45 @@ const originalBase64 = event.target.result;
         const rowIdx = {};
         __LJ_SHEET_ROWS.forEach((f, i) => { rowIdx[f.k] = i; });
         const diffs = [];
+        const newer = []; // 값은 다른데 홍부가 더 최신인 것 — 자동으로는 안 가져오고, 수동일 때 보여 준다
         let missing = 0;
-        let newerHere = 0;
         // 시트 열에 찍힌 기록일시 = 그 매물을 마지막으로 내보낸 시점의 updatedAt.
-        // 홍부 레코드가 그보다 더 최신이면 **홍부에서 고치고 아직 안 내보낸 것**이므로 가져오면 안 된다
-        // (안 그러면 옛 시트 값이 새 값을 덮는다 — 2026-09-27 실제로 그랬다).
+        // 홍부 레코드가 그보다 더 최신이면 **홍부에서 고치고 아직 안 내보낸 것**이다
+        // (자동으로 가져오면 옛 시트 값이 새 값을 덮는다 — 2026-09-27 실제로 그랬다).
         // 시트 기록일시를 못 읽는 옛 시트는 파일 단위 내보내기 시각으로 대신한다.
         const fallbackTs = __ljParseWhen(__ljModGet(String(sgg5Hint || "")));
-        const mine = read.cols.filter((c) => __ljOwnerOf(c.id) === String(aptId));
-        for (const c of mine) {
-          const rec = local.get(c.id);
-          if (!rec) { missing++; continue; } // 이 단지 기록ID 인데 홍부에 없다(지웠거나 다른 기기 것)
-          const sheetTs = __ljParseWhen(c.col[rowIdx.__when]) || fallbackTs;
-          if (sheetTs && (Number(rec.updatedAt) || 0) > sheetTs) { newerHere++; continue; }
+        const diffOf = (rec, col) => {
           const changes = [];
           for (const f of __LJ_ROWS) {
             if (!__LJ_USER_KEYS.includes(f.k)) continue; // 자동채움·자동계산 칸은 가져오지 않는다
             const i = rowIdx[f.k];
             if (i == null) continue;
-            const to = __ljFromSheet(f.k, c.col[i]);
+            const to = __ljFromSheet(f.k, col[i]);
             if (__ljCmpVal(f.k, rec[f.k]) === __ljCmpVal(f.k, to)) continue;
             changes.push({ k: f.k, lb: f.lb, from: rec[f.k] || "", to });
           }
-          if (changes.length) diffs.push({ rec, changes });
+          return changes;
+        };
+        const mine = read.cols.filter((c) => __ljOwnerOf(c.id) === String(aptId));
+        for (const c of mine) {
+          const rec = local.get(c.id);
+          if (!rec) { missing++; continue; } // 이 단지 기록ID 인데 홍부에 없다(지웠거나 다른 기기 것)
+          const changes = diffOf(rec, c.col);
+          if (!changes.length) continue;
+          const sheetTs = __ljParseWhen(c.col[rowIdx.__when]) || fallbackTs;
+          const recTs = Number(rec.updatedAt) || 0;
+          if (__ljHongbuNewer(recTs, sheetTs)) {
+            console.log(
+              `[lj] 홍부가 최신 ${c.id} — 홍부 ${__ljWhenOut(recTs)}(${recTs}) > 시트 ${__ljWhenOut(sheetTs)}(${sheetTs}) ` +
+                `[${changes.map((x) => x.lb).join(", ")}]`
+            );
+            newer.push({ rec, changes, hongbuNewer: true });
+            continue;
+          }
+          diffs.push({ rec, changes });
         }
         // noId 는 시트 전체 기준 — 손으로 만든 열이 남아 있으면 '덮어쓰기 경고' 를 살려 둬야 한다
-        return { diffs, missing, newerHere, unknown: read.noId };
+        return { diffs, newer, missing, newerHere: newer.length, unknown: read.noId };
       }
 
       function __ljDiffClose() {
@@ -26212,6 +26234,12 @@ const originalBase64 = event.target.result;
             [d.rec.dongho, d.rec.pyeong ? d.rec.pyeong + "평" : ""].filter(Boolean).join(" · ") ||
             __ljSnippet(d.rec.memo, 24) || d.rec.id;
           inner.appendChild(b);
+          if (d.hongbuNewer) {
+            const w = document.createElement("p");
+            w.style.cssText = "margin:5px 0 0;font-size:11.5px;line-height:1.45;color:#b3261e";
+            w.textContent = "⚠ 홍부가 더 최신입니다 — 가져오면 홍부에서 고친 내용이 사라집니다";
+            inner.appendChild(w);
+          }
           for (const c of d.changes) {
             const p = document.createElement("p");
             p.className = "lj-diff-chg";
@@ -26303,7 +26331,7 @@ const originalBase64 = event.target.result;
         if (!sid) return null;
         const mod = await __ljSheetMod(sid);
         // 파일 수정시각만 보고 끝내는 값싼 길 — 여기서 막히면 요청 1~2회로 끝난다
-        if (opts?.skipIfSame && mod && mod === __ljScanGet(ctx.aptId)) return { same: true };
+        if (opts?.skipIfSame && mod && mod === __ljScanGet(ctx.aptId)) return { same: true, mod };
         const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
         const gp = meta.result.sheets[0].properties.gridProperties || {};
         const r = await __ljImportScan(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30), ctx.aptId, ctx.sgg5);
@@ -26316,7 +26344,9 @@ const originalBase64 = event.target.result;
           `[lj] 대조 ${ctx.aptName || ctx.aptId}: 바뀐 매물 ${r.diffs.length} · 홍부가 최신 ${r.newerHere} · ` +
             `시트에만 ${r.unknown} · 홍부에 없음 ${r.missing} (시트수정 ${mod || "?"})`
         );
-        if (mod) __ljScanSet(ctx.aptId, mod); // 훑었으니 같은 상태로 또 읽거나 또 묻지 않는다
+        // ⚠ '지난확인' 기록은 여기서 하지 않는다. 훑자마자 찍으면, 팝업을 못 띄운 경우에도
+        //    "확인함" 이 되어 시트가 또 바뀔 때까지 영영 조용해진다(2026-09-27 실제로 그랬다).
+        //    사용자에게 보여 줬거나 보여 줄 게 없다고 확정한 자리에서만 찍는다.
         // 완전히 대조가 끝났을 때만 덮어쓰기 경고 기준을 갱신
         if (mod && !r.diffs.length && !r.unknown) __ljModSet(ctx.sgg5, mod);
         return r;
@@ -26340,13 +26370,17 @@ const originalBase64 = event.target.result;
         try {
           const r = await __ljScanSheet(ctx, { skipIfSame: true });
           if (!r) return why("시트를 못 찾았거나 형식이 다름");
-          if (r.same) return why("시트가 지난번 확인 뒤로 안 바뀜");
+          if (r.same) return why(`시트가 지난번 확인 뒤로 안 바뀜 (수정시각 ${r.mod} · __lj.reset() 으로 초기화 가능)`);
           if (!r.diffs.length) {
+            // 보여 줄 게 없다고 확정 → 같은 시트 상태로 또 읽지 않게 기록
+            if (r.mod) __ljScanSet(k, r.mod);
             return why(
               `가져올 변경 없음 (홍부가 최신 ${r.newerHere || 0}건 · 시트에만 있는 열 ${r.unknown || 0}개 · 홍부에 없는 열 ${r.missing || 0}개)`
             );
           }
+          // 못 보여 줬으면 기록하지 않는다 — 다음에 다시 묻게
           if (String(__ljState.aptId) !== k) return why("그새 다른 단지로 이동함");
+          if (r.mod) __ljScanSet(k, r.mod);
           __ljDiffPopup(r);
         } catch (e) {
           console.warn("[lj] 자동 대조 실패:", e?.result?.error?.message || e?.message || e, e);
@@ -26383,18 +26417,20 @@ const originalBase64 = event.target.result;
         try {
           const r = await __ljScanSheet(ctx, {});
           await __ljRenderList();
+          if (r?.mod) __ljScanSet(ctx.aptId, r.mod); // 수동 확인은 결과를 바로 보여 주므로 여기서 기록
           if (r === null) {
             alert("이 시군구의 시트를 찾지 못했습니다.\n먼저 한 번 내보내기를 해 주세요.");
-          } else if (!r.diffs.length) {
+          } else if (r.diffs.length || r.newer.length) {
+            // 수동으로 누른 것이니 **홍부가 더 최신인 건도 보여 주고** 사람이 정하게 한다.
+            // (자동 대조는 이것들을 조용히 건너뛴다 — 옛 시트 값이 새 값을 덮으면 안 되므로)
+            __ljDiffPopup({ ...r, diffs: r.diffs.concat(r.newer) });
+          } else {
             alert(
               [
                 `${ctx.aptName || "이 단지"}는 시트에서 가져올 내용이 없습니다.`,
-                r.newerHere ? `· 홍부가 더 최신이라 건너뛴 매물 ${r.newerHere}건 — 내보내기를 하면 시트에 반영됩니다` : "",
                 r.unknown ? `· 시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다` : "",
               ].filter(Boolean).join("\n")
             );
-          } else {
-            __ljDiffPopup(r);
           }
         } catch (e) {
           console.error("[lj] 가져오기 실패:", e);
@@ -26415,7 +26451,12 @@ const originalBase64 = event.target.result;
           시트수정기준: __ljModGet(__ljState.ctx?.sgg5 || ""),
           지난확인: __ljScanGet(__ljState.ctx?.aptId || ""),
         }),
-        check: () => { __ljAutoAt.clear(); return __ljAutoCheck(__ljState.ctx, { retried: true }); },
+        // 게이트(쓰로틀·'안 바뀜')를 모두 무시하고 지금 다시 본다 — reset 을 따로 부를 필요가 없다
+        check: () => {
+          __ljAutoAt.clear();
+          try { localStorage.removeItem(__ljScanKey(String(__ljState.ctx?.aptId))); } catch (_) {}
+          return __ljAutoCheck(__ljState.ctx, { retried: true });
+        },
         scan: () => __ljScanSheet(__ljState.ctx, {}),
         reset: () => {
           try { localStorage.removeItem(__ljScanKey(String(__ljState.ctx?.aptId))); } catch (_) {}
