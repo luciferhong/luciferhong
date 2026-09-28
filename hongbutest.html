@@ -9502,19 +9502,47 @@ const originalBase64 = event.target.result;
         } catch (e) {}
       }
 
+      // 패널 바깥을 **탭** 하면 닫는다 — 쓸어 넘기는 동작과는 구분한다.
+      // ⚠ 예전엔 pointerdown 에서 바로 닫았다. 그래서 폴드처럼 제스처로 조작하는 기기에서
+      //   화면 아래를 쓸어 홈으로 나가면, 그 시작점이 '바깥 누름' 으로 잡혀 패널이 닫혔다
+      //   (2026-09-28 폴드8 실측). 닫히면서 '보던 자리' 기록까지 지워져 돌아오지 못했다.
+      //   가장자리 몇 px 을 무시하는 방법도 있었지만, 그러면 가장자리를 일부러 탭해도
+      //   안 닫힌다. 탭과 쓸기는 **이동거리**로 갈리므로 그쪽으로 판단한다.
+      // 판단을 pointerup 으로 미루고, 손가락이 거의 안 움직였을 때만 닫는다.
+      // 시스템이 제스처를 가져가면 pointerup 이 아예 안 오거나 pointercancel 이 와서 역시 안 닫힌다.
+      const __OUTSIDE_TAP_SLOP = 10; // px — 이보다 움직이면 탭이 아니라 쓸기다
+      let __outsideDown = null;
+      // 누를 때와 뗄 때 **둘 다** 본다 — 그 사이에 사진 모달이나 무음 촬영이 열릴 수 있다.
+      function __outsideCloseBlocked() {
+        const p = document.getElementById("apartmentInfo");
+        if (!p || p.style.display !== "block") return true;
+        if (window.imageModalShowYn === true) return true;
+        // 무음 촬영 오버레이는 body 직속이라 "패널 바깥"으로 잡힌다.
+        // 막지 않으면 촬영 버튼을 누르는 순간 패널이 닫히며 saveNote()가 사진 없이 저장해버린다.
+        if (window.__silentCamOpen === true) return true;
+        return false;
+      }
       document.addEventListener(
         "pointerdown",
         (event) => {
-          const apartmentInfo = document.getElementById("apartmentInfo");
-
-          if (!apartmentInfo || apartmentInfo.style.display !== "block") return;
-          if (window.imageModalShowYn === true) return;
-          // 무음 촬영 오버레이는 body 직속이라 "패널 바깥"으로 잡힌다.
-          // 막지 않으면 촬영 버튼을 누르는 순간 패널이 닫히며 saveNote()가 사진 없이 저장해버린다.
-          if (window.__silentCamOpen === true) return;
+          __outsideDown = null;
+          if (__outsideCloseBlocked()) return;
           if (event.pointerType === "mouse" && event.button !== 0) return;
-          if (apartmentInfo.contains(event.target)) return;
-
+          if (document.getElementById("apartmentInfo").contains(event.target)) return;
+          __outsideDown = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        },
+        true,
+      );
+      document.addEventListener(
+        "pointerup",
+        (event) => {
+          const d = __outsideDown;
+          __outsideDown = null;
+          if (!d || d.id !== event.pointerId) return;
+          if (__outsideCloseBlocked()) return;
+          // 바깥에서 눌렀다가 패널 위에서 뗀 경우는 닫지 않는다
+          if (document.getElementById("apartmentInfo").contains(event.target)) return;
+          if (Math.hypot(event.clientX - d.x, event.clientY - d.y) > __OUTSIDE_TAP_SLOP) return;
           clearTimeout(window.__apartmentInfoOutsideCloseTimer);
           window.__apartmentInfoOutsideCloseTimer = setTimeout(() => {
             try {
@@ -9524,6 +9552,8 @@ const originalBase64 = event.target.result;
         },
         true,
       );
+      // 시스템이 제스처를 가져가면 여기로 온다 — 시작점을 버려 닫히지 않게 한다
+      document.addEventListener("pointercancel", () => { __outsideDown = null; }, true);
 
       document.getElementById("apartmentInfo").addEventListener(
         "touchstart",
