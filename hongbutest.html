@@ -12325,31 +12325,47 @@ const originalBase64 = event.target.result;
       }
 
       // 경량 인덱스만 로드 (Blob 없음) — 화면 로드 시 전체 Blob 로드 대신 좌표/ID만
+      // ⚠ **읽는 중이면 그것을 함께 기다린다.** __photoMemoIndexLoaded 는 읽기가 끝난 뒤에야
+      //   켜지는데, 한 번에 276ms 가 걸려서 그 사이에 들어온 호출이 가드를 그냥 통과해 같은
+      //   읽기를 또 시작한다 (2026-09-29 실측: 부팅 1.38초와 1.56초에 두 번).
+      // ⚠ 한 번이 가볍지 않다 — IndexedDB 커서는 레코드를 **통째로** 읽으므로 포토메모 247건의
+      //   사진 데이터까지 다 올린다(실측 100.5MB). 정작 남기는 건 좌표·썸네일뿐이고 나머지는
+      //   그대로 버려져 가비지 컬렉션을 부른다. 이름이 '경량' 인데 실제로는 가장 무거운 읽기다.
+      //   근본 해결은 좌표만 담은 저장소를 따로 두는 것인데 IndexedDB 스토어 추가라 DB 버전을
+      //   올려야 한다(claude_docs/indexeddb.md 의 BLOCKING 절차). 우선 중복만 없앤다.
+      let __photoMemoIndexP = null;
       async function loadPhotoMemoIndexOnce() {
         if (window.__photoMemoIndexLoaded) return window.__photoMemoIndex;
-
-        // 1) IndexedDB에서 우선 로드 (로그인 여부 무관, 오프라인 지원)
+        if (__photoMemoIndexP) return await __photoMemoIndexP; // 이미 읽는 중이면 그것을 기다린다
+        __photoMemoIndexP = (async () => {
+          // 1) IndexedDB에서 우선 로드 (로그인 여부 무관, 오프라인 지원)
+          try {
+            const localMemos = await __loadPhotoMemoIndexFromLocal();
+            window.__photoMemoIndex = localMemos
+              .filter((v) => !v.deletedAt) // tombstone(삭제 마킹)은 마커 인덱스에서 제외
+              .map((v) => ({
+                id: String(v.id || ""),
+                lat: Number(v.lat),
+                lng: Number(v.lng),
+                sgg5: v.sgg5 || "",
+                createdAt: v.createdAt || 0,
+                addedAt: v.addedAt || v.createdAt || 0,
+                note: v.note || "",
+                thumbDataUrl: v.thumbDataUrl || "",
+              }));
+          } catch (e) {
+            console.error("IndexedDB 포토메모 로드 실패:", e);
+            window.__photoMemoIndex = [];
+          }
+          window.__photoMemoIndexLoaded = true;
+          // Drive 동기화는 __gdriveOnSignedIn에서 단지메모와 함께 순서대로 제어
+          return window.__photoMemoIndex;
+        })();
         try {
-          const localMemos = await __loadPhotoMemoIndexFromLocal();
-          window.__photoMemoIndex = localMemos
-            .filter((v) => !v.deletedAt) // tombstone(삭제 마킹)은 마커 인덱스에서 제외
-            .map((v) => ({
-              id: String(v.id || ""),
-              lat: Number(v.lat),
-              lng: Number(v.lng),
-              sgg5: v.sgg5 || "",
-              createdAt: v.createdAt || 0,
-              addedAt: v.addedAt || v.createdAt || 0,
-              note: v.note || "",
-              thumbDataUrl: v.thumbDataUrl || "",
-            }));
-        } catch (e) {
-          console.error("IndexedDB 포토메모 로드 실패:", e);
-          window.__photoMemoIndex = [];
+          return await __photoMemoIndexP;
+        } finally {
+          __photoMemoIndexP = null;
         }
-        window.__photoMemoIndexLoaded = true;
-        // Drive 동기화는 __gdriveOnSignedIn에서 단지메모와 함께 순서대로 제어
-        return window.__photoMemoIndex;
       }
 
       // 하위 호환 — 기존 호출 코드가 있는 경우를 대비
@@ -14718,12 +14734,16 @@ const originalBase64 = event.target.result;
           }
         } catch (e) { console.warn('[lj] 로그인 뒤 탭 주입 실패:', e?.message || e); }
         // (로그인 직후 "마지막 수정 지역" 변동 체크/동기화 확인창 제거됨 — 모든 동기화는 🔄 동기화 버튼으로 수동 실행)
-        window.__photoMemoIndexLoaded = false;
-        window.__photoMemoIndex = [];
-
+        // ⚠ 여기서 포토메모 인덱스를 **버리지 않는다** (2026-09-29).
+        //   로그인만 했을 뿐 로컬 데이터는 그대로다 — 동기화는 🔄 버튼으로만 도므로 드라이브에서
+        //   받아 온 것도 아직 없다. 버리면 부팅 직후에 같은 결과를 한 번 더 만들 뿐이다.
+        //   그 '한 번' 이 싸지 않다: IndexedDB 커서는 레코드를 통째로 읽어 포토메모 247건의
+        //   사진 데이터까지 다 올린다(실측 100.5MB · 276ms). 정작 남기는 건 좌표뿐이고 나머지는
+        //   버려져 가비지 컬렉션을 부른다. 부팅 중 3번 돌던 것이 2번이 된다.
+        //   데이터가 실제로 바뀌는 동기화·복원 뒤의 무효화는 그대로 둔다(그쪽은 정당하다).
         try {
           __syncProgressShow("☁️ 포토메모 로드 중...");
-          await loadPhotoMemoIndexOnce();
+          await loadPhotoMemoIndexOnce(); // 아직 안 읽었으면 읽고, 이미 있으면 그냥 넘어간다
         } catch (e) {
           console.error("인덱스 로드 실패:", e);
         }
