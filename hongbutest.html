@@ -8813,6 +8813,152 @@
         }, 200);
       })();
 
+      // ── 보던 자리로 되돌아오기 (2026-09-28 사용자 요청) ─────────────────────────
+      // 임장 중에 화면이 처음부터 다시 뜨는 경우가 두 가지다.
+      //   ① 홈화면 바로가기로 들어옴 — 기존 탭이 아니라 **맨 주소로 새 탭**이 열린다
+      //   ② 카톡·인터넷을 보다 돌아옴 — 크롬이 백그라운드 탭을 버려 같은 주소로 다시 로드된다
+      // ①은 주소에 아무것도 안 실리므로 ?focus= 같은 URL 방식으로는 못 덮는다. 둘 다 덮는 건
+      // localStorage 뿐이라 여기에 적어 둔다.
+      //
+      // 내용 자체는 안 잃는다 — 글자는 __ljFlush 가 시트에 바로 쓴다. 잃는 건 "어디를 보고
+      // 있었는지" 뿐이라, 단지·탭·기록 세 가지만 기억했다가 되짚는다.
+      const __RESUME_KEY = "__hongbuResume_v1";
+      const __RESUME_AUTO_MS = 30 * 60 * 1000;      // 이 안이면 묻지 않고 바로 연다
+      const __RESUME_ASK_MS = 12 * 60 * 60 * 1000;  // 이 안이면 띠만 띄우고 누를 때 연다
+      let __resumeBusy = false;   // 복원하는 동안의 화면 이동은 기록하지 않는다
+      let __resumeStop = false;   // '취소' 를 누르면 남은 단계를 접는다
+
+      function __resumeGet() {
+        try { return JSON.parse(localStorage.getItem(__RESUME_KEY) || "null"); } catch (_) { return null; }
+      }
+      function __resumeClear() {
+        try { localStorage.removeItem(__RESUME_KEY); } catch (_) {}
+      }
+      // 바뀐 것만 넘기면 나머지는 이전 값을 물려받는다(탭만 바뀌는 경우가 많다).
+      function __resumeSet(patch) {
+        if (__resumeBusy) return; // 복원 절차가 자기 발자국을 덮어쓰지 않게
+        try {
+          const next = Object.assign({}, __resumeGet() || {}, patch, { ts: Date.now() });
+          if (!next.aptId) return;
+          localStorage.setItem(__RESUME_KEY, JSON.stringify(next));
+        } catch (_) {}
+      }
+
+      // 조건이 참이 될 때까지 기다린다(없으면 null). 구글 로그인처럼 늦게 되는 것들 때문에 필요하다.
+      function __resumeWait(fn, ms) {
+        return new Promise((resolve) => {
+          const t0 = Date.now();
+          const timer = setInterval(() => {
+            if (__resumeStop) { clearInterval(timer); resolve(null); return; }
+            let v = null;
+            try { v = fn(); } catch (_) {}
+            if (v) { clearInterval(timer); resolve(v); return; }
+            if (Date.now() - t0 > ms) { clearInterval(timer); resolve(null); }
+          }, 200);
+        });
+      }
+
+      // 화면 위쪽 띠 하나로 두 가지를 다 쓴다: 여는 중 알림 / 이어서 볼지 묻기
+      function __resumeBar(text, onTap, tapLabel) {
+        let bar = document.getElementById("hongbuResumeBar");
+        if (!bar) {
+          bar = document.createElement("div");
+          bar.id = "hongbuResumeBar";
+          bar.style.cssText =
+            "position:fixed;left:50%;transform:translateX(-50%);top:calc(8px + env(safe-area-inset-top,0px));" +
+            "z-index:1000003;max-width:92vw;display:flex;align-items:center;gap:10px;" +
+            "padding:9px 12px;border-radius:999px;background:rgba(32,32,32,.92);color:#fff;" +
+            "font-size:13px;box-shadow:0 4px 16px rgba(0,0,0,.28);";
+          document.body.appendChild(bar);
+        }
+        bar.innerHTML = "";
+        const msg = document.createElement("span");
+        msg.textContent = text;
+        msg.style.cssText = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+        bar.appendChild(msg);
+        const act = document.createElement("button");
+        act.type = "button";
+        act.textContent = tapLabel;
+        act.style.cssText =
+          "flex:0 0 auto;border:0;border-radius:999px;padding:4px 10px;cursor:pointer;" +
+          "background:#fff;color:#222;font-size:12px;font-weight:700;touch-action:manipulation;";
+        act.onclick = (e) => { e.stopPropagation(); onTap(); };
+        bar.appendChild(act);
+        bar.style.display = "flex";
+        return bar;
+      }
+      function __resumeBarHide() {
+        const bar = document.getElementById("hongbuResumeBar");
+        if (bar) bar.style.display = "none";
+      }
+
+      async function __resumeRun(s) {
+        __resumeBusy = true;
+        __resumeStop = false;
+        const name = s.aptName || "단지";
+        __resumeBar(`${name} 이어서 여는 중…`, () => { __resumeStop = true; __resumeBarHide(); }, "취소");
+        try {
+          // ① 지도·단지 데이터가 올 때까지 (__focusFromUrl 과 같은 조건)
+          const apt = await __resumeWait(
+            () =>
+              window.map && window.naver && Array.isArray(apartmentData) && apartmentData.length
+                ? apartmentData.find((a) => String(a.id) === String(s.aptId))
+                : null,
+            30000
+          );
+          if (!apt || __resumeStop) return;
+          // ② 그 단지로 이동. 필터(대형·세대수 등)에 걸려 마커가 없을 수 있어 강제 표시한다.
+          window.__forceShowAptId = String(s.aptId);
+          try {
+            window.map.setZoom(17);
+            window.map.setCenter(new naver.maps.LatLng(apt.lat, apt.lng));
+            updateMarkers(window.map.getBounds());
+          } catch (_) {}
+          await new Promise((r) => setTimeout(r, 700));
+          if (__resumeStop) return;
+          // ③ 단지 모달
+          try { showApartmentInfo(String(s.aptId)); } catch (_) { return; }
+          if (s.tab !== "lj" || __resumeStop) return;
+          // ④ 매물임장 탭 — 구글 로그인 뒤에야 버튼이 생기므로 기다린다.
+          //    로그인이 안 돼 있으면 버튼이 영영 안 생기고, 그때는 단지 모달까지만 열고 끝낸다.
+          const btn = await __resumeWait(() => document.getElementById("ljTabBtn"), 20000);
+          if (!btn || __resumeStop) return;
+          await __ljOpen(String(s.aptId));
+          if (!s.recId || __resumeStop) return;
+          // ⑤ 보던 매물 — 시트에서 사라졌을 수 있다(파트너가 지웠거나 빈 기록이라 취소됐거나).
+          //    그땐 조용히 목록에 머문다. __ljEdit 를 그냥 부르면 "찾을 수 없습니다" 경고가 뜬다.
+          const rows = await __ljByApt(String(s.aptId));
+          if (__resumeStop) return;
+          if (rows.some((r) => String(r.id) === String(s.recId))) await __ljEdit(s.recId);
+        } catch (e) {
+          console.warn("[resume] 복원 실패:", e);
+        } finally {
+          __resumeBusy = false;
+          __resumeBarHide();
+        }
+      }
+
+      (function __resumeLastView() {
+        setTimeout(() => {
+          try {
+            // 주소로 직접 지정해 들어온 경우(?focus=)가 우선 — 그쪽이 사람이 방금 정한 목적지다
+            if (new URLSearchParams(location.search).get("focus")) return;
+          } catch (_) {}
+          const s = __resumeGet();
+          if (!s || !s.aptId) return;
+          const age = Date.now() - (s.ts || 0);
+          if (age > __RESUME_ASK_MS) { __resumeClear(); return; }
+          if (age > __RESUME_AUTO_MS) {
+            const name = s.aptName || "단지";
+            const sub = s.recId && s.label ? ` · ${s.label}` : "";
+            __resumeBar(`${name}${sub} 이어서`, () => { __resumeBarHide(); __resumeRun(s); }, "열기");
+            setTimeout(__resumeBarHide, 15000); // 안 누르면 조용히 사라진다
+            return;
+          }
+          __resumeRun(s);
+        }, 0);
+      })();
+
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
 
@@ -8987,6 +9133,20 @@
 
         infoDiv.innerHTML = infoHtml;
         infoDiv.style.display = "block";
+        // 보던 자리 기억 — 화면이 처음부터 다시 떠도 여기로 되돌아온다.
+        // ⚠ 탭·기록은 **다른 단지를 열 때만** 초기화한다. 이 함수는 상세(aptDetail)가 늦게
+        //   도착하면 같은 단지를 다시 그리는데(위 __aptDetailPromise), 그때 매물임장 탭을 보고
+        //   있었다면 tab:"info" 로 덮어써 버린다. 바로 뒤 __ljMountTabButton 이 화면을 되살리며
+        //   다시 적어 주긴 하지만, 그 틈에 앱이 죽으면 단지정보로 떨어진다.
+        const __rPrev = __resumeGet();
+        const __rSame = __rPrev && String(__rPrev.aptId) === String(apartmentId);
+        __resumeSet({
+          aptId: String(apartmentId),
+          aptName: apartmentDetailData[apartmentId]?.아파트명 || aptInfo?.name || "",
+          tab: __rSame ? __rPrev.tab || "info" : "info",
+          recId: __rSame ? __rPrev.recId || null : null,
+          label: __rSame ? __rPrev.label || "" : "",
+        });
         __dockApartmentPanel(); // PC: 지도영역 안쪽 + 화면 하단까지로 위치·높이 제한
         __updateResidentStoryBtn(apartmentId); // 호갱 매핑 있는 단지만 이야기 버튼 노출
 
@@ -9279,6 +9439,7 @@ const originalBase64 = event.target.result;
         const id = apartmentInfo.getAttribute("data-id");
         saveNote(id);
 
+        __resumeClear(); // 사람이 닫은 것이므로 다음에 켤 때 되돌아가지 않는다
         apartmentInfo.style.display = "none";
         // ✅ [테스트] 필지 경계 제거
         try { __parcelClear(); } catch (e) {}
@@ -26177,6 +26338,7 @@ const originalBase64 = event.target.result;
       }
       async function __ljRenderList() {
         __ljState.view = "list";
+        __resumeSet({ tab: "lj", recId: null, label: "" }); // 보던 자리 기억
         __ljState.rec = null;
         __ljState.isNew = false;
         __ljState.seed = null;
@@ -26438,6 +26600,8 @@ const originalBase64 = event.target.result;
         const rec = __ljState.rec;
         const panel = __ljPanelEl();
         if (!panel || !ctx || !rec) return;
+        // 보던 자리 기억 — 이 매물까지 되짚어 연다
+        __resumeSet({ tab: "lj", recId: rec.id, label: rec.dongho || rec.pyeong || "" });
         const q = (sel) => panel.querySelector(sel);
         const ttl = q("#ljTitle");
         if (ttl) ttl.textContent = rec.dongho || "새 매물";
