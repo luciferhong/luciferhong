@@ -16827,21 +16827,16 @@ const originalBase64 = event.target.result;
             const have = new Set();
             for (const ph of Object.values(local.localPhotos)) if (ph && !ph.deletedAt && __netSz(ph.imageDataUrl)) have.add(__photoImgFilename({ ...ph, sgg5 }));
             for (const n of Object.values(local.localNotes)) { if (!n || n.deletedAt) continue; if (n.lazy) r.notes++; for (const im of (n.images || [])) if (im && typeof im === 'object' && __getImgData(im)) have.add(__aptImgFilename({ ...n, sgg5 }, im.addedAt)); }
-            // 매물임장 사진도 센다 (2026-09-28) — 별도 DB 라 위 local 에 안 들어온다
-            try {
-              for (const lr of (await __ljAll()).filter((x) => String(x.sgg5) === sgg5)) {
-                for (const it of __ljShots(lr)) if (__getImgData(it)) have.add(__ljImgFilename({ ...lr, sgg5 }, it.addedAt));
-              }
-            } catch (_) {}
-            const [pf, af, lf] = await Promise.all([
-              __lzFindSggFolder('photos', sgg5), __lzFindSggFolder('aptImages', sgg5), __ljPhotoFolder(sgg5, false),
+            // ⚠ 매물임장 사진은 여기서 세지 않는다 (2026-09-28). 지역 단위로 미리 받지 않고
+            //   매물임장 탭을 열 때 __ljPrefetchShots 가 그 단지 것만 받기 때문이다.
+            const [pf, af] = await Promise.all([
+              __lzFindSggFolder('photos', sgg5), __lzFindSggFolder('aptImages', sgg5),
             ]);
-            const [pm, am, lm] = await Promise.all([
-              __driveListFolderSizes(pf), __driveListFolderSizes(af), __driveListFolderSizes(lf),
+            const [pm, am] = await Promise.all([
+              __driveListFolderSizes(pf), __driveListFolderSizes(af),
             ]);
             for (const [name, size] of pm) if (!have.has(name)) { r.files++; r.bytes += size; }
             for (const [name, size] of am) if (!have.has(name)) { r.files++; r.bytes += size; }
-            for (const [name, size] of lm) if (!have.has(name)) { r.files++; r.bytes += size; }
           } catch (e) { console.warn('[net] 내려받기 용량 계산 실패(무시):', sgg5, e?.message || e); r.err = true; }
           out.push(r);
         }
@@ -17102,15 +17097,7 @@ const originalBase64 = event.target.result;
 
       // ── IDB 레코드 읽기 ──
       function __dqReadRecord(kind, id) {
-        // 매물임장만 별도 DB(hongbuListing) — hongbuMemo 버전을 올리지 않으려고 분리해 두었다
-        if (kind === 'listing') {
-          return __ljOpenDB().then((db) => new Promise((resolve, reject) => {
-            const tx = db.transaction([__LJ_ST], 'readonly');
-            const g = tx.objectStore(__LJ_ST).get(String(id));
-            g.onsuccess = () => resolve(g.result || null);
-            g.onerror = (e) => reject(e.target.error);
-          }));
-        }
+        // 매물임장('listing')은 더 이상 이 큐를 타지 않는다 — 원본이 구글시트다 (2026-09-28).
         const store = kind === 'note' ? 'apartmentNotes' : kind === 'photo' ? 'photoMemos' : 'polygonMemos';
         return new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
@@ -17159,16 +17146,7 @@ const originalBase64 = event.target.result;
         return s;
       }
       function __dqPatchSgg5(kind, id, sgg5) {
-        if (kind === 'listing') {
-          return __ljOpenDB().then((db) => new Promise((resolve, reject) => {
-            const tx = db.transaction([__LJ_ST], 'readwrite');
-            const os = tx.objectStore(__LJ_ST);
-            const g = os.get(String(id));
-            g.onsuccess = () => { if (g.result && g.result.sgg5 !== sgg5) os.put({ ...g.result, sgg5 }); };
-            tx.oncomplete = () => { console.log(`[dq] sgg5 보정 listing ${id} → ${sgg5}`); resolve(); };
-            tx.onerror = (ev) => reject(ev.target.error);
-          }));
-        }
+        // 매물임장('listing')은 이 큐를 타지 않는다 — 원본이 구글시트다 (2026-09-28)
         const store = kind === 'note' ? 'apartmentNotes' : 'photoMemos';
         return new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
@@ -18158,28 +18136,6 @@ const originalBase64 = event.target.result;
       // 글·단지 사진·포토 원본을 전부 받아 두면 클릭이 즉시가 된다. 옛 v3 동기화(__sggSync)는 쓰지 않는다.
       // 현재 화면 중심의 시군구 1개 대상. 5개 병렬 + __driveSlot 간격, 실시간 큐 우선, 429/403 은 60초 쉼.
       const __rf = { running: false, total: 0, done: 0, sgg5: '', fail: 0 };
-      // 매물임장 사진 한 장을 IDB 에 채운다 (2026-09-28). 별도 DB 라 __rfPutNoteImage 와 따로 둔다.
-      // ⚠ updatedAt 은 건드리지 않는다 — 받아 온 것뿐이라 올리면 드라이브로 되올라간다.
-      //   화면이 그 매물을 열어 두었으면 그 객체에도 채워야 바로 보인다.
-      async function __rfPutLjImage(id, addedAt, dataUrl) {
-        try {
-          const rec = (await __ljAll(true)).find((x) => String(x.id) === String(id));
-          if (!rec) return false;
-          const hit = __ljShots(rec).find((it) => Number(it.addedAt) === Number(addedAt));
-          if (!hit) return false;
-          hit.data = dataUrl;
-          delete hit.miss;
-          await __ljPut(rec);
-          if (String(__ljState?.rec?.id || '') === String(id)) {
-            const live = __ljShots(__ljState.rec).find((it) => Number(it.addedAt) === Number(addedAt));
-            if (live && !__getImgData(live)) { live.data = dataUrl; delete live.miss; }
-          }
-          return true;
-        } catch (e) {
-          console.warn('[fetch] 매물임장 사진 저장 실패:', id, addedAt, e?.message || e);
-          return false;
-        }
-      }
       function __rfPutNoteImage(id, addedAt, dataUrl) {
         return new Promise((resolve) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
@@ -18375,17 +18331,9 @@ const originalBase64 = event.target.result;
           const photos = Object.values(local.localPhotos).filter((p) => p && !p.deletedAt && !(typeof p.imageDataUrl === 'string' && p.imageDataUrl.startsWith('data:')));
           photos.sort((a, b) => ((a.lat - cl) ** 2 + (a.lng - cg) ** 2) - ((b.lat - cl) ** 2 + (b.lng - cg) ** 2));
           for (const p of photos) tasks.push({ kind: 'photo', id: String(p.id), rec: p });
-          // 매물임장 사진 (2026-09-28) — 별도 DB(hongbuListing)라 __sggLoadLocalForSgg 에 안 들어온다.
-          // ⚠ 이걸 빼 두면 '🔁 원본' 지역인데도 매물 사진만 안 받아, 매물을 열 때마다 '받는 중' 이 뜬다.
-          try {
-            for (const r of (await __ljAll()).filter((x) => String(x.sgg5) === sgg5)) {
-              for (const it of __ljShots(r)) {
-                if (it && typeof it === 'object' && it.addedAt && !__getImgData(it)) {
-                  tasks.push({ kind: 'ljImg', id: String(r.id), addedAt: Number(it.addedAt) });
-                }
-              }
-            }
-          } catch (e) { console.warn('[fetch] 매물임장 사진 목록 실패(무시):', e?.message || e); }
+          // ⚠ 매물임장 사진은 여기서 받지 않는다 (2026-09-28). 받아 둘 곳이 없어졌다 —
+          //   매물 레코드는 시트에서 매번 새로 만들어지고, 사진은 매물임장 탭을 열 때
+          //   __ljPrefetchShots 가 그 단지 것만 받는다.
           __rf.total = lazyNotes.length + tasks.length;
           __dqEmit();
           if (__rf.total === 0) { __rfRefreshPicker().catch(() => {}); __syncStatus(`✅ ${sName}: 동기화 완료 — 내려받을 원본 없음`, 15000); return; }
@@ -18420,10 +18368,8 @@ const originalBase64 = event.target.result;
           // 4) 단지 사진·포토 원본 (5 병렬, 큐 우선)
           const aptF = await __lzFindSggFolder('aptImages', sgg5);
           const phF = await __lzFindSggFolder('photos', sgg5);
-          const ljF = tasks.some((t) => t.kind === 'ljImg') ? await __ljPhotoFolder(sgg5, false) : null;
           const aptList = aptF ? await __dqList(aptF, true) : new Map();
           const phList = phF ? await __dqList(phF, true) : new Map();
-          const ljList = ljF ? await __dqList(ljF, true) : new Map();
           let i = 0;
           while (i < tasks.length) {
             if (!window.__gdriveReady) throw new Error('연결 끊김');
@@ -18437,11 +18383,6 @@ const originalBase64 = event.target.result;
                   if (!fid) { __rf.fail++; return; }
                   const dataUrl = await __blobToDataUrl(await __rfDownloadWithRetry(fid));
                   if (dataUrl) await __rfPutNoteImage(t.id, t.addedAt, dataUrl); else __rf.fail++;
-                } else if (t.kind === 'ljImg') {
-                  const fid = ljList.get(`lj_${sgg5}_${t.id}_${t.addedAt}.jpg`);
-                  if (!fid) { __rf.fail++; return; }
-                  const dataUrl = await __blobToDataUrl(await __rfDownloadWithRetry(fid));
-                  if (dataUrl) await __rfPutLjImage(t.id, t.addedAt, dataUrl); else __rf.fail++;
                 } else {
                   const fid = phList.get(__photoImgFilename({ ...t.rec, sgg5 }));
                   if (!fid) { __rf.fail++; return; }
@@ -18856,10 +18797,9 @@ const originalBase64 = event.target.result;
           __lz.doneAt.delete(sgg5);
           await __lzIndexSgg(sgg5); // 드라이브에만 있던 것도 로컬 레코드(자리표시자)로 만들어 함께 삭제 표시
           const c = await __rdLocalCounts(sgg5);
-          // 매물임장은 별도 DB(hongbuListing)라 여기서 따로 모은다
-          let ljs = [];
-          try { ljs = (await __ljAll()).filter((r) => String(r.sgg5) === String(sgg5)); } catch (e) { console.warn('[rd] 매물임장 목록 실패(무시):', e?.message || e); }
-          let total = c.notes.length + c.photos.length + c.polys.length + ljs.length; // 드라이브 잔여 항목이 더해질 수 있어 let
+          // 매물임장은 구글시트가 원본이라 레코드 단위 삭제표시가 통하지 않는다.
+          // 시트 1장 + 사진 폴더 1개를 통째로 치우는 것이 이 지역의 '완전 삭제'다 (2026-09-28).
+          let total = c.notes.length + c.photos.length + c.polys.length + 2; // 드라이브 잔여 항목이 더해질 수 있어 let
           let done = 0;
           for (const n of c.notes) { try { await __softDeleteNote(String(n.id)); __dqEnqueue('note', String(n.id), sgg5, true); try { window.__memoPresenceCache?.set(String(n.id), false); window.__hongbuMemoKeySet?.delete(String(n.id)); } catch (_) {} } catch (e) { console.warn('[rd] 단지메모 삭제 실패:', n.id, e); } say(`삭제 표시 중… ${++done}/${total}`); }
           for (const p of c.photos) { try { await __photoMemoDelete(String(p.id)); __dqEnqueue('photo', String(p.id), sgg5, true); } catch (e) { console.warn('[rd] 포토메모 삭제 실패:', p.id, e); } say(`삭제 표시 중… ${++done}/${total}`); }
@@ -18867,15 +18807,22 @@ const originalBase64 = event.target.result;
             try { await _softDeletePolygonRecord(g.id); __dqEnqueue('polygon', String(g.id), sgg5, true); const poly = __lzFindPolygonOnMap(g.id); if (poly) _detachPolygonMemoFromMap(poly); } catch (e) { console.warn('[rd] 폴리곤 삭제 실패:', g.id, e); }
             say(`삭제 표시 중… ${++done}/${total}`);
           }
-          for (const r of ljs) {
+          // 매물임장 — 시트와 사진 폴더를 휴지통으로.
+          // ⚠ 예전에는 아무도 읽지 않는 로컬 DB 에 삭제표시만 남겨 **실제로는 아무 일도
+          //   일어나지 않았다**(2026-09-28). 컨펌 문구는 예전부터 매물임장을 지운다고 적고
+          //   있었으므로, 문구가 사실이 되도록 맞춘 것이다.
+          // 완전 삭제가 아니라 휴지통인 이유: 시트는 손으로 적은 임장 기록 원본이라
+          //   되돌릴 길을 30일 남겨 둔다. 화면에서 사라지는 것은 똑같다.
+          for (const step of ['시트', '사진']) {
             try {
-              const now = Date.now();
-              const dead = { ...r, deletedAt: now, updatedAt: now };
-              await __ljPut(dead);
-              __ljSync(dead);
-            } catch (e) { console.warn('[rd] 매물임장 삭제 실패:', r.id, e); }
+              const fid = step === '시트'
+                ? await __ljFindSheetId(sgg5, __syncSigunguNameByCode5.get(sgg5) || '')
+                : await __ljPhotoFolder(sgg5, false);
+              if (fid) await gapi.client.drive.files.update({ fileId: fid, resource: { trashed: true } });
+            } catch (e) { console.warn('[rd] 매물임장 ' + step + ' 삭제 실패:', e?.result?.error?.message || e?.message || e); }
             say(`삭제 표시 중… ${++done}/${total}`);
           }
+          try { __ljSheetCache.delete(sgg5); __ljPhotoFolderP.delete(sgg5); } catch (_) {}
           try { if (window.map) { updateMarkers(window.map.getBounds()); updatePhotoMemoMarkersByBounds(); } } catch (_) {}
           try { __ljUpdateTabBadge(); } catch (_) {}
           // 로컬 매칭(apt.json 인덱스·좌표)에서 빠진 레코드가 드라이브에 남아 있을 수 있다 → 드라이브 폴더를 직접 훑어 살아있는 메타를 전부 삭제 표시
@@ -18895,13 +18842,9 @@ const originalBase64 = event.target.result;
                   if (kind === 'note') { await __lzApplyNote({ ...meta, sgg5: meta.sgg5 || sgg5 }, null); await __softDeleteNote(id, sgg5); __dqEnqueue('note', id, sgg5, true); try { window.__memoPresenceCache?.set(id, false); window.__hongbuMemoKeySet?.delete(id); } catch (_) {} }
                   else if (kind === 'photo') { await __lzApplyPhoto({ ...meta, sgg5: meta.sgg5 || sgg5 }, null); await __photoMemoDelete(id); __dqEnqueue('photo', id, sgg5, true); }
                   else if (kind === 'listing') {
-                    // 드라이브에만 있던 매물임장 — 로컬에 삭제 표시를 만들어 큐가 .del 을 올리게 한다
-                    const now = Date.now();
-                    const dead = { ...meta, id, sgg5: meta.sgg5 || sgg5, deletedAt: now, updatedAt: now };
-                    delete dead.schemaVersion;
-                    delete dead.kind;
-                    await __ljPut(dead);
-                    __ljSync(dead);
+                    // 매물임장은 시트·사진 폴더를 통째로 치우는 쪽에서 처리한다 (2026-09-28).
+                    // 옛 판이 드라이브에 남겨 둔 listings/ 메타는 여기서 파일만 지운다.
+                    try { await __driveDeleteFile(r.id); } catch (_) {}
                   }
                   else { await __lzApplyPolygon(meta); await _softDeletePolygonRecord(meta.id); __dqEnqueue('polygon', String(meta.id), sgg5, true); const poly = __lzFindPolygonOnMap(meta.id); if (poly) _detachPolygonMemoFromMap(poly); }
                   extra++; total++;
@@ -25325,7 +25268,7 @@ const originalBase64 = event.target.result;
               직속 자식으로 두면 hongbuSise 의 MutationObserver 가 탭1로 회수해 버린다.
             · 매물임장이 켜지면 탭1의 나머지 형제만 숨긴다(원래 숨어 있던 것은 그대로 둔다).
 
-         저장: 전용 IndexedDB `hongbuListing`(v1) — hongbu/hongbuMemo 와 완전히 분리했다.
+         저장: 구글시트가 원본이다. 로컬 IndexedDB(`hongbuListing`)는 2026-09-28 에 없앴다.
                두 DB 의 버전 상수는 hongbu.html·hongbuCloud.html 에도 있어 한쪽만 올리면
                나머지 파일이 VersionError 로 DB 를 못 연다(claude_docs/indexeddb.md).
                별도 DB 라 그 위험이 없고, 이 파일만 알면 된다.
@@ -25334,9 +25277,6 @@ const originalBase64 = event.target.result;
          내보내기: 그 단지가 속한 시군구의 전 매물을 구글시트 1장으로 전체 재작성.
                값만 지우고 쓰므로(values.clear) 시트에 해 둔 서식은 남는다.
          ===================================================================== */
-      const __LJ_DB = "hongbuListing";
-      const __LJ_DBV = 1;
-      const __LJ_ST = "listings";
       const __LJ_DRAFT_KEY = "__ljDraft_v1";
       const __LJ_FOLDER = "maemool";           // HongbuMemo/maemool — 시군구당 시트 1장이 여기 쌓인다
       const __LJ_FOLDER_LEGACY = "홍부 매물임장"; // 잠깐 썼던 최상위 폴더 (있으면 회수만 하고 새로 만들지 않는다)
@@ -25419,34 +25359,22 @@ const originalBase64 = event.target.result;
 
       let __ljState = { aptId: null, view: "list", rec: null, ctx: null, saveTimer: null, active: false, isNew: false, seed: null, savedOnce: false };
 
-      // ── IndexedDB ──
-      function __ljOpenDB() {
-        if (window.__ljDbPromise) return window.__ljDbPromise;
-        window.__ljDbPromise = new Promise((resolve, reject) => {
-          const req = indexedDB.open(__LJ_DB, __LJ_DBV);
-          req.onupgradeneeded = (e) => {
-            const db = e.target.result;
-            if (!db.objectStoreNames.contains(__LJ_ST)) {
-              const st = db.createObjectStore(__LJ_ST, { keyPath: "id" });
-              st.createIndex("aptId", "aptId", { unique: false });
-              st.createIndex("sgg5", "sgg5", { unique: false });
-            }
-          };
-          req.onsuccess = (e) => resolve(e.target.result);
-          req.onerror = (e) => reject(e.target.error);
-          req.onblocked = () => reject(new Error("다른 탭이 매물임장 DB를 잡고 있습니다"));
-        });
-        return window.__ljDbPromise;
-      }
-      async function __ljAll(includeDeleted) {
-        const db = await __ljOpenDB();
-        return new Promise((resolve, reject) => {
-          const tx = db.transaction([__LJ_ST], "readonly");
-          const r = tx.objectStore(__LJ_ST).getAll();
-          r.onsuccess = () => resolve((r.result || []).filter((x) => includeDeleted || !x.deletedAt));
-          r.onerror = (e) => reject(e.target.error);
-        });
-      }
+      // ── 로컬 DB 없음 ──
+      // 매물임장은 구글시트가 원본이다. 예전에는 hongbuListing(IndexedDB v1)에도 같이
+      // 적었는데, 시트로 옮긴 뒤로 **쓰기만 하고 아무도 읽지 않는 저장소**가 됐다
+      // (__ljAttachPhotos 가 시트를 읽을 때마다 photos 를 새로 만들어 덮어쓴다).
+      // 2026-09-28 에 DB 와 그 호출처를 전부 걷어냈다. 되살리지 말 것.
+      (function __ljDropLegacyDB() {
+        const K = "__hongbuLjDbDropped_v1";
+        try { if (localStorage.getItem(K) === "1") return; } catch (_) {}
+        try {
+          const req = indexedDB.deleteDatabase("hongbuListing");
+          const done = () => { try { localStorage.setItem(K, "1"); } catch (_) {} };
+          req.onsuccess = () => { console.log("[lj] 안 쓰는 로컬 DB(hongbuListing) 삭제"); done(); };
+          req.onerror = done;   // 못 지워도 다시 시도하지 않는다 — 어차피 아무도 안 읽는다
+          req.onblocked = done; // 다른 탭이 잡고 있으면 그냥 넘어간다
+        } catch (_) {}
+      })();
       // ⚠ 원본은 **구글시트**다 (2026-09-28). 로컬 DB 는 더 이상 목록의 근거가 아니다.
       //   읽기 실패 사정은 __ljState.why 에 담아 화면에 그대로 적는다.
       // ctxIn 을 주면 그 단지 기준으로 읽는다(배지처럼 **지금 열려 있는 단지가 아닌** 곳에서 부를 때).
@@ -25487,34 +25415,12 @@ const originalBase64 = event.target.result;
         }
         return ctx;
       }
-      async function __ljPut(rec) {
-        const db = await __ljOpenDB();
-        return new Promise((resolve, reject) => {
-          const tx = db.transaction([__LJ_ST], "readwrite");
-          tx.objectStore(__LJ_ST).put(rec);
-          tx.oncomplete = () => resolve();
-          tx.onerror = (e) => reject(e.target.error);
-        });
-      }
       // ── 드라이브 자동 백업 ──
       // 단지메모와 **같은 __dq 큐**를 탄다. 저장·삭제 때 큐에 넣기만 하면 나머지(1.5초 디바운스·직렬 처리·
       // 오프라인 재시도·옛 판 정리)는 큐가 한다. 드라이브→로컬 반영 경로는 이 함수를 부르지 않는다(메아리 방지).
       // ⚠ 매물임장은 2026-09-28 부터 **구글시트가 원본**이다. 드라이브 listings/ 백업은 쓰지 않는다.
       //   큐에 넣으면 빈 listings/ 폴더가 다시 만들어지므로 아무것도 하지 않는다.
       function __ljSync() {}
-      // 이 기능이 생기기 전에 만든 기록을 한 번만 큐에 올린다. 드라이브에 이미 있으면 큐가 이름 대조로 건너뛴다.
-      const __LJ_SEED_KEY = "__hongbuLjSeeded_v1";
-      async function __ljDqSeed(force) {
-        try {
-          if (!force) { try { if (localStorage.getItem(__LJ_SEED_KEY) === "1") return; } catch (_) {} }
-          const all = await __ljAll(true);
-          for (const r of all) __ljSync(r);
-          try { localStorage.setItem(__LJ_SEED_KEY, "1"); } catch (_) {}
-          if (all.length) console.log(`[lj] 드라이브 최초 적재 ${all.length}건 큐에 넣음`);
-        } catch (e) {
-          console.warn("[lj] 최초 적재 실패:", e);
-        }
-      }
       // 드라이브 연결을 기다린다. 부팅 직후엔 아직 토큰이 없어, 그냥 포기하면
       // **새로 연 브라우저에서 다른 기기의 변경이 통째로 안 들어온다**(2026-09-28 실측:
       // 다른 브라우저로 접속하면 사진이 동기화되지 않던 원인). 화면을 막지 않는 백그라운드
@@ -25524,17 +25430,6 @@ const originalBase64 = event.target.result;
         const t0 = Date.now();
         while (!ok() && Date.now() - t0 < (ms || 0)) await new Promise((r) => setTimeout(r, 500));
         return ok();
-      }
-
-      // 통째로 지운다 — 삭제 표시(deletedAt)조차 남길 필요가 없는 경우(빈 새 기록)에만 쓴다
-      async function __ljHardDelete(id) {
-        const db = await __ljOpenDB();
-        return new Promise((resolve, reject) => {
-          const tx = db.transaction([__LJ_ST], "readwrite");
-          tx.objectStore(__LJ_ST).delete(id);
-          tx.oncomplete = () => resolve();
-          tx.onerror = (e) => reject(e.target.error);
-        });
       }
 
       // ── 자동채움 소스: apartmentData(목록) + apartmentDetailData(평형표) + apt.json(시군구) ──
@@ -25914,7 +25809,6 @@ const originalBase64 = event.target.result;
         } catch (e) {
           console.warn("[lj] 사진 내려받기 실패(무시):", e?.result?.error?.message || e?.message || e);
         }
-        if (got) { try { await __ljPut(rec); } catch (_) {} }
         return got;
       }
 
@@ -26049,57 +25943,37 @@ const originalBase64 = event.target.result;
       document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") __ljFlush(); });
       window.addEventListener("pagehide", () => __ljFlush());
 
-      // 앱이 강제 종료돼 IndexedDB 확정 전에 끊긴 작성분 복구 (부팅 1회)
+      // 앱이 강제 종료돼 시트에 못 올라간 작성분 복구 (부팅 1회)
+      // ⚠ 예전에는 로컬 DB 에 되넣고 드래프트를 **무조건 지웠다**. 그 DB 를 아무도 읽지 않게
+      //   된 뒤로는 복구가 한 번도 일어나지 않은 채 유일한 사본만 지워지고 있었다
+      //   (2026-09-28). 토큰은 대개 쓰는 도중에 만료되므로, 마지막 타이핑의 시트 저장이
+      //   실패한 바로 그 경우에 글이 사라졌다.
+      //   이제 원본인 시트와 직접 대조하고, **시트에 올린 뒤에만** 지운다.
+      //   못 올렸으면 그대로 두고 다음 부팅에 다시 시도한다.
       (async function __ljRecoverDraft() {
         try {
           const d = __ljDraftGet();
           if (!d?.rec?.id) return;
           if (d.isNew && __ljBlank(d.rec, d.seed)) { __ljDraftClear(); return; } // 빈 새 기록은 되살리지 않는다
-          const cur = (await __ljAll(true)).find((x) => x.id === d.rec.id);
-          if (!cur || (d.rec.updatedAt || 0) > (cur.updatedAt || 0)) {
-            // 드래프트의 사진은 addedAt 만 있는 자리표시자다 → IDB 에 있는 원본을 되붙인다.
-            // 안 붙이면 복구가 사진을 자리표시자로 덮어써, 드라이브에서 다시 받아야 한다.
-            d.rec.photos = __ljPhotosFromMeta(__ljShots(d.rec).map((it) => it.addedAt), cur);
-            await __ljPut(d.rec);
-            __ljSync(d.rec);
-            console.log("[lj] 작성 중이던 매물 복구:", d.rec.id);
-          }
+          const rec = d.rec;
+          const sgg5 = String(rec.sgg5 || "");
+          if (!/^\d{5}$/.test(sgg5) || rec.ci == null) return; // 어디에 쓸지 모르면 남겨 둔다
+          if (!(await __ljDriveWait(60000))) return;            // 로그인 전이면 다음 부팅에
+          const r = await __ljReadRegion({ sgg5, sigunguName: rec.sigunguName || "" }, true);
+          if (!r?.sid) return;
+          const cur = (r.recs || []).find((x) => String(x.id) === String(rec.id));
+          if (cur && __ljColSig(cur) === __ljColSig(rec)) { __ljDraftClear(); return; } // 이미 들어가 있다
+          await __ljWriteCol(r.sid, rec);
+          __ljSheetCache.delete(sgg5);
           __ljDraftClear();
+          console.log("[lj] 시트에 못 올라간 작성분 복구:", rec.id);
         } catch (e) {
-          console.warn("[lj] 드래프트 복구 실패:", e);
+          console.warn("[lj] 드래프트 복구 실패(다음 부팅에 다시 시도):", e?.message || e);
         }
       })();
 
-      // 억 단위로 적어 둔 금액을 만원 단위로 정리 (부팅 1회)
-      (async function __ljNormalizeMoney() {
-        try {
-          const all = await __ljAll();
-          let n = 0;
-          for (const r of all) {
-            const next = { ...r };
-            let changed = false;
-            for (const k of __LJ_MONEY_KEYS) {
-              const man = __ljEokToMan(r[k]);
-              if (man == null) continue;
-              next[k] = __ljComma(man);
-              changed = true;
-            }
-            if (!changed) continue;
-            next.updatedAt = Date.now();
-            await __ljPut(next);
-            __ljSync(next); // 값이 실제로 바뀐 것이므로 드라이브에도 전파
-            console.log(
-              `[lj] 억→만원 ${r.id}: ` +
-                __LJ_MONEY_KEYS.filter((k) => r[k] !== next[k]).map((k) => `${r[k]}→${next[k]}`).join(" · ")
-            );
-            n++;
-          }
-          if (n) console.log(`[lj] 억 단위로 적힌 금액 ${n}건을 만원 단위로 바꿨습니다`);
-        } catch (e) {
-          console.warn("[lj] 금액 단위 정리 실패(무시):", e);
-        }
-      })();
-
+      // 억 단위 정리는 입력할 때 __ljEokToMan 이 바로 한다 — 부팅 때 로컬 DB 를 훑던
+      // 일회성 보정(__ljNormalizeMoney)은 그 DB 와 함께 걷어냈다 (2026-09-28).
       // 입력 화면에서 나갈 때 — 새로 만들었는데 아무것도 안 썼으면 기록 자체를 취소한다
       async function __ljLeaveForm() {
         const rec = __ljState.rec;
@@ -26279,7 +26153,8 @@ const originalBase64 = event.target.result;
               const rec = __ljState.rec;
               if (!rec) return;
               try {
-                const fresh = (await __ljAll(true)).find((x) => x.id === rec.id);
+                // 드라이브 폴더 목록이 곧 사진 목록이다 (로컬 DB 를 보던 자리, 2026-09-28)
+                const fresh = (await __ljByApt(aptId, true)).find((x) => x.id === rec.id);
                 const nowN = __ljShots(rec).length;
                 const newN = __ljShots(fresh).length;
                 if (fresh && newN > nowN) {
