@@ -8844,6 +8844,22 @@
         } catch (_) {}
       }
 
+      // 왜 되돌아갔는지 / 왜 안 갔는지를 남긴다.
+      // ⚠ 화면에 아무 일도 안 일어나면 "기록이 없었다 / 오래됐다 / ?focus= 가 있었다" 를
+      //   구분할 길이 없어 원인을 못 찾는다(2026-09-28). 콘솔·디버그 로그·window 에 다 남긴다.
+      function __resumeWhy(msg) {
+        window.__resumeReason = msg;
+        console.log("[resume]", msg);
+        try { window.hongbuDebugLog?.("INFO", "[resume]", msg); } catch (_) {}
+      }
+      function __resumeAgo(ms) {
+        const m = Math.round(ms / 60000);
+        if (m < 1) return "방금";
+        if (m < 60) return `${m}분`;
+        const h = Math.floor(m / 60);
+        return h < 24 ? `${h}시간 ${m % 60}분` : `${Math.floor(h / 24)}일`;
+      }
+
       // 조건이 참이 될 때까지 기다린다(없으면 null). 구글 로그인처럼 늦게 되는 것들 때문에 필요하다.
       function __resumeWait(fn, ms) {
         return new Promise((resolve) => {
@@ -8884,6 +8900,16 @@
           "background:#fff;color:#222;font-size:12px;font-weight:700;touch-action:manipulation;";
         act.onclick = (e) => { e.stopPropagation(); onTap(); };
         bar.appendChild(act);
+        // 저절로 사라지지 않으므로 닫을 길을 준다
+        const x = document.createElement("button");
+        x.type = "button";
+        x.textContent = "✕";
+        x.setAttribute("aria-label", "닫기");
+        x.style.cssText =
+          "flex:0 0 auto;border:0;background:transparent;color:#bbb;font-size:14px;" +
+          "padding:2px 0 2px 2px;cursor:pointer;touch-action:manipulation;";
+        x.onclick = (e) => { e.stopPropagation(); __resumeStop = true; __resumeBarHide(); };
+        bar.appendChild(x);
         bar.style.display = "flex";
         return bar;
       }
@@ -8942,19 +8968,30 @@
         setTimeout(() => {
           try {
             // 주소로 직접 지정해 들어온 경우(?focus=)가 우선 — 그쪽이 사람이 방금 정한 목적지다
-            if (new URLSearchParams(location.search).get("focus")) return;
+            if (new URLSearchParams(location.search).get("focus")) {
+              __resumeWhy("주소에 ?focus= 가 있어 건너뜀");
+              return;
+            }
           } catch (_) {}
           const s = __resumeGet();
-          if (!s || !s.aptId) return;
+          if (!s || !s.aptId) { __resumeWhy("되돌아갈 기록이 없음"); return; }
           const age = Date.now() - (s.ts || 0);
-          if (age > __RESUME_ASK_MS) { __resumeClear(); return; }
-          if (age > __RESUME_AUTO_MS) {
-            const name = s.aptName || "단지";
-            const sub = s.recId && s.label ? ` · ${s.label}` : "";
-            __resumeBar(`${name}${sub} 이어서`, () => { __resumeBarHide(); __resumeRun(s); }, "열기");
-            setTimeout(__resumeBarHide, 15000); // 안 누르면 조용히 사라진다
+          if (age > __RESUME_ASK_MS) {
+            __resumeWhy(`기록이 너무 오래됨 (${__resumeAgo(age)}) — 버림`);
+            __resumeClear();
             return;
           }
+          if (age > __RESUME_AUTO_MS) {
+            // ⚠ 저절로 사라지게 두지 않는다 (2026-09-28). 15초 뒤 숨기게 했더니 놓쳤을 때
+            //   "복원이 안 된 것" 과 구분이 안 돼 원인을 못 찾았다. 누를 때까지 남긴다.
+            const name = s.aptName || "단지";
+            const sub = s.recId && s.label ? ` · ${s.label}` : "";
+            __resumeWhy(`${__resumeAgo(age)} 전 기록 — 물어봄`);
+            __resumeBar(`${name}${sub} 이어서 (${__resumeAgo(age)} 전)`,
+              () => { __resumeBarHide(); __resumeRun(s); }, "열기");
+            return;
+          }
+          __resumeWhy(`${__resumeAgo(age)} 전 기록 — 바로 복원`);
           __resumeRun(s);
         }, 0);
       })();
