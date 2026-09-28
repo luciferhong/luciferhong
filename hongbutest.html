@@ -733,10 +733,12 @@
       /* 메모는 여러 줄 글이라 가운데 정렬하면 읽기 어렵다 — 가로는 왼쪽, 세로는 가운데 (2026-09-27).
          세로 가운데는 **상자를 글 길이에 맞춰 줄인 뒤** flex 로 가운데 두어 만든다.
          상자를 칸 높이만큼 키워 두면 vertical-align 을 줘도 글은 늘 위에서 시작한다. */
+      /* ⚠ 높이를 여기서 정하지 않는다 (2026-09-28). 글 상자 높이는 __fitMemo 가 줄 수로
+         계산해 인라인으로 넣고, 이 상자는 그 높이를 따라간다. px 로 바닥이나 천장을 두면
+         단지정보 메모와 규칙이 어긋나 둘이 달라 보인다. */
       #ljTab3 #ljForm .lj-memo-box {
         display: flex;
         align-items: center;
-        height: 165px; /* __LJ_MEMO_H 와 같이 움직인다 */
         box-sizing: border-box;
         padding: 4px 0;
       }
@@ -756,9 +758,8 @@
         touch-action: manipulation;
       }
       #ljTab3 #ljForm textarea {
+        /* 높이·상한은 __fitMemo 가 줄 수로 계산해 인라인으로 넣는다 (px 로 박지 않는다) */
         height: auto;
-        min-height: 22px;
-        max-height: 150px; /* __LJ_MEMO_MAX */
         padding: 0 7px;
         line-height: 1.55;
         font-size: 13px;
@@ -8609,6 +8610,69 @@
         }, 500);
       })();
 
+      // ── 메모 칸 높이 (단지정보·매물임장 공용) ────────────────────────────────
+      // 2026-09-28 사용자 확정. 규칙이 두 벌이라 헷갈린다고 해서 하나로 합쳤다.
+      // 픽셀 상수를 쓰지 않는다 — 글꼴·미디어쿼리마다 줄 높이가 달라 px 로 박으면
+      // 기기별로 줄 수가 어긋난다. 늘 계산된 line-height 에서 줄 높이를 재서 곱한다.
+      //   ① 최소 3줄  ② 글이 길면 6줄까지만 키우고 그 위는 안쪽 스크롤
+      //   ③ 그러고도 모달에 여유가 남으면(= 위아래 여백이 24px 보다 넓으면) 그만큼 더
+      const __MEMO_LINES_MIN = 3;
+      const __MEMO_LINES_MAX = 6;
+
+      function __fitMemo(el) {
+        if (!el) return;
+        const cs = getComputedStyle(el);
+        let lh = parseFloat(cs.lineHeight);
+        if (!(lh > 0)) lh = (parseFloat(cs.fontSize) || 13) * 1.4; // normal 이면 계산이 안 된다
+        const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+        const borderY =
+          (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+        const chrome = padY + borderY; // border-box 라 height 에 함께 들어간다
+        const min = Math.round(lh * __MEMO_LINES_MIN + chrome);
+        const max = Math.round(lh * __MEMO_LINES_MAX + chrome);
+        // ⚠ 먼저 CSS 상한을 풀어야 한다. 지난번에 여유분만큼 넓혀 둔 인라인 max-height 가
+        //   남아 있으면 줄어들 수가 없다.
+        el.style.removeProperty("max-height");
+        // ⚠ height:"auto" 로 풀면 안 된다 — textarea 는 auto 일 때 rows 속성 높이로 돌아가
+        //   scrollHeight 가 그 아래로 안 내려간다 (2026-09-28 실측: 한 줄인데 120px).
+        el.style.height = "0px";
+        // scrollHeight 는 패딩은 품고 테두리는 빼고 센다. border-box 라 테두리를 더해 준다.
+        const need = el.scrollHeight + borderY;
+        let h = Math.min(Math.max(need, min), max);
+        el.style.height = h + "px";
+        const slack = __modalSlack(); // 이 높이로 놓았을 때 모달에 남는 세로
+        if (slack > 2) h = Math.round(h + slack);
+        el.style.height = h + "px";
+        // 인라인 height 를 CSS max-height 가 잘라내지 않도록 상한도 같이 올린다
+        el.style.maxHeight = h + "px";
+      }
+
+      // 단지정보 메모 — 값을 코드로 채워 넣는 곳(loadNote·초기화)에서도 불러야 해 window 에 건다
+      function __fitNoteText() {
+        __fitMemo(document.getElementById("noteText"));
+      }
+      window.__fitNoteText = __fitNoteText;
+
+      // 단지 모달에 아직 남아 있는 세로 여유(px). 없으면 0.
+      // 내용이 상한보다 짧아 모달이 덜 찼을 때, 그 남는 높이를 메모 칸이 먹도록 쓰는 값이다.
+      // ⚠ PC 도킹은 제외한다 — 거기선 높이를 지도 높이로 **고정**해 두어 짧은 내용에도
+      //   scrollHeight 가 늘 clientHeight 와 같아져 여유를 잴 수 없다.
+      function __modalSlack() {
+        try {
+          if (__isPcDock()) return 0;
+          const p = document.getElementById("apartmentInfo");
+          if (!p || p.style.display !== "block") return 0;
+          const cs = getComputedStyle(p);
+          const cap = parseFloat(cs.maxHeight); // 패널은 content-box — 이 값은 글 영역 기준
+          if (!(cap > 0)) return 0;
+          const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+          // clientHeight/scrollHeight 는 패딩을 품으므로 상한에도 같이 더해 비교한다
+          return Math.round(cap + padY - p.scrollHeight);
+        } catch (e) {
+          return 0;
+        }
+      }
+
       // PC 도킹 판정(레이아웃 CSS와 동일 조건)
       function __isPcDock() {
         return window.matchMedia("(min-width: 1281px) and (pointer: fine)").matches;
@@ -8668,7 +8732,9 @@
               (parseFloat(cs.paddingBottom) || 0) +
               (parseFloat(cs.borderTopWidth) || 0) +
               (parseFloat(cs.borderBottomWidth) || 0);
-            const want = touch ? vh - 16 : Math.round(vh * 0.9);
+            // 위아래 여백 24px 씩 (2026-09-28 사용자 최종 결정 — 8px 은 꽉 차 보이고
+            // 32px 은 표가 한 줄 덜 보여, 16/32 비교 캡처를 보고 가운데로 정했다).
+            const want = touch ? vh - 48 : Math.round(vh * 0.9);
             panel.style.maxHeight = Math.max(120, Math.round(want - chrome)) + "px";
           } else panel.style.removeProperty("max-height"); // 값이 이상하면 CSS 에 맡긴다
           return;
@@ -8700,7 +8766,12 @@
       }
       // 스크롤/리사이즈/방향전환 시 재도킹(패널 열려 있을 때만 동작)
       (function __bindDockListeners() {
-        const relayout = () => { try { __dockApartmentPanel(); } catch (e) {} };
+        // 높이 상한이 바뀌면 메모 칸이 먹던 여유도 달라지므로 함께 다시 맞춘다.
+        const relayout = () => {
+          try { __dockApartmentPanel(); } catch (e) {}
+          try { __fitNoteText(); } catch (e) {}
+          try { __ljRefitMemos(); } catch (e) {}
+        };
         window.addEventListener("scroll", relayout, { passive: true });
         window.addEventListener("resize", relayout);
         window.addEventListener("orientationchange", relayout);
@@ -8938,6 +9009,12 @@
         }
         const noteTextEl = document.getElementById("noteText");
         if (noteTextEl) {
+          // 글 길이에 맞춰 칸을 줄인다 (2026-09-28 사용자 요청 — rows=4 로 못 박혀 있어
+          // 한 단어짜리 메모에도 늘 네 줄만큼 자리를 먹고 아래 요소를 밀어냈다).
+          // 위 한계는 지금까지와 같은 네 줄, 아래 한계는 두 줄. 줄 높이는 기기·미디어쿼리마다
+          // 다르므로 상수로 박지 않고 계산된 line-height 에서 잰다.
+          noteTextEl.addEventListener("input", __fitNoteText);
+          __fitNoteText();
           noteTextEl.addEventListener("focus", function () {
             const el = this;
             setTimeout(() => {
@@ -21788,7 +21865,7 @@ const originalBase64 = event.target.result;
 
             if (!result) {
               // ✅ 데이터가 없는 경우 UI 초기화
-              if (noteEl) noteEl.value = "";
+              if (noteEl) { noteEl.value = ""; __fitNoteText(); }
               if (preview) {
                 preview.innerHTML = "";
                 preview.style.display = "none";
@@ -21800,6 +21877,7 @@ const originalBase64 = event.target.result;
 
             preview.innerHTML = "";
             document.getElementById("noteText").value = result.memo || "";
+            __fitNoteText(); // 불러온 글 길이에 칸을 맞춘다
             // 빈 객체 같은 garbage 이미지 항목 자동 정리 (다음 saveNote 시 IndexedDB 도 자가 치유)
             const cleanImgs = __sanitizeImages(result.images || []);
             if (cleanImgs.length > 0) {
@@ -22487,7 +22565,7 @@ const originalBase64 = event.target.result;
             try {
               const noteEl = document.getElementById("noteText");
               const preview = document.getElementById("imagePreview");
-              if (noteEl) noteEl.value = "";
+              if (noteEl) { noteEl.value = ""; __fitNoteText(); }
               if (preview) {
                 preview.innerHTML = "";
                 preview.style.display = "none";
@@ -26713,8 +26791,11 @@ const originalBase64 = event.target.result;
         }
       }
       // 메모 칸 높이 (2026-09-28 사용자 요청: 1.5배). 칸 높이와 글 상자 최대 높이를 함께 움직인다.
-      const __LJ_MEMO_H = 165;   // 표 한 줄(라벨·값 칸) 높이
-      const __LJ_MEMO_MAX = 150; // 글 상자가 커질 수 있는 최대 높이
+      // 화면 높이가 바뀌면(주소창 접힘·회전) 열려 있는 매물임장 메모 칸을 다시 맞춘다.
+      // 높이 규칙은 단지정보 메모와 같은 __fitMemo 하나를 쓴다.
+      function __ljRefitMemos() {
+        document.querySelectorAll("#ljTab3 #ljForm textarea").forEach(__fitMemo);
+      }
       function __ljRowEl(f, ctx, rec, grp) {
         const tr = document.createElement("tr");
         if (grp) {
@@ -26735,8 +26816,7 @@ const originalBase64 = event.target.result;
         const td = document.createElement("td");
 
         if (f.t === "area") {
-          th.style.height = __LJ_MEMO_H + "px";
-          td.style.height = __LJ_MEMO_H + "px";
+          // 표 칸에 height 를 주지 않는다 — 글 상자(__fitMemo)가 정한 높이를 그대로 따른다
           td.style.padding = "0"; // 안쪽 .lj-memo-box 가 높이·여백을 맡는다
           // 복사 단추는 **라벨 칸 안**, 글자 아래 줄에 가운데로 (2026-09-28 사용자 요청).
           // ⚠ 값은 rec 에서 읽는다 — textarea 는 아래에서 만들어져 여기선 아직 없고,
@@ -26775,10 +26855,7 @@ const originalBase64 = event.target.result;
           const ta = document.createElement("textarea");
           ta.setAttribute("aria-label", f.lb);
           ta.value = rec[f.k] || "";
-          const fit = () => {
-            ta.style.height = "auto";
-            ta.style.height = Math.min(ta.scrollHeight, __LJ_MEMO_MAX) + "px";
-          };
+          const fit = () => __fitMemo(ta);
           ta.addEventListener("input", () => { rec[f.k] = ta.value; fit(); __ljTouch(); });
           // 칸에 들어오면 커서를 맨 뒤로 — 임장 중에는 대개 뒤에 덧붙인다 (2026-09-28 사용자 요청).
           // ⚠ focus 에서만 한다. click 까지 잡으면 **글 중간을 고칠 방법이 없어진다** —
