@@ -25238,6 +25238,14 @@ const originalBase64 = event.target.result;
         const m = String(v ?? "").match(/-?\d+(?:\.\d+)?/);
         return m ? parseFloat(m[0]) : null;
       }
+      // 평형 값은 이미 "25평(전용59)" 같은 표기다. 거기에 "평" 을 또 붙이면 "…평"이 두 번 된다.
+      // ⚠ 화면·시트에 평형을 적는 곳은 전부 이 함수를 지나게 한다 (2026-09-28 실측: 목록 카드,
+      //   사진 탭 이름, 사진 시트 요약 세 곳에서 같은 실수가 났다).
+      function __ljPyeongText(v) {
+        const t = String(v ?? "").trim();
+        if (!t) return "";
+        return t.includes("평") ? t : t + "평";
+      }
       function __ljPyeongOpts(ctx) {
         const seen = new Set();
         const out = [];
@@ -26069,11 +26077,13 @@ const originalBase64 = event.target.result;
         const bShot = document.createElement("button");
         bShot.type = "button";
         bShot.className = "lj-btn";
-        bShot.textContent = "🖼 사진 시트 올리기";
+        bShot.className = "lj-btn dng";
+        bShot.textContent = "⚠ 사진 시트 다시 올리기";
         bShot.onclick = () => __ljShotSheetsOnly();
         foot.appendChild(bNew);
         foot.appendChild(bView);
-        foot.appendChild(bShot);
+        // 사진 시트는 사진을 넣고 지울 때 저절로 맞춰진다 → **실패했을 때만** 고칠 단추를 보여 준다
+        if (__ljShotFail.has(String(ctx.aptId))) foot.appendChild(bShot);
       }
 
       // ⚠ localStorage 를 그대로 믿지 않는다 — **이번 세션에 이름까지 확인한** 것만 쓴다.
@@ -26099,7 +26109,7 @@ const originalBase64 = event.target.result;
 
         // 제목: 동호수·평형이 있으면 그것, 없으면 메모 앞부분
         // (동호수도 평형도 안 쓰고 메모만 남기는 경우가 있어 목록에서 사라지면 안 된다)
-        const head = [r.dongho, r.pyeong ? r.pyeong + "평" : ""].filter(Boolean).join(" · ");
+        const head = [r.dongho, __ljPyeongText(r.pyeong)].filter(Boolean).join(" · ");
         const memoLong = __ljSnippet(r.memo, 44);
         const b = document.createElement("b");
         b.textContent = head || __ljSnippet(r.memo, 30) || "(내용 없음)";
@@ -26330,9 +26340,13 @@ const originalBase64 = event.target.result;
       }
       // 사진 시트(매물별 탭)를 이 매물 기준으로 맞춘다 — 사진을 넣거나 지우면 자동으로 부른다
       // (2026-09-28 사용자 요청). 화면을 막지 않고 뒤에서 돌리되, 결과는 상태줄에 남긴다.
+      // 사진 시트 갱신이 실패한 단지. 평소엔 숨겨 둔 "다시 올리기" 단추를 여기 있을 때만 보여 준다
+      // (2026-09-28 사용자 확정 — 자동으로 맞춰지므로 평소엔 누를 일이 없다).
+      const __ljShotFail = new Set();
       async function __ljSyncShotSheet(rec) {
         const sid = __ljState.sid;
         if (!sid || !rec) return;
+        const apt = String(__ljState.ctx?.aptId || rec.aptId || "");
         const st = () => document.getElementById("ljStatus");
         const show = (t, c) => { const e = st(); if (e && __ljState.view === "form") { e.textContent = t; e.style.color = c; } };
         show("사진 시트 맞추는 중…", "#8a6d1f");
@@ -26341,9 +26355,11 @@ const originalBase64 = event.target.result;
           const r = await __ljWriteShotSheets(sid, [rec], () => {});
           console.log(`[lj] 사진 시트 갱신 끝 — 탭 ${r.sheets} · 사진 ${r.photos} · 비움 ${r.cleared || 0} · 건너뜀 ${r.skipped || 0}`);
           show(r.sheets ? `사진 시트 갱신됨 (${r.photos}장)` : r.cleared ? "사진 시트 지움" : "사진 시트 변경 없음", "#0d652d");
+          __ljShotFail.delete(apt);
         } catch (e) {
           console.error("[lj] 사진 시트 갱신 실패:", e);
-          show("⚠ 사진 시트 갱신 실패", "#b3261e");
+          show("⚠ 사진 시트 갱신 실패 — 목록에서 다시 올릴 수 있습니다", "#b3261e");
+          __ljShotFail.add(apt);
         }
       }
       // 사진은 시트에 담기는 항목이 아니다 — 드라이브에 이미 올렸거나 지웠으므로 화면만 다시 그린다.
@@ -28194,6 +28210,7 @@ const originalBase64 = event.target.result;
           if (!sid) { alert("이 시군구의 시트가 아직 없습니다.\n📄 구글시트 보기로 먼저 만들어 주세요."); return; }
           const rows = await __ljByApt(ctx.aptId);
           const r = await __ljWriteShotSheets(sid, rows, setB);
+          __ljShotFail.delete(String(ctx.aptId)); // 고쳐졌으니 단추를 다시 숨긴다
           alert(r.sheets
             ? `사진 시트 ${r.sheets}개 · 사진 ${r.photos}장을 올렸습니다.` + (r.skipped ? `\n(사진을 못 찾은 매물 ${r.skipped}건은 건너뜀)` : "")
             : "이 단지에는 사진이 있는 매물이 없습니다.");
@@ -28221,7 +28238,7 @@ const originalBase64 = event.target.result;
         // ⚠ 평형 값은 이제 "25평(전용59)" 처럼 표기 전체다. 여기에 "평" 을 또 붙이면
         //   "25평(전용59)평" 이 된다 (2026-09-28 실측).
         const py = String(rec?.pyeong || "").trim();
-        if (py) return py.includes("평") ? py : py + "평";
+        if (py) return __ljPyeongText(py);
         return String(rec?.id || "").slice(-4);
       }
       // 시트 탭 이름에 못 쓰는 글자를 없앤다. `'` 도 없애는 이유는 A1 범위를 '탭이름'!A1 로 쓰기 때문.
@@ -28385,7 +28402,7 @@ const originalBase64 = event.target.result;
             [__ljShotText(`${String(rec.aptName || "").trim()} ${__ljShotWho(rec)}`.trim())],
             ["기록ID", __ljShotText(String(rec.id))], // ⚠ B2 = 짝짓기 열쇠. 자리를 옮기면 탭이 계속 새로 생긴다.
             ["기록일시", __ljShotText(__ljWhenOut(rec.updatedAt))],
-            ["평형·동호수", __ljShotText([rec.pyeong ? rec.pyeong + "평" : "", rec.dongho].filter(Boolean).join(" · "))],
+            ["평형·동호수", __ljShotText([__ljPyeongText(rec.pyeong), rec.dongho].filter(Boolean).join(" · "))],
             ["구조·타입·방향", __ljShotText([rec.structure, rec.roomType, rec.direction].filter(Boolean).join(" · "))],
             ["거주자·만기", __ljShotText([rec.resident, rec.expiry].filter(Boolean).join(" · "))],
             ["가격", __ljShotText(money.join("   "))],
