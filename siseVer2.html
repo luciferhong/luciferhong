@@ -4846,6 +4846,8 @@ async function exportSiseToExcel() {
             if (/^\.\d+$/.test(t)) t = "0" + t;
             return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : t;
         };
+        // 시세는 억 단위(7.6)로 적는다 → 만원 단위 열을 옆에 붙인다. 숫자가 아닌 칸은 비운다.
+        const toMan = v => typeof v === "number" ? Math.round(v * 10000) : "";
 
         const rows = [];
         for (const rec of records) {
@@ -4869,10 +4871,14 @@ async function exportSiseToExcel() {
             String(rec.text || "").split("\n").forEach(line => {
                 const c = line.split("\t").map(v => v.trim());
                 if (!c.some(v => v)) return; // 빈 줄 제외
+                const 매매 = toCell(c[1] || "");
+                const 전세 = toCell(c[2] || "");
                 rows.push(Object.assign({}, base, {
                     평형: toCell(c[0] || ""),
-                    매매: toCell(c[1] || ""),
-                    전세: toCell(c[2] || ""),
+                    매매,
+                    "매매(만원)": toMan(매매),
+                    전세,
+                    "전세(만원)": toMan(전세),
                     기타: c.slice(3).filter(v => v).join(" ")
                 }));
             });
@@ -4886,9 +4892,18 @@ async function exportSiseToExcel() {
         const ko = (a, b) => String(a).localeCompare(String(b), "ko");
         rows.sort((a, b) => ko(a.시도, b.시도) || ko(a.시군구, b.시군구) || ko(a.읍면동, b.읍면동) || ko(a.아파트명, b.아파트명));
 
-        const header = ["시도", "시군구", "읍면동", "아파트id", "아파트명", "연도", "세대수", "평형", "매매", "전세", "기타"];
+        const header = ["시도", "시군구", "읍면동", "아파트id", "아파트명", "연도", "세대수", "평형", "매매", "매매(만원)", "전세", "전세(만원)", "기타"];
         const ws = XLSX.utils.json_to_sheet(rows, { header });
-        ws["!cols"] = [8, 14, 10, 10, 24, 6, 7, 8, 8, 8, 20].map(wch => ({ wch }));
+        ws["!cols"] = [8, 14, 10, 10, 24, 6, 7, 8, 8, 11, 8, 11, 20].map(wch => ({ wch }));
+        // 만원 열은 천 단위 콤마 (값은 숫자 그대로라 계산·정렬 가능)
+        const range = XLSX.utils.decode_range(ws["!ref"]);
+        for (const colName of ["매매(만원)", "전세(만원)"]) {
+            const ci = header.indexOf(colName);
+            for (let r = 1; r <= range.e.r; r++) {
+                const cell = ws[XLSX.utils.encode_cell({ r, c: ci })];
+                if (cell && cell.t === "n") cell.z = "#,##0";
+            }
+        }
         ws["!autofilter"] = { ref: ws["!ref"] };
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "시세");
