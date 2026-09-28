@@ -736,7 +736,7 @@
       #ljTab3 #ljForm .lj-memo-box {
         display: flex;
         align-items: center;
-        height: 110px;
+        height: 165px; /* __LJ_MEMO_H 와 같이 움직인다 */
         box-sizing: border-box;
         padding: 4px 0;
       }
@@ -758,14 +758,25 @@
       #ljTab3 #ljForm textarea {
         height: auto;
         min-height: 22px;
-        max-height: 100px;
+        max-height: 150px; /* __LJ_MEMO_MAX */
         padding: 0 7px;
         line-height: 1.55;
         font-size: 13px;
         resize: none;
         overflow-y: auto;
         text-align: left;
+        /* ⚠ 이 세 줄이 없으면 **아래로는 내려가는데 위로는 안 올라간다** (2026-09-28 실측).
+           단지메모(#noteText)에는 처음부터 있었고, 그래서 그쪽은 잘 됐다.
+           touch-action 을 안 주면 부모의 제스처(모달 끌기 등)가 위로 미는 동작을 먼저 가져간다. */
+        -webkit-overflow-scrolling: touch; /* iOS 관성 스크롤 */
+        touch-action: pan-y;               /* 세로 스크롤은 이 칸이 가져간다 */
+        overscroll-behavior-y: contain;    /* 끝에 닿아도 뒤 화면이 따라 밀리지 않게 */
+        scrollbar-width: thin;
+        scrollbar-color: #aaa #f0f0f0;
       }
+      #ljTab3 #ljForm textarea::-webkit-scrollbar { width: 6px; }
+      #ljTab3 #ljForm textarea::-webkit-scrollbar-track { background: #f0f0f0; border-radius: 3px; }
+      #ljTab3 #ljForm textarea::-webkit-scrollbar-thumb { background: #aaa; border-radius: 3px; }
       #ljTab3 #ljForm td.sel { position: relative; }
       #ljTab3 #ljForm td.sel::after {
         content: "▾";
@@ -1413,6 +1424,21 @@
         }
       }
 
+      /* 단지메모 복사 단추 — 매물임장 쪽(.lj-memo-copy)과 같은 모양 (2026-09-28) */
+      #noteCopyBtn {
+        margin-left: 8px;
+        padding: 3px 7px;
+        border: 1px solid #cfcfcf;
+        border-radius: 5px;
+        background: #fff;
+        color: #4a4a48;
+        font: inherit;
+        font-size: 11px;
+        line-height: 1.3;
+        cursor: pointer;
+        touch-action: manipulation;
+        vertical-align: 1px;
+      }
       /* ===== 메모 입력칸 스크롤바 ===== */
       #noteText {
         overflow-y: scroll;
@@ -8806,6 +8832,7 @@
     </table>
     <div style="margin-top: 20px;">
       <label>메모:</label>
+      <button type="button" id="noteCopyBtn" title="메모를 클립보드에 복사">📋 복사</button>
       <textarea id="noteText" rows="4" style="width: 100%; box-sizing: border-box;"></textarea>
       <div id="imagePreview" style="margin-top: 10px; display: none;"></div>
       <div style="display: flex; gap: 15px; align-items: center; margin-top: 10px;">
@@ -8853,6 +8880,22 @@
         __updateResidentStoryBtn(apartmentId); // 호갱 매핑 있는 단지만 이야기 버튼 노출
 
         // 포커스 시 커서를 마지막 글자 뒤로 이동 + 해당 위치로 스크롤
+        // 메모 복사 — 매물임장 쪽과 같은 함수(__ljCopy)를 쓴다.
+        // 클립보드 API 가 막히는 웹뷰가 있어 옛 방식 대비까지 그 안에 들어 있다.
+        const noteCopyBtn = document.getElementById("noteCopyBtn");
+        if (noteCopyBtn) {
+          noteCopyBtn.onclick = async () => {
+            const t = document.getElementById("noteText")?.value || "";
+            if (!t.trim()) {
+              noteCopyBtn.textContent = "내용 없음";
+              setTimeout(() => (noteCopyBtn.textContent = "📋 복사"), 1200);
+              return;
+            }
+            const ok = await __ljCopy(t);
+            noteCopyBtn.textContent = ok ? "✅ 복사됨" : "복사 실패";
+            setTimeout(() => (noteCopyBtn.textContent = "📋 복사"), 1200);
+          };
+        }
         const noteTextEl = document.getElementById("noteText");
         if (noteTextEl) {
           noteTextEl.addEventListener("focus", function () {
@@ -26621,6 +26664,9 @@ const originalBase64 = event.target.result;
           return false;
         }
       }
+      // 메모 칸 높이 (2026-09-28 사용자 요청: 1.5배). 칸 높이와 글 상자 최대 높이를 함께 움직인다.
+      const __LJ_MEMO_H = 165;   // 표 한 줄(라벨·값 칸) 높이
+      const __LJ_MEMO_MAX = 150; // 글 상자가 커질 수 있는 최대 높이
       function __ljRowEl(f, ctx, rec, grp) {
         const tr = document.createElement("tr");
         if (grp) {
@@ -26641,8 +26687,8 @@ const originalBase64 = event.target.result;
         const td = document.createElement("td");
 
         if (f.t === "area") {
-          th.style.height = "110px";
-          td.style.height = "110px";
+          th.style.height = __LJ_MEMO_H + "px";
+          td.style.height = __LJ_MEMO_H + "px";
           td.style.padding = "0"; // 안쪽 .lj-memo-box 가 높이·여백을 맡는다
           // 복사 단추는 **라벨 칸 안**, 글자 아래 줄에 가운데로 (2026-09-28 사용자 요청).
           // ⚠ 값은 rec 에서 읽는다 — textarea 는 아래에서 만들어져 여기선 아직 없고,
@@ -26683,7 +26729,7 @@ const originalBase64 = event.target.result;
           ta.value = rec[f.k] || "";
           const fit = () => {
             ta.style.height = "auto";
-            ta.style.height = Math.min(ta.scrollHeight, 100) + "px";
+            ta.style.height = Math.min(ta.scrollHeight, __LJ_MEMO_MAX) + "px";
           };
           ta.addEventListener("input", () => { rec[f.k] = ta.value; fit(); __ljTouch(); });
           // 칸에 들어오면 커서를 맨 뒤로 — 임장 중에는 대개 뒤에 덧붙인다 (2026-09-28 사용자 요청).
