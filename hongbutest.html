@@ -623,6 +623,7 @@
         border: 1px dashed #c8c8c4; border-radius: 4px; background: #f6f6f4;
         color: #9a9a96; font-size: 10.5px; text-align: center; line-height: 1.3;
       }
+      #ljTab3 .lj-shot.wait.bad { border-color: #d08b84; color: #b3261e; background: #fdf4f3; }
       #ljTab3 .lj-shot-x {
         position: absolute; top: 2px; right: 2px;
         width: 18px; height: 18px;
@@ -16438,10 +16439,21 @@ const originalBase64 = event.target.result;
             const have = new Set();
             for (const ph of Object.values(local.localPhotos)) if (ph && !ph.deletedAt && __netSz(ph.imageDataUrl)) have.add(__photoImgFilename({ ...ph, sgg5 }));
             for (const n of Object.values(local.localNotes)) { if (!n || n.deletedAt) continue; if (n.lazy) r.notes++; for (const im of (n.images || [])) if (im && typeof im === 'object' && __getImgData(im)) have.add(__aptImgFilename({ ...n, sgg5 }, im.addedAt)); }
-            const [pf, af] = await Promise.all([__lzFindSggFolder('photos', sgg5), __lzFindSggFolder('aptImages', sgg5)]);
-            const [pm, am] = await Promise.all([__driveListFolderSizes(pf), __driveListFolderSizes(af)]);
+            // 매물임장 사진도 센다 (2026-09-28) — 별도 DB 라 위 local 에 안 들어온다
+            try {
+              for (const lr of (await __ljAll()).filter((x) => String(x.sgg5) === sgg5)) {
+                for (const it of __ljShots(lr)) if (__getImgData(it)) have.add(__ljImgFilename({ ...lr, sgg5 }, it.addedAt));
+              }
+            } catch (_) {}
+            const [pf, af, lf] = await Promise.all([
+              __lzFindSggFolder('photos', sgg5), __lzFindSggFolder('aptImages', sgg5), __lzFindSggFolder('listingImages', sgg5),
+            ]);
+            const [pm, am, lm] = await Promise.all([
+              __driveListFolderSizes(pf), __driveListFolderSizes(af), __driveListFolderSizes(lf),
+            ]);
             for (const [name, size] of pm) if (!have.has(name)) { r.files++; r.bytes += size; }
             for (const [name, size] of am) if (!have.has(name)) { r.files++; r.bytes += size; }
+            for (const [name, size] of lm) if (!have.has(name)) { r.files++; r.bytes += size; }
           } catch (e) { console.warn('[net] 내려받기 용량 계산 실패(무시):', sgg5, e?.message || e); r.err = true; }
           out.push(r);
         }
@@ -17809,6 +17821,28 @@ const originalBase64 = event.target.result;
       // 글·단지 사진·포토 원본을 전부 받아 두면 클릭이 즉시가 된다. 옛 v3 동기화(__sggSync)는 쓰지 않는다.
       // 현재 화면 중심의 시군구 1개 대상. 5개 병렬 + __driveSlot 간격, 실시간 큐 우선, 429/403 은 60초 쉼.
       const __rf = { running: false, total: 0, done: 0, sgg5: '', fail: 0 };
+      // 매물임장 사진 한 장을 IDB 에 채운다 (2026-09-28). 별도 DB 라 __rfPutNoteImage 와 따로 둔다.
+      // ⚠ updatedAt 은 건드리지 않는다 — 받아 온 것뿐이라 올리면 드라이브로 되올라간다.
+      //   화면이 그 매물을 열어 두었으면 그 객체에도 채워야 바로 보인다.
+      async function __rfPutLjImage(id, addedAt, dataUrl) {
+        try {
+          const rec = (await __ljAll(true)).find((x) => String(x.id) === String(id));
+          if (!rec) return false;
+          const hit = __ljShots(rec).find((it) => Number(it.addedAt) === Number(addedAt));
+          if (!hit) return false;
+          hit.data = dataUrl;
+          delete hit.miss;
+          await __ljPut(rec);
+          if (String(__ljState?.rec?.id || '') === String(id)) {
+            const live = __ljShots(__ljState.rec).find((it) => Number(it.addedAt) === Number(addedAt));
+            if (live && !__getImgData(live)) { live.data = dataUrl; delete live.miss; }
+          }
+          return true;
+        } catch (e) {
+          console.warn('[fetch] 매물임장 사진 저장 실패:', id, addedAt, e?.message || e);
+          return false;
+        }
+      }
       function __rfPutNoteImage(id, addedAt, dataUrl) {
         return new Promise((resolve) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
@@ -18004,6 +18038,17 @@ const originalBase64 = event.target.result;
           const photos = Object.values(local.localPhotos).filter((p) => p && !p.deletedAt && !(typeof p.imageDataUrl === 'string' && p.imageDataUrl.startsWith('data:')));
           photos.sort((a, b) => ((a.lat - cl) ** 2 + (a.lng - cg) ** 2) - ((b.lat - cl) ** 2 + (b.lng - cg) ** 2));
           for (const p of photos) tasks.push({ kind: 'photo', id: String(p.id), rec: p });
+          // 매물임장 사진 (2026-09-28) — 별도 DB(hongbuListing)라 __sggLoadLocalForSgg 에 안 들어온다.
+          // ⚠ 이걸 빼 두면 '🔁 원본' 지역인데도 매물 사진만 안 받아, 매물을 열 때마다 '받는 중' 이 뜬다.
+          try {
+            for (const r of (await __ljAll()).filter((x) => String(x.sgg5) === sgg5)) {
+              for (const it of __ljShots(r)) {
+                if (it && typeof it === 'object' && it.addedAt && !__getImgData(it)) {
+                  tasks.push({ kind: 'ljImg', id: String(r.id), addedAt: Number(it.addedAt) });
+                }
+              }
+            }
+          } catch (e) { console.warn('[fetch] 매물임장 사진 목록 실패(무시):', e?.message || e); }
           __rf.total = lazyNotes.length + tasks.length;
           __dqEmit();
           if (__rf.total === 0) { __rfRefreshPicker().catch(() => {}); __syncStatus(`✅ ${sName}: 동기화 완료 — 내려받을 원본 없음`, 15000); return; }
@@ -18038,8 +18083,10 @@ const originalBase64 = event.target.result;
           // 4) 단지 사진·포토 원본 (5 병렬, 큐 우선)
           const aptF = await __lzFindSggFolder('aptImages', sgg5);
           const phF = await __lzFindSggFolder('photos', sgg5);
+          const ljF = tasks.some((t) => t.kind === 'ljImg') ? await __lzFindSggFolder('listingImages', sgg5) : null;
           const aptList = aptF ? await __dqList(aptF, true) : new Map();
           const phList = phF ? await __dqList(phF, true) : new Map();
+          const ljList = ljF ? await __dqList(ljF, true) : new Map();
           let i = 0;
           while (i < tasks.length) {
             if (!window.__gdriveReady) throw new Error('연결 끊김');
@@ -18053,6 +18100,11 @@ const originalBase64 = event.target.result;
                   if (!fid) { __rf.fail++; return; }
                   const dataUrl = await __blobToDataUrl(await __rfDownloadWithRetry(fid));
                   if (dataUrl) await __rfPutNoteImage(t.id, t.addedAt, dataUrl); else __rf.fail++;
+                } else if (t.kind === 'ljImg') {
+                  const fid = ljList.get(`lj_${sgg5}_${t.id}_${t.addedAt}.jpg`);
+                  if (!fid) { __rf.fail++; return; }
+                  const dataUrl = await __blobToDataUrl(await __rfDownloadWithRetry(fid));
+                  if (dataUrl) await __rfPutLjImage(t.id, t.addedAt, dataUrl); else __rf.fail++;
                 } else {
                   const fid = phList.get(__photoImgFilename({ ...t.rec, sgg5 }));
                   if (!fid) { __rf.fail++; return; }
@@ -25086,6 +25138,9 @@ const originalBase64 = event.target.result;
       }
       // 드라이브 → 이 기기. 다른 기기에서 적은 매물을 받아 온다(시군구 단위, 60초에 한 번).
       const __ljPulledAt = new Map();
+      // 내려받기가 왜 못 했는지를 **화면에도** 쓰려고 들고 있는다 (2026-09-28).
+      // 목록이 비었을 때 "정말 0건" 과 "못 받아 왔다" 를 구분할 수 없어서 원인을 못 찾았다.
+      const __ljPull = { why: "", busy: false };
       // 드라이브 연결을 기다린다. 부팅 직후엔 아직 토큰이 없어, 그냥 포기하면
       // **새로 연 브라우저에서 다른 기기의 변경이 통째로 안 들어온다**(2026-09-28 실측:
       // 다른 브라우저로 접속하면 사진이 동기화되지 않던 원인). 화면을 막지 않는 백그라운드
@@ -25097,16 +25152,18 @@ const originalBase64 = event.target.result;
         return ok();
       }
       async function __ljPullRegion(sgg5, force) {
-        const why = (m) => { console.log("[lj] 내려받기 건너뜀 —", m); return 0; };
-        if (!sgg5) return why("시군구를 모름");
-        if (!(await __ljDriveWait(20000))) return why("드라이브 연결 전 (20초 기다렸다)");
+        const why = (m) => { console.log("[lj] 내려받기 건너뜀 —", m); __ljPull.why = m; __ljPull.busy = false; return 0; };
+        if (!sgg5) return why("이 단지의 시군구를 몰라 받아 올 수 없습니다");
+        __ljPull.busy = true;
+        __ljPull.why = "";
+        if (!(await __ljDriveWait(20000))) return why("구글 드라이브에 연결되지 않았습니다 — 로그인해야 다른 기기의 기록이 보입니다");
         const last = __ljPulledAt.get(sgg5) || 0;
-        if (!force && Date.now() - last < 60000) return why("방금 받아 옴 (__lj.pull() 로 지금 받기)");
+        if (!force && Date.now() - last < 60000) { __ljPull.busy = false; return why("방금 받아 옴 (__lj.pull() 로 지금 받기)"); }
         __ljPulledAt.set(sgg5, Date.now());
         let n = 0;
         try {
           const folder = await __lzFindSggFolder("listings", sgg5);
-          if (!folder) return why("드라이브에 이 시군구 폴더가 아직 없음");
+          if (!folder) return why(`드라이브에 이 시군구(${sgg5}) 매물 폴더가 없습니다 — 적어 둔 기기에서 업로드가 끝났는지 확인해 주세요`);
           // ⚠ 반드시 새로 받아 온다. __dqList 는 10분 캐시라, 그냥 부르면 다른 기기가 올린 것이
           //    최대 10분간 안 보인다(2026-09-27 PC 에서 고친 메모가 모바일에 안 오던 원인).
           const list = await __dqList(folder, true);
@@ -25142,9 +25199,13 @@ const originalBase64 = event.target.result;
           }
           const waiting = (await __ljAll(true)).reduce((a, r) => a + __ljShots(r).filter((it) => !__getImgData(it)).length, 0);
           console.log(`[lj] 드라이브 대조 (${sgg5}): 파일 ${best.size}건 · 받음 ${n}건` + (waiting ? ` · 아직 안 받은 사진 ${waiting}장` : ""));
+          __ljPull.why = "";
         } catch (e) {
-          console.warn("[lj] 드라이브 내려받기 실패(무시):", e?.result?.error?.message || e?.message || e);
+          const m = e?.result?.error?.message || e?.message || String(e);
+          console.warn("[lj] 드라이브 내려받기 실패(무시):", m);
+          __ljPull.why = "드라이브에서 받아 오다 실패했습니다 — " + m;
         }
+        __ljPull.busy = false;
         return n;
       }
 
@@ -25437,14 +25498,45 @@ const originalBase64 = event.target.result;
           for (const it of miss) {
             const nm = __ljImgFilename({ ...rec, sgg5 }, it.addedAt);
             const fid = list.get(nm);
-            if (!fid) { none++; console.log("[lj] 드라이브에 사진 파일이 없다:", nm); continue; }
-            try { it.data = await __driveDownloadImageAsDataUrl(fid); got++; } catch (e) { console.warn("[lj] 사진 한 장 실패(무시):", nm, e?.message || e); }
+            if (!fid) { none++; it.miss = "드라이브에 아직 없음"; console.log("[lj] 드라이브에 사진 파일이 없다:", nm); continue; }
+            try {
+              it.data = await __driveDownloadImageAsDataUrl(fid);
+              delete it.miss;
+              got++;
+            } catch (e) {
+              it.miss = "받다가 실패";
+              console.warn("[lj] 사진 한 장 실패(무시):", nm, e?.message || e);
+            }
           }
           console.log(`[lj] 사진 내려받기 ${got}/${miss.length}장` + (none ? ` (드라이브에 없음 ${none}장)` : ""));
         } catch (e) {
           console.warn("[lj] 사진 내려받기 실패(무시):", e?.result?.error?.message || e?.message || e);
         }
         if (got) { try { await __ljPut(rec); } catch (_) {} }
+        return got;
+      }
+
+      // 이 단지 매물의 사진을 미리 받아 둔다 — 탭을 연 김에 (2026-09-28 사용자 요청).
+      // 단지메모(`__lz`)는 지역 전체가 수십 MB 라 "열 때 받기"가 맞지만, 매물임장은 단지 하나에
+      // 몇 건·몇 장 수준이라 아낄 이유가 없다. 그래서 여기만 선받기로 한다.
+      // ⚠ 그래도 상한은 둔다 — 한 단지에 사진이 잔뜩 쌓인 경우까지 한 번에 받지는 않는다.
+      const __LJ_PREFETCH_MAX = 40;
+      async function __ljPrefetchShots(aptId) {
+        let got = 0, budget = __LJ_PREFETCH_MAX;
+        try {
+          for (const r of await __ljByApt(aptId)) {
+            if (budget <= 0) break;
+            // 입력 화면이 그 매물을 열어 두었으면 **그 객체**에 채워야 화면에 바로 보인다
+            const rec = String(__ljState.rec?.id || "") === String(r.id) ? __ljState.rec : r;
+            const need = __ljShots(rec).filter((it) => !__getImgData(it)).length;
+            if (!need) continue;
+            budget -= need;
+            got += await __ljFetchShots(rec);
+          }
+        } catch (e) {
+          console.warn("[lj] 사진 선받기 실패(무시):", e?.message || e);
+        }
+        if (got) console.log(`[lj] 사진 선받기 ${got}장 (단지 ${aptId})`);
         return got;
       }
 
@@ -25684,6 +25776,23 @@ const originalBase64 = event.target.result;
         try { if (typeof __loadAptIndexForSync === "function") await __loadAptIndexForSync(); } catch (_) {}
         __ljState.aptId = String(aptId);
         __ljState.ctx = __ljAptCtx(aptId);
+        // ⚠ sgg5 가 비면 **내려받기도 시트 찾기도 둘 다** 막혀서, 다른 기기의 기록이 하나도 안 보인다
+        //   (2026-09-28: "찾는시군구: (모름)"). apt.json 인덱스에 늦게 들어오거나 그 단지가 빠져 있을 수 있어,
+        //   업로드 쪽이 쓰는 것과 **같은 추론기**(__resolveSgg5)로 한 번 더 구해 둔다.
+        if (!__ljState.ctx.sgg5 && typeof __resolveSgg5 === "function") {
+          try {
+            const s = await __resolveSgg5({ aptId: String(aptId) });
+            if (s) {
+              const rg = typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(aptId)) : null;
+              __ljState.ctx.sgg5 = s;
+              __ljState.ctx.sidoName = __ljState.ctx.sidoName || rg?.sidoName || "";
+              __ljState.ctx.sigunguName = __ljState.ctx.sigunguName || rg?.sigunguName || "";
+              console.log(`[lj] 시군구를 뒤늦게 구했다: ${s} (${__ljState.ctx.sigunguName || "?"})`);
+            } else {
+              console.warn(`[lj] 이 단지(${aptId})의 시군구를 못 구했다 — 다른 기기 기록을 받아 올 수 없습니다`);
+            }
+          } catch (e) { console.warn("[lj] 시군구 추론 실패:", e?.message || e); }
+        }
         // 버튼만 남고 패널이 없어진 상태에서 눌리면 렌더가 죽는다 → 여기서 되살린다 (2026-09-27)
         if (!__ljPanelEl()) {
           try { __ljMountTabButton(aptId); } catch (e) { console.warn("[lj] 패널 재생성 실패:", e); }
@@ -25694,15 +25803,28 @@ const originalBase64 = event.target.result;
         }
         __ljActivate(true);
         await __ljRenderList();
+        const rowsAtOpen = (await __ljByApt(__ljState.ctx?.aptId).catch(() => [])).length;
         // 다른 기기에서 적은 매물 받아 오기 — 화면은 먼저 띄우고 뒤에서 조용히
         const sgg5 = __ljState.ctx?.sgg5;
         if (sgg5) {
-          __ljPullRegion(sgg5)
+          const pulling = __ljPullRegion(sgg5); // 부르는 순간 __ljPull.busy 가 켜진다
+          const here = () => __ljState.active && String(__ljState.aptId) === String(aptId);
+          // 목록이 비어 있으면 "받는 중…" 이 보이게 한 번 더 그린다
+          if (!rowsAtOpen && here() && __ljState.view === "list") __ljRenderList().catch(() => {});
+          pulling
             .then(async (n) => {
-              if (!n) return;
               __ljUpdateTabBadge(aptId);
-              if (!__ljState.active || String(__ljState.aptId) !== String(aptId)) return;
+              if (!here()) return;
+              // 이 단지 사진을 미리 받아 둔다 — 매물을 눌렀을 때 '받는 중' 이 안 뜨게
+              __ljPrefetchShots(aptId)
+                .then((k) => {
+                  if (!k || !here()) return;
+                  if (__ljState.view === "form") __ljRenderForm();
+                })
+                .catch(() => {});
+              // 0건이어도 다시 그린다 — "받는 중…" 을 결과(이유 또는 빈 목록)로 바꿔야 한다
               if (__ljState.view === "list") { await __ljRenderList().catch(() => {}); return; }
+              if (!n) return;
               // 입력 화면을 보고 있는 중이라면 **사진만** 물려받는다. 레코드를 통째로 갈아 끼우면
               // 지금 치고 있는 글자가 날아갈 수 있다(사진은 더해지기만 하니 안전하다).
               const rec = __ljState.rec;
@@ -25757,7 +25879,17 @@ const originalBase64 = event.target.result;
         if (!rows.length) {
           const p = document.createElement("p");
           p.style.cssText = "margin:30px 4px;color:#777;font-size:13.5px;line-height:1.7;text-align:center;white-space:pre-line";
-          p.textContent = "아직 기록한 매물이 없습니다.\n아래 ＋ 버튼으로 시작하세요.";
+          // ⚠ "정말 0건" 과 "드라이브에서 못 받아 왔다" 를 구분해서 적는다.
+          //    예전엔 둘 다 "아직 기록한 매물이 없습니다" 라 원인을 볼 수 없었다
+          //    (2026-09-28: 다른 브라우저에서 메모조차 안 보이는데 이유를 알 수 없었다).
+          if (__ljPull.busy) {
+            p.textContent = "드라이브에서 받아 오는 중…";
+          } else if (__ljPull.why) {
+            p.textContent = __ljPull.why + "\n\n( 다시 시도: 콘솔에서 __lj.pull() )";
+            p.style.color = "#9a5b1f";
+          } else {
+            p.textContent = "아직 기록한 매물이 없습니다.\n아래 ＋ 버튼으로 시작하세요.";
+          }
           body.appendChild(p);
         }
         for (const r of rows) body.appendChild(__ljCardEl(r));
@@ -25813,8 +25945,12 @@ const originalBase64 = event.target.result;
           console.warn("[lj] 시트 유무 확인 실패(버튼 그대로):", e?.result?.error?.message || e?.message || e);
           return;
         }
-        // 그새 다른 단지로 옮겼거나 화면이 다시 그려졌으면 손대지 않는다
-        if (!foot.isConnected || String(__ljState.ctx?.aptId) !== String(ctx.aptId)) return;
+        // 그새 다른 단지로 옮겼거나 화면이 다시 그려졌으면 손대지 않는다.
+        // ⚠ `foot.isConnected` 만으로는 부족하다 — #ljFoot 은 그대로 있고 **안의 버튼만** 갈리기 때문이다.
+        //   그때 옛 bExp 를 기준으로 insertBefore 하면 NotFoundError 로 죽는다(2026-09-28 실측).
+        //   기준 버튼이 아직 이 foot 의 자식인지까지 봐야 한다. 아니면 새로 그린 쪽이 알아서 처리한다.
+        if (!foot.isConnected || bExp.parentNode !== foot) return;
+        if (String(__ljState.ctx?.aptId) !== String(ctx.aptId)) return;
         if (sid) {
           if (!bView.isConnected) foot.insertBefore(bView, bExp);
         } else {
@@ -26186,7 +26322,10 @@ const originalBase64 = event.target.result;
             img.onclick = () => openModalImage(data, shown, shown.indexOf(data));
             cell.appendChild(img);
           } else {
-            cell.textContent = "받는 중";
+            // 이 브라우저엔 원본이 없다(다른 브라우저에서 찍은 것) → 드라이브에서 받아 온다.
+            // 실패했으면 그 사실이 타일에 보여야 한다 — 그냥 '받는 중' 이면 멈춘 건지 알 수 없다.
+            cell.textContent = it.miss || "받는 중";
+            if (it.miss) cell.classList.add("bad");
             cell.title = "눌러서 다시 받기";
             cell.style.cursor = "pointer";
             cell.onclick = async () => {
@@ -27314,6 +27453,8 @@ const originalBase64 = event.target.result;
           sgg5: __ljState.ctx?.sgg5,
           드라이브준비: !!window.__gdriveReady,
           토큰: !!window.__gdriveAccessToken,
+          내려받기: __ljPull.busy ? "받는 중" : __ljPull.why || "정상",
+          로컬매물수: "__lj.rows() 로 확인",
           시트수정기준: __ljModGet(__ljState.ctx?.sgg5 || ""),
           이미물어본변경: __ljAskedGet(__ljState.ctx?.aptId || ""),
         }),
@@ -27325,6 +27466,57 @@ const originalBase64 = event.target.result;
         },
         scan: () => __ljScanSheet(__ljState.ctx, {}),
         // 드라이브에서 지금 바로 받아 오기(쓰로틀·캐시 무시) — 다른 기기 수정이 안 보일 때
+        // 드라이브 쪽을 그대로 들여다본다 — "폴더가 없다" 가 계정 문제인지 빈 폴더인지 가른다.
+        // 2026-09-28: 엣지에서 메모조차 안 보이는데 원인을 좁히지 못해 만들었다.
+        // sgg5 를 주면 그걸로, 안 주면 지금 열린 단지의 것으로 본다.
+        // ⚠ 값은 전부 **문자열**로 만든다 — 콘솔이 배열·객체를 접어 버려 정작 볼 것이 안 보였다.
+        drive: async (sgg5) => {
+          const want = String(sgg5 || __ljState.ctx?.sgg5 || "");
+          const out = {
+            계정: "?",
+            루트: window.__gdriveRootFolderId || "(없음)",
+            찾는시군구: want || "(모름 — 매물임장 탭을 연 뒤 다시 부르거나 __lj.drive('11590') 처럼 직접 주세요)",
+            단지: __ljState.ctx?.aptName || "(안 열림)",
+          };
+          try {
+            const me = await gapi.client.drive.about.get({ fields: "user(emailAddress,displayName)" });
+            out.계정 = me.result.user?.emailAddress || "?";
+          } catch (e) { out.계정 = "확인 실패: " + (e?.result?.error?.message || e?.message || e); }
+          for (const root of ["listings", "listingImages"]) {
+            try {
+              const rootId = await __dqRootFolder(root);
+              const { nameMap } = await __driveListFolderNameMap(rootId);
+              const kids = Array.from(nameMap.keys());
+              out[root + " 하위폴더"] = kids.length ? kids.join(" | ") : "(비어 있음)";
+              const hit = want ? kids.find((n) => __parseSgg5Prefix(n) === want) : "";
+              out[root + " 이시군구"] = want ? hit || "없음" : "(시군구를 몰라 확인 못 함)";
+              if (hit) {
+                const f = await __lzFindSggFolder(root, want);
+                const list = await __dqList(f, true);
+                const names = Array.from(list.keys());
+                out[root + " 파일수"] = names.length;
+                out[root + " 파일"] = names.slice(0, 8).join(" | ") || "(비어 있음)";
+              }
+            } catch (e) { out[root + " 하위폴더"] = "확인 실패: " + (e?.result?.error?.message || e?.message || e); }
+          }
+          console.table(out);
+          return out;
+        },
+        // 이 기기에 실제로 뭐가 들어 있나 — 동기화가 안 될 때 제일 먼저 볼 것
+        rows: async () => {
+          const all = await __ljAll(true);
+          const mine = all.filter((r) => String(r.aptId) === String(__ljState.ctx?.aptId));
+          return {
+            전체: all.length,
+            살아있음: all.filter((r) => !r.deletedAt).length,
+            이단지: mine.length,
+            이단지목록: mine.map((r) => ({
+              id: r.id, 동호수: r.dongho, sgg5: r.sgg5,
+              사진: __ljShots(r).length, 받은사진: __ljShots(r).filter((it) => __getImgData(it)).length,
+              수정: __ljWhenOut(r.updatedAt), 삭제됨: !!r.deletedAt,
+            })),
+          };
+        },
         // 지금 보고 있는 매물의 사진을 드라이브에서 강제로 받아 온다
         shots: async () => {
           const rec = __ljState.rec;
