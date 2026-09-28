@@ -8640,6 +8640,9 @@
       //   ③ 그러고도 모달에 여유가 남으면(= 위아래 여백이 24px 보다 넓으면) 그만큼 더
       const __MEMO_LINES_MIN = 2;
       const __MEMO_LINES_MAX = 6;
+      // 사진 줄 높이 — CSS 의 `#imagePreview { height: 72px }` 와 같이 움직인다.
+      // 사진이 없어도 이만큼은 메모가 못 쓰게 비워 둔다(사진이 뒤늦게 도착하므로).
+      const __PHOTO_ROW_H = 72;
 
       function __fitMemo(el) {
         if (!el) return;
@@ -8662,7 +8665,15 @@
         const need = el.scrollHeight + borderY;
         let h = Math.min(Math.max(need, min), max);
         el.style.height = h + "px";
-        const slack = __modalSlack(); // 이 높이로 놓았을 때 모달에 남는 세로
+        let slack = __modalSlack(); // 이 높이로 놓았을 때 모달에 남는 세로
+        // ⚠ 사진 줄 자리는 **늘 비워 둔다** (2026-09-29 사용자 요청). 사진은 나중에 도착하는데,
+        //   지금 없다고 그 자리까지 메모가 차지하면 사진이 붙는 순간 아래 단추들이 밀려난다.
+        //   뒤에서 다시 맞추기는 하지만 화면이 한 번 출렁인다. 처음부터 빼 두는 쪽이 낫다.
+        //   단지정보 메모에만 해당한다 — 매물임장 사진은 다른 자리에 붙는다.
+        if (el.id === "noteText") {
+          const pv = document.getElementById("imagePreview");
+          if (pv && getComputedStyle(pv).display === "none") slack -= __PHOTO_ROW_H;
+        }
         if (slack > 2) h = Math.round(h + slack);
         el.style.height = h + "px";
         // 인라인 height 를 CSS max-height 가 잘라내지 않도록 상한도 같이 올린다
@@ -8674,6 +8685,29 @@
         __fitMemo(document.getElementById("noteText"));
       }
       window.__fitNoteText = __fitNoteText;
+
+      // ⚠ 모달 안에는 **나중에 채워지는 칸**이 있다 — 사진 미리보기는 한 장씩 도착하고,
+      //   시세 상자들도 비동기로 들어온다. 메모가 그 전에 여유를 다 가져가 버리면, 사진이
+      //   붙은 뒤 아래 단추들이 화면 밖으로 밀려 모달에 스크롤이 생긴다 (2026-09-29 사용자 보고).
+      //   그 칸들이 커질 때마다 메모를 다시 맞춘다. 메모 높이는 저 칸들 크기에 영향을 주지
+      //   않으므로 되먹임이 생기지 않는다.
+      let __lateBoxRO = null;
+      let __lateBoxTimer = null;
+      function __watchLateBoxes() {
+        if (!window.ResizeObserver) return;
+        try { __lateBoxRO?.disconnect(); } catch (_) {}
+        __lateBoxRO = new ResizeObserver(() => {
+          clearTimeout(__lateBoxTimer);
+          __lateBoxTimer = setTimeout(() => {
+            try { __fitNoteText(); } catch (_) {}
+            try { __ljRefitMemos(); } catch (_) {}
+          }, 80);
+        });
+        for (const id of ["imagePreview", "sisePriceBox", "similarPriceBox", "similarPriceResultBox"]) {
+          const el = document.getElementById(id);
+          if (el) { try { __lateBoxRO.observe(el); } catch (_) {} }
+        }
+      }
 
       // 단지 모달에 아직 남아 있는 세로 여유(px). 없으면 0.
       // 내용이 상한보다 짧아 모달이 덜 찼을 때, 그 남는 높이를 메모 칸이 먹도록 쓰는 값이다.
@@ -9252,6 +9286,7 @@
           // 다르므로 상수로 박지 않고 계산된 line-height 에서 잰다.
           noteTextEl.addEventListener("input", __fitNoteText);
           __fitNoteText();
+          __watchLateBoxes(); // 사진·시세 칸이 나중에 채워지면 메모를 다시 맞춘다
           noteTextEl.addEventListener("focus", function () {
             const el = this;
             setTimeout(() => {
