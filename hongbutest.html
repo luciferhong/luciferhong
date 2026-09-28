@@ -18883,13 +18883,13 @@ const originalBase64 = event.target.result;
           for (const step of ['시트', '사진']) {
             try {
               const fid = step === '시트'
-                ? await __ljFindSheetId(sgg5, __syncSigunguNameByCode5.get(sgg5) || '')
+                ? await __ljFindSheetId(sgg5)
                 : await __ljPhotoFolder(sgg5, false);
               if (fid) await gapi.client.drive.files.update({ fileId: fid, resource: { trashed: true } });
             } catch (e) { console.warn('[rd] 매물임장 ' + step + ' 삭제 실패:', e?.result?.error?.message || e?.message || e); }
             say(`삭제 표시 중… ${++done}/${total}`);
           }
-          try { __ljSheetCache.delete(sgg5); __ljPhotoFolderP.delete(sgg5); } catch (_) {}
+          try { __ljSheetCache.delete(sgg5); __ljPhotoFolderP.delete(sgg5); __ljRegionForget(sgg5); } catch (_) {}
           try { if (window.map) { updateMarkers(window.map.getBounds()); updatePhotoMemoMarkersByBounds(); } } catch (_) {}
           try { __ljUpdateTabBadge(); } catch (_) {}
           // 로컬 매칭(apt.json 인덱스·좌표)에서 빠진 레코드가 드라이브에 남아 있을 수 있다 → 드라이브 폴더를 직접 훑어 살아있는 메타를 전부 삭제 표시
@@ -25402,6 +25402,10 @@ const originalBase64 = event.target.result;
         { k: "__when", lb: "기록일시" },
         { k: "__id", lb: "기록ID" },
         { k: "__aptCode", lb: "단지코드" },
+        // 사진 목록(찍은 시각만, 쉼표로 이어 적는다). 이미지는 드라이브에 있고 여기엔 없다.
+        // ⚠ 이 행이 생기기 전에는 "이 매물에 사진이 몇 장인가" 를 아는 곳이 드라이브뿐이라,
+        //   시트를 읽을 때마다 폴더를 뒤져야 했다(왕복 1~5회). 이제 시트 값과 함께 온다.
+        { k: "__photos", lb: "사진" },
       ];
       const __LJ_SHEET_ROWS = __LJ_ROWS.concat(__LJ_META_ROWS);
       // 시트가 "우리 배치"인지 가리는 **최소** 항목 (2026-09-28).
@@ -27334,6 +27338,12 @@ const originalBase64 = event.target.result;
             return __ljWhenOut(r.updatedAt || r.createdAt);
           case "__id": return r.id || "";
           case "__aptCode": return __ljNum(r.aptId) ?? (r.aptId || "");
+          case "__photos":
+            return __ljShots(r)
+              .map((it) => Number(it?.addedAt) || 0)
+              .filter(Boolean)
+              .sort((a, b) => a - b)
+              .join(",");
           default: return r[k] || "";
         }
       }
@@ -27515,17 +27525,81 @@ const originalBase64 = event.target.result;
       //    그런데도 결과가 비지 않아 **폴더의 첫 시트**(= 먼저 만든 다른 시군구)가 잡혔다.
       //    2026-09-27 실측: 시트가 없는 새 지역에서 '구글시트 보기' 를 누르면 동작구 시트가 열렸다.
       //    시군구 1곳에 1장이라 목록이 짧으니, 폴더의 시트를 다 받아 **이름을 JS 로** 대조한다.
-      function __ljSheetNameOk(name, sgg5, sigunguName) {
-        const n = String(name || "");
-        if (sgg5 && n.endsWith("_" + sgg5)) return true; // 현재 규칙: 서울시_동작구_11590
-        if (sigunguName && n.endsWith("_" + sigunguName)) return true; // 옛 이름: 매물임장_서울시_동작구
-        return false;
+      // ⚠ 시군구 **이름**으로 맞추면 안 된다 — 시도가 다르면 '동구' 처럼 같은 이름이 여럿이다
+      //   (대전 30110 · 대구 27140 · 인천 28140 · 부산 26170). 이름 끝의 시군구코드 5자리는
+      //   전국 유일하므로 그것만 본다 (2026-09-28 사용자 확정, 옛 이름 호환은 걷어냈다).
+      function __ljSheetNameOk(name, sgg5) {
+        return !!sgg5 && String(name || "").endsWith("_" + String(sgg5));
       }
+
+      // ── maemool 폴더 (2026-09-28) ──
+      // 이 id 는 한 번 만들어지면 **절대 안 바뀐다** — 유일하게 기억해도 되는 값이다.
+      // 시트·사진폴더 id 는 기억하지 않는다: 테스트로 지웠다 만들면 옛 id 가 휴지통을 가리키는데,
+      // 구글은 휴지통 파일에도 쓰기를 성공시켜 "저장됨" 이라 말하면서 값은 안 보인다.
+      const __LJ_MAE_KEY = "__ljMaemoolId_v1";
+      let __ljMaeP = null;
+      async function __ljMaemoolFolder() {
+        try { const v = localStorage.getItem(__LJ_MAE_KEY); if (v) return v; } catch (_) {}
+        if (__ljMaeP) return await __ljMaeP;
+        __ljMaeP = (async () => {
+          const root = window.__gdriveRootFolderId;
+          if (!root) return "";
+          const id = await __ljFindFolder(__LJ_FOLDER, root);
+          if (id) { try { localStorage.setItem(__LJ_MAE_KEY, id); } catch (_) {} }
+          return id || "";
+        })();
+        try { return await __ljMaeP; } finally { __ljMaeP = null; }
+      }
+      function __ljMaemoolForget() { try { localStorage.removeItem(__LJ_MAE_KEY); } catch (_) {} }
+      // 잠깐 썼던 사진 폴더 id 기억(__ljPhotoDir_*)을 치운다 — 이제 아무도 읽지 않는다 (2026-09-28)
+      (function __ljDropPhotoDirMemo() {
+        try {
+          for (const k of Object.keys(localStorage)) if (k.startsWith("__ljPhotoDir_")) localStorage.removeItem(k);
+        } catch (_) {}
+      })();
+
+      // 그 시군구의 **시트와 사진 폴더를 한 번에** 찾는다.
+      // 둘 다 maemool 바로 아래에 같은 이름으로 있다(하나는 스프레드시트, 하나는 폴더).
+      // 따로 찾으면 왕복이 두 번인데 한 번이면 된다 — 왕복 하나가 폰에서 0.5~1초다.
+      const __LJ_REGION_TTL = 10 * 1000; // 시트 내용 캐시(20초)보다 짧게 — 지웠다 만든 것을 빨리 알아채게
+      const __ljRegionCache = new Map(); // sgg5 → { at, p }
+      function __ljRegionFiles(sgg5, force) {
+        const k = String(sgg5 || "");
+        if (!/^\d{5}$/.test(k)) return Promise.resolve({ sid: "", folder: "" });
+        const c = __ljRegionCache.get(k);
+        if (!force && c && Date.now() - c.at < __LJ_REGION_TTL) return c.p;
+        const p = (async () => {
+          const mae = await __ljMaemoolFolder();
+          if (!mae) return { sid: "", folder: "" };
+          let files;
+          try {
+            const r = await gapi.client.drive.files.list({
+              q: `'${mae}' in parents and trashed=false`,
+              fields: "files(id,name,mimeType)", spaces: "drive", pageSize: 200,
+            });
+            files = r.result.files || [];
+          } catch (e) {
+            __ljMaemoolForget(); // 기억해 둔 maemool 이 사라졌을 수 있다 — 다음엔 다시 찾는다
+            throw e;
+          }
+          let sid = "", folder = "";
+          for (const f of files) {
+            if (!__ljSheetNameOk(f.name, k)) continue;
+            if (f.mimeType === "application/vnd.google-apps.folder") folder = folder || f.id;
+            else if (f.mimeType === "application/vnd.google-apps.spreadsheet") sid = sid || f.id;
+          }
+          if (sid) __ljSheetOk.set(k, sid); // '구글시트 보기' 버튼 노출 판정용
+          return { sid, folder };
+        })().catch((e) => { __ljRegionCache.delete(k); throw e; });
+        __ljRegionCache.set(k, { at: Date.now(), p });
+        return p;
+      }
+      function __ljRegionForget(sgg5) { __ljRegionCache.delete(String(sgg5 || "")); }
       async function __ljFindSheetBySgg(folderId, sgg5, sigunguName) {
         if (!folderId) return null;
         const q = ["mimeType='application/vnd.google-apps.spreadsheet'", "trashed=false", `'${folderId}' in parents`].join(" and ");
         const r = await gapi.client.drive.files.list({ q, fields: "files(id,name)", spaces: "drive", pageSize: 200 });
-        return (r.result.files || []).find((f) => __ljSheetNameOk(f.name, sgg5, sigunguName)) || null;
+        return (r.result.files || []).find((f) => __ljSheetNameOk(f.name, sgg5)) || null;
       }
       async function __ljMoveTo(fileId, folderId) {
         const got = await gapi.client.drive.files.get({ fileId, fields: "parents" });
@@ -27564,7 +27638,7 @@ const originalBase64 = event.target.result;
           try {
             const got = await gapi.client.drive.files.get({ fileId: sid, fields: "id,name,trashed" });
             // 이름까지 확인 — 다른 시군구 시트가 기억돼 있으면 덮어쓰면 안 된다
-            if (!got.result.trashed && __ljSheetNameOk(got.result.name, sgg5, sigunguName)) {
+            if (!got.result.trashed && __ljSheetNameOk(got.result.name, sgg5)) {
               return await settle(sid, got.result.name);
             }
           } catch (_) {}
@@ -27608,7 +27682,7 @@ const originalBase64 = event.target.result;
           valueRenderOption: "UNFORMATTED_VALUE",
         });
         const vals = res.result.values || [];
-        if (!vals.length) return { cols: [], noId: 0 };
+        if (!vals.length) return { cols: [], noId: 0, all: [], noPhotoRow: true };
 
         // ⚠ 줄 순서로 맞추면 안 된다. 항목을 위아래로 옮기는 순간 이미 내보낸 시트가
         //    전부 "형식 다름" 이 된다(2026-09-27 메모를 세대수 아래로 옮기며 겪음).
@@ -27652,12 +27726,14 @@ const originalBase64 = event.target.result;
           }
           out.push({ id, col, ci: c });
         }
-        return { cols: out, noId, all };
+        // '사진' 행이 없는 옛 시트는 예전처럼 드라이브 폴더를 뒤져야 한다
+        const photoRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__photos");
+        return { cols: out, noId, all, noPhotoRow: at[photoRow] < 0 };
       }
       // 시트를 원본으로 읽을 때 — 기록ID 가 없는 열(파트너가 새로 적은 것)까지 전부 돌려준다
       async function __ljReadSheetAll(sid) {
         const r = await __ljReadSheet(sid);
-        return r === null ? null : r.all;
+        return r === null ? null : { all: r.all, noPhotoRow: !!r.noPhotoRow };
       }
 
       // ── 시트 → 홍부 (기존 매물의 수정분만) ──
@@ -27704,6 +27780,13 @@ const originalBase64 = event.target.result;
         }
         // 평단가·매전차이·전세가율은 시트에 있어도 무시한다 — 늘 다시 계산한다
         for (const k of ["pyeongPrice", "gap", "jeonseRatio"]) delete rec[k];
+        // 사진: 찍은 시각만 온다. 이미지는 입력 화면을 열 때 __ljFetchShots 가 드라이브에서 받는다.
+        rec.photos = String(at.__photos ?? "")
+          .split(",")
+          .map((x) => Number(String(x).trim()))
+          .filter((n) => n > 0)
+          .sort((a, b) => a - b)
+          .map((addedAt) => ({ addedAt }));
         return rec;
       }
       // 이 시군구 시트를 읽어 레코드 목록을 만든다.
@@ -27727,16 +27810,16 @@ const originalBase64 = event.target.result;
       async function __ljReadRegionRaw(ctx, sgg5) {
         if (!(await __ljDriveWait(20000))) return { sid: "", recs: [], why: "구글 드라이브에 연결되지 않았습니다" };
         if (!(await __ljEnsureSheetsApi())) return { sid: "", recs: [], why: "Sheets API 를 불러오지 못했습니다" };
-        const sid = await __ljFindSheetId(sgg5, ctx.sigunguName);
+        // 시트와 사진 폴더를 **한 번의 조회**로 같이 구한다 (둘 다 maemool 바로 아래, 이름도 같다)
+        const { sid, folder: photoDir } = await __ljRegionFiles(sgg5);
         if (!sid) return { sid: "", recs: [], why: "이 시군구 시트가 아직 없습니다 — 📄 구글시트 보기로 만드세요" };
 
         // ⚠ 크기를 알려고 spreadsheets.get 을 먼저 부르지 않는다 — 왕복이 하나 늘 뿐이다.
         //   `'매물'!1:23` 처럼 **행만 지정하면 모든 열**이 오고, values.get 은 값이 있는 데까지만
         //   돌려주므로 열이 100개든 300개든 비용이 같다 (2026-09-28: 배지 한 번에 5초 걸리던 원인).
-        // 시트 읽기와 사진 폴더 찾기를 **동시에** 돌린다 — 서로 기다릴 이유가 없다
-        const photoP = __ljPhotoFolder(sgg5, false).catch(() => "");
-        const read = await __ljReadSheetAll(sid);
-        if (read === null) return { sid, recs: [], why: "시트 배치를 알아볼 수 없습니다" };
+        const got = await __ljReadSheetAll(sid);
+        if (got === null) return { sid, recs: [], why: "시트 배치를 알아볼 수 없습니다" };
+        const read = got.all;
 
         const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
         const seen = new Set();
@@ -27770,14 +27853,72 @@ const originalBase64 = event.target.result;
           });
           console.log(`[lj] 기록ID 채번 ${fixes.length}건 → 시트에 적음`);
         }
-        // 사진은 시트에 담을 수 없다 → **드라이브 폴더의 파일 목록이 곧 사진 목록**이다.
-        // 파일명이 lj_{sgg5}_{기록ID}_{addedAt}.jpg 라 따로 메타를 둘 필요가 없다.
-        await __ljAttachPhotos(recs, sgg5, await photoP);
+        // 사진 목록은 시트의 숨긴 '사진' 행에서 이미 왔다(__ljRecFromCol) — 드라이브를 안 본다.
+        // 그 행이 없는 옛 시트만 예전처럼 폴더를 뒤지고, 행은 뒤에서 조용히 만들어 둔다.
+        if (got.noPhotoRow) {
+          await __ljAttachPhotos(recs, sgg5, photoDir);
+          __ljAddPhotoRow(sid, recs).catch((e) => console.warn("[lj] 사진 행 추가 실패(무시):", e?.message || e));
+        }
         const out = { at: Date.now(), sid, recs, why: "" };
         __ljSheetCache.set(sgg5, out);
         console.log(`[lj] 시트 읽음 (${sgg5}): 매물 ${recs.length}건` + (skipped.length ? ` · 단지코드를 못 구해 건너뜀 ${skipped.length}개 [${skipped.slice(0, 5).join(", ")}]` : ""));
         return out;
       }
+      // 옛 시트(사진 행이 없는)에 '사진' 행을 만들어 둔다 — 다음부터는 드라이브를 안 봐도 된다.
+      // 화면을 막지 않는 뒷일이라 실패해도 그냥 넘어간다(다음 읽기에서 다시 시도).
+      // ⚠ 시트는 values 쓰기로 **행이 자동으로 늘지 않는다**. 모자라면 그냥 거부한다
+      //   ("Range ('매물'!B26) exceeds grid limits. Max rows: 25", 2026-09-28 실측).
+      //   옛 시트는 만들 때 행 수를 항목 수에 딱 맞춰 뒀으므로, 항목을 더하면 반드시 늘려야 한다.
+      //   반환값은 '매물' 탭의 sheetId — 뒤에서 행을 숨길 때 재사용해 왕복을 아낀다.
+      async function __ljEnsureRows(sid, need) {
+        const g = await gapi.client.sheets.spreadsheets.get({
+          spreadsheetId: sid, fields: "sheets(properties(title,sheetId,gridProperties(rowCount)))",
+        });
+        const main = (g.result.sheets || []).find((sh) => sh.properties?.title === "매물");
+        if (!main) return null;
+        const have = main.properties.gridProperties?.rowCount || 0;
+        if (have < need) {
+          await gapi.client.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sid,
+            resource: { requests: [{ appendDimension: {
+              sheetId: main.properties.sheetId, dimension: "ROWS", length: need - have } }] },
+          });
+          console.log(`[lj] 시트 행을 ${have} → ${need} 로 늘렸습니다`);
+        }
+        return main.properties.sheetId;
+      }
+
+      const __ljPhotoRowDone = new Set();
+      async function __ljAddPhotoRow(sid, recs) {
+        if (!sid || __ljPhotoRowDone.has(sid)) return;
+        const ri = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__photos");
+        if (ri < 0) return;
+        const row = ri + 1;
+        const mainId = await __ljEnsureRows(sid, __LJ_SHEET_ROWS.length);
+        const data = [{ range: `'매물'!B${row}`, values: [["사진"]] }];
+        for (const r of recs) {
+          if (r.ci == null) continue;
+          data.push({ range: `'매물'!${__ljColA1(r.ci + 1)}${row}`, values: [[__ljCellValue("__photos", r, {})]] });
+        }
+        await gapi.client.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sid, resource: { valueInputOption: "RAW", data },
+        });
+        // 기록ID 처럼 숨긴다 — 파트너가 볼 것이 아니다
+        if (mainId != null) {
+          try {
+            await gapi.client.sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sid,
+              resource: { requests: [{ updateDimensionProperties: {
+                range: { sheetId: mainId, dimension: "ROWS", startIndex: ri, endIndex: ri + 1 },
+                properties: { hiddenByUser: true }, fields: "hiddenByUser" } }] },
+            });
+          } catch (e) { console.warn("[lj] 사진 행 숨기기 실패(무시):", e?.message || e); }
+        }
+        // ⚠ 성공한 뒤에 표시한다. 먼저 찍어 두면 한 번 실패했을 때 그 세션에서 영영 다시 안 한다.
+        __ljPhotoRowDone.add(sid);
+        console.log("[lj] 옛 시트에 '사진' 행을 만들었습니다");
+      }
+
       // ── 사진 폴더 (2026-09-28 사용자 요청) ──
       // 시트와 **같은 이름의 폴더**를 maemool 안에 두고 거기 넣는다 (2026-09-28 사용자 확정).
       //   HongbuMemo/maemool/서울시_동작구_11590    (구글시트 — 파일)
@@ -27791,35 +27932,28 @@ const originalBase64 = event.target.result;
         return [sido, sigungu, String(sgg5)].filter(Boolean).join("_"); // __ljSheetTitle 과 같은 모양
       }
       // create=false 면 **찾기만** 한다(없으면 ""). 읽기 경로가 빈 폴더를 만들지 않게.
+      // 시군구 사진 폴더를 찾는다. 찾기는 __ljRegionFiles 한 번(시트와 같이)으로 끝난다.
+      // ⚠ 폴더 id 는 기억하지 않는다 — 시트와 같은 이유(지웠다 만들면 옛 id 가 휴지통을 가리킨다).
+      //   만들기(create=true)는 사진을 올릴 때만 불리므로 왕복이 몇 번 더 들어도 괜찮다.
       async function __ljPhotoFolder(sgg5, create) {
         const k = String(sgg5 || "");
         if (!/^\d{5}$/.test(k)) return "";
+        if (!create) return (await __ljRegionFiles(k)).folder;
         if (__ljPhotoFolderP.has(k)) {
           const got = await __ljPhotoFolderP.get(k);
           if (got) return got;
           __ljPhotoFolderP.delete(k);
         }
         const p = (async () => {
-          const root = window.__gdriveRootFolderId || (create ? await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null) : "");
+          const found = (await __ljRegionFiles(k, true)).folder;
+          if (found) { await __ljMoveOldPhotos(k, found); return found; }
+          const root = window.__gdriveRootFolderId || (await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null));
           if (!root) return "";
-          const maemool = create ? await __driveFindOrCreateFolder(__LJ_FOLDER, root) : await __ljFindFolder(__LJ_FOLDER, root);
+          const maemool = await __driveFindOrCreateFolder(__LJ_FOLDER, root);
           if (!maemool) return "";
-          const want = __ljRegionFolderName(k);
-          const { nameMap } = await __driveListFolderNameMap(maemool);
-          for (const [name, id] of nameMap.entries()) {
-            // 시군구 이름이 같거나, 예전 규칙(…_{시군구코드})으로 만들어 둔 폴더
-            if (name !== want && __parseSgg5Prefix(name) !== k && !String(name).endsWith("_" + k)) continue;
-            // ⚠ 이 폴더에는 **시트(파일)** 도 함께 있다. 폴더만 골라야 한다.
-            try {
-              const got = await gapi.client.drive.files.get({ fileId: id, fields: "mimeType" });
-              if (got.result.mimeType !== "application/vnd.google-apps.folder") continue;
-            } catch (_) { continue; }
-            await __ljMoveOldPhotos(k, id);
-            return id;
-          }
-          if (!create) return "";
           const id = await __driveFindOrCreateFolder(__ljRegionFolderName(k), maemool);
           await __ljMoveOldPhotos(k, id);
+          __ljRegionForget(k); // 방금 만들었으니 다음 조회는 새로
           return id;
         })().catch((e) => { __ljPhotoFolderP.delete(k); throw e; });
         __ljPhotoFolderP.set(k, p);
@@ -27953,9 +28087,19 @@ const originalBase64 = event.target.result;
         });
         flush(__LJ_SHEET_ROWS.length);
         if (data.length) {
-          await gapi.client.sheets.spreadsheets.values.batchUpdate({
+          const put = () => gapi.client.sheets.spreadsheets.values.batchUpdate({
             spreadsheetId: sid, resource: { valueInputOption: "RAW", data },
           });
+          try {
+            await put();
+          } catch (e) {
+            // 항목을 더한 뒤 아직 안 늘어난 옛 시트 — 한 번 늘리고 다시 쓴다.
+            // 여기서 포기하면 "시트 저장 실패" 만 뜨고 적은 것이 안 들어간다.
+            const msg = e?.result?.error?.message || e?.message || "";
+            if (!/exceeds grid limits/i.test(msg)) throw e;
+            await __ljEnsureRows(sid, __LJ_SHEET_ROWS.length);
+            await put();
+          }
         }
         // 계산 줄은 **수식으로 다시 심는다**. 새 시트뿐 아니라 옛 시트(값이 박혀 있던 것)도
         // 저장하는 김에 낫는다 — 평형이 나중에 채워져 평단가가 빈 채 남던 문제가 여기서 풀린다.
@@ -28003,39 +28147,13 @@ const originalBase64 = event.target.result;
       // 이름까지 확인한 시트 id (sgg5 → sid). 세션 안에서만 유효하다.
       const __ljSheetOk = new Map();
       const __ljSheetOkAt = new Map(); // sgg5 → 마지막으로 휴지통·이름을 확인한 시각
-      async function __ljFindSheetId(sgg5, sigunguName) {
-        const k = String(sgg5);
-        const key = "__ljSheet_" + sgg5;
-        const done = (id) => {
-          __ljSheetOk.set(k, id);
-          __ljSheetOkAt.set(k, Date.now());
-          try { id ? localStorage.setItem(key, id) : localStorage.removeItem(key); } catch (_) {}
-          return id;
-        };
-        // ⚠ 세션 기억(__ljSheetOk)을 영원히 믿으면 안 된다. 시트를 휴지통에 보내고 새로 만들어도
-        //   옛 id 가 남아 **휴지통의 시트**에 계속 쓰게 된다 — 구글 API 는 휴지통 파일에도 쓰기가
-        //   성공하므로 "저장됨" 이라 말하면서 값은 안 보인다.
-        //   그렇다고 부를 때마다 확인하면 왕복이 하나 늘어 배지가 느려진다(2026-09-28: 5초).
-        //   → **1분에 한 번만** 확인한다.
-        const okAt = __ljSheetOkAt.get(k) || 0;
-        if (__ljSheetOk.has(k) && Date.now() - okAt < 60000) return __ljSheetOk.get(k);
-        let sid = __ljSheetOk.get(k) || "";
-        if (!sid) { try { sid = localStorage.getItem(key) || ""; } catch (_) {} }
-        if (sid) {
-          try {
-            const got = await gapi.client.drive.files.get({ fileId: sid, fields: "id,name,trashed" });
-            // 이름까지 본다 — 엉뚱한 시군구 시트 id 가 기억돼 있으면 여기서 버린다.
-            if (!got.result.trashed && __ljSheetNameOk(got.result.name, sgg5, sigunguName)) return done(sid);
-          } catch (_) {}
-          __ljSheetOk.delete(k);
-          __ljSheetOkAt.delete(k);
-        }
-        const root = window.__gdriveRootFolderId;
-        if (!root) return "";
-        const folder = await __ljFindFolder(__LJ_FOLDER, root);
-        if (!folder) return done("");
-        const hit = await __ljFindSheetBySgg(folder, sgg5, sigunguName);
-        return done(hit ? hit.id : "");
+      // ⚠ 시트 id 를 기억하지 않는다 (2026-09-28 사용자 확정). 지웠다 다시 만들면 이름은 같고
+      //   id 는 달라지는데, 기억해 둔 옛 id 는 휴지통 시트를 가리킨다. 구글은 휴지통 파일에도
+      //   쓰기를 성공시키므로 "저장됨" 이라 말하면서 값은 안 보인다.
+      //   이름으로 찾으면 쿼리에 trashed=false 가 들어가 늘 살아 있는 것만 잡힌다. 왕복 수는
+      //   '기억 + 검증' 과 같다(실측 289ms vs 370ms) — 같은 값에 더 안전하다.
+      async function __ljFindSheetId(sgg5) {
+        return (await __ljRegionFiles(sgg5)).sid;
       }
 
       // 📄 시트 보기 = 유일한 시트 진입점. 있으면 열고, 없으면 만들어서 연다 (2026-09-28 사용자 확정).
@@ -28068,7 +28186,7 @@ const originalBase64 = event.target.result;
         let sid = "";
         try {
           if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-          sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
+          sid = await __ljFindSheetId(ctx.sgg5);
           if (!sid) sid = await __ljCreateSheet(ctx, setB);
         } catch (e) {
           console.error("[lj] 시트 준비 실패:", e);
@@ -28451,11 +28569,12 @@ const originalBase64 = event.target.result;
         const reqs = __ljFormatRequests(mainId, nSeed + __LJ_BLANK_COLS);
         // 평형·구조·타입 드롭다운 — 열마다 자기 목록을 가리킨다(__ljInputColRequests 가 만든다)
         reqs.push(...built.reqs);
-        // 기록ID 줄은 숨긴다 — 파트너가 볼 것이 아니고, 지우면 짝짓기가 깨진다
-        if (idx.__id != null) {
+        // 기록ID·사진 줄은 숨긴다 — 파트너가 볼 것이 아니고, 지우면 짝짓기가 깨진다
+        for (const k of ["__id", "__photos"]) {
+          if (idx[k] == null) continue;
           reqs.push({
             updateDimensionProperties: {
-              range: { sheetId: mainId, dimension: "ROWS", startIndex: idx.__id, endIndex: idx.__id + 1 },
+              range: { sheetId: mainId, dimension: "ROWS", startIndex: idx[k], endIndex: idx[k] + 1 },
               properties: { hiddenByUser: true }, fields: "hiddenByUser",
             },
           });
@@ -28483,7 +28602,7 @@ const originalBase64 = event.target.result;
         const setB = (t) => { if (prog) prog.textContent = t; };
         try {
           if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-          const sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
+          const sid = await __ljFindSheetId(ctx.sgg5);
           if (!sid) { alert("이 시군구의 시트가 아직 없습니다.\n📄 구글시트 보기로 먼저 만들어 주세요."); return; }
           const rows = await __ljByApt(ctx.aptId);
           const r = await __ljWriteShotSheets(sid, rows, setB);
