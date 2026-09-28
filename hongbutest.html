@@ -8933,6 +8933,15 @@
             30000
           );
           if (!apt || __resumeStop) return;
+          // ⓪ 매물임장으로 되돌아가는 길이면 **시트를 미리 읽어 둔다**.
+          //    지도를 옮기고 모달을 그리는 동안(0.7초 + 렌더) 같이 돌아, 탭이 열릴 때는
+          //    __ljSheetCache 에 이미 들어 있다. ctxIn 을 주므로 __ljState 는 건드리지 않는다.
+          let warm = null;
+          if (s.tab === "lj" && __ljSignedIn()) {
+            warm = __ljCtxFor(String(s.aptId))
+              .then((ctx) => __ljByApt(String(s.aptId), true, ctx))
+              .catch(() => null);
+          }
           // ② 그 단지로 이동. 필터(대형·세대수 등)에 걸려 마커가 없을 수 있어 강제 표시한다.
           window.__forceShowAptId = String(s.aptId);
           try {
@@ -8945,10 +8954,19 @@
           // ③ 단지 모달
           try { showApartmentInfo(String(s.aptId)); } catch (_) { return; }
           if (s.tab !== "lj" || __resumeStop) return;
-          // ④ 매물임장 탭 — 구글 로그인 뒤에야 버튼이 생기므로 기다린다.
-          //    로그인이 안 돼 있으면 버튼이 영영 안 생기고, 그때는 단지 모달까지만 열고 끝낸다.
-          const btn = await __resumeWait(() => document.getElementById("ljTabBtn"), 20000);
-          if (!btn || __resumeStop) return;
+          // ④ 매물임장 탭. ⚠ 로그인이 풀렸으면 **여기서 멈춘다** (2026-09-28 사용자 확정).
+          //    탭 버튼은 로그인 뒤에야 생기므로, 예전엔 없는 버튼을 20초 기다리느라
+          //    "이어서 여는 중…" 이 멈춘 것처럼 보였다.
+          if (!__ljSignedIn()) {
+            __resumeWhy("구글 로그인이 풀려 매물임장까지는 못 간다 — 단지 모달까지만");
+            return;
+          }
+          const btn = await __resumeWait(() => document.getElementById("ljTabBtn"), 8000);
+          if (!btn || __resumeStop) {
+            if (!btn) __resumeWhy("매물임장 탭이 뜨지 않았다 — 단지 모달까지만");
+            return;
+          }
+          if (warm) await warm.catch(() => null); // 미리 읽던 것이 있으면 마저 기다린다
           await __ljOpen(String(s.aptId));
           if (!s.recId || __resumeStop) return;
           // ⑤ 보던 매물 — 시트에서 사라졌을 수 있다(파트너가 지웠거나 빈 기록이라 취소됐거나).
@@ -14690,6 +14708,9 @@ const originalBase64 = event.target.result;
         try { await __ensureUpdatedAtMigration(); } catch (_) {}
         window.__gdriveReady = true;
         __gdriveUpdateAuthBtn();
+        // Sheets API 는 첫 매물임장 탭을 열 때 불러오느라 늘 ~500ms 를 먹었다 (2026-09-28 실측).
+        // 로그인이 끝난 지금 백그라운드로 받아 두면 그 기다림이 사라진다. 실패해도 그때 다시 받는다.
+        try { __ljEnsureSheetsApi().catch(() => {}); } catch (_) {}
         // 매물임장 탭은 로그인해야 보인다. 단지 모달을 열어 둔 채 로그인했으면 지금 붙여 준다.
         try {
           if (window.__hongbuOpenAptId && typeof __ljMountTabButton === "function") {
