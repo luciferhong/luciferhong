@@ -590,6 +590,46 @@
         cursor: pointer;
         touch-action: manipulation;
       }
+      /* 매물 사진 (2026-09-28) — 단지메모의 촬영 버튼 묶음을 입력 표 아래에 같은 모양으로 둔다 */
+      #ljTab3 .lj-shots { margin: 10px 2px 0; }
+      #ljTab3 .lj-shot-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      #ljTab3 .lj-shot-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 7px 9px;
+        border: 1px solid #cfcfcf;
+        border-radius: 6px;
+        background: #fff;
+        color: #1a1a1a;
+        font: inherit;
+        font-size: 12.5px;
+        line-height: 1;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
+      #ljTab3 .lj-shot-btn.dng { border-color: #d08b84; color: #b3261e; }
+      #ljTab3 .lj-shot-cap { margin: 8px 1px 0; font-size: 11.5px; color: #6a6a66; }
+      #ljTab3 .lj-shot-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+      #ljTab3 .lj-shot-strip:empty { display: none; }
+      #ljTab3 .lj-shot { position: relative; width: 60px; height: 60px; flex: 0 0 auto; }
+      #ljTab3 .lj-shot img {
+        width: 60px; height: 60px; object-fit: cover; display: block;
+        border: 1px solid #ccc; border-radius: 4px; cursor: pointer; background: #f1f1ef;
+      }
+      /* 아직 안 받은 사진(다른 기기에서 찍은 것) */
+      #ljTab3 .lj-shot.wait {
+        display: flex; align-items: center; justify-content: center;
+        border: 1px dashed #c8c8c4; border-radius: 4px; background: #f6f6f4;
+        color: #9a9a96; font-size: 10.5px; text-align: center; line-height: 1.3;
+      }
+      #ljTab3 .lj-shot-x {
+        position: absolute; top: 2px; right: 2px;
+        width: 18px; height: 18px;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0, 0, 0, 0.62); color: #fff; border: 0; border-radius: 50%;
+        font-size: 11px; line-height: 1; padding: 0; cursor: pointer;
+      }
       /* 입력 표 — 사용자가 쓰던 스프레드시트 레이아웃 그대로.
          ⚠ 선택자를 #ljTab3 로 한 번 더 감싼 이유: #apartmentInfo th(복숭아 그라디언트)·
             #apartmentInfo tbody tr:nth-child(even)·:hover 가 같은 특이도인데 뒤에 있어 그냥 두면 이긴다. */
@@ -16125,10 +16165,17 @@ const originalBase64 = event.target.result;
       function __polygonMetaFilename(rec) {
         return `polygon_${String(rec?.id ?? '').trim()}_${Number(rec?.updatedAt) || 0}${__metaExt(rec)}`;
       }
-      // 매물임장 — 이미지가 없어 메타 1장뿐. id("L-{aptId}-{ts36}")에는 `_` 가 없어 prefix 파싱이 어긋나지 않는다.
+      // 매물임장 — id("L-{aptId}-{ts36}")에는 `_` 가 없어 prefix 파싱이 어긋나지 않는다.
       function __ljMetaFilename(rec) {
         const sgg5 = String(rec?.sgg5 || '').trim() || '00000';
         return `listing_${sgg5}_${String(rec?.id ?? '').trim()}_${Number(rec?.updatedAt) || 0}${__metaExt(rec)}`;
+      }
+      // 매물 사진 (2026-09-28) — 단지메모와 같은 방식: 사진은 파일로 따로 올리고 메타에는 addedAt 만 적는다.
+      // ⚠ 메타 JSON 에 dataURL 을 담으면 안 된다 — listing 메타는 레코드를 통째로(`...rec`) 담아서,
+      //   사진을 그대로 두면 메타 한 장이 수 MB 가 된다.
+      function __ljImgFilename(rec, addedAt) {
+        const sgg5 = String(rec?.sgg5 || '').trim() || '00000';
+        return `lj_${sgg5}_${String(rec?.id ?? '').trim()}_${Number(addedAt) || 0}.jpg`;
       }
       // 메타 파일명 → {prefix(updatedAt 앞까지), updatedAt, deleted}. 아니면 null.
       function __parseMetaFilename(name) {
@@ -16861,15 +16908,62 @@ const originalBase64 = event.target.result;
             }
           }
         } else if (item.kind === 'listing') {
-          // 이미지가 없어 메타 1장이면 끝난다 (폴리곤과 같은 모양)
           const name = __ljMetaFilename({ ...rec, sgg5, updatedAt });
           if (await __newerOnDrive('listings', name)) return;
+          // 사진은 파일로 따로. 메타에는 addedAt 목록만 남긴다(단지메모와 같은 방식).
+          const shots = __sanitizeImages(rec.photos);
+          const shotAts = [];
+          const shotTasks = [];
+          for (const it of shots) {
+            const addedAt = typeof it === 'object' ? Number(it.addedAt) : 0;
+            if (!addedAt) continue;
+            shotAts.push(addedAt);
+            if (rec.deletedAt) continue;
+            const data = __getImgData(it);
+            if (!data || !data.startsWith('data:')) continue; // 자리표시자 → 드라이브에 이미 있다
+            const fn = __ljImgFilename({ ...rec, sgg5 }, addedAt);
+            shotTasks.push((async () => {
+              const f = await __dqSggFolder('listingImages', sgg5);
+              await __dqUploadIfMissing(f, fn, __dataUrlToBlob(data), 'image/jpeg');
+            })());
+          }
+          await Promise.all(shotTasks); // 여러 장 동시에
           const meta = rec.deletedAt
             ? { schemaVersion: __DQ_SCHEMA, kind: 'listing', id: String(rec.id), aptId: String(rec.aptId || ''), sgg5, updatedAt, deletedAt: rec.deletedAt }
-            : { schemaVersion: __DQ_SCHEMA, ...rec, kind: 'listing', id: String(rec.id), sgg5, updatedAt, deletedAt: null };
+            : { schemaVersion: __DQ_SCHEMA, ...rec, photos: shotAts, kind: 'listing', id: String(rec.id), sgg5, updatedAt, deletedAt: null };
           const metaFolder = await __dqSggFolder('listings', sgg5);
           await __dqUploadIfMissing(metaFolder, name, JSON.stringify(meta), 'application/json');
           await __dqDeleteOlderMeta(metaFolder, __parseMetaFilename(name).prefix, updatedAt, name);
+          // 이 매물에서 지운 사진의 드라이브 파일도 치운다. 위에서 '드라이브가 더 새 판' 이면 이미 돌아갔으므로,
+          // 여기까지 왔다면 우리 목록이 최신 = 목록에 없는 파일은 지운 사진이다.
+          if (!rec.deletedAt && shotAts.length >= 0) {
+            try {
+              const f = await __lzFindSggFolder('listingImages', sgg5);
+              if (f) {
+                const list = await __dqList(f);
+                const pre = `lj_${sgg5}_${String(rec.id)}_`;
+                const keep = new Set(shotAts.map((a) => `${pre}${a}.jpg`));
+                for (const [n, fid] of Array.from(list.entries())) {
+                  if (!n.startsWith(pre) || keep.has(n)) continue;
+                  try { await __driveDeleteFile(fid); list.delete(n); } catch (e) { console.warn('[dq] 지운 매물 사진 정리 실패(무시):', n, e?.message || e); }
+                }
+              }
+            } catch (e) { console.warn('[dq] 지운 매물 사진 정리 실패(무시):', e?.message || e); }
+          }
+          // 삭제(tombstone)이고 드라이브에 더 새 판이 없으면 이 매물의 사진 파일도 정리
+          if (rec.deletedAt && __dqNewestMetaTs(await __dqList(metaFolder), __parseMetaFilename(name).prefix) <= updatedAt) {
+            try {
+              const f = await __lzFindSggFolder('listingImages', sgg5);
+              if (f) {
+                const list = await __dqList(f);
+                const pre = `lj_${sgg5}_${String(rec.id)}_`;
+                for (const [n, fid] of Array.from(list.entries())) {
+                  if (!n.startsWith(pre)) continue;
+                  try { await __driveDeleteFile(fid); list.delete(n); } catch (e) { console.warn('[dq] 삭제 매물 사진 정리 실패(무시):', n, e?.message || e); }
+                }
+              }
+            } catch (e) { console.warn('[dq] 삭제 매물 사진 정리 실패(무시):', e?.message || e); }
+          }
         } else {
           const meta = { schemaVersion: __DQ_SCHEMA, kind: 'polygon', sgg5, ...rec, updatedAt, deletedAt: rec.deletedAt || null };
           const metaFolder = await __dqSggFolder('polygons', sgg5);
@@ -24992,10 +25086,20 @@ const originalBase64 = event.target.result;
       }
       // 드라이브 → 이 기기. 다른 기기에서 적은 매물을 받아 온다(시군구 단위, 60초에 한 번).
       const __ljPulledAt = new Map();
+      // 드라이브 연결을 기다린다. 부팅 직후엔 아직 토큰이 없어, 그냥 포기하면
+      // **새로 연 브라우저에서 다른 기기의 변경이 통째로 안 들어온다**(2026-09-28 실측:
+      // 다른 브라우저로 접속하면 사진이 동기화되지 않던 원인). 화면을 막지 않는 백그라운드
+      // 호출이라 기다려도 무해하다.
+      async function __ljDriveWait(ms) {
+        const ok = () => !!(window.__gdriveReady && window.__gdriveAccessToken);
+        const t0 = Date.now();
+        while (!ok() && Date.now() - t0 < (ms || 0)) await new Promise((r) => setTimeout(r, 500));
+        return ok();
+      }
       async function __ljPullRegion(sgg5, force) {
         const why = (m) => { console.log("[lj] 내려받기 건너뜀 —", m); return 0; };
         if (!sgg5) return why("시군구를 모름");
-        if (!window.__gdriveReady) return why("드라이브 연결 전");
+        if (!(await __ljDriveWait(20000))) return why("드라이브 연결 전 (20초 기다렸다)");
         const last = __ljPulledAt.get(sgg5) || 0;
         if (!force && Date.now() - last < 60000) return why("방금 받아 옴 (__lj.pull() 로 지금 받기)");
         __ljPulledAt.set(sgg5, Date.now());
@@ -25031,10 +25135,13 @@ const originalBase64 = event.target.result;
             const rec = { ...meta, id, updatedAt: f.updatedAt };
             delete rec.schemaVersion;
             delete rec.kind;
+            // 메타의 photos 는 addedAt 목록뿐 → 자리표시자로 바꾼다. 실제 사진은 입력 화면을 열 때 받는다.
+            rec.photos = __ljPhotosFromMeta(meta.photos, cur);
             await __ljPut(rec); // 훅 없이 직접 — 되올리면 메아리가 된다
             n++;
           }
-          console.log(`[lj] 드라이브 대조 (${sgg5}): 파일 ${best.size}건 · 받음 ${n}건`);
+          const waiting = (await __ljAll(true)).reduce((a, r) => a + __ljShots(r).filter((it) => !__getImgData(it)).length, 0);
+          console.log(`[lj] 드라이브 대조 (${sgg5}): 파일 ${best.size}건 · 받음 ${n}건` + (waiting ? ` · 아직 안 받은 사진 ${waiting}장` : ""));
         } catch (e) {
           console.warn("[lj] 드라이브 내려받기 실패(무시):", e?.result?.error?.message || e?.message || e);
         }
@@ -25290,6 +25397,57 @@ const originalBase64 = event.target.result;
         return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
       }
 
+      // ── 매물 사진 (2026-09-28) ──
+      // 단지메모와 **같은 모양**으로 담는다: [{addedAt, data}] — data 는 압축 dataURL,
+      // 없으면 "드라이브에 있고 아직 안 받은" 자리표시자다. 그래서 __sanitizeImages·__getImgData 를 그대로 쓴다.
+      function __ljShots(rec) {
+        return typeof __sanitizeImages === "function" ? __sanitizeImages(rec?.photos) : (Array.isArray(rec?.photos) ? rec.photos : []);
+      }
+      // 드라이브 메타의 photos(= addedAt 숫자 배열)를 로컬 모양으로. 이미 받아 둔 사진은 물려받아 다시 받지 않는다.
+      function __ljPhotosFromMeta(list, localRec) {
+        const have = new Map();
+        for (const it of __ljShots(localRec)) {
+          const at = typeof it === "object" ? Number(it.addedAt) : 0;
+          const d = __getImgData(it);
+          if (at && d && d.startsWith("data:")) have.set(at, d);
+        }
+        return (Array.isArray(list) ? list : [])
+          .map((v) => Number(typeof v === "object" ? v?.addedAt : v))
+          .filter((at) => at > 0)
+          .sort((a, b) => a - b)
+          .map((at) => (have.has(at) ? { addedAt: at, data: have.get(at) } : { addedAt: at }));
+      }
+      // 자리표시자를 드라이브에서 받아 채운다(입력 화면을 열 때). 받은 것은 IDB 에 되써 둔다.
+      // ⚠ updatedAt 을 올리지 않는다 — 내용이 바뀐 게 아니라 받아 온 것뿐이다(올리면 메아리가 된다).
+      async function __ljFetchShots(rec) {
+        const miss = __ljShots(rec).filter((it) => !__getImgData(it));
+        if (!miss.length) return 0;
+        const why = (m) => { console.log(`[lj] 사진 ${miss.length}장 못 받음 —`, m); return 0; };
+        // 여기도 드라이브를 기다린다 — 부팅 직후 입력 화면을 열면 늘 '연결 전'에 걸려
+        // '받는 중' 에서 멈춘 채 다시 시도하지 않았다 (2026-09-28)
+        if (!(await __ljDriveWait(20000))) return why("드라이브 연결 전 (20초 기다렸다)");
+        const sgg5 = String(rec.sgg5 || "");
+        if (!/^\d{5}$/.test(sgg5)) return why(`시군구를 모름 (sgg5=${sgg5 || "없음"})`);
+        let got = 0;
+        try {
+          const folder = await __lzFindSggFolder("listingImages", sgg5);
+          if (!folder) return why("드라이브에 listingImages 폴더가 아직 없음 (찍은 기기가 아직 안 올렸다)");
+          const list = await __dqList(folder, true); // ⚠ 캐시를 쓰면 방금 다른 기기가 올린 사진이 안 보인다
+          let none = 0;
+          for (const it of miss) {
+            const nm = __ljImgFilename({ ...rec, sgg5 }, it.addedAt);
+            const fid = list.get(nm);
+            if (!fid) { none++; console.log("[lj] 드라이브에 사진 파일이 없다:", nm); continue; }
+            try { it.data = await __driveDownloadImageAsDataUrl(fid); got++; } catch (e) { console.warn("[lj] 사진 한 장 실패(무시):", nm, e?.message || e); }
+          }
+          console.log(`[lj] 사진 내려받기 ${got}/${miss.length}장` + (none ? ` (드라이브에 없음 ${none}장)` : ""));
+        } catch (e) {
+          console.warn("[lj] 사진 내려받기 실패(무시):", e?.result?.error?.message || e?.message || e);
+        }
+        if (got) { try { await __ljPut(rec); } catch (_) {} }
+        return got;
+      }
+
       // ── 빈 기록 판정 ──
       // 사람이 직접 넣는 칸만 본다. 단지명·연식·세대수는 자동으로 채워지므로 "입력했다"의 근거가 못 된다.
       // 새 매물은 부동산·연락처(직전 값)·평형·구조·타입(평형표)이 미리 채워져 있으므로,
@@ -25297,6 +25455,7 @@ const originalBase64 = event.target.result;
       const __LJ_USER_KEYS = ["agency", "tel", "pyeong", "dongho", "structure", "roomType", "direction",
         "resident", "moveReason", "expiry", "memo", "priceSale", "priceNego", "priceJeonse"];
       function __ljBlank(rec, seed) {
+        if (__ljShots(rec).length) return false; // 사진만 찍어 둔 것도 기록이다 (2026-09-28)
         const s = seed || {};
         return __LJ_USER_KEYS.every((k) => {
           const v = String(rec?.[k] ?? "").trim(); // 공백·개행만 있으면 빈 값
@@ -25313,7 +25472,12 @@ const originalBase64 = event.target.result;
       // seed·isNew 를 같이 담는다 — 복구할 때도 "빈 기록인지"를 판정할 수 있어야 한다.
       function __ljDraftSet() {
         try {
-          localStorage.setItem(__LJ_DRAFT_KEY, JSON.stringify({ rec: __ljState.rec, seed: __ljState.seed, isNew: !!__ljState.isNew }));
+          // ⚠ 사진 원본(dataURL)은 드래프트에 담지 않는다 — 한 장이 수백 KB 라 localStorage 5MB 를 금방 넘긴다.
+          //   대신 addedAt 만 남긴다. 사진은 추가·삭제 즉시 IDB 에 확정하므로 드래프트가 지킬 것이 없다.
+          //   복구할 때 이 자리표시자를 IDB 의 사진과 다시 맞춘다(__ljRecoverDraft).
+          const rec = __ljState.rec;
+          const lean = rec ? { ...rec, photos: __ljShots(rec).map((it) => ({ addedAt: Number(it?.addedAt) || 0 })).filter((x) => x.addedAt) } : null;
+          localStorage.setItem(__LJ_DRAFT_KEY, JSON.stringify({ rec: lean, seed: __ljState.seed, isNew: !!__ljState.isNew }));
         } catch (_) {}
       }
       function __ljDraftGet() {
@@ -25366,6 +25530,9 @@ const originalBase64 = event.target.result;
           if (d.isNew && __ljBlank(d.rec, d.seed)) { __ljDraftClear(); return; } // 빈 새 기록은 되살리지 않는다
           const cur = (await __ljAll(true)).find((x) => x.id === d.rec.id);
           if (!cur || (d.rec.updatedAt || 0) > (cur.updatedAt || 0)) {
+            // 드래프트의 사진은 addedAt 만 있는 자리표시자다 → IDB 에 있는 원본을 되붙인다.
+            // 안 붙이면 복구가 사진을 자리표시자로 덮어써, 드라이브에서 다시 받아야 한다.
+            d.rec.photos = __ljPhotosFromMeta(__ljShots(d.rec).map((it) => it.addedAt), cur);
             await __ljPut(d.rec);
             __ljSync(d.rec);
             console.log("[lj] 작성 중이던 매물 복구:", d.rec.id);
@@ -25531,12 +25698,25 @@ const originalBase64 = event.target.result;
         const sgg5 = __ljState.ctx?.sgg5;
         if (sgg5) {
           __ljPullRegion(sgg5)
-            .then((n) => {
+            .then(async (n) => {
               if (!n) return;
               __ljUpdateTabBadge(aptId);
-              if (__ljState.active && __ljState.view === "list" && String(__ljState.aptId) === String(aptId)) {
-                __ljRenderList().catch(() => {});
-              }
+              if (!__ljState.active || String(__ljState.aptId) !== String(aptId)) return;
+              if (__ljState.view === "list") { await __ljRenderList().catch(() => {}); return; }
+              // 입력 화면을 보고 있는 중이라면 **사진만** 물려받는다. 레코드를 통째로 갈아 끼우면
+              // 지금 치고 있는 글자가 날아갈 수 있다(사진은 더해지기만 하니 안전하다).
+              const rec = __ljState.rec;
+              if (!rec) return;
+              try {
+                const fresh = (await __ljAll(true)).find((x) => x.id === rec.id);
+                const nowN = __ljShots(rec).length;
+                const newN = __ljShots(fresh).length;
+                if (fresh && newN > nowN) {
+                  rec.photos = __ljPhotosFromMeta(__ljShots(fresh).map((it) => it.addedAt), rec);
+                  console.log(`[lj] 입력 화면에 사진 ${newN - nowN}장 물려받음`);
+                  __ljRenderForm();
+                }
+              } catch (_) {}
             })
             .catch(() => {});
         }
@@ -25607,9 +25787,39 @@ const originalBase64 = event.target.result;
         bImp.textContent = "📥 시트와 수동 비교";
         bImp.onclick = () => __ljImport();
         foot.appendChild(bNew);
-        foot.appendChild(bView);
+        // 📄 보기 버튼은 **이 시군구 시트가 있을 때만**. 기억이 있으면 바로 붙이고(클릭 즉시 열려야
+        // 팝업 차단에 안 걸린다), 없으면 뒤에서 드라이브를 확인한 뒤 붙인다.
+        if (__ljSheetIdCached(ctx.sgg5)) foot.appendChild(bView);
         foot.appendChild(bExp);
         foot.appendChild(bImp);
+        __ljSyncViewBtn(ctx, foot, bView, bExp);
+      }
+
+      // ⚠ localStorage 를 그대로 믿지 않는다 — **이번 세션에 이름까지 확인한** 것만 쓴다.
+      //    (예전 판은 느슨한 검색 결과를 그대로 기억해 다른 시군구 id 가 들어 있을 수 있다)
+      function __ljSheetIdCached(sgg5) {
+        return sgg5 ? __ljSheetOk.get(String(sgg5)) || "" : "";
+      }
+      // 시트 유무를 드라이브에서 확정해 '구글시트 보기' 버튼을 넣거나 뺀다(화면은 이미 떠 있다).
+      // 2026-09-27 사용자 요청: 시트를 만든 적 없는 시군구에서는 버튼 자체를 보여 주지 않는다.
+      // __ljFindSheetId 가 엉뚱하게 기억된 id 도 이 과정에서 지운다.
+      async function __ljSyncViewBtn(ctx, foot, bView, bExp) {
+        if (!ctx?.sgg5) { bView.remove(); return; }
+        if (!(window.__gdriveReady && window.__gdriveAccessToken)) return; // 로그인 전이면 판단 보류
+        let sid = "";
+        try {
+          sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
+        } catch (e) {
+          console.warn("[lj] 시트 유무 확인 실패(버튼 그대로):", e?.result?.error?.message || e?.message || e);
+          return;
+        }
+        // 그새 다른 단지로 옮겼거나 화면이 다시 그려졌으면 손대지 않는다
+        if (!foot.isConnected || String(__ljState.ctx?.aptId) !== String(ctx.aptId)) return;
+        if (sid) {
+          if (!bView.isConnected) foot.insertBefore(bView, bExp);
+        } else {
+          bView.remove();
+        }
       }
 
       // 줄바꿈·연속 공백을 한 칸으로 줄이고 앞부분만 (목록 한 줄에 담기게)
@@ -25658,6 +25868,9 @@ const originalBase64 = event.target.result;
         const b = document.createElement("b");
         b.textContent = head || __ljSnippet(r.memo, 30) || "(내용 없음)";
         el.appendChild(b);
+
+        const nShot = __ljShots(r).length;
+        if (nShot) b.textContent += `  📷${nShot}`;
 
         const t2 = [r.structure, r.roomType, r.direction, r.resident].filter(Boolean).join(" · ");
         if (t2) {
@@ -25805,6 +26018,14 @@ const originalBase64 = event.target.result;
         for (; ri < __LJ_ROWS.length; ri++) tb.appendChild(__ljRowEl(__LJ_ROWS[ri], ctx, rec, null)); // 묶음 개수가 어긋나도 누락 없이
         tbl.appendChild(tb);
         body.appendChild(tbl);
+        body.appendChild(__ljShotBlock(rec));
+
+        // 다른 기기에서 찍은 사진은 자리표시자로 와 있다 → 화면을 띄운 뒤 받아서 다시 그린다
+        if (__ljShots(rec).some((it) => !__getImgData(it))) {
+          __ljFetchShots(rec)
+            .then((n) => { if (n && __ljState.rec === rec && __ljState.view === "form") __ljRenderForm(); })
+            .catch(() => {});
+        }
 
         const foot = q("#ljFoot");
         if (!foot) return;
@@ -25823,6 +26044,175 @@ const originalBase64 = event.target.result;
         foot.appendChild(bDel);
 
         __ljPaintCalc();
+      }
+
+      // ── 사진 블록 (2026-09-28) — 단지메모와 같은 버튼 묶음 ──
+      // 단지메모 쪽(handleImageFiles)과 파이프라인이 같다: 파일 → dataURL → compressImage(1200, 0.82).
+      // 다만 저장처가 이 매물 레코드의 photos 이고, **추가·삭제는 디바운스 없이 바로 확정**한다
+      // (사진 원본은 드래프트에 안 담기므로 300ms 사이에 앱이 죽으면 그대로 날아간다).
+      function __ljReadFileDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = (e) => resolve(e.target.result);
+          r.onerror = () => reject(r.error || new Error("파일 읽기 실패"));
+          r.readAsDataURL(file);
+        });
+      }
+      function __ljShotCommit(rec, reveal) {
+        rec.updatedAt = Date.now();
+        __ljFlush(); // 디바운스 없이 즉시 IDB 확정 + 드라이브 큐
+        if (__ljState.view !== "form") return;
+        __ljRenderForm();
+        // 방금 넣은 사진이 화면 밖이면 보이게 — 표가 길어서 사진 줄이 접혀 있을 때가 많다
+        if (!reveal) return;
+        try {
+          const strip = __ljPanelEl()?.querySelector(".lj-shot-strip");
+          if (strip) strip.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        } catch (_) {}
+      }
+      async function __ljAddShots(files) {
+        const rec = __ljState.rec;
+        if (!rec || !files || !files.length) return;
+        let added = 0;
+        for (const file of Array.from(files)) {
+          try {
+            const raw = await __ljReadFileDataUrl(file);
+            let data = raw;
+            try {
+              // 단지메모와 같은 값: 긴 변 1200px + JPEG 0.82
+              data = await compressImage(raw, 1200, 0.82);
+            } catch (e) {
+              console.warn("[lj] 사진 압축 실패 — 원본으로 저장:", e);
+              data = raw;
+            }
+            if (!Array.isArray(rec.photos)) rec.photos = [];
+            // ⚠ addedAt 이 드라이브 파일명이라 **절대 겹치면 안 된다**(겹치면 한 장이 다른 장을 가린다)
+            const used = new Set(__ljShots(rec).map((it) => Number(it.addedAt)));
+            let at = Date.now();
+            while (used.has(at)) at++;
+            rec.photos.push({ addedAt: at, data });
+            added++;
+          } catch (e) {
+            console.warn("[lj] 사진 읽기 실패:", e);
+          }
+        }
+        if (added) __ljShotCommit(rec, true);
+        else alert("사진을 읽지 못했습니다."); // 조용히 아무 일도 안 일어나는 것이 제일 나쁘다
+      }
+      function __ljShotBlock(rec) {
+        const wrap = document.createElement("div");
+        wrap.className = "lj-shots";
+        const btns = document.createElement("div");
+        btns.className = "lj-shot-btns";
+
+        // 카메라 앱 호출용 input 두 개(촬영/파일). label 안에 숨겨 두는 단지메모 방식과 같다.
+        const mkInput = (capture, multiple) => {
+          const ip = document.createElement("input");
+          ip.type = "file";
+          ip.accept = "image/*";
+          if (capture) ip.capture = "environment";
+          if (multiple) ip.multiple = true;
+          ip.style.display = "none";
+          ip.addEventListener("change", (e) => {
+            // ⚠ FileList 는 input 에 **살아 있는** 목록이라 value="" 를 먼저 하면 그 자리에서 비워진다.
+            //   (2026-09-28 실측: 사진이 하나도 안 들어갔다) → 배열로 떠 놓고 나서 비운다.
+            const fs = Array.from(e.target.files || []);
+            e.target.value = ""; // 같은 파일을 다시 골라도 change 가 오게
+            __ljAddShots(fs);
+          });
+          return ip;
+        };
+        const camIn = mkInput(true, false);
+        const fileIn = mkInput(false, true);
+
+        const mk = (text, cls, fn) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "lj-shot-btn" + (cls ? " " + cls : "");
+          b.textContent = text;
+          b.onclick = fn;
+          btns.appendChild(b);
+          return b;
+        };
+        mk("📷 사진 촬영", "", () => camIn.click());
+        mk("🔇 무음 연속 촬영", "", async () => {
+          try {
+            // 기본 카메라 앱을 안 거쳐 셔터음이 없다. 결과 dataURL 을 File 로 되돌려 같은 길로 태운다.
+            const shots = await window.__openSilentCamera({ multiple: true, onFallback: () => camIn.click() });
+            if (!shots || !shots.length) return;
+            const files = [];
+            shots.forEach((url, i) => {
+              const blob = __dataUrlToBlob(url);
+              if (blob) files.push(new File([blob], `lj_${Date.now()}_${i}.jpg`, { type: "image/jpeg" }));
+            });
+            if (files.length) await __ljAddShots(files);
+          } catch (e) {
+            console.warn("[lj] 무음 촬영 실패:", e);
+          }
+        });
+        mk("📁 파일", "", () => fileIn.click());
+        mk("🗑 사진 초기화", "dng", () => {
+          const cur = __ljState.rec;
+          const n = __ljShots(cur).length;
+          if (!n) { alert("이 매물에 사진이 없습니다."); return; }
+          if (!confirm(`이 매물의 사진 ${n}장을 모두 지웁니다.`)) return;
+          cur.photos = [];
+          __ljShotCommit(cur);
+        });
+        btns.appendChild(camIn);
+        btns.appendChild(fileIn);
+        wrap.appendChild(btns);
+
+        const shots = __ljShots(rec);
+        const cap = document.createElement("p");
+        cap.className = "lj-shot-cap";
+        const nWait = shots.filter((it) => !__getImgData(it)).length;
+        cap.textContent = shots.length
+          ? `사진 ${shots.length}장` + (nWait ? ` (받는 중 ${nWait}장)` : "")
+          : "사진 없음 — 위 버튼으로 찍거나 고르세요";
+        wrap.appendChild(cap);
+
+        const strip = document.createElement("div");
+        strip.className = "lj-shot-strip";
+        const shown = shots.map((it) => __getImgData(it)).filter((d) => d && d.startsWith("data:"));
+        for (const it of shots) {
+          const data = __getImgData(it);
+          const cell = document.createElement("div");
+          cell.className = "lj-shot" + (data ? "" : " wait");
+          if (data) {
+            const img = document.createElement("img");
+            img.src = data;
+            img.alt = "매물 사진";
+            img.onclick = () => openModalImage(data, shown, shown.indexOf(data));
+            cell.appendChild(img);
+          } else {
+            cell.textContent = "받는 중";
+            cell.title = "눌러서 다시 받기";
+            cell.style.cursor = "pointer";
+            cell.onclick = async () => {
+              cell.textContent = "…";
+              const n = await __ljFetchShots(__ljState.rec);
+              if (__ljState.view === "form") __ljRenderForm();
+              if (!n) alert("드라이브에서 이 사진을 찾지 못했습니다.\n찍은 기기에서 업로드가 끝났는지 확인해 주세요.");
+            };
+          }
+          const x = document.createElement("button");
+          x.type = "button";
+          x.className = "lj-shot-x";
+          x.textContent = "✕";
+          x.title = "이 사진 삭제";
+          x.onclick = (e) => {
+            e.stopPropagation();
+            if (!confirm("사진을 삭제합니다")) return;
+            const cur = __ljState.rec;
+            cur.photos = __ljShots(cur).filter((p) => Number(p.addedAt) !== Number(it.addedAt));
+            __ljShotCommit(cur);
+          };
+          cell.appendChild(x);
+          strip.appendChild(cell);
+        }
+        wrap.appendChild(strip);
+        return wrap;
       }
 
       // 메모에서 읽은 값으로 **빈 칸만** 채우고, 채운 칸 이름을 돌려준다.
@@ -26385,6 +26775,23 @@ const originalBase64 = event.target.result;
         const r = await gapi.client.drive.files.list({ q, fields: "files(id,name)", spaces: "drive", pageSize: 5 });
         return r.result.files?.[0] || null;
       }
+      // ⚠ 시군구 시트를 `name contains '_{코드}'` 로 찾으면 안 된다.
+      //    Drive 의 contains 는 이름에 대해 **앞부분 일치**라 `_11710` 같은 조각은 제대로 안 걸리는데,
+      //    그런데도 결과가 비지 않아 **폴더의 첫 시트**(= 먼저 만든 다른 시군구)가 잡혔다.
+      //    2026-09-27 실측: 시트가 없는 새 지역에서 '구글시트 보기' 를 누르면 동작구 시트가 열렸다.
+      //    시군구 1곳에 1장이라 목록이 짧으니, 폴더의 시트를 다 받아 **이름을 JS 로** 대조한다.
+      function __ljSheetNameOk(name, sgg5, sigunguName) {
+        const n = String(name || "");
+        if (sgg5 && n.endsWith("_" + sgg5)) return true; // 현재 규칙: 서울시_동작구_11590
+        if (sigunguName && n.endsWith("_" + sigunguName)) return true; // 옛 이름: 매물임장_서울시_동작구
+        return false;
+      }
+      async function __ljFindSheetBySgg(folderId, sgg5, sigunguName) {
+        if (!folderId) return null;
+        const q = ["mimeType='application/vnd.google-apps.spreadsheet'", "trashed=false", `'${folderId}' in parents`].join(" and ");
+        const r = await gapi.client.drive.files.list({ q, fields: "files(id,name)", spaces: "drive", pageSize: 200 });
+        return (r.result.files || []).find((f) => __ljSheetNameOk(f.name, sgg5, sigunguName)) || null;
+      }
       async function __ljMoveTo(fileId, folderId) {
         const got = await gapi.client.drive.files.get({ fileId, fields: "parents" });
         const cur = got.result.parents || [];
@@ -26400,7 +26807,7 @@ const originalBase64 = event.target.result;
       // 시군구 1곳 = 시트 1장. 한 번 만들면 계속 그 시트를 다시 쓴다 (2026-09-27 사용자 확정).
       // 찾는 순서: localStorage 기억 → HongbuMemo/maemool 에서 코드로 → 예전 위치 2곳에서 옛 이름으로(있으면 옮겨 재활용)
       //            → 그래도 없을 때만 새로 만든다. localStorage 를 지워도 코드로 다시 찾으므로 중복이 안 생긴다.
-      async function __ljEnsureSheet(sgg5, title) {
+      async function __ljEnsureSheet(sgg5, title, sigunguName) {
         const key = "__ljSheet_" + sgg5;
         const root = window.__gdriveRootFolderId || (await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null));
         const folder = await __driveFindOrCreateFolder(__LJ_FOLDER, root);
@@ -26412,6 +26819,7 @@ const originalBase64 = event.target.result;
             try { await gapi.client.drive.files.update({ fileId: id, resource: { name: title }, fields: "id" }); } catch (_) {}
           }
           try { localStorage.setItem(key, id); } catch (_) {}
+          __ljSheetOk.set(String(sgg5), id); // 내보낸 직후부터 '구글시트 보기' 버튼이 뜨게
           return id;
         };
 
@@ -26420,13 +26828,16 @@ const originalBase64 = event.target.result;
         if (sid) {
           try {
             const got = await gapi.client.drive.files.get({ fileId: sid, fields: "id,name,trashed" });
-            if (!got.result.trashed) return await settle(sid, got.result.name);
+            // 이름까지 확인 — 다른 시군구 시트가 기억돼 있으면 덮어쓰면 안 된다
+            if (!got.result.trashed && __ljSheetNameOk(got.result.name, sgg5, sigunguName)) {
+              return await settle(sid, got.result.name);
+            }
           } catch (_) {}
           try { localStorage.removeItem(key); } catch (_) {}
         }
 
         // 이름 끝의 시군구코드로 찾는다 — 표기가 바뀌어도 걸린다
-        let hit = await __ljFindSheet(folder, `name contains '_${__ljQ(sgg5)}'`);
+        let hit = await __ljFindSheetBySgg(folder, sgg5, sigunguName);
 
         // 예전 판이 만든 시트 회수 (중복 생성 방지). 옛 이름은 "매물임장_{시도}_{시군구}" 였다.
         // 예전 폴더는 찾기만 하고 없으면 새로 만들지 않는다.
@@ -26447,6 +26858,7 @@ const originalBase64 = event.target.result;
         });
         console.log(`[lj] 시트 새로 만듦: ${__DRIVE_ROOT_NAME}/${__LJ_FOLDER}/${title}`);
         try { localStorage.setItem(key, created.result.id); } catch (_) {}
+        __ljSheetOk.set(String(sgg5), created.result.id);
         return created.result.id;
       }
 
@@ -26748,28 +27160,39 @@ const originalBase64 = event.target.result;
       }
 
       // 있는 시트만 찾는다(만들지 않는다) — 자동 대조가 시트·폴더를 새로 만들면 안 된다
-      async function __ljFindSheetId(sgg5) {
+      // 이름까지 확인한 시트 id (sgg5 → sid). 세션 안에서만 유효하다.
+      const __ljSheetOk = new Map();
+      async function __ljFindSheetId(sgg5, sigunguName) {
+        const k = String(sgg5);
+        if (__ljSheetOk.has(k)) return __ljSheetOk.get(k);
+        const key = "__ljSheet_" + sgg5;
+        const done = (id) => {
+          __ljSheetOk.set(k, id);
+          try { id ? localStorage.setItem(key, id) : localStorage.removeItem(key); } catch (_) {}
+          return id;
+        };
         let sid = "";
-        try { sid = localStorage.getItem("__ljSheet_" + sgg5) || ""; } catch (_) {}
+        try { sid = localStorage.getItem(key) || ""; } catch (_) {}
         if (sid) {
           try {
-            const got = await gapi.client.drive.files.get({ fileId: sid, fields: "id,trashed" });
-            if (!got.result.trashed) return sid;
+            const got = await gapi.client.drive.files.get({ fileId: sid, fields: "id,name,trashed" });
+            // ⚠ 이름까지 본다. 엉뚱한 시군구 시트 id 가 기억돼 있으면 여기서 버려야 한다.
+            if (!got.result.trashed && __ljSheetNameOk(got.result.name, sgg5, sigunguName)) return done(sid);
           } catch (_) {}
         }
         const root = window.__gdriveRootFolderId;
         if (!root) return "";
         const folder = await __ljFindFolder(__LJ_FOLDER, root);
-        if (!folder) return "";
-        const hit = await __ljFindSheet(folder, `name contains '_${__ljQ(sgg5)}'`);
-        return hit ? hit.id : "";
+        if (!folder) return done("");
+        const hit = await __ljFindSheetBySgg(folder, sgg5, sigunguName);
+        return done(hit ? hit.id : "");
       }
 
       // 시트에서 **이 단지** 변동분을 훑는다. 팝업을 띄울지는 부르는 쪽이 정한다.
       //   null = 시트 없음 / 형식 다름,  {same:true} = 지난번 훑은 뒤로 시트가 안 바뀜
       async function __ljScanSheet(ctx, opts) {
         if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-        const sid = await __ljFindSheetId(ctx.sgg5);
+        const sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
         if (!sid) return null;
         const mod = await __ljSheetMod(sid);
         const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
@@ -26902,6 +27325,14 @@ const originalBase64 = event.target.result;
         },
         scan: () => __ljScanSheet(__ljState.ctx, {}),
         // 드라이브에서 지금 바로 받아 오기(쓰로틀·캐시 무시) — 다른 기기 수정이 안 보일 때
+        // 지금 보고 있는 매물의 사진을 드라이브에서 강제로 받아 온다
+        shots: async () => {
+          const rec = __ljState.rec;
+          if (!rec) return "입력 화면을 먼저 열어 주세요";
+          const n = await __ljFetchShots(rec);
+          if (n && __ljState.view === "form") __ljRenderForm();
+          return `${n}장 받음 (총 ${__ljShots(rec).length}장)`;
+        },
         pull: async () => {
           const n = await __ljPullRegion(__ljState.ctx?.sgg5, true);
           if (n) { try { await __ljRenderList(); __ljUpdateTabBadge(); } catch (_) {} }
@@ -26923,16 +27354,16 @@ const originalBase64 = event.target.result;
         if (!hasToken) { alert("구글 로그인이 먼저 필요합니다."); return; }
 
         const url = (id) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
-        // 기억해 둔 시트가 있으면 바로 연다 — 클릭 직후 동기 호출이라야 팝업 차단에 안 걸린다
-        let sid = "";
-        try { sid = localStorage.getItem("__ljSheet_" + ctx.sgg5) || ""; } catch (_) {}
+        // 이름까지 확인해 둔 시트가 있으면 바로 연다 — 클릭 직후 동기 호출이라야 팝업 차단에 안 걸린다.
+        // ⚠ localStorage 를 직접 읽지 않는다(다른 시군구 id 가 들어 있을 수 있다).
+        let sid = __ljSheetIdCached(ctx.sgg5);
         if (sid) { window.open(url(sid), "_blank"); return; }
 
         // 기억이 없으면 찾아본다. 찾는 동안 빈 탭을 미리 열어 둬야 차단되지 않는다.
         const win = window.open("", "_blank");
         try {
           if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-          sid = await __ljFindSheetId(ctx.sgg5);
+          sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
           if (!sid) {
             if (win) win.close();
             alert("이 시군구의 시트가 아직 없습니다.\n먼저 한 번 내보내기를 해 주세요.");
@@ -26945,6 +27376,201 @@ const originalBase64 = event.target.result;
           console.error("[lj] 시트 열기 실패:", e);
           alert("시트를 열지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
         }
+      }
+
+      // ── 매물별 사진 시트 (2026-09-28 사용자 요청) ──
+      // 시트 탭을 "{아파트명}-{매물명}" 으로 만들고 사진을 셀에 붙인다.
+      // ⚠ Sheets API 에는 이미지를 셀에 넣는 요청이 없다. 그래서 `=IMAGE(url)` 수식을 쓴다 —
+      //   구글시트가 그 url 을 **서버에서** 가져오므로 사진 파일이 링크 공개여야 보인다
+      //   (2026-09-28 사용자 확정: 셀에 보이는 쪽을 택했다. 각 사진은 '링크가 있는 사람은 누구나 보기'가 된다).
+      const __LJ_SHOT_ROW_H = 220; // 사진 줄 높이(px)
+      const __LJ_SHOT_LB_W = 110; // A열(라벨) 너비
+      const __LJ_SHOT_IMG_W = 300; // B열(사진) 너비
+
+      // 매물명 = 동호수 → 없으면 평형 → 없으면 기록ID 뒤 4자리 (2026-09-28 사용자 확정)
+      function __ljShotWho(rec) {
+        return (
+          String(rec?.dongho || "").trim() ||
+          (rec?.pyeong ? String(rec.pyeong).trim() + "평" : "") ||
+          String(rec?.id || "").slice(-4)
+        );
+      }
+      // 시트 탭 이름에 못 쓰는 글자를 없앤다. `'` 도 없애는 이유는 A1 범위를 '탭이름'!A1 로 쓰기 때문.
+      function __ljShotTabName(rec) {
+        const raw = `${String(rec?.aptName || "").trim() || "단지"}-${__ljShotWho(rec)}`;
+        return raw.replace(/[[\]*?/\\:']/g, " ").replace(/\s+/g, " ").trim().slice(0, 100) || "매물";
+      }
+      // USER_ENTERED 로 쓰면 =·+·-·@ 로 시작하는 글자가 수식으로 해석된다 → 앞에 ' 를 붙여 글자로 고정
+      function __ljShotText(v) {
+        const s = String(v ?? "");
+        return /^[=+\-@]/.test(s) ? "'" + s : s;
+      }
+      async function __ljSharePublic(fileId) {
+        try {
+          await gapi.client.drive.permissions.create({
+            fileId,
+            resource: { role: "reader", type: "anyone" },
+            fields: "id",
+          });
+          return true;
+        } catch (e) {
+          const msg = e?.result?.error?.message || e?.message || "";
+          if (/duplicate|already/i.test(msg)) return true; // 이미 공개돼 있으면 그대로 쓴다
+          console.warn("[lj] 사진 링크 공개 실패:", fileId, msg);
+          return false;
+        }
+      }
+      // 이 매물 사진의 드라이브 fileId 목록. 아직 안 올라간 것은 여기서 올린다(큐를 기다리지 않게).
+      async function __ljShotFileIds(rec) {
+        const shots = __ljShots(rec);
+        if (!shots.length) return [];
+        const sgg5 = String(rec.sgg5 || "");
+        if (!/^\d{5}$/.test(sgg5)) return [];
+        const folder = await __dqSggFolder("listingImages", sgg5);
+        const list = await __dqList(folder, true);
+        const out = [];
+        for (const it of shots) {
+          const nm = __ljImgFilename({ ...rec, sgg5 }, it.addedAt);
+          let fid = list.get(nm);
+          if (!fid) {
+            const data = __getImgData(it);
+            if (!data || !data.startsWith("data:")) continue; // 데이터도 파일도 없다 → 이 한 장은 건너뜀
+            try {
+              fid = await __dqUploadIfMissing(folder, nm, __dataUrlToBlob(data), "image/jpeg");
+            } catch (e) {
+              console.warn("[lj] 사진 업로드 실패(건너뜀):", nm, e?.message || e);
+              continue;
+            }
+          }
+          if (fid) out.push({ addedAt: Number(it.addedAt), fileId: fid });
+        }
+        return out;
+      }
+      // 사진이 있는 매물마다 탭 하나. 같은 매물은 **기록ID로 알아보고 그 탭을 다시 쓴다**
+      // (동호수를 고쳐 이름이 바뀌면 탭 이름만 갈아 끼운다 — 탭이 불어나지 않게).
+      async function __ljWriteShotSheets(sid, rows, setB) {
+        const targets = rows.filter((r) => __ljShots(r).length);
+        const out = { sheets: 0, photos: 0, skipped: 0 };
+        if (!targets.length) return out;
+        if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
+
+        const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+        const props = (meta.result.sheets || []).map((s) => s.properties);
+        const dataSheetId = props[0]?.sheetId; // 첫 탭은 시군구 취합표 — 건드리지 않는다
+        const others = props.filter((p) => p.sheetId !== dataSheetId);
+
+        // 각 탭의 B2(기록ID)를 한 번에 읽어 "어느 탭이 어느 매물인지" 를 만든다
+        const tabOf = new Map(); // 기록ID → {title, sheetId}
+        if (others.length) {
+          try {
+            const r = await gapi.client.sheets.spreadsheets.values.batchGet({
+              spreadsheetId: sid,
+              ranges: others.map((p) => `'${p.title}'!B2`),
+            });
+            (r.result.valueRanges || []).forEach((vr, i) => {
+              const id = String(vr.values?.[0]?.[0] ?? "").trim();
+              if (id) tabOf.set(id, { title: others[i].title, sheetId: others[i].sheetId });
+            });
+          } catch (e) {
+            console.warn("[lj] 사진 탭 확인 실패(새로 만듭니다):", e?.result?.error?.message || e?.message || e);
+          }
+        }
+        const taken = new Map(props.map((p) => [p.title, p.sheetId])); // 탭 이름 → sheetId
+
+        for (let i = 0; i < targets.length; i++) {
+          const rec = targets[i];
+          setB(`⏳ 사진 시트 ${i + 1}/${targets.length}…`);
+          let shots = [];
+          try {
+            shots = await __ljShotFileIds(rec);
+          } catch (e) {
+            console.warn("[lj] 사진 준비 실패(건너뜀):", rec.id, e?.result?.error?.message || e?.message || e);
+          }
+          if (!shots.length) { out.skipped++; continue; }
+          for (const s of shots) await __ljSharePublic(s.fileId);
+
+          // 탭 이름 정하기 — 남이 쓰고 있으면 기록ID 뒤 4자리를 붙인다
+          const mine = tabOf.get(String(rec.id)) || null;
+          let title = __ljShotTabName(rec);
+          if (taken.has(title) && taken.get(title) !== mine?.sheetId) {
+            title = `${title}-${String(rec.id).slice(-4)}`.slice(0, 100);
+            let k = 2;
+            while (taken.has(title) && taken.get(title) !== mine?.sheetId) title = `${__ljShotTabName(rec)}-${k++}`.slice(0, 100);
+          }
+
+          let sheetId = mine?.sheetId ?? null;
+          const pre = [];
+          if (sheetId == null) {
+            const add = await gapi.client.sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sid,
+              resource: { requests: [{ addSheet: { properties: { title, gridProperties: { rowCount: 40, columnCount: 4 } } } }] },
+            });
+            sheetId = add.result.replies[0].addSheet.properties.sheetId;
+            taken.set(title, sheetId);
+          } else {
+            if (mine.title !== title) {
+              pre.push({ updateSheetProperties: { properties: { sheetId, title }, fields: "title" } });
+              taken.delete(mine.title);
+              taken.set(title, sheetId);
+            }
+            // 지난 회차 값·줄높이를 지운다 (사진이 줄었을 때 옛 줄이 남지 않게)
+            try {
+              await gapi.client.sheets.spreadsheets.values.clear({ spreadsheetId: sid, range: `'${mine.title}'`, resource: {} });
+            } catch (e) {
+              console.warn("[lj] 사진 탭 비우기 실패(계속):", e?.result?.error?.message || e?.message || e);
+            }
+          }
+
+          const money = [];
+          if (__ljMoney(rec.priceSale) != null) money.push("매매 " + __ljComma(__ljMoney(rec.priceSale)));
+          if (__ljMoney(rec.priceNego) != null) money.push("협의 " + __ljComma(__ljMoney(rec.priceNego)));
+          if (__ljMoney(rec.priceJeonse) != null) money.push("전세 " + __ljComma(__ljMoney(rec.priceJeonse)));
+
+          const vals = [
+            [__ljShotText(`${String(rec.aptName || "").trim()} ${__ljShotWho(rec)}`.trim())],
+            ["기록ID", __ljShotText(String(rec.id))], // ⚠ B2 = 짝짓기 열쇠. 자리를 옮기면 탭이 계속 새로 생긴다.
+            ["기록일시", __ljShotText(__ljWhenOut(rec.updatedAt))],
+            ["평형·동호수", __ljShotText([rec.pyeong ? rec.pyeong + "평" : "", rec.dongho].filter(Boolean).join(" · "))],
+            ["구조·타입·방향", __ljShotText([rec.structure, rec.roomType, rec.direction].filter(Boolean).join(" · "))],
+            ["거주자·만기", __ljShotText([rec.resident, rec.expiry].filter(Boolean).join(" · "))],
+            ["가격", __ljShotText(money.join("   "))],
+            ["메 모", __ljShotText(rec.memo || "")],
+            [],
+          ];
+          const firstShotRow = vals.length + 1; // 1-based
+          shots.forEach((s, n) => {
+            vals.push([`사진 ${n + 1}`, `=IMAGE("https://lh3.googleusercontent.com/d/${s.fileId}", 1)`]);
+          });
+
+          const lastRow = vals.length;
+          const reqs = pre.concat([
+            { updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: Math.max(lastRow + 4, 40), columnCount: 4 } }, fields: "gridProperties(rowCount,columnCount)" } },
+            { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: __LJ_SHOT_LB_W }, fields: "pixelSize" } },
+            { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: __LJ_SHOT_IMG_W }, fields: "pixelSize" } },
+            { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 2 }, cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 } } }, fields: "userEnteredFormat.textFormat" } },
+            { repeatCell: { range: { sheetId, startRowIndex: 1, endRowIndex: lastRow, startColumnIndex: 0, endColumnIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: __LJ_C.group, verticalAlignment: "MIDDLE" } }, fields: "userEnteredFormat(backgroundColor,verticalAlignment)" } },
+            { repeatCell: { range: { sheetId, startRowIndex: 7, endRowIndex: 8, startColumnIndex: 1, endColumnIndex: 2 }, cell: { userEnteredFormat: { wrapStrategy: "WRAP", verticalAlignment: "TOP" } }, fields: "userEnteredFormat(wrapStrategy,verticalAlignment)" } },
+          ]);
+          if (shots.length) {
+            reqs.push({
+              updateDimensionProperties: {
+                range: { sheetId, dimension: "ROWS", startIndex: firstShotRow - 1, endIndex: firstShotRow - 1 + shots.length },
+                properties: { pixelSize: __LJ_SHOT_ROW_H },
+                fields: "pixelSize",
+              },
+            });
+          }
+          await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: reqs } });
+          await gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId: sid,
+            range: `'${title}'!A1:B${lastRow}`,
+            valueInputOption: "USER_ENTERED", // =IMAGE() 가 수식으로 들어가야 한다
+            resource: { values: vals },
+          });
+          out.sheets++;
+          out.photos += shots.length;
+        }
+        return out;
       }
 
       // 내보내기 범위 고르기 — 시군구 전체 / 이 단지만
@@ -27033,7 +27659,7 @@ const originalBase64 = event.target.result;
 
           setB("⏳ 시트 여는 중…");
           const title = __ljSheetTitle(ctx);
-          const sid = await __ljEnsureSheet(ctx.sgg5, title);
+          const sid = await __ljEnsureSheet(ctx.sgg5, title, ctx.sigunguName);
           const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
           const props = meta.result.sheets[0].properties;
           const sheetId = props.sheetId;
@@ -27122,14 +27748,27 @@ const originalBase64 = event.target.result;
             resource: { requests: __ljFormatRequests(sheetId, cols.length) },
           });
 
+          // 사진이 있는 매물은 탭을 따로 만든다 (실패해도 취합표는 이미 끝났으므로 삼킨다)
+          let shotOut = { sheets: 0, photos: 0, skipped: 0 };
+          try {
+            shotOut = await __ljWriteShotSheets(sid, rows, setB);
+          } catch (e) {
+            console.error("[lj] 사진 시트 실패:", e);
+            alert("취합표는 올렸지만 사진 시트에서 실패했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+          }
+
           // 방금 우리가 쓴 뒤의 값을 기억 — 이 뒤로 달라지면 사람이 시트에서 고친 것
           __ljModSet(ctx.sgg5, await __ljSheetMod(sid));
 
           setB("✅ 내보내기 완료");
           const url = `https://docs.google.com/spreadsheets/d/${sid}/edit`;
+          const shotLine = shotOut.sheets
+            ? `\n사진 시트 ${shotOut.sheets}개 · 사진 ${shotOut.photos}장` +
+              (shotOut.skipped ? ` (사진을 못 찾은 매물 ${shotOut.skipped}건은 건너뜀)` : "")
+            : "";
           const what = isApt
-            ? `${ctx.aptName || "이 단지"} 매물 ${rows.length}건을 갈아 끼웠습니다.\n(시트 전체 ${cols.length}건)`
-            : `${ctx.sigunguName || "이 시군구"} — 단지 ${new Set(rows.map((r) => r.aptId)).size}곳 · 매물 ${rows.length}건을 내보냈습니다.`;
+            ? `${ctx.aptName || "이 단지"} 매물 ${rows.length}건을 갈아 끼웠습니다.\n(시트 전체 ${cols.length}건)${shotLine}`
+            : `${ctx.sigunguName || "이 시군구"} — 단지 ${new Set(rows.map((r) => r.aptId)).size}곳 · 매물 ${rows.length}건을 내보냈습니다.${shotLine}`;
           if (confirm(`${what}\n\n시트를 지금 열까요?`)) {
             window.open(url, "_blank");
           }
