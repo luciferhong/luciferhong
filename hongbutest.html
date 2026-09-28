@@ -609,6 +609,25 @@
         touch-action: manipulation;
       }
       #ljTab3 .lj-shot-btn.dng { border-color: #d08b84; color: #b3261e; }
+      #ljTab3 .lj-loading {
+        margin: 34px 4px;
+        text-align: center;
+        color: #8a6d1f;
+        font-size: 13.5px;
+        line-height: 1.7;
+      }
+      #ljTab3 .lj-loading::after {
+        content: "";
+        display: block;
+        width: 22px;
+        height: 22px;
+        margin: 12px auto 0;
+        border: 2px solid #e0d6b8;
+        border-top-color: #b8861a;
+        border-radius: 50%;
+        animation: ljSpin 0.8s linear infinite;
+      }
+      @keyframes ljSpin { to { transform: rotate(360deg); } }
       #ljTab3 .lj-shot-cap { margin: 8px 1px 0; font-size: 11.5px; color: #6a6a66; }
       #ljTab3 .lj-shot-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
       #ljTab3 .lj-shot-strip:empty { display: none; }
@@ -697,10 +716,25 @@
          상자를 칸 높이만큼 키워 두면 vertical-align 을 줘도 글은 늘 위에서 시작한다. */
       #ljTab3 #ljForm .lj-memo-box {
         display: flex;
-        align-items: center;
+        flex-direction: column;   /* 글 아래에 복사 단추가 온다 */
+        justify-content: center;
         height: 110px;
         box-sizing: border-box;
         padding: 4px 0;
+      }
+      #ljTab3 #ljForm .lj-memo-copy {
+        align-self: flex-start;
+        margin: 4px 0 0 7px;
+        padding: 3px 7px;
+        border: 1px solid #cfcfcf;
+        border-radius: 5px;
+        background: #fff;
+        color: #4a4a48;
+        font: inherit;
+        font-size: 11px;
+        line-height: 1.3;
+        cursor: pointer;
+        touch-action: manipulation;
       }
       #ljTab3 #ljForm textarea {
         height: auto;
@@ -14268,7 +14302,7 @@ const originalBase64 = event.target.result;
         // 실시간 업로드 큐 재개 (로그인 전에 쌓인 항목·이전 세션 잔여분) + 최초 1회 로컬 전체 적재
         try { __dqKick(500); } catch (_) {}
         try { __dqSeedFromLocal().catch((e) => console.warn('[dq] 초기 적재 실패:', e)); } catch (_) {}
-        try { __ljDqSeed().catch((e) => console.warn('[lj] 초기 적재 실패:', e)); } catch (_) {}
+        // 매물임장 초기 적재는 없앴다 — 원본이 구글시트라 드라이브 listings/ 에 올릴 것이 없다 (2026-09-28)
         // v3 시군구 JSON → v4 레코드별 파일 이관 (백그라운드, 큐가 우선). 지도가 먼저 안정되도록 5초 뒤.
         // 이관이 끝나면 전 지역 선로드(6시간에 1회) 시작.
         setTimeout(() => {
@@ -16446,7 +16480,7 @@ const originalBase64 = event.target.result;
               }
             } catch (_) {}
             const [pf, af, lf] = await Promise.all([
-              __lzFindSggFolder('photos', sgg5), __lzFindSggFolder('aptImages', sgg5), __lzFindSggFolder('listingImages', sgg5),
+              __lzFindSggFolder('photos', sgg5), __lzFindSggFolder('aptImages', sgg5), __ljPhotoFolder(sgg5, false),
             ]);
             const [pm, am, lm] = await Promise.all([
               __driveListFolderSizes(pf), __driveListFolderSizes(af), __driveListFolderSizes(lf),
@@ -16920,62 +16954,11 @@ const originalBase64 = event.target.result;
             }
           }
         } else if (item.kind === 'listing') {
-          const name = __ljMetaFilename({ ...rec, sgg5, updatedAt });
-          if (await __newerOnDrive('listings', name)) return;
-          // 사진은 파일로 따로. 메타에는 addedAt 목록만 남긴다(단지메모와 같은 방식).
-          const shots = __sanitizeImages(rec.photos);
-          const shotAts = [];
-          const shotTasks = [];
-          for (const it of shots) {
-            const addedAt = typeof it === 'object' ? Number(it.addedAt) : 0;
-            if (!addedAt) continue;
-            shotAts.push(addedAt);
-            if (rec.deletedAt) continue;
-            const data = __getImgData(it);
-            if (!data || !data.startsWith('data:')) continue; // 자리표시자 → 드라이브에 이미 있다
-            const fn = __ljImgFilename({ ...rec, sgg5 }, addedAt);
-            shotTasks.push((async () => {
-              const f = await __dqSggFolder('listingImages', sgg5);
-              await __dqUploadIfMissing(f, fn, __dataUrlToBlob(data), 'image/jpeg');
-            })());
-          }
-          await Promise.all(shotTasks); // 여러 장 동시에
-          const meta = rec.deletedAt
-            ? { schemaVersion: __DQ_SCHEMA, kind: 'listing', id: String(rec.id), aptId: String(rec.aptId || ''), sgg5, updatedAt, deletedAt: rec.deletedAt }
-            : { schemaVersion: __DQ_SCHEMA, ...rec, photos: shotAts, kind: 'listing', id: String(rec.id), sgg5, updatedAt, deletedAt: null };
-          const metaFolder = await __dqSggFolder('listings', sgg5);
-          await __dqUploadIfMissing(metaFolder, name, JSON.stringify(meta), 'application/json');
-          await __dqDeleteOlderMeta(metaFolder, __parseMetaFilename(name).prefix, updatedAt, name);
-          // 이 매물에서 지운 사진의 드라이브 파일도 치운다. 위에서 '드라이브가 더 새 판' 이면 이미 돌아갔으므로,
-          // 여기까지 왔다면 우리 목록이 최신 = 목록에 없는 파일은 지운 사진이다.
-          if (!rec.deletedAt && shotAts.length >= 0) {
-            try {
-              const f = await __lzFindSggFolder('listingImages', sgg5);
-              if (f) {
-                const list = await __dqList(f);
-                const pre = `lj_${sgg5}_${String(rec.id)}_`;
-                const keep = new Set(shotAts.map((a) => `${pre}${a}.jpg`));
-                for (const [n, fid] of Array.from(list.entries())) {
-                  if (!n.startsWith(pre) || keep.has(n)) continue;
-                  try { await __driveDeleteFile(fid); list.delete(n); } catch (e) { console.warn('[dq] 지운 매물 사진 정리 실패(무시):', n, e?.message || e); }
-                }
-              }
-            } catch (e) { console.warn('[dq] 지운 매물 사진 정리 실패(무시):', e?.message || e); }
-          }
-          // 삭제(tombstone)이고 드라이브에 더 새 판이 없으면 이 매물의 사진 파일도 정리
-          if (rec.deletedAt && __dqNewestMetaTs(await __dqList(metaFolder), __parseMetaFilename(name).prefix) <= updatedAt) {
-            try {
-              const f = await __lzFindSggFolder('listingImages', sgg5);
-              if (f) {
-                const list = await __dqList(f);
-                const pre = `lj_${sgg5}_${String(rec.id)}_`;
-                for (const [n, fid] of Array.from(list.entries())) {
-                  if (!n.startsWith(pre)) continue;
-                  try { await __driveDeleteFile(fid); list.delete(n); } catch (e) { console.warn('[dq] 삭제 매물 사진 정리 실패(무시):', n, e?.message || e); }
-                }
-              }
-            } catch (e) { console.warn('[dq] 삭제 매물 사진 정리 실패(무시):', e?.message || e); }
-          }
+          // ⚠ 매물임장은 2026-09-28 부터 **구글시트가 원본**이다. 드라이브 listings/ 백업은 쓰지 않는다.
+          //   사진도 maemool/{시트이름}/ 로 옮겼다. 옛 큐 항목이 남아 있어도 아무것도 하지 않는다.
+          console.log('[dq] listing 항목 무시 — 매물임장은 구글시트가 원본:', item.id);
+          __dq.items.delete(`${item.kind}:${item.id}`);
+          __dqSave();
         } else {
           const meta = { schemaVersion: __DQ_SCHEMA, kind: 'polygon', sgg5, ...rec, updatedAt, deletedAt: rec.deletedAt || null };
           const metaFolder = await __dqSggFolder('polygons', sgg5);
@@ -18083,7 +18066,7 @@ const originalBase64 = event.target.result;
           // 4) 단지 사진·포토 원본 (5 병렬, 큐 우선)
           const aptF = await __lzFindSggFolder('aptImages', sgg5);
           const phF = await __lzFindSggFolder('photos', sgg5);
-          const ljF = tasks.some((t) => t.kind === 'ljImg') ? await __lzFindSggFolder('listingImages', sgg5) : null;
+          const ljF = tasks.some((t) => t.kind === 'ljImg') ? await __ljPhotoFolder(sgg5, false) : null;
           const aptList = aptF ? await __dqList(aptF, true) : new Map();
           const phList = phF ? await __dqList(phF, true) : new Map();
           const ljList = ljF ? await __dqList(ljF, true) : new Map();
@@ -18545,7 +18528,7 @@ const originalBase64 = event.target.result;
           try {
             say('드라이브에 남은 항목 확인 중…');
             let extra = 0;
-            for (const [root, kind] of [['notes', 'note'], ['photoMeta', 'photo'], ['polygons', 'polygon'], ['listings', 'listing']]) {
+            for (const [root, kind] of [['notes', 'note'], ['photoMeta', 'photo'], ['polygons', 'polygon']]) {
               const f = await __lzFindSggFolder(root, sgg5);
               if (!f) continue;
               const newest = __lzNewest(await __dqList(f, true));
@@ -25046,11 +25029,18 @@ const originalBase64 = event.target.result;
 
       // 시트도 화면 표와 같은 **세로 배치** — 항목이 행, 매물 1건이 열(C·D·E…).
       // A열 = 묶음(병합), B열 = 항목명, C열부터 매물. 맨 아래 '기록' 묶음에 메타 2줄.
+      // 시트에만 있는 행. ⚠ 단지코드가 이 기능의 핵심이다 — 파트너가 단지명을 드롭다운에서 고르면
+      //   VLOOKUP 이 여기에 단지코드(= 홍부의 aptId)를 넣고, 홍부는 그 값으로 매물을 단지에 배치한다.
       const __LJ_META_ROWS = [
         { k: "__when", lb: "기록일시" },
         { k: "__id", lb: "기록ID" },
+        { k: "__aptCode", lb: "단지코드" },
       ];
       const __LJ_SHEET_ROWS = __LJ_ROWS.concat(__LJ_META_ROWS);
+      // 시트가 "우리 배치"인지 가리는 **최소** 항목 (2026-09-28).
+      // ⚠ 여기에 새 항목을 넣지 말 것. 넣는 순간 그 항목이 없는 기존 시트가 통째로 거부된다.
+      //   새 항목은 언제나 선택 — 없으면 빈값으로 읽힌다.
+      const __LJ_SHEET_REQ = ["aptName", "pyeong", "priceSale", "__id"];
       const __LJ_SHEET_GROUPS = __LJ_GROUPS.concat([{ g: "기록", n: __LJ_META_ROWS.length }]);
 
       // 시트 셀 색 (화면 표와 같은 값)
@@ -25097,11 +25087,45 @@ const originalBase64 = event.target.result;
           r.onerror = (e) => reject(e.target.error);
         });
       }
-      async function __ljByApt(aptId) {
-        const all = await __ljAll();
-        return all
-          .filter((x) => String(x.aptId) === String(aptId))
-          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      // ⚠ 원본은 **구글시트**다 (2026-09-28). 로컬 DB 는 더 이상 목록의 근거가 아니다.
+      //   읽기 실패 사정은 __ljState.why 에 담아 화면에 그대로 적는다.
+      // ctxIn 을 주면 그 단지 기준으로 읽는다(배지처럼 **지금 열려 있는 단지가 아닌** 곳에서 부를 때).
+      // ⚠ 그때는 __ljState 를 건드리지 않는다 — 보고 있는 화면의 시트 id·사정을 덮어쓰면 안 된다.
+      async function __ljByApt(aptId, force, ctxIn) {
+        const ctx = ctxIn || __ljState.ctx || {};
+        const mine = !ctxIn;
+        let r;
+        try {
+          r = await __ljReadRegion(ctx, force);
+        } catch (e) {
+          console.warn("[lj] 시트 읽기 실패:", e?.result?.error?.message || e?.message || e);
+          if (mine) {
+            __ljState.sid = "";
+            __ljState.why = "시트를 읽지 못했습니다 — " + (e?.result?.error?.message || e?.message || e);
+          }
+          return [];
+        }
+        if (mine) {
+          __ljState.sid = r.sid || "";
+          __ljState.why = r.why || "";
+        }
+        return (r.recs || []).filter((x) => String(x.aptId) === String(aptId));
+      }
+      // 그 단지의 ctx 를 만든다. sgg5 가 비면 업로드 쪽과 같은 추론기로 한 번 더 구한다.
+      async function __ljCtxFor(aptId) {
+        const ctx = __ljAptCtx(aptId);
+        if (!ctx.sgg5 && typeof __resolveSgg5 === "function") {
+          try {
+            const s = await __resolveSgg5({ aptId: String(aptId) });
+            if (s) {
+              const rg = typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(aptId)) : null;
+              ctx.sgg5 = s;
+              ctx.sidoName = ctx.sidoName || rg?.sidoName || "";
+              ctx.sigunguName = ctx.sigunguName || rg?.sigunguName || "";
+            }
+          } catch (_) {}
+        }
+        return ctx;
       }
       async function __ljPut(rec) {
         const db = await __ljOpenDB();
@@ -25115,14 +25139,9 @@ const originalBase64 = event.target.result;
       // ── 드라이브 자동 백업 ──
       // 단지메모와 **같은 __dq 큐**를 탄다. 저장·삭제 때 큐에 넣기만 하면 나머지(1.5초 디바운스·직렬 처리·
       // 오프라인 재시도·옛 판 정리)는 큐가 한다. 드라이브→로컬 반영 경로는 이 함수를 부르지 않는다(메아리 방지).
-      function __ljSync(rec) {
-        if (!rec?.id) return;
-        try {
-          if (typeof __dqEnqueue === "function") __dqEnqueue("listing", String(rec.id), rec.sgg5 || "", true);
-        } catch (e) {
-          console.warn("[lj] 업로드 큐 등록 실패(무시):", e?.message || e);
-        }
-      }
+      // ⚠ 매물임장은 2026-09-28 부터 **구글시트가 원본**이다. 드라이브 listings/ 백업은 쓰지 않는다.
+      //   큐에 넣으면 빈 listings/ 폴더가 다시 만들어지므로 아무것도 하지 않는다.
+      function __ljSync() {}
       // 이 기능이 생기기 전에 만든 기록을 한 번만 큐에 올린다. 드라이브에 이미 있으면 큐가 이름 대조로 건너뛴다.
       const __LJ_SEED_KEY = "__hongbuLjSeeded_v1";
       async function __ljDqSeed(force) {
@@ -25136,11 +25155,6 @@ const originalBase64 = event.target.result;
           console.warn("[lj] 최초 적재 실패:", e);
         }
       }
-      // 드라이브 → 이 기기. 다른 기기에서 적은 매물을 받아 온다(시군구 단위, 60초에 한 번).
-      const __ljPulledAt = new Map();
-      // 내려받기가 왜 못 했는지를 **화면에도** 쓰려고 들고 있는다 (2026-09-28).
-      // 목록이 비었을 때 "정말 0건" 과 "못 받아 왔다" 를 구분할 수 없어서 원인을 못 찾았다.
-      const __ljPull = { why: "", busy: false };
       // 드라이브 연결을 기다린다. 부팅 직후엔 아직 토큰이 없어, 그냥 포기하면
       // **새로 연 브라우저에서 다른 기기의 변경이 통째로 안 들어온다**(2026-09-28 실측:
       // 다른 브라우저로 접속하면 사진이 동기화되지 않던 원인). 화면을 막지 않는 백그라운드
@@ -25150,63 +25164,6 @@ const originalBase64 = event.target.result;
         const t0 = Date.now();
         while (!ok() && Date.now() - t0 < (ms || 0)) await new Promise((r) => setTimeout(r, 500));
         return ok();
-      }
-      async function __ljPullRegion(sgg5, force) {
-        const why = (m) => { console.log("[lj] 내려받기 건너뜀 —", m); __ljPull.why = m; __ljPull.busy = false; return 0; };
-        if (!sgg5) return why("이 단지의 시군구를 몰라 받아 올 수 없습니다");
-        __ljPull.busy = true;
-        __ljPull.why = "";
-        if (!(await __ljDriveWait(20000))) return why("구글 드라이브에 연결되지 않았습니다 — 로그인해야 다른 기기의 기록이 보입니다");
-        const last = __ljPulledAt.get(sgg5) || 0;
-        if (!force && Date.now() - last < 60000) { __ljPull.busy = false; return why("방금 받아 옴 (__lj.pull() 로 지금 받기)"); }
-        __ljPulledAt.set(sgg5, Date.now());
-        let n = 0;
-        try {
-          const folder = await __lzFindSggFolder("listings", sgg5);
-          if (!folder) return why(`드라이브에 이 시군구(${sgg5}) 매물 폴더가 없습니다 — 적어 둔 기기에서 업로드가 끝났는지 확인해 주세요`);
-          // ⚠ 반드시 새로 받아 온다. __dqList 는 10분 캐시라, 그냥 부르면 다른 기기가 올린 것이
-          //    최대 10분간 안 보인다(2026-09-27 PC 에서 고친 메모가 모바일에 안 오던 원인).
-          const list = await __dqList(folder, true);
-          const head = `listing_${sgg5}_`;
-          const local = new Map((await __ljAll(true)).map((r) => [String(r.id), r]));
-          // 같은 레코드의 파일이 여러 판 남아 있을 수 있어 prefix 별 최신만 본다
-          const best = new Map();
-          for (const [name, fid] of list.entries()) {
-            if (!name.startsWith(head)) continue;
-            const p = __parseMetaFilename(name);
-            if (!p) continue;
-            const prev = best.get(p.prefix);
-            if (!prev || p.updatedAt > prev.updatedAt) best.set(p.prefix, { fid, ...p });
-          }
-          for (const [prefix, f] of best.entries()) {
-            const id = prefix.slice(head.length);
-            const cur = local.get(id);
-            if (cur && (Number(cur.updatedAt) || 0) >= f.updatedAt) continue; // 이 기기 것이 더 새것
-            if (f.deleted) {
-              // 파일명만 보고 삭제를 알 수 있어 메타를 받지 않는다
-              if (cur && !cur.deletedAt) { await __ljPut({ ...cur, deletedAt: f.updatedAt, updatedAt: f.updatedAt }); n++; }
-              continue;
-            }
-            const meta = await __lzReadMeta(f.fid);
-            if (!meta || String(meta.id || "") !== id) continue;
-            const rec = { ...meta, id, updatedAt: f.updatedAt };
-            delete rec.schemaVersion;
-            delete rec.kind;
-            // 메타의 photos 는 addedAt 목록뿐 → 자리표시자로 바꾼다. 실제 사진은 입력 화면을 열 때 받는다.
-            rec.photos = __ljPhotosFromMeta(meta.photos, cur);
-            await __ljPut(rec); // 훅 없이 직접 — 되올리면 메아리가 된다
-            n++;
-          }
-          const waiting = (await __ljAll(true)).reduce((a, r) => a + __ljShots(r).filter((it) => !__getImgData(it)).length, 0);
-          console.log(`[lj] 드라이브 대조 (${sgg5}): 파일 ${best.size}건 · 받음 ${n}건` + (waiting ? ` · 아직 안 받은 사진 ${waiting}장` : ""));
-          __ljPull.why = "";
-        } catch (e) {
-          const m = e?.result?.error?.message || e?.message || String(e);
-          console.warn("[lj] 드라이브 내려받기 실패(무시):", m);
-          __ljPull.why = "드라이브에서 받아 오다 실패했습니다 — " + m;
-        }
-        __ljPull.busy = false;
-        return n;
       }
 
       // 통째로 지운다 — 삭제 표시(deletedAt)조차 남길 필요가 없는 경우(빈 새 기록)에만 쓴다
@@ -25237,22 +25194,28 @@ const originalBase64 = event.target.result;
           sigunguName: rg?.sigunguName || "",
         };
       }
+      // ⚠ 평형은 **정수**로 다룬다 (2026-09-28 사용자 확정 — 시트와 같게).
+      //   시트의 평형 칸에는 "32평(전용84)" 이 글자 그대로 들어가고 홍부는 앞 숫자만 떼어 쓴다.
+      //   그래서 홍부의 선택지도 정수여야 오간 값이 어긋나지 않는다(32.1 을 두면 시트에서 온 32 와
+      //   맞는 선택지가 없어 평형 칸이 비어 보인다). 평단가가 0.3%쯤 달라지는 건 감수한다.
+      function __ljPyeongRound(v) {
+        const n = __ljNum(v);
+        return n == null || !(n > 0) ? "" : String(Math.round(n));
+      }
       function __ljPyeongOpts(ctx) {
         const seen = new Set();
         const out = [];
         for (const t of ctx.types) {
-          const p = String(t["공급평수"] ?? "").trim();
+          const p = __ljPyeongRound(t["공급평수"]);
           if (p && !seen.has(p)) { seen.add(p); out.push(p); }
         }
         return out.sort((a, b) => (parseFloat(a) || 0) - (parseFloat(b) || 0));
       }
-      // 평형 드롭다운 표기: "33평(전용 25)" — 값은 공급평수 그대로 두고 라벨만 바꾼다(평단가 계산이 이 값을 쓴다).
-      // 전용평 = 전용면적㎡ ÷ 3.3058 (1평 = 3.305785㎡)
+      // 평형 드롭다운 표기: "32평(전용84)" — 전용면적은 ㎡ 그대로다(시트와 같은 표기).
       function __ljPyeongLabel(ctx, v) {
-        const row = ctx.types.find((t) => String(t["공급평수"] ?? "").trim() === String(v).trim());
+        const row = ctx.types.find((t) => __ljPyeongRound(t["공급평수"]) === String(v).trim());
         const ex = row ? __ljNum(row["전용면적"]) : null;
-        const exP = ex != null && ex > 0 ? Math.round(ex / 3.3058) : null;
-        return exP ? `${v}평(전용 ${exP})` : `${v}평`;
+        return ex != null && ex > 0 ? `${v}평(전용${Math.round(ex)})` : `${v}평`;
       }
       // 구조·타입 선택지 = 그 단지 평형표에 실제로 있는 값 (중복 제거, 평형표 순서)
       // 드롭다운과 "한 가지뿐이면 미리 채우기" 가 같은 목록을 보도록 여기 하나로 모은다.
@@ -25260,7 +25223,8 @@ const originalBase64 = event.target.result;
       // 24.8평이면 구조는 방2화1 하나뿐이라 고를 것도 없다.
       function __ljTypeOpts(ctx, k, pyeong) {
         const p = String(pyeong ?? "").trim();
-        const rows = (ctx?.types || []).filter((t) => !p || String(t["공급평수"] ?? "").trim() === p);
+        // 평형이 정수로 바뀌었으므로 평형표도 반올림해서 맞춘다 (2026-09-28)
+        const rows = (ctx?.types || []).filter((t) => !p || __ljPyeongRound(t["공급평수"]) === p);
         const out = [];
         const seen = new Set();
         for (const t of rows) {
@@ -25272,13 +25236,18 @@ const originalBase64 = event.target.result;
       }
       // 메모의 "34평" 을 단지의 34.8평에 맞춘다 — **소수점을 버리고** 비교한다(2026-09-27 사용자 요청).
       // 같은 정수로 떨어지는 평형이 둘 이상이면 어느 쪽인지 몰라 고르지 않는다.
-      function __ljMatchPyeong(opts, raw) {
+      function __ljMatchPyeong(opts, raw, ctx) {
         const list = opts || [];
         const s = String(raw ?? "").trim();
         if (!s) return "";
         if (list.includes(s)) return s; // 딱 맞으면 그대로
         const n = parseFloat(s);
         if (!Number.isFinite(n)) return "";
+        // ⚠ 선택지가 정수로 바뀐 뒤로는 옛 방식이 안 통한다 — 메모의 "24평" 은 24.8평을 뜻하는데
+        //   선택지는 25 다(2026-09-28). 그래서 **원본 공급평수**의 버림값으로 맞춘 뒤 정수로 돌려준다.
+        const orig = (ctx?.types || []).filter((t) => Math.floor(__ljNum(t["공급평수"]) ?? NaN) === Math.floor(n));
+        const hits = Array.from(new Set(orig.map((t) => __ljPyeongRound(t["공급평수"])))).filter(Boolean);
+        if (hits.length === 1) return hits[0];
         const hit = list.filter((o) => Math.floor(parseFloat(o)) === Math.floor(n));
         return hit.length === 1 ? hit[0] : "";
       }
@@ -25361,9 +25330,13 @@ const originalBase64 = event.target.result;
         };
 
         // 거주자 — 딱 떨어지는 말만. '전세'·'월세' 는 가격 문맥과 겹쳐 쓰지 않는다
+        // ⚠ 순서가 규칙이다. 더 분명한 말이 먼저 이긴다:
+        //   "주인거주" > "세안고"(세입자를 안고 사는 것) > "공실" > 그냥 "주인"
+        //   (2026-09-28 사용자 요청 — 세안고=세입자, 주인이 들어가면 주인)
         if (/주인\s*거주|집주인|자가\s*거주/.test(w)) out.resident = "주인";
-        else if (/세입자|임차인/.test(w)) out.resident = "세입자";
+        else if (/세\s*안고|세입자|임차인/.test(w)) out.resident = "세입자";
         else if (/공실|비어\s*있|비었/.test(w)) out.resident = "공실";
+        else if (/주인/.test(w)) out.resident = "주인";
 
         // 연락처 — 숫자가 많아 먼저 걷어낸다
         const tel = take(/01[016789][-. ]?\d{3,4}[-. ]?\d{4}/);
@@ -25392,7 +25365,7 @@ const originalBase64 = event.target.result;
         if (st) out.structure = `방${st[1]}화${st[2]}`;
         const py = take(/(\d+(?:\.\d+)?)\s*평/);
         if (py) {
-          const v = __ljMatchPyeong(__ljPyeongOpts(ctx || {}), py[1]);
+          const v = __ljMatchPyeong(__ljPyeongOpts(ctx || {}), py[1], ctx);
           if (v) out.pyeong = v; // 못 맞춰도 "N평" 은 지운 상태 — 가격으로 오해하지 않게
         }
         const dh = take(/(\d{1,3})\s*동\s*((?:\d{3,4}\s*호)|고층|중층|저층|로얄층|탑층)?/);
@@ -25491,8 +25464,8 @@ const originalBase64 = event.target.result;
         if (!/^\d{5}$/.test(sgg5)) return why(`시군구를 모름 (sgg5=${sgg5 || "없음"})`);
         let got = 0;
         try {
-          const folder = await __lzFindSggFolder("listingImages", sgg5);
-          if (!folder) return why("드라이브에 listingImages 폴더가 아직 없음 (찍은 기기가 아직 안 올렸다)");
+          const folder = await __ljPhotoFolder(sgg5, false);
+          if (!folder) return why("아직 사진 폴더가 없음 (찍은 기기가 아직 안 올렸다)");
           const list = await __dqList(folder, true); // ⚠ 캐시를 쓰면 방금 다른 기기가 올린 사진이 안 보인다
           let none = 0;
           for (const it of miss) {
@@ -25593,23 +25566,56 @@ const originalBase64 = event.target.result;
         const st = document.getElementById("ljStatus");
         if (st) { st.textContent = "저장 중…"; st.style.color = "#8a6d1f"; }
       }
+      // 이 매물이 시트에 써질 모습. 폼을 열 때와 저장할 때를 견줘 "바뀐 게 있나" 를 판정한다.
+      // ⚠ rec.updatedAt 이 __when 칸으로 들어가므로, 손대지 않은 레코드는 열 때와 같은 값이 나온다
+      //   (시트에서 읽은 레코드에는 updatedAt 이 없고, __ljTouch 를 거쳐야 생긴다).
+      function __ljColSig(rec) {
+        try { return JSON.stringify(__ljRecCol(rec, __ljCalc(rec))); } catch (_) { return ""; }
+      }
+      // 저장 = **구글시트의 그 열을 다시 쓴다** (2026-09-28). 로컬에는 남기지 않는다.
+      // ⚠ 실패가 조용히 묻히면 안 된다 — 적은 것이 사라진 줄도 모른다. 상태줄에 빨갛게 남긴다.
       function __ljFlush() {
         clearTimeout(__ljState.saveTimer);
         const rec = __ljState.rec;
         if (!rec) return;
+        const sid = __ljState.sid;
+        const st = () => document.getElementById("ljStatus");
+        if (!sid || rec.ci == null) {
+          const e = st();
+          if (e) { e.textContent = "시트를 몰라 저장 못 함"; e.style.color = "#b3261e"; }
+          return;
+        }
         const snap = { ...rec };
-        __ljPut(snap)
+        // 시트에 자리가 모자라면 늘린다(입력 도구까지 같이 심는다) — 100칸을 다 쓰면 50칸씩
+        if (rec.ci + 1 >= 2 + __LJ_BLANK_COLS) {
+          __ljGrowCols(sid, String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec.ci)
+            .catch((e) => console.warn("[lj] 입력 칸 늘리기 실패(무시):", e?.result?.error?.message || e?.message || e));
+        }
+        // ⚠ 바뀐 게 없으면 **쓰지 않는다.** 열을 통째로 다시 쓰는 방식이라, 그냥 열어 보고
+        //   뒤로 가기만 해도 그 사이 시트에서 고쳐진 값을 덮어 버린다(2026-09-28 실측).
+        const sig = __ljColSig(snap);
+        if (sig === __ljState.sig) {
+          const e = st();
+          if (e && __ljState.view === "form") { e.textContent = "바뀐 것 없음"; e.style.color = "#5a5a5a"; }
+          return;
+        }
+        __ljWriteCol(sid, snap)
           .then(() => {
             __ljState.savedOnce = true;
-            __ljSync(snap); // 드라이브 자동 백업
+            __ljState.sig = sig; // 방금 쓴 내용이 새 기준
+            __ljSheetCache.delete(String(rec.sgg5)); // 다음 목록은 시트에서 새로 읽는다
             __ljDraftClear();
-            const st = document.getElementById("ljStatus");
-            if (st && __ljState.view === "form") {
-              st.textContent = "저장됨 " + (__ljWhen(snap.updatedAt).split(" ")[1] || "");
-              st.style.color = "#0d652d";
+            const e = st();
+            if (e && __ljState.view === "form") {
+              e.textContent = "시트에 저장됨 " + (__ljWhen(snap.updatedAt).split(" ")[1] || "");
+              e.style.color = "#0d652d";
             }
           })
-          .catch((e) => console.warn("[lj] 저장 실패:", e));
+          .catch((err) => {
+            console.warn("[lj] 시트 저장 실패:", err?.result?.error?.message || err?.message || err);
+            const e = st();
+            if (e) { e.textContent = "⚠ 시트 저장 실패 — 다시 시도하세요"; e.style.color = "#b3261e"; }
+          });
       }
       document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") __ljFlush(); });
       window.addEventListener("pagehide", () => __ljFlush());
@@ -25670,26 +25676,35 @@ const originalBase64 = event.target.result;
         const rec = __ljState.rec;
         if (!rec) return;
         if (__ljState.isNew && __ljBlank(rec, __ljState.seed)) {
-          clearTimeout(__ljState.saveTimer);
+          clearTimeout(__ljState.saveTimer); // 아직 안 나간 저장 예약을 먼저 끊는다
           __ljDraftClear();
           try {
-            if (__ljState.savedOnce) {
-              // 쓰다 지운 경우 — 이미 드라이브에 올라갔을 수 있어 삭제 표시를 남긴다
-              const now = Date.now();
-              const dead = { ...rec, deletedAt: now, updatedAt: now };
-              await __ljPut(dead);
-              __ljSync(dead);
-            } else {
-              await __ljHardDelete(rec.id); // 한 번도 저장된 적 없음 → 흔적 없이
+            // ⚠ 이제 원본은 시트다. 로컬을 지우는 것으로는 아무 일도 일어나지 않는다 —
+            //   메모를 치는 순간 이미 시트에 열이 써졌기 때문에, 그 **열을 비워야** 한다.
+            //   (2026-09-28 실측: 메모를 쓰다 지우고 나갔는데 "(내용 없음)" 으로 남았다)
+            if (__ljState.savedOnce && __ljState.sid && rec.ci != null) {
+              const c = __ljColA1(rec.ci + 1);
+              await gapi.client.sheets.spreadsheets.values.clear({
+                spreadsheetId: __ljState.sid,
+                range: `'매물'!${c}1:${c}${__LJ_SHEET_ROWS.length}`,
+                resource: {},
+              });
+              __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
+              console.log("[lj] 빈 새 기록 취소 — 시트 열 비움:", c);
             }
-          } catch (_) {}
+          } catch (e) {
+            console.warn("[lj] 빈 기록 취소 실패(그대로 둠):", e?.result?.error?.message || e?.message || e);
+          }
           __ljState.rec = null;
           __ljState.isNew = false;
           __ljState.seed = null;
           __ljState.savedOnce = false;
+          __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
           return;
         }
         __ljFlush();
+        // 목록으로 돌아갈 때는 시트를 다시 보게 한다 — 그 사이 파트너가 고쳤을 수 있다
+        __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
       }
 
       // ── 탭 전환 ──
@@ -25802,12 +25817,17 @@ const originalBase64 = event.target.result;
           return;
         }
         __ljActivate(true);
+        // ⚠ 시트를 읽는 동안 화면이 비어 있으면 **눌린 건지 로딩인지 알 수 없다**(2026-09-28 사용자 지적).
+        //   목록을 그리기 전에 먼저 "읽는 중" 을 띄운다.
+        __ljPaintLoading();
         await __ljRenderList();
         const rowsAtOpen = (await __ljByApt(__ljState.ctx?.aptId).catch(() => [])).length;
         // 다른 기기에서 적은 매물 받아 오기 — 화면은 먼저 띄우고 뒤에서 조용히
         const sgg5 = __ljState.ctx?.sgg5;
         if (sgg5) {
-          const pulling = __ljPullRegion(sgg5); // 부르는 순간 __ljPull.busy 가 켜진다
+          // ⚠ 옛 경로(드라이브 listings/ 내려받기)는 더 이상 목록의 근거가 아니다 — 원본은 시트다.
+          //   사진 선받기만 남긴다. listings/ 동기화 코드는 다음 단계에서 통째로 들어낸다.
+          const pulling = Promise.resolve(0);
           const here = () => __ljState.active && String(__ljState.aptId) === String(aptId);
           // 목록이 비어 있으면 "받는 중…" 이 보이게 한 번 더 그린다
           if (!rowsAtOpen && here() && __ljState.view === "list") __ljRenderList().catch(() => {});
@@ -25842,8 +25862,31 @@ const originalBase64 = event.target.result;
             })
             .catch(() => {});
         }
-        // 시트에서 이 단지를 고친 게 있으면 팝업으로 묻는다 (화면을 가리지 않게 뒤에서)
-        __ljAutoCheck(__ljState.ctx).catch(() => {});
+        // ⚠ 시트↔홍부 대조는 없앴다 (2026-09-28). 원본이 시트 하나뿐이라 견줄 상대가 없다.
+      }
+      // 탭 버튼의 건수 배지. 시트를 다시 읽지 않고 이미 아는 수로 바로 고친다.
+      function __ljSetBadge(n) {
+        const btn = document.getElementById("ljTabBtn");
+        if (btn) btn.textContent = n ? `🏠 매물임장 ${n}` : "🏠 매물임장";
+      }
+      // 시트를 읽는 동안 보여 주는 화면. 목록이 그려지면 덮인다.
+      function __ljPaintLoading() {
+        const panel = __ljPanelEl();
+        if (!panel) return;
+        const ttl = panel.querySelector("#ljTitle");
+        if (ttl) ttl.textContent = "매물임장";
+        const st = panel.querySelector("#ljStatus");
+        if (st) { st.textContent = "구글시트 읽는 중…"; st.style.color = "#8a6d1f"; }
+        const body = panel.querySelector("#ljBody");
+        if (body) {
+          body.innerHTML = "";
+          const p = document.createElement("p");
+          p.className = "lj-loading";
+          p.textContent = "구글시트를 읽고 있습니다…";
+          body.appendChild(p);
+        }
+        const foot = panel.querySelector("#ljFoot");
+        if (foot) foot.innerHTML = "";
       }
       async function __ljRenderList() {
         __ljState.view = "list";
@@ -25864,6 +25907,9 @@ const originalBase64 = event.target.result;
           st.textContent = `매물 ${rows.length}건`;
           st.style.color = "#5a5a5a";
         }
+        // 탭 배지도 여기서 맞춘다 — 목록을 그리는 곳이 건수를 아는 유일한 자리라,
+        // 새로 만들거나 지우거나 빈 기록을 취소해도 전부 이 경로를 지난다 (2026-09-28 사용자 요청).
+        __ljSetBadge(rows.length);
         const sub = q("#ljSub");
         if (sub) {
           sub.textContent = [
@@ -25879,13 +25925,10 @@ const originalBase64 = event.target.result;
         if (!rows.length) {
           const p = document.createElement("p");
           p.style.cssText = "margin:30px 4px;color:#777;font-size:13.5px;line-height:1.7;text-align:center;white-space:pre-line";
-          // ⚠ "정말 0건" 과 "드라이브에서 못 받아 왔다" 를 구분해서 적는다.
-          //    예전엔 둘 다 "아직 기록한 매물이 없습니다" 라 원인을 볼 수 없었다
-          //    (2026-09-28: 다른 브라우저에서 메모조차 안 보이는데 이유를 알 수 없었다).
-          if (__ljPull.busy) {
-            p.textContent = "드라이브에서 받아 오는 중…";
-          } else if (__ljPull.why) {
-            p.textContent = __ljPull.why + "\n\n( 다시 시도: 콘솔에서 __lj.pull() )";
+          // ⚠ "정말 0건" 과 "시트를 못 읽었다" 를 구분해서 적는다.
+          //    예전엔 둘 다 "아직 기록한 매물이 없습니다" 라 원인을 볼 수 없었다.
+          if (__ljState.why) {
+            p.textContent = __ljState.why;
             p.style.color = "#9a5b1f";
           } else {
             p.textContent = "아직 기록한 매물이 없습니다.\n아래 ＋ 버튼으로 시작하세요.";
@@ -25902,60 +25945,28 @@ const originalBase64 = event.target.result;
         bNew.className = "lj-btn pri";
         bNew.textContent = "＋ 새 매물 기록";
         bNew.onclick = () => __ljNew();
+        // 📄 시트 보기 = **유일한 시트 진입점** (2026-09-28 사용자 확정).
+        // 있으면 열고, 없으면 만들어서 연다. 내보내기는 없앴다 — 시트가 원본이므로
+        // 홍부가 시트를 통째로 덮어쓰는 동작 자체가 없다.
         const bView = document.createElement("button");
         bView.type = "button";
         bView.className = "lj-btn";
         bView.textContent = "📄 구글시트 보기";
-        bView.onclick = () => __ljViewSheet(); // 열기만 — 아무것도 쓰지 않는다
-        const bExp = document.createElement("button");
-        bExp.type = "button";
-        bExp.className = "lj-btn";
-        bExp.id = "ljExportBtn";
-        bExp.textContent = "📊 구글시트로 내보내기";
-        bExp.onclick = () => __ljExportChoose();
-        const bImp = document.createElement("button");
-        bImp.type = "button";
-        bImp.className = "lj-btn";
-        bImp.textContent = "📥 시트와 수동 비교";
-        bImp.onclick = () => __ljImport();
+        bView.onclick = () => __ljViewSheet();
+        const bShot = document.createElement("button");
+        bShot.type = "button";
+        bShot.className = "lj-btn";
+        bShot.textContent = "🖼 사진 시트 올리기";
+        bShot.onclick = () => __ljShotSheetsOnly();
         foot.appendChild(bNew);
-        // 📄 보기 버튼은 **이 시군구 시트가 있을 때만**. 기억이 있으면 바로 붙이고(클릭 즉시 열려야
-        // 팝업 차단에 안 걸린다), 없으면 뒤에서 드라이브를 확인한 뒤 붙인다.
-        if (__ljSheetIdCached(ctx.sgg5)) foot.appendChild(bView);
-        foot.appendChild(bExp);
-        foot.appendChild(bImp);
-        __ljSyncViewBtn(ctx, foot, bView, bExp);
+        foot.appendChild(bView);
+        foot.appendChild(bShot);
       }
 
       // ⚠ localStorage 를 그대로 믿지 않는다 — **이번 세션에 이름까지 확인한** 것만 쓴다.
       //    (예전 판은 느슨한 검색 결과를 그대로 기억해 다른 시군구 id 가 들어 있을 수 있다)
       function __ljSheetIdCached(sgg5) {
         return sgg5 ? __ljSheetOk.get(String(sgg5)) || "" : "";
-      }
-      // 시트 유무를 드라이브에서 확정해 '구글시트 보기' 버튼을 넣거나 뺀다(화면은 이미 떠 있다).
-      // 2026-09-27 사용자 요청: 시트를 만든 적 없는 시군구에서는 버튼 자체를 보여 주지 않는다.
-      // __ljFindSheetId 가 엉뚱하게 기억된 id 도 이 과정에서 지운다.
-      async function __ljSyncViewBtn(ctx, foot, bView, bExp) {
-        if (!ctx?.sgg5) { bView.remove(); return; }
-        if (!(window.__gdriveReady && window.__gdriveAccessToken)) return; // 로그인 전이면 판단 보류
-        let sid = "";
-        try {
-          sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
-        } catch (e) {
-          console.warn("[lj] 시트 유무 확인 실패(버튼 그대로):", e?.result?.error?.message || e?.message || e);
-          return;
-        }
-        // 그새 다른 단지로 옮겼거나 화면이 다시 그려졌으면 손대지 않는다.
-        // ⚠ `foot.isConnected` 만으로는 부족하다 — #ljFoot 은 그대로 있고 **안의 버튼만** 갈리기 때문이다.
-        //   그때 옛 bExp 를 기준으로 insertBefore 하면 NotFoundError 로 죽는다(2026-09-28 실측).
-        //   기준 버튼이 아직 이 foot 의 자식인지까지 봐야 한다. 아니면 새로 그린 쪽이 알아서 처리한다.
-        if (!foot.isConnected || bExp.parentNode !== foot) return;
-        if (String(__ljState.ctx?.aptId) !== String(ctx.aptId)) return;
-        if (sid) {
-          if (!bView.isConnected) foot.insertBefore(bView, bExp);
-        } else {
-          bView.remove();
-        }
       }
 
       // 줄바꿈·연속 공백을 한 칸으로 줄이고 앞부분만 (목록 한 줄에 담기게)
@@ -25964,30 +25975,6 @@ const originalBase64 = event.target.result;
         return t.length > n ? t.slice(0, n) + "…" : t;
       }
 
-      // 두 글에서 **달라진 부분만** 잘라 낸다.
-      // ⚠ 앞부분만 잘라 보여 주면 긴 메모는 앞이 똑같아서 "…" 두 개만 보이고
-      //    정작 뭐가 바뀌었는지 알 수 없다(2026-09-27 사용자 보고).
-      //    같은 앞·뒤를 걷어내고 바뀐 자리 둘레만 남긴다.
-      function __ljDiffParts(from, to, pad, max) {
-        const norm = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
-        const a = norm(from);
-        const b = norm(to);
-        const P = pad || 8;
-        const M = max || 70;
-        let s = 0;
-        while (s < a.length && s < b.length && a[s] === b[s]) s++;
-        let e = 0;
-        while (e < a.length - s && e < b.length - s && a[a.length - 1 - e] === b[b.length - 1 - e]) e++;
-        const cut = (t) => {
-          const st = Math.max(0, s - P);
-          const en = Math.min(t.length, t.length - e + P);
-          let mid = t.slice(st, en);
-          let tailCut = en < t.length;
-          if (mid.length > M) { mid = mid.slice(0, M); tailCut = true; }
-          return (st > 0 ? "…" : "") + mid + (tailCut ? "…" : "");
-        };
-        return { from: cut(a), to: cut(b) };
-      }
 
       function __ljCardEl(r) {
         const c = __ljCalc(r);
@@ -26059,6 +26046,16 @@ const originalBase64 = event.target.result;
       }
 
       function __ljNew() {
+        // ⚠ 시트가 없으면 적을 곳이 없다. 폼을 열어 줘 봐야 저장할 때 실패하므로 미리 막는다
+        //   (2026-09-28 사용자 요청). 시트는 '구글시트 보기' 가 만든다.
+        if (!__ljState.sid) {
+          alert(
+            "이 시군구의 구글시트가 아직 없습니다.\n\n" +
+            "아래 '📄 구글시트 보기' 를 먼저 눌러 시트를 만들어 주세요.\n" +
+            "(단지정보 표를 받아야 해서 처음 한 번은 1~2분 걸립니다)"
+          );
+          return;
+        }
         const ctx = __ljState.ctx;
         const now = Date.now();
         const pys = __ljPyeongOpts(ctx);
@@ -26096,26 +26093,41 @@ const originalBase64 = event.target.result;
           const o = __ljTypeOpts(ctx, k, rec.pyeong);
           if (o.length === 1) rec[k] = o[0];
         }
+        // 시트에서 쓸 자리(열)를 잡아 둔다 — 지금 쓰고 있는 열들 다음 칸.
+        // ⚠ ci 가 없으면 저장할 곳을 모른다(__ljFlush 가 거부한다).
+        rec.ci = __ljNextCol();
         __ljState.rec = rec;
         __ljState.isNew = true;
         __ljState.savedOnce = false;
+        __ljState.sig = __ljColSig(rec); // 아직 아무것도 안 쓴 상태가 기준
         __ljState.seed = __ljSeedOf(rec); // 여기서 넣어 준 값 = "사용자가 쓴 것이 아님"의 기준
         // 여기서는 저장하지 않는다 — 아무것도 안 쓰고 나가면 기록 자체가 없던 일이 되어야 한다
         __ljRenderForm();
       }
+      // 시트에서 비어 있는 첫 열. 이 시군구 시트에 이미 쓰인 열 다음 칸을 쓴다.
+      function __ljNextCol() {
+        const c = __ljSheetCache.get(String(__ljState.ctx?.sgg5 || ""));
+        let max = 1; // A·B 는 묶음·항목명
+        for (const r of c?.recs || []) if (Number(r.ci) > max) max = Number(r.ci);
+        return max + 1;
+      }
 
       async function __ljEdit(id) {
-        const rec = (await __ljAll()).find((x) => x.id === id);
+        // ⚠ 반드시 **시트를 새로 읽는다**(force). 캐시된 옛 값으로 폼을 열면, 저장할 때 그 열을
+        //   통째로 다시 쓰므로 그 사이 파트너가 시트에서 고친 것을 덮어 버린다
+        //   (2026-09-28 실측: 모달을 다시 띄우기 전까지 홍부 값이 시트를 계속 엎었다).
+        const st = document.getElementById("ljStatus");
+        if (st) { st.textContent = "시트에서 읽는 중…"; st.style.color = "#5a5a5a"; }
+        const rec = (await __ljByApt(__ljState.ctx?.aptId, true)).find((x) => x.id === id);
         if (!rec) {
           alert("매물을 찾을 수 없습니다.");
           return;
         }
-        const d = __ljDraftGet();
-        if (d?.rec?.id === id && (d.rec.updatedAt || 0) > (rec.updatedAt || 0)) Object.assign(rec, d.rec);
         __ljState.rec = rec;
         __ljState.isNew = false;
         __ljState.seed = null;
         __ljState.savedOnce = true;
+        __ljState.sig = __ljColSig(rec); // 지금 시트에 있는 모습 = 안 바뀐 기준
         __ljRenderForm();
       }
 
@@ -26194,9 +26206,29 @@ const originalBase64 = event.target.result;
           r.readAsDataURL(file);
         });
       }
+      // 사진 시트(매물별 탭)를 이 매물 기준으로 맞춘다 — 사진을 넣거나 지우면 자동으로 부른다
+      // (2026-09-28 사용자 요청). 화면을 막지 않고 뒤에서 돌리되, 결과는 상태줄에 남긴다.
+      async function __ljSyncShotSheet(rec) {
+        const sid = __ljState.sid;
+        if (!sid || !rec) return;
+        const st = () => document.getElementById("ljStatus");
+        const show = (t, c) => { const e = st(); if (e && __ljState.view === "form") { e.textContent = t; e.style.color = c; } };
+        show("사진 시트 맞추는 중…", "#8a6d1f");
+        console.log(`[lj] 사진 시트 갱신 시작 — ${rec.id} (사진 ${__ljShots(rec).length}장)`);
+        try {
+          const r = await __ljWriteShotSheets(sid, [rec], () => {});
+          console.log(`[lj] 사진 시트 갱신 끝 — 탭 ${r.sheets} · 사진 ${r.photos} · 비움 ${r.cleared || 0} · 건너뜀 ${r.skipped || 0}`);
+          show(r.sheets ? `사진 시트 갱신됨 (${r.photos}장)` : r.cleared ? "사진 시트 비움" : "사진 시트 변경 없음", "#0d652d");
+        } catch (e) {
+          console.error("[lj] 사진 시트 갱신 실패:", e);
+          show("⚠ 사진 시트 갱신 실패", "#b3261e");
+        }
+      }
+      // 사진은 시트에 담기는 항목이 아니다 — 드라이브에 이미 올렸거나 지웠으므로 화면만 다시 그린다.
       function __ljShotCommit(rec, reveal) {
         rec.updatedAt = Date.now();
-        __ljFlush(); // 디바운스 없이 즉시 IDB 확정 + 드라이브 큐
+        __ljSheetCache.delete(String(rec.sgg5 || "")); // 다음 목록에서 사진 수가 맞게
+        __ljSyncShotSheet(rec).catch(() => {}); // 사진 시트도 따라가게 (뒤에서)
         if (__ljState.view !== "form") return;
         __ljRenderForm();
         // 방금 넣은 사진이 화면 밖이면 보이게 — 표가 길어서 사진 줄이 접혀 있을 때가 많다
@@ -26226,6 +26258,8 @@ const originalBase64 = event.target.result;
             const used = new Set(__ljShots(rec).map((it) => Number(it.addedAt)));
             let at = Date.now();
             while (used.has(at)) at++;
+            // 드라이브에 **먼저 올린다**. 로컬에 쌓아 둘 곳이 없으므로, 못 올리면 그 사진은 없는 것이다.
+            await __ljUploadShot(rec, at, data);
             rec.photos.push({ addedAt: at, data });
             added++;
           } catch (e) {
@@ -26287,11 +26321,17 @@ const originalBase64 = event.target.result;
           }
         });
         mk("📁 파일", "", () => fileIn.click());
-        mk("🗑 사진 초기화", "dng", () => {
+        mk("🗑 사진 초기화", "dng", async () => {
           const cur = __ljState.rec;
-          const n = __ljShots(cur).length;
-          if (!n) { alert("이 매물에 사진이 없습니다."); return; }
-          if (!confirm(`이 매물의 사진 ${n}장을 모두 지웁니다.`)) return;
+          const list = __ljShots(cur);
+          if (!list.length) { alert("이 매물에 사진이 없습니다."); return; }
+          if (!confirm(`이 매물의 사진 ${list.length}장을 모두 지웁니다.`)) return;
+          try {
+            await __ljRemoveAllShotFiles(cur); // 드라이브가 원본이다 — 이름으로 훑어 남김없이
+          } catch (e) {
+            alert("사진을 지우지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+            return;
+          }
           cur.photos = [];
           __ljShotCommit(cur);
         });
@@ -26340,10 +26380,16 @@ const originalBase64 = event.target.result;
           x.className = "lj-shot-x";
           x.textContent = "✕";
           x.title = "이 사진 삭제";
-          x.onclick = (e) => {
+          x.onclick = async (e) => {
             e.stopPropagation();
             if (!confirm("사진을 삭제합니다")) return;
             const cur = __ljState.rec;
+            try {
+              await __ljRemoveShotFile(cur, it.addedAt); // 드라이브에서 먼저 지운다
+            } catch (err) {
+              alert("사진을 지우지 못했습니다.\n" + (err?.result?.error?.message || err?.message || err));
+              return;
+            }
             cur.photos = __ljShots(cur).filter((p) => Number(p.addedAt) !== Number(it.addedAt));
             __ljShotCommit(cur);
           };
@@ -26389,6 +26435,30 @@ const originalBase64 = event.target.result;
         rec.autoFilled = rec.autoFilled.filter((x) => x !== k);
       }
 
+      // 클립보드 복사. navigator.clipboard 는 https·localhost 에서만 되고 안드로이드 웹뷰에서
+      // 막히는 경우가 있어, 안 되면 옛 방식(숨은 textarea + execCommand)으로 한 번 더 시도한다.
+      async function __ljCopy(text) {
+        try {
+          if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
+        } catch (e) {
+          console.warn("[lj] 클립보드 실패, 옛 방식으로 재시도:", e?.message || e);
+        }
+        try {
+          const t = document.createElement("textarea");
+          t.value = text;
+          t.setAttribute("readonly", "");
+          t.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+          document.body.appendChild(t);
+          t.select();
+          t.setSelectionRange(0, t.value.length); // iOS 는 이게 있어야 잡힌다
+          const ok = document.execCommand("copy");
+          t.remove();
+          return ok;
+        } catch (e) {
+          console.warn("[lj] 클립보드 복사 실패:", e?.message || e);
+          return false;
+        }
+      }
       function __ljRowEl(f, ctx, rec, grp) {
         const tr = document.createElement("tr");
         if (grp) {
@@ -26437,6 +26507,16 @@ const originalBase64 = event.target.result;
             ta.style.height = Math.min(ta.scrollHeight, 100) + "px";
           };
           ta.addEventListener("input", () => { rec[f.k] = ta.value; fit(); __ljTouch(); });
+          // 칸에 들어오면 커서를 맨 뒤로 — 임장 중에는 대개 뒤에 덧붙인다 (2026-09-28 사용자 요청).
+          // ⚠ focus 에서만 한다. click 까지 잡으면 **글 중간을 고칠 방법이 없어진다** —
+          //   한 번 들어온 뒤의 탭은 그대로 두어 원하는 자리를 짚을 수 있게 남겨 둔다.
+          ta.addEventListener("focus", () => {
+            setTimeout(() => {
+              const n = ta.value.length;
+              try { ta.setSelectionRange(n, n); } catch (_) {}
+              ta.scrollTop = ta.scrollHeight;
+            }, 0); // 브라우저가 기본 커서 위치를 정한 **뒤** 라야 덮어쓸 수 있다
+          });
           // 메모 칸을 벗어날 때 적힌 내용을 읽어 빈 칸을 채운다 (메모 자체는 절대 안 고친다)
           ta.addEventListener("blur", () => {
             if (!__ljApplyMemo(rec, ctx).changed) return;
@@ -26444,6 +26524,19 @@ const originalBase64 = event.target.result;
             __ljRenderForm();
           });
           box.appendChild(ta);
+          // 메모를 클립보드로 (2026-09-28 사용자 요청) — 카톡·문자로 옮겨 적을 때 쓴다
+          const cp = document.createElement("button");
+          cp.type = "button";
+          cp.className = "lj-memo-copy";
+          cp.textContent = "📋 복사";
+          cp.onclick = async () => {
+            const t = ta.value;
+            if (!t.trim()) { cp.textContent = "복사할 내용 없음"; setTimeout(() => (cp.textContent = "📋 복사"), 1200); return; }
+            const ok = await __ljCopy(t);
+            cp.textContent = ok ? "✅ 복사됨" : "복사 실패";
+            setTimeout(() => (cp.textContent = "📋 복사"), 1200);
+          };
+          box.appendChild(cp);
           td.appendChild(box);
           setTimeout(fit, 0); // DOM 에 붙은 뒤라야 scrollHeight 가 나온다
         } else {
@@ -26542,14 +26635,50 @@ const originalBase64 = event.target.result;
         if (r) r.textContent = __ljPct(c.jeonseRatio);
       }
 
+      // 삭제 = 시트의 그 **열을 비운다**.
+      // ⚠ 열을 실제로 지우면 오른쪽 열이 전부 왼쪽으로 밀린다 — 파트너가 같은 시트를 보고 있으면
+      //   엉뚱한 칸을 고치게 된다(2026-09-28 사용자 확정). 값만 비우면 그 자리가 다시 입력 칸이 된다.
+      // 이 매물의 사진 탭을 시트에서 통째로 지운다. 탭은 B2 의 기록ID 로 알아본다.
+      async function __ljDeleteShotSheet(sid, recId) {
+        try {
+          const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+          const props = (meta.result.sheets || []).map((s) => s.properties);
+          const others = props.filter((p) => p.sheetId !== props[0]?.sheetId);
+          if (!others.length) return;
+          const r = await gapi.client.sheets.spreadsheets.values.batchGet({
+            spreadsheetId: sid, ranges: others.map((p) => `'${p.title}'!B2`),
+          });
+          const hit = (r.result.valueRanges || []).findIndex((vr) => String(vr.values?.[0]?.[0] ?? "").trim() === String(recId));
+          if (hit < 0) return;
+          await gapi.client.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sid, resource: { requests: [{ deleteSheet: { sheetId: others[hit].sheetId } }] },
+          });
+          console.log("[lj] 사진 탭 삭제:", others[hit].title);
+        } catch (e) {
+          console.warn("[lj] 사진 탭 삭제 실패(무시):", e?.result?.error?.message || e?.message || e);
+        }
+      }
       async function __ljDelete(id) {
-        if (!confirm("이 매물 기록을 삭제할까요?\n(구글시트로 다시 내보내면 시트에서도 빠집니다)")) return;
-        const rec = (await __ljAll(true)).find((x) => x.id === id);
-        if (rec) {
-          rec.deletedAt = Date.now();
-          rec.updatedAt = rec.deletedAt;
-          await __ljPut(rec);
-          __ljSync(rec);
+        if (!confirm("이 매물 기록을 삭제할까요?\n구글시트의 그 칸과 사진·사진 탭도 함께 지웁니다.")) return;
+        const rec = (await __ljByApt(__ljState.ctx?.aptId, true)).find((x) => x.id === id); // 열 번호가 바뀌었을 수 있다
+        const sid = __ljState.sid;
+        if (rec && sid) {
+          // ⚠ 사진 원본과 사진 탭을 **먼저** 치운다. 열을 비운 뒤에는 기록ID 를 잃어 둘 다 못 찾는다.
+          try { await __ljRemoveAllShotFiles(rec); } catch (e) { console.warn("[lj] 사진 원본 정리 실패(무시):", e?.message || e); }
+          await __ljDeleteShotSheet(sid, rec.id);
+        }
+        if (rec && sid && rec.ci != null) {
+          try {
+            const c = __ljColA1(rec.ci + 1);
+            await gapi.client.sheets.spreadsheets.values.clear({
+              spreadsheetId: sid, range: `'매물'!${c}1:${c}${__LJ_SHEET_ROWS.length}`, resource: {},
+            });
+            __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
+          } catch (e) {
+            console.error("[lj] 시트에서 지우기 실패:", e);
+            alert("시트에서 지우지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+            return;
+          }
         }
         __ljState.rec = null;
         __ljDraftClear();
@@ -26669,9 +26798,19 @@ const originalBase64 = event.target.result;
         const id = aptId || __ljState.aptId || document.getElementById("apartmentInfo")?.getAttribute("data-id");
         if (!id) return;
         try {
-          const n = (await __ljByApt(id)).length;
-          btn.textContent = n ? `🏠 매물임장 ${n}` : "🏠 매물임장";
-        } catch (_) {}
+          // ⚠ 이 단지의 ctx 로 읽어야 한다. __ljState.ctx 는 아직 **직전에 보던 단지** 것이라,
+          //   그대로 쓰면 엉뚱한 시군구 시트를 읽어 건수가 0 으로 나온다 (2026-09-28 실측).
+          const ctx = await __ljCtxFor(id);
+          if (!ctx.sgg5) return; // 시군구를 모르면 셀 수 없다 — 배지는 그냥 두고 조용히 넘어간다
+          // ⚠ 이 읽기가 곧 **선로드**다. 단지를 누르는 순간 시트를 받아 두므로, 탭을 눌렀을 때
+          //   대개 캐시로 바로 뜬다. 같은 시군구를 동시에 두 번 읽지 않게 __ljReadRegion 이 묶는다.
+          const n = (await __ljByApt(id, false, ctx)).length;
+          // 그새 다른 단지로 옮겼으면 그 단지의 배지를 덮어쓰면 안 된다
+          if (String(__ljState.aptId || id) !== String(id)) return;
+          __ljSetBadge(n);
+        } catch (e) {
+          console.warn("[lj] 배지 갱신 실패(무시):", e?.result?.error?.message || e?.message || e);
+        }
       }
 
       // ── 구글시트 내보내기 (시군구 단위, 전체 재작성) ──
@@ -26695,36 +26834,7 @@ const originalBase64 = event.target.result;
         const p = (n) => String(n).padStart(2, "0");
         return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
       }
-      // 시트의 기록일시를 되읽는다. 옛 시트의 한국어 표기도 받아 준다. 못 읽으면 0.
-      function __ljParseWhen(s) {
-        const t = String(s ?? "").trim();
-        if (!t) return 0;
-        // 'Z' 나 +09:00 같은 시간대 표시가 붙어 있으면(드라이브 modifiedTime 이 그렇다) Date.parse 에 맡긴다.
-        // 아래 regex 로 읽으면 UTC 를 지역시각으로 착각해 9시간 어긋난다.
-        if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(t)) {
-          const iso = Date.parse(t);
-          if (!Number.isNaN(iso)) return iso;
-        }
-        let m = t.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
-        if (m) return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime();
-        m = t.match(/^(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.\s*(오전|오후)\s*(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-        if (m) {
-          let h = +m[5] % 12;
-          if (m[4] === "오후") h += 12;
-          return new Date(+m[1], +m[2] - 1, +m[3], h, +m[6], +(m[7] || 0)).getTime();
-        }
-        const n = Date.parse(t);
-        return Number.isNaN(n) ? 0 : n;
-      }
 
-      // ⚠ 시트 기록일시는 **초 단위까지만** 적힌다(밀리초가 없다).
-      // 그대로 비교하면 같은 시각인데도 홍부 쪽 밀리초 때문에 늘 "홍부가 최신" 이 되어
-      // 시트에서 고친 것을 하나도 못 가져온다(2026-09-27 실측: 10:47:01 > 10:47:01).
-      // 그래서 둘 다 초로 내려서 비교한다.
-      function __ljHongbuNewer(recTs, sheetTs) {
-        if (!recTs || !sheetTs) return false;
-        return Math.floor(recTs / 1000) > Math.floor(sheetTs / 1000);
-      }
 
       function __ljColA1(n) {
         let s = "";
@@ -26745,6 +26855,7 @@ const originalBase64 = event.target.result;
           case "__when":
             return __ljWhenOut(r.updatedAt || r.createdAt);
           case "__id": return r.id || "";
+          case "__aptCode": return __ljNum(r.aptId) ?? (r.aptId || "");
           default: return r[k] || "";
         }
       }
@@ -26868,7 +26979,7 @@ const originalBase64 = event.target.result;
         if (idx.jeonseRatio != null) reqs.push(cell(idx.jeonseRatio, idx.jeonseRatio + 1, 2, C,
           { numberFormat: { type: "NUMBER", pattern: '0.00"%"' } }, "userEnteredFormat.numberFormat"));
         // 메타 2줄은 작고 흐리게
-        for (const k of ["__when", "__id"]) {
+        for (const k of ["__when", "__id", "__aptCode"]) {
           if (idx[k] != null) reqs.push(cell(idx[k], idx[k] + 1, 1, C,
             { textFormat: { fontSize: 8, bold: false, foregroundColor: __LJ_C.gray } }, "userEnteredFormat.textFormat"));
         }
@@ -27001,49 +27112,6 @@ const originalBase64 = event.target.result;
         return created.result.id;
       }
 
-      // ── 시트 수정 감지 ──
-      // Sheets API 는 **셀별 수정 시각을 주지 않는다**(리비전 이력도 시각·사용자만, 어느 셀인지는 없다).
-      // 대신 Drive 의 파일 단위 modifiedTime 은 쓸 수 있다. 우리가 쓴 직후의 값을 기억해 두면,
-      // 그 뒤에 값이 달라진 것 = 홍부 밖에서(사람이 시트에서) 고친 것이다.
-      async function __ljSheetMod(sid) {
-        try {
-          const r = await gapi.client.drive.files.get({ fileId: sid, fields: "modifiedTime" });
-          return String(r.result.modifiedTime || "");
-        } catch (e) {
-          console.warn("[lj] 시트 수정시각 확인 실패(무시):", e?.result?.error?.message || e?.message || e);
-          return "";
-        }
-      }
-      // 기준 두 개를 따로 둔다.
-      //  ① __ljSheetMod_{sgg5}  — '덮어쓰기 경고' 기준. **완전히 대조가 끝났을 때만** 갱신한다
-      //     (시트에 손으로 만든 열이 남아 있으면 갱신하지 않아 경고가 계속 뜬다).
-      //  ② __ljAsked_{aptId}  — 자동 대조가 '이미 물어본 변경'. 시각이 아니라 **변경 내용의 서명**이다
-      //     (= 나중에 누르면 조용해지고, 시트를 또 고치면 다시 묻는다).
-      function __ljModKey(sgg5) { return "__ljSheetMod_" + sgg5; }
-      function __ljModGet(sgg5) { try { return localStorage.getItem(__ljModKey(sgg5)) || ""; } catch (_) { return ""; } }
-      function __ljModSet(sgg5, v) { try { if (v) localStorage.setItem(__ljModKey(sgg5), v); } catch (_) {} }
-      // ⚠ '이미 물어본 변경' 은 **내용으로** 기억한다. 시트 파일의 modifiedTime 으로 판단하면 안 된다 —
-      //    구글 시트는 셀을 고쳐도 Drive 수정시각이 바로 갱신되지 않는다
-      //    (2026-09-27 실측: 시트를 고치고 두 번 확인하는 동안 02:07:45.960Z 로 계속 같았다).
-      //    그래서 자동 대조는 탭을 열 때마다 실제로 읽고, 같은 변경을 또 묻지만 않게 한다.
-      function __ljHash(s) {
-        let h = 5381;
-        for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-        return String(h);
-      }
-      function __ljDiffSig(diffs) {
-        return __ljHash(
-          (diffs || []).map((d) => d.rec.id + ":" + d.changes.map((c) => c.k + "=" + c.to).join("|")).sort().join("~")
-        );
-      }
-      function __ljAskedKey(aptId) { return "__ljAsked_" + aptId; }
-      function __ljAskedGet(aptId) { try { return localStorage.getItem(__ljAskedKey(aptId)) || ""; } catch (_) { return ""; } }
-      function __ljAskedSet(aptId, v) { try { localStorage.setItem(__ljAskedKey(aptId), v || ""); } catch (_) {} }
-      function __ljModWhen(iso) {
-        if (!iso) return "";
-        const d = new Date(iso);
-        return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("ko-KR");
-      }
 
       // 시트를 세로 배치로 읽는다.
       //   null = 우리 배치가 아니다(다른 형식)
@@ -27070,15 +27138,27 @@ const originalBase64 = event.target.result;
           for (const a of f.alt || []) if (rowOf.has(a)) return rowOf.get(a);
           return -1;
         });
-        if (at.some((i) => i < 0)) return null; // 우리 표의 항목이 빠져 있다 → 다른 형식
+        // ⚠ 예전엔 **한 줄이라도 없으면 "다른 형식"** 으로 거부했다. 그러면 항목을 하나
+        //    추가하는 순간 이미 만들어 둔 시트가 통째로 안 읽힌다. 배치를 가리는 데 꼭 필요한
+        //    항목만 필수로 보고, 나머지는 없으면 빈값으로 읽는다 (2026-09-28).
+        const missReq = __LJ_SHEET_ROWS.filter((f, i) => at[i] < 0 && __LJ_SHEET_REQ.includes(f.k));
+        if (missReq.length) {
+          console.log("[lj] 우리 배치가 아님 — 없는 항목:", missReq.map((f) => f.lb).join(", "));
+          return null;
+        }
+        const missOpt = __LJ_SHEET_ROWS.filter((f, i) => at[i] < 0);
+        if (missOpt.length) console.log("[lj] 시트에 없는 항목(빈값으로 읽음):", missOpt.map((f) => f.lb).join(", "));
 
         const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
         const width = vals.reduce((m, r) => Math.max(m, r.length), 0);
         const out = [];
+        const all = []; // 기록ID 유무와 상관없이 값이 있는 열 전부 (시트를 원본으로 읽을 때 쓴다)
         let noId = 0;
         for (let c = 2; c < width; c++) {
-          // col 은 시트 순서가 아니라 **우리 표 순서**로 맞춰 담는다
-          const col = at.map((i) => vals[i]?.[c] ?? "");
+          // col 은 시트 순서가 아니라 **우리 표 순서**로 맞춰 담는다.
+          // 시트에 없는 항목(-1)은 빈값 — 옛 시트에 새 항목을 더해도 읽히게.
+          const col = at.map((i) => (i < 0 ? "" : vals[i]?.[c] ?? ""));
+          if (col.some((v) => String(v ?? "").trim() !== "")) all.push({ col, ci: c });
           const id = String(col[idRow] ?? "").trim();
           if (!id) {
             // 기록ID 없는 열 = 시트에서 손으로 만든 것. 완전히 빈 열은 세지 않는다.
@@ -27087,237 +27167,302 @@ const originalBase64 = event.target.result;
           }
           out.push({ id, col, ci: c });
         }
-        return { cols: out, noId };
+        return { cols: out, noId, all };
       }
-      // '이 단지만' 내보낼 때 — 다른 단지 열만 남긴다
-      async function __ljKeepOtherCols(sid, lastCol, lastRow, aptId) {
-        const read = await __ljReadSheet(sid, lastCol, lastRow);
-        if (read === null) return null;
-        return read.cols.filter((c) => __ljOwnerOf(c.id) !== String(aptId)).map((c) => c.col);
+      // 시트를 원본으로 읽을 때 — 기록ID 가 없는 열(파트너가 새로 적은 것)까지 전부 돌려준다
+      async function __ljReadSheetAll(sid, lastCol, lastRow) {
+        const r = await __ljReadSheet(sid, lastCol, lastRow);
+        return r === null ? null : r.all;
       }
 
       // ── 시트 → 홍부 (기존 매물의 수정분만) ──
       // 새로 만드는 것은 홍부에서만 한다(단방향). 시트에서 고친 **기존 기록**만 되가져온다(2026-09-27 사용자 확정).
       // 시트 셀에는 수정 시각이 안 찍혀 자동 병합이 위험하다 → **바뀐 항목을 보여 주고 확인받은 뒤** 반영한다.
       const __LJ_NUM_KEYS = new Set(["pyeong", "priceSale", "priceNego", "priceJeonse"]);
-      // 비교용 정규화 — 시트는 숫자로, 홍부는 "153,000" 문자열로 들고 있어 그대로 비교하면 전부 다르게 보인다
-      function __ljCmpVal(k, v) {
-        if (__LJ_MONEY_KEYS.includes(k)) { const n = __ljMoney(v); return n == null ? "" : String(n); }
-        if (__LJ_NUM_KEYS.has(k)) { const n = __ljNum(v); return n == null ? "" : String(n); }
-        return String(v ?? "").replace(/\r\n/g, "\n").trim();
-      }
       // 시트 값 → 홍부에 저장할 모양
+      // ── 시트 = 원본 (2026-09-28) ──
+      // 매물 목록을 **구글시트에서** 읽어 온다. 로컬 DB 는 더 이상 목록의 근거가 아니다
+      // (사용자: "아직 기록한 매물이 없습니다 … 이 과정은 불필요하다. 그냥 구글시트를 보여줘").
+      const __ljSheetCache = new Map(); // sgg5 → { at, sid, recs }
+      const __LJ_SHEET_TTL = 20 * 1000;
+      // 시트 열 하나 → 홍부 레코드
+      function __ljRecFromCol(col, sgg5) {
+        const at = {};
+        __LJ_SHEET_ROWS.forEach((f, i) => { at[f.k] = col[i]; });
+        const rec = { id: String(at.__id ?? "").trim(), aptId: String(__ljNum(at.__aptCode) ?? "").trim(), sgg5 };
+        for (const f of __LJ_ROWS) {
+          // ⚠ 드롭다운 안내 문구가 칸에 남아 있으면 값이 아니라 빈칸으로 본다
+          const raw = at[f.k];
+          rec[f.k] = raw === __LJ_HINT_APT || raw === __LJ_HINT_NONE ? "" : __ljFromSheet(f.k, raw);
+        }
+        // 평단가·매전차이·전세가율은 시트에 있어도 무시한다 — 늘 다시 계산한다
+        for (const k of ["pyeongPrice", "gap", "jeonseRatio"]) delete rec[k];
+        return rec;
+      }
+      // 이 시군구 시트를 읽어 레코드 목록을 만든다.
+      //   · 기록ID 가 없는 열 = 파트너가 시트에 새로 적은 매물 → 채번해서 시트에 되쓴다
+      //   · 기록ID 가 겹치는 열 = 열을 복사한 것 → 뒤엣것에 새로 채번한다 (2026-09-28 사용자 확정)
+      // ⚠ 되쓰기가 실패하면 다음에 또 새 매물로 잡힌다 → 되쓴 뒤에만 그 id 를 쓴다.
+      // ⚠ 같은 시군구를 동시에 두 번 읽지 않는다. 단지 모달이 열릴 때 배지가 한 번 읽는데,
+      //   그 사이 탭을 누르면 예전엔 **같은 시트를 또 읽어** 두 배로 기다렸다 (2026-09-28).
+      const __ljReading = new Map(); // sgg5 → 진행 중인 읽기 Promise
+      function __ljBusy(sgg5) { return __ljReading.has(String(sgg5 || "")); }
+      async function __ljReadRegion(ctx, force) {
+        const sgg5 = String(ctx?.sgg5 || "");
+        if (!/^\d{5}$/.test(sgg5)) return { sid: "", recs: [], why: "이 단지의 시군구를 알 수 없습니다" };
+        const c = __ljSheetCache.get(sgg5);
+        if (!force && c && Date.now() - c.at < __LJ_SHEET_TTL) return c;
+        if (__ljReading.has(sgg5)) return await __ljReading.get(sgg5); // 이미 읽고 있으면 그걸 기다린다
+        const p = __ljReadRegionRaw(ctx, sgg5).finally(() => __ljReading.delete(sgg5));
+        __ljReading.set(sgg5, p);
+        return await p;
+      }
+      async function __ljReadRegionRaw(ctx, sgg5) {
+        if (!(await __ljDriveWait(20000))) return { sid: "", recs: [], why: "구글 드라이브에 연결되지 않았습니다" };
+        if (!(await __ljEnsureSheetsApi())) return { sid: "", recs: [], why: "Sheets API 를 불러오지 못했습니다" };
+        const sid = await __ljFindSheetId(sgg5, ctx.sigunguName);
+        if (!sid) return { sid: "", recs: [], why: "이 시군구 시트가 아직 없습니다 — 📄 구글시트 보기로 만드세요" };
+
+        const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+        const gp = meta.result.sheets[0].properties.gridProperties || {};
+        const read = await __ljReadSheetAll(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30));
+        if (read === null) return { sid, recs: [], why: "시트 배치를 알아볼 수 없습니다" };
+
+        const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
+        const seen = new Set();
+        const fixes = [];
+        const recs = [];
+        for (const { col, ci } of read) {
+          const rec = __ljRecFromCol(col, sgg5);
+          if (!rec.aptId) continue;                 // 단지코드가 없으면 어느 단지인지 모른다 → 못 쓴다
+          if (!rec.id || seen.has(rec.id)) {
+            rec.id = "L-" + rec.aptId + "-" + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36);
+            fixes.push({ ci, id: rec.id });
+          }
+          seen.add(rec.id);
+          rec.ci = ci;                              // 되쓸 때 쓸 열 번호
+          recs.push(rec);
+        }
+        if (fixes.length) {
+          // 채번한 기록ID 를 시트에 되쓴다. **성공해야만** 그 id 가 의미를 가진다.
+          await gapi.client.sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sid,
+            resource: {
+              valueInputOption: "RAW",
+              data: fixes.map((f) => ({ range: `'매물'!${__ljColA1(f.ci + 1)}${idRow + 1}`, values: [[f.id]] })),
+            },
+          });
+          console.log(`[lj] 기록ID 채번 ${fixes.length}건 → 시트에 적음`);
+        }
+        // 사진은 시트에 담을 수 없다 → **드라이브 폴더의 파일 목록이 곧 사진 목록**이다.
+        // 파일명이 lj_{sgg5}_{기록ID}_{addedAt}.jpg 라 따로 메타를 둘 필요가 없다.
+        await __ljAttachPhotos(recs, sgg5);
+        const out = { at: Date.now(), sid, recs, why: "" };
+        __ljSheetCache.set(sgg5, out);
+        console.log(`[lj] 시트 읽음 (${sgg5}): 매물 ${recs.length}건`);
+        return out;
+      }
+      // ── 사진 폴더 (2026-09-28 사용자 요청) ──
+      // 시트와 **같은 이름의 폴더**를 maemool 안에 두고 거기 넣는다 (2026-09-28 사용자 확정).
+      //   HongbuMemo/maemool/서울시_동작구_11590    (구글시트 — 파일)
+      //   HongbuMemo/maemool/서울시_동작구_11590/   (사진 — 폴더, 같은 이름)
+      // 드라이브는 같은 자리에 같은 이름의 파일과 폴더를 함께 둘 수 있다. 이렇게 모여 있어야
+      // 옛 listings/·listingImages/ 를 지울 수 있다. 이름 끝의 시군구코드가 짝짓기 열쇠다.
+      const __ljPhotoFolderP = new Map(); // sgg5 → Promise<folderId>
+      function __ljRegionFolderName(sgg5) {
+        const sido = (typeof __SYNC_SIDO_CODE_NAME_MAP !== "undefined" && __SYNC_SIDO_CODE_NAME_MAP[String(sgg5).slice(0, 2)]) || "";
+        const sigungu = (typeof __syncSigunguNameByCode5 !== "undefined" && __syncSigunguNameByCode5.get(String(sgg5))) || "";
+        return [sido, sigungu, String(sgg5)].filter(Boolean).join("_"); // __ljSheetTitle 과 같은 모양
+      }
+      // create=false 면 **찾기만** 한다(없으면 ""). 읽기 경로가 빈 폴더를 만들지 않게.
+      async function __ljPhotoFolder(sgg5, create) {
+        const k = String(sgg5 || "");
+        if (!/^\d{5}$/.test(k)) return "";
+        if (__ljPhotoFolderP.has(k)) {
+          const got = await __ljPhotoFolderP.get(k);
+          if (got) return got;
+          __ljPhotoFolderP.delete(k);
+        }
+        const p = (async () => {
+          const root = window.__gdriveRootFolderId || (create ? await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null) : "");
+          if (!root) return "";
+          const maemool = create ? await __driveFindOrCreateFolder(__LJ_FOLDER, root) : await __ljFindFolder(__LJ_FOLDER, root);
+          if (!maemool) return "";
+          const want = __ljRegionFolderName(k);
+          const { nameMap } = await __driveListFolderNameMap(maemool);
+          for (const [name, id] of nameMap.entries()) {
+            // 시군구 이름이 같거나, 예전 규칙(…_{시군구코드})으로 만들어 둔 폴더
+            if (name !== want && __parseSgg5Prefix(name) !== k && !String(name).endsWith("_" + k)) continue;
+            // ⚠ 이 폴더에는 **시트(파일)** 도 함께 있다. 폴더만 골라야 한다.
+            try {
+              const got = await gapi.client.drive.files.get({ fileId: id, fields: "mimeType" });
+              if (got.result.mimeType !== "application/vnd.google-apps.folder") continue;
+            } catch (_) { continue; }
+            await __ljMoveOldPhotos(k, id);
+            return id;
+          }
+          if (!create) return "";
+          const id = await __driveFindOrCreateFolder(__ljRegionFolderName(k), maemool);
+          await __ljMoveOldPhotos(k, id);
+          return id;
+        })().catch((e) => { __ljPhotoFolderP.delete(k); throw e; });
+        __ljPhotoFolderP.set(k, p);
+        return await p;
+      }
+      // 옛 listingImages/{sgg5} 에 있던 사진을 새 폴더로 **옮긴다**(복사가 아니다).
+      // ⚠ 옮기면 파일 id 가 그대로라 이미 만들어 둔 사진 시트의 =IMAGE() 링크가 안 깨진다.
+      const __ljMoved = new Set();
+      // 옛 루트 폴더는 **찾기만** 한다. __dqRootFolder 는 없으면 만들어 버려서,
+      // 사용자가 listingImages/ 를 지워도 다음 실행에 되살아난다 (2026-09-28).
+      async function __ljFindOldRoot(name) {
+        const root = window.__gdriveRootFolderId;
+        if (!root) return "";
+        try { return await __ljFindFolder(name, root); } catch (_) { return ""; }
+      }
+      async function __ljMoveOldPhotos(sgg5, toId) {
+        if (__ljMoved.has(sgg5) || !toId) return;
+        __ljMoved.add(sgg5);
+        try {
+          const oldRoot = await __ljFindOldRoot("listingImages");
+          if (!oldRoot) return; // 옛 폴더가 이미 없다 → 옮길 것도 없다
+          let old = "";
+          const { nameMap } = await __driveListFolderNameMap(oldRoot);
+          for (const [name, id] of nameMap.entries()) if (__parseSgg5Prefix(name) === String(sgg5)) { old = id; break; }
+          if (!old || old === toId) return;
+          const list = await __dqList(old, true);
+          const head = `lj_${sgg5}_`;
+          let n = 0;
+          for (const [name, fid] of Array.from(list.entries())) {
+            if (!name.startsWith(head)) continue;
+            try {
+              await gapi.client.drive.files.update({ fileId: fid, addParents: toId, removeParents: old, fields: "id" });
+              list.delete(name);
+              n++;
+            } catch (e) { console.warn("[lj] 사진 옮기기 실패(무시):", name, e?.message || e); }
+          }
+          if (n) console.log(`[lj] 옛 폴더에서 사진 ${n}장을 매물 폴더로 옮겼습니다 (${sgg5})`);
+        } catch (e) {
+          console.warn("[lj] 옛 사진 폴더 정리 실패(무시):", e?.result?.error?.message || e?.message || e);
+        }
+      }
+
+      // 드라이브 폴더를 훑어 매물마다 사진 자리표시자를 달아 준다.
+      // 실제 사진(dataURL)은 입력 화면을 열 때 __ljFetchShots 가 받는다.
+      async function __ljAttachPhotos(recs, sgg5) {
+        for (const r of recs) r.photos = [];
+        try {
+          const folder = await __ljPhotoFolder(sgg5, false);
+          if (!folder) return;
+          const list = await __dqList(folder, true);
+          const by = new Map();
+          const head = `lj_${sgg5}_`;
+          for (const name of list.keys()) {
+            if (!name.startsWith(head) || !name.endsWith(".jpg")) continue;
+            const body = name.slice(head.length, -4);
+            const at = body.lastIndexOf("_");
+            if (at < 0) continue;
+            const id = body.slice(0, at);
+            const addedAt = Number(body.slice(at + 1));
+            if (!id || !addedAt) continue;
+            if (!by.has(id)) by.set(id, []);
+            by.get(id).push({ addedAt });
+          }
+          for (const r of recs) {
+            const got = by.get(String(r.id));
+            if (got) r.photos = got.sort((a, b) => a.addedAt - b.addedAt);
+          }
+        } catch (e) {
+          console.warn("[lj] 사진 목록 확인 실패(무시):", e?.result?.error?.message || e?.message || e);
+        }
+      }
+      // 사진 한 장을 드라이브에 올린다. 큐를 거치지 않는다 — 시트가 원본인 모델에서는
+      // 로컬에 쌓아 둘 곳이 없으므로 그 자리에서 올리고, 실패하면 그 사실을 알린다.
+      async function __ljUploadShot(rec, addedAt, dataUrl) {
+        const sgg5 = String(rec.sgg5 || "");
+        if (!/^\d{5}$/.test(sgg5)) throw new Error("시군구를 알 수 없어 사진을 올릴 수 없습니다");
+        const folder = await __ljPhotoFolder(sgg5, true);
+        if (!folder) throw new Error("사진 폴더를 만들지 못했습니다");
+        return await __dqUploadIfMissing(folder, __ljImgFilename({ ...rec, sgg5 }, addedAt), __dataUrlToBlob(dataUrl), "image/jpeg");
+      }
+      async function __ljRemoveShotFile(rec, addedAt) {
+        const sgg5 = String(rec.sgg5 || "");
+        const folder = await __ljPhotoFolder(sgg5, false);
+        if (!folder) return;
+        const list = await __dqList(folder, true); // ⚠ 캐시를 쓰면 방금 올린 사진을 못 찾아 그냥 남는다
+        const name = __ljImgFilename({ ...rec, sgg5 }, addedAt);
+        const fid = list.get(name);
+        if (fid) { await __driveDeleteFile(fid); list.delete(name); }
+      }
+      // 이 매물의 사진 원본을 **폴더에서 이름으로 찾아** 전부 지운다.
+      // ⚠ rec.photos 목록만 믿으면 안 된다 — 목록에 안 잡힌 파일(올리다 만 것, 다른 기기가
+      //   방금 올린 것)이 주인 없이 드라이브에 남는다 (2026-09-28 사용자 지적).
+      async function __ljRemoveAllShotFiles(rec) {
+        const sgg5 = String(rec?.sgg5 || "");
+        if (!/^\d{5}$/.test(sgg5) || !rec?.id) return 0;
+        const folder = await __ljPhotoFolder(sgg5, false);
+        if (!folder) return 0;
+        const list = await __dqList(folder, true);
+        const pre = `lj_${sgg5}_${String(rec.id)}_`;
+        let n = 0;
+        for (const [name, fid] of Array.from(list.entries())) {
+          if (!name.startsWith(pre)) continue;
+          try { await __driveDeleteFile(fid); list.delete(name); n++; }
+          catch (e) { console.warn("[lj] 사진 원본 삭제 실패(무시):", name, e?.message || e); }
+        }
+        if (n) console.log(`[lj] 사진 원본 ${n}장 삭제 (${rec.id})`);
+        return n;
+      }
+      // 매물 한 건 → 시트의 그 열을 통째로 다시 쓴다.
+      // 열 단위로 쓰는 이유: 칸별로 무엇이 바뀌었는지 따지는 것보다 단순하고 요청도 한 번이다.
+      // 시트가 우선인 모델에서 홍부의 변경은 **먼저 시트에 써 넣어야** 의미가 있다.
+      async function __ljWriteCol(sid, rec) {
+        const col = __ljRecCol(rec, __ljCalc(rec));
+        await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: sid,
+          range: `'매물'!${__ljColA1(rec.ci + 1)}1:${__ljColA1(rec.ci + 1)}${__LJ_SHEET_ROWS.length}`,
+          valueInputOption: "RAW",
+          resource: { values: col.map((v) => [v]) },
+        });
+      }
       function __ljFromSheet(k, v) {
-        if (k === "pyeong") { const n = __ljNum(v); return n == null ? "" : String(n); }
+        // ⚠ 평형 칸에는 "32평(전용84)" 처럼 표기가 통째로 들어 있다(구글시트 드롭다운은
+        //   보이는 글자가 곧 값이다). __ljNum 은 숫자만 훑어 "32.84" 를 만들어 버리므로
+        //   **맨 앞 숫자만** 떼어 쓴다 (2026-09-28).
+        if (k === "pyeong") { const m = String(v ?? "").match(/-?\d+(?:\.\d+)?/); return m ? m[0] : ""; }
         if (__LJ_NUM_KEYS.has(k)) { const n = __ljNum(v); return n == null ? "" : __ljComma(n); }
         return String(v ?? "").replace(/\r\n/g, "\n").trim();
-      }
-      // 비교 범위는 **지금 보고 있는 단지의 열만**(2026-09-27 사용자 확정).
-      // 시군구 전체를 훑으면 지금 관심 없는 단지의 변동까지 들이밀게 된다.
-      async function __ljImportScan(sid, lastCol, lastRow, aptId, sgg5Hint) {
-        const read = await __ljReadSheet(sid, lastCol, lastRow);
-        if (read === null) return null;
-        const local = new Map((await __ljAll()).map((r) => [String(r.id), r]));
-        const rowIdx = {};
-        __LJ_SHEET_ROWS.forEach((f, i) => { rowIdx[f.k] = i; });
-        const diffs = [];
-        const newer = []; // 값은 다른데 홍부가 더 최신인 것 — 자동으로는 안 가져오고, 수동일 때 보여 준다
-        let missing = 0;
-        // 시트 열에 찍힌 기록일시 = 그 매물을 마지막으로 내보낸 시점의 updatedAt.
-        // 홍부 레코드가 그보다 더 최신이면 **홍부에서 고치고 아직 안 내보낸 것**이다
-        // (자동으로 가져오면 옛 시트 값이 새 값을 덮는다 — 2026-09-27 실제로 그랬다).
-        // 시트 기록일시를 못 읽는 옛 시트는 파일 단위 내보내기 시각으로 대신한다.
-        const fallbackTs = __ljParseWhen(__ljModGet(String(sgg5Hint || "")));
-        const diffOf = (rec, col) => {
-          const changes = [];
-          for (const f of __LJ_ROWS) {
-            if (!__LJ_USER_KEYS.includes(f.k)) continue; // 자동채움·자동계산 칸은 가져오지 않는다
-            const i = rowIdx[f.k];
-            if (i == null) continue;
-            const to = __ljFromSheet(f.k, col[i]);
-            if (__ljCmpVal(f.k, rec[f.k]) === __ljCmpVal(f.k, to)) continue;
-            changes.push({ k: f.k, lb: f.lb, from: rec[f.k] || "", to });
-          }
-          return changes;
-        };
-        const mine = read.cols.filter((c) => __ljOwnerOf(c.id) === String(aptId));
-        for (const c of mine) {
-          const rec = local.get(c.id);
-          if (!rec) { missing++; continue; } // 이 단지 기록ID 인데 홍부에 없다(지웠거나 다른 기기 것)
-          const changes = diffOf(rec, c.col);
-          if (!changes.length) continue;
-          const sheetTs = __ljParseWhen(c.col[rowIdx.__when]) || fallbackTs;
-          const recTs = Number(rec.updatedAt) || 0;
-          if (__ljHongbuNewer(recTs, sheetTs)) {
-            console.log(
-              `[lj] 홍부가 최신 ${c.id} — 홍부 ${__ljWhenOut(recTs)}(${recTs}) > 시트 ${__ljWhenOut(sheetTs)}(${sheetTs}) ` +
-                `[${changes.map((x) => x.lb).join(", ")}]`
-            );
-            newer.push({ rec, changes, ci: c.ci, hongbuNewer: true });
-            continue;
-          }
-          diffs.push({ rec, changes, ci: c.ci });
-        }
-        // noId 는 시트 전체 기준 — 손으로 만든 열이 남아 있으면 '덮어쓰기 경고' 를 살려 둬야 한다
-        return { diffs, newer, missing, newerHere: newer.length, unknown: read.noId };
       }
 
       function __ljDiffClose() {
         const o = document.getElementById("ljDiffOverlay");
         if (o) { try { o.remove(); } catch (_) {} }
       }
-      // 변동사항 팝업 — 자동 대조·수동 가져오기 둘 다 이걸 쓴다
-      function __ljDiffPopup(r) {
-        __ljDiffClose();
-        const ov = document.createElement("div");
-        ov.id = "ljDiffOverlay";
-        ov.onclick = (e) => { if (e.target === ov) __ljDiffClose(); }; // 바깥 탭하면 닫기(= 나중에)
-        const box = document.createElement("div");
-        box.className = "lj-diff-box";
 
-        const head = document.createElement("div");
-        head.className = "lj-diff-head";
-        const h = document.createElement("h3");
-        h.textContent = `${r.aptName || "이 단지"} — 시트에서 바뀐 내용`;
-        const sub = document.createElement("p");
-        sub.textContent = [
-          `매물 ${r.diffs.length}건`,
-          r.mod ? `시트 수정 ${__ljModWhen(r.mod)}` : "",
-          r.newerHere ? `홍부가 더 최신이라 건너뛴 매물 ${r.newerHere}건` : "",
-          r.unknown ? `시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다` : "",
-        ].filter(Boolean).join(" · ");
-        head.appendChild(h);
-        head.appendChild(sub);
-
-        const body = document.createElement("div");
-        body.className = "lj-diff-body";
-        for (const d of r.diffs) {
-          const card = document.createElement("div");
-          card.className = "lj-card";
-          const inner = document.createElement("div");
-          inner.style.cssText = "padding:11px 12px";
-          const b = document.createElement("b");
-          b.textContent =
-            [d.rec.dongho, d.rec.pyeong ? d.rec.pyeong + "평" : ""].filter(Boolean).join(" · ") ||
-            __ljSnippet(d.rec.memo, 24) || d.rec.id;
-          inner.appendChild(b);
-          if (d.hongbuNewer) {
-            const w = document.createElement("p");
-            w.style.cssText = "margin:5px 0 0;font-size:11.5px;line-height:1.45;color:#b3261e";
-            w.textContent = "⚠ 홍부가 더 최신입니다 — 가져오면 홍부에서 고친 내용이 사라집니다";
-            inner.appendChild(w);
-          }
-          for (const c of d.changes) {
-            const p = document.createElement("p");
-            p.className = "lj-diff-chg";
-            const lb = document.createElement("b");
-            lb.textContent = c.lb + " ";
-            const d = __ljDiffParts(c.from, c.to); // 달라진 자리만
-            const o1 = document.createElement("span");
-            o1.className = "old";
-            o1.textContent = d.from || "(빈칸)";
-            const arrow = document.createTextNode(" → ");
-            const n1 = document.createElement("span");
-            n1.className = "new";
-            n1.textContent = d.to || "(빈칸)";
-            p.appendChild(lb);
-            p.appendChild(o1);
-            p.appendChild(arrow);
-            p.appendChild(n1);
-            inner.appendChild(p);
-          }
-          card.appendChild(inner);
-          body.appendChild(card);
-        }
-
-        const foot = document.createElement("div");
-        foot.className = "lj-diff-foot";
-        const ok = document.createElement("button");
-        ok.type = "button";
-        ok.className = "lj-btn pri";
-        ok.textContent = `홍부에 반영 (${r.diffs.length}건)`;
-        ok.onclick = () => { __ljDiffClose(); __ljImportApply(r); };
-        const no = document.createElement("button");
-        no.type = "button";
-        no.className = "lj-btn";
-        no.textContent = "나중에";
-        no.onclick = () => __ljDiffClose();
-        foot.appendChild(ok);
-        foot.appendChild(no);
-
-        box.appendChild(head);
-        box.appendChild(body);
-        box.appendChild(foot);
-        ov.appendChild(box);
-        document.body.appendChild(ov);
-      }
-
-      async function __ljImportApply(r) {
-        const diffs = r.diffs || [];
-        let n = 0;
-        const applied = [];
-        for (const d of diffs) {
-          try {
-            const ts = Date.now();
-            const next = { ...d.rec, updatedAt: ts };
-            for (const c of d.changes) next[c.k] = c.to;
-            await __ljPut(next);
-            __ljSync(next); // 드라이브에도 전파
-            if (d.ci != null) applied.push({ ci: d.ci, ts });
-            n++;
-          } catch (e) {
-            console.warn("[lj] 가져오기 반영 실패:", d.rec.id, e);
-          }
-        }
-
-        // ⚠ 시트의 기록일시도 같이 올려 준다.
-        // 가져오기는 updatedAt 을 '지금' 으로 올리는데 시트 기록일시는 내보낸 시점 그대로라,
-        // 안 맞춰 주면 그 뒤로 이 매물의 시트 수정이 전부 "홍부가 최신" 으로 걸러진다
-        // (2026-09-27 실측: 홍부 11:11:00 > 시트 11:06:42 로 4분 18초 차이가 나 영영 막혔다).
-        if (r.sid && applied.length) {
-          const row = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__when") + 1;
-          try {
-            await gapi.client.sheets.spreadsheets.values.batchUpdate({
-              spreadsheetId: r.sid,
-              resource: {
-                valueInputOption: "RAW",
-                data: applied.map((a) => ({
-                  range: `${__ljColA1(a.ci + 1)}${row}`,
-                  values: [[__ljWhenOut(a.ts)]],
-                })),
-              },
-            });
-          } catch (e) {
-            console.warn("[lj] 시트 기록일시 갱신 실패(무시):", e?.result?.error?.message || e?.message || e);
-          }
-        }
-        // 대조 완료 — 시트에만 있는 열이 남아 있으면 덮어쓰기 경고는 살려 둔다
-        if (r.sgg5 && r.mod && !r.unknown) __ljModSet(r.sgg5, r.mod);
-        try { __ljUpdateTabBadge(); } catch (_) {}
-        try { if (__ljState.active && __ljState.view === "list") await __ljRenderList(); } catch (_) {}
-        alert(`시트의 수정분 ${n}건을 홍부에 반영했습니다.`);
-      }
 
       // 있는 시트만 찾는다(만들지 않는다) — 자동 대조가 시트·폴더를 새로 만들면 안 된다
       // 이름까지 확인한 시트 id (sgg5 → sid). 세션 안에서만 유효하다.
       const __ljSheetOk = new Map();
       async function __ljFindSheetId(sgg5, sigunguName) {
         const k = String(sgg5);
-        if (__ljSheetOk.has(k)) return __ljSheetOk.get(k);
         const key = "__ljSheet_" + sgg5;
         const done = (id) => {
           __ljSheetOk.set(k, id);
           try { id ? localStorage.setItem(key, id) : localStorage.removeItem(key); } catch (_) {}
           return id;
         };
-        let sid = "";
-        try { sid = localStorage.getItem(key) || ""; } catch (_) {}
+        // ⚠ 세션 기억(__ljSheetOk)을 그대로 돌려주지 않는다. 시트를 휴지통에 보내고 새로 만들어도
+        //   옛 id 가 그대로 남아, 홍부는 **휴지통의 시트**에 계속 쓰게 된다 — 구글 API 는 휴지통
+        //   파일에도 쓰기가 성공하므로 "저장됨" 이라고 말하면서 값은 안 보이는 상태가 된다.
+        //   기억은 힌트로만 쓰고, 쓸 때마다 휴지통·이름을 확인한다(요청 한 번, 읽기는 20초 캐시).
+        let sid = __ljSheetOk.get(k) || "";
+        if (!sid) { try { sid = localStorage.getItem(key) || ""; } catch (_) {} }
         if (sid) {
           try {
             const got = await gapi.client.drive.files.get({ fileId: sid, fields: "id,name,trashed" });
-            // ⚠ 이름까지 본다. 엉뚱한 시군구 시트 id 가 기억돼 있으면 여기서 버려야 한다.
+            // 이름까지 본다 — 엉뚱한 시군구 시트 id 가 기억돼 있으면 여기서 버린다.
             if (!got.result.trashed && __ljSheetNameOk(got.result.name, sgg5, sigunguName)) return done(sid);
           } catch (_) {}
+          __ljSheetOk.delete(k);
         }
         const root = window.__gdriveRootFolderId;
         if (!root) return "";
@@ -27327,76 +27472,22 @@ const originalBase64 = event.target.result;
         return done(hit ? hit.id : "");
       }
 
-      // 시트에서 **이 단지** 변동분을 훑는다. 팝업을 띄울지는 부르는 쪽이 정한다.
-      //   null = 시트 없음 / 형식 다름,  {same:true} = 지난번 훑은 뒤로 시트가 안 바뀜
-      async function __ljScanSheet(ctx, opts) {
-        if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-        const sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
-        if (!sid) return null;
-        const mod = await __ljSheetMod(sid);
-        const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
-        const gp = meta.result.sheets[0].properties.gridProperties || {};
-        const r = await __ljImportScan(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30), ctx.aptId, ctx.sgg5);
-        if (!r) return null;
-        r.mod = mod;
-        r.sid = sid;
-        r.sgg5 = ctx.sgg5;
-        r.aptId = ctx.aptId;
-        r.aptName = ctx.aptName;
-        console.log(
-          `[lj] 대조 ${ctx.aptName || ctx.aptId}: 바뀐 매물 ${r.diffs.length} · 홍부가 최신 ${r.newerHere} · ` +
-            `시트에만 ${r.unknown} · 홍부에 없음 ${r.missing} (시트수정 ${mod || "?"})`
-        );
-        // ⚠ '지난확인' 기록은 여기서 하지 않는다. 훑자마자 찍으면, 팝업을 못 띄운 경우에도
-        //    "확인함" 이 되어 시트가 또 바뀔 때까지 영영 조용해진다(2026-09-27 실제로 그랬다).
-        //    사용자에게 보여 줬거나 보여 줄 게 없다고 확정한 자리에서만 찍는다.
-        // 완전히 대조가 끝났을 때만 덮어쓰기 경고 기준을 갱신
-        if (mod && !r.diffs.length && !r.unknown) __ljModSet(ctx.sgg5, mod);
-        return r;
-      }
-
-      // 매물임장 탭을 열 때 자동으로 대조하고, 바뀐 게 있으면 팝업으로 묻는다
-      // 건너뛸 때마다 이유를 남긴다 — 조용히 빠져나가면 왜 안 뜨는지 알 길이 없다(2026-09-27)
-      const __ljAutoAt = new Map();
-      const __LJ_AUTO_GAP = 10000; // 탭을 연속으로 여닫을 때만 막는 정도
-      async function __ljAutoCheck(ctx, opts) {
-        const why = (m) => { console.log("[lj] 자동 대조 건너뜀 —", m); };
-        if (!ctx?.sgg5 || !ctx.aptId) return why("단지·시군구를 모름");
-        if (!(window.__gdriveReady && window.__gdriveAccessToken)) {
-          // 부팅 직후 바로 탭을 열면 여기 걸린다. 예전엔 그대로 포기했다 → 한 번 더 시도한다
-          if (!opts?.retried) setTimeout(() => { __ljAutoCheck(ctx, { retried: true }).catch(() => {}); }, 4000);
-          return why("드라이브 연결 전 (4초 뒤 다시 시도)");
-        }
-        const k = String(ctx.aptId);
-        if (Date.now() - (__ljAutoAt.get(k) || 0) < __LJ_AUTO_GAP) return why("방금 확인함");
-        __ljAutoAt.set(k, Date.now());
-        try {
-          const r = await __ljScanSheet(ctx, {});
-          if (!r) return why("시트를 못 찾았거나 형식이 다름");
-          if (!r.diffs.length) {
-            __ljAskedSet(k, ""); // 없어졌으니 기억도 지운다
-            return why(
-              `가져올 변경 없음 (홍부가 최신 ${r.newerHere || 0}건 · 시트에만 있는 열 ${r.unknown || 0}개 · 홍부에 없는 열 ${r.missing || 0}개)`
-            );
-          }
-          const sig = __ljDiffSig(r.diffs);
-          if (sig === __ljAskedGet(k)) {
-            return why(`같은 변경을 이미 물어봄 — 📥 버튼이나 __lj.check() 로 다시 볼 수 있습니다`);
-          }
-          // 못 보여 줬으면 기억하지 않는다 — 다음에 다시 묻게
-          if (String(__ljState.aptId) !== k) return why("그새 다른 단지로 이동함");
-          __ljAskedSet(k, sig);
-          __ljDiffPopup(r);
-        } catch (e) {
-          console.warn("[lj] 자동 대조 실패:", e?.result?.error?.message || e?.message || e, e);
-        }
-      }
-
-      // 수동 확인 — 자동 대조가 "안 바뀜"으로 건너뛴 경우에도 강제로 훑는다
-      async function __ljImport() {
+      // 📄 시트 보기 = 유일한 시트 진입점. 있으면 열고, 없으면 만들어서 연다 (2026-09-28 사용자 확정).
+      async function __ljViewSheet() {
         const ctx = __ljState.ctx;
-        const panel = __ljPanelEl();
-        const foot = panel ? panel.querySelector("#ljFoot") : null;
+        if (!ctx?.sgg5) { alert("이 단지의 시군구를 알 수 없습니다."); return; }
+        let hasToken = !!window.__gdriveAccessToken;
+        try { hasToken = hasToken || !!localStorage.getItem("__hongbuDriveToken"); } catch (_) {}
+        if (!hasToken) { alert("구글 로그인이 먼저 필요합니다."); return; }
+        const url = (id) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
+
+        // 이름까지 확인해 둔 시트가 있으면 **클릭 직후 동기로** 연다(그래야 팝업 차단에 안 걸린다).
+        const cached = __ljSheetIdCached(ctx.sgg5);
+        if (cached) { window.open(url(cached), "_blank"); return; }
+
+        // 처음이면 화면에 진행을 보여 주면서 찾거나 만들고, 끝나면 연다.
+        // ⚠ 빈 탭을 미리 열지 않는다 — 초점이 그쪽으로 가서 사용자는 about:blank 만 본다.
+        const foot = __ljPanelEl()?.querySelector("#ljFoot");
         let prog = null;
         if (foot) {
           foot.innerHTML = "";
@@ -27404,47 +27495,38 @@ const originalBase64 = event.target.result;
           prog.type = "button";
           prog.className = "lj-btn";
           prog.disabled = true;
-          prog.textContent = "⏳ 시트 읽는 중…";
           foot.appendChild(prog);
         }
-        if (!ctx?.sgg5) {
-          alert("이 단지의 시군구를 알 수 없어 가져올 수 없습니다.");
-          await __ljRenderList();
-          return;
-        }
-        let hasToken = !!window.__gdriveAccessToken;
-        try { hasToken = hasToken || !!localStorage.getItem("__hongbuDriveToken"); } catch (_) {}
-        if (!hasToken) {
-          alert("구글 로그인이 먼저 필요합니다.");
-          await __ljRenderList();
-          return;
-        }
+        const setB = (t) => { if (prog) prog.textContent = t; };
+        setB("⏳ 구글시트를 찾는 중…");
+        let sid = "";
         try {
-          const r = await __ljScanSheet(ctx, {});
-          await __ljRenderList();
-          if (r) __ljAskedSet(ctx.aptId, r.diffs.length ? __ljDiffSig(r.diffs) : ""); // 바로 보여 주므로 기억
-          if (r === null) {
-            alert("이 시군구의 시트를 찾지 못했습니다.\n먼저 한 번 내보내기를 해 주세요.");
-          } else if (r.diffs.length || r.newer.length) {
-            // 수동으로 누른 것이니 **홍부가 더 최신인 건도 보여 주고** 사람이 정하게 한다.
-            // (자동 대조는 이것들을 조용히 건너뛴다 — 옛 시트 값이 새 값을 덮으면 안 되므로)
-            __ljDiffPopup({ ...r, diffs: r.diffs.concat(r.newer) });
-          } else {
-            alert(
-              [
-                `${ctx.aptName || "이 단지"}는 시트에서 가져올 내용이 없습니다.`,
-                r.unknown ? `· 시트에만 있는 열 ${r.unknown}개는 가져오지 않습니다` : "",
-              ].filter(Boolean).join("\n")
-            );
-          }
+          if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
+          sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
+          if (!sid) sid = await __ljCreateSheet(ctx, setB);
         } catch (e) {
-          console.error("[lj] 가져오기 실패:", e);
-          await __ljRenderList();
-          alert("가져오기에 실패했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+          console.error("[lj] 시트 준비 실패:", e);
+          alert("시트를 준비하지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+          await __ljRenderList().catch(() => {});
+          return;
+        }
+        // 만드는 데 오래 걸렸으면 사용자 조작과 멀어져 팝업이 막힐 수 있다.
+        // 그때는 억지로 열지 않고 **누를 수 있는 단추**를 남긴다(그건 진짜 조작이라 안 막힌다).
+        if (window.open(url(sid), "_blank")) {
+          await __ljRenderList().catch(() => {});
+          return;
+        }
+        if (prog) {
+          prog.disabled = false;
+          prog.className = "lj-btn pri";
+          prog.textContent = "📄 준비 완료 — 시트 열기";
+          prog.onclick = () => { window.open(url(sid), "_blank"); __ljRenderList().catch(() => {}); };
+        } else {
+          alert("시트가 준비됐습니다.\n다시 눌러 주세요.");
         }
       }
 
-      // 콘솔 진단 — 자동 대조가 왜 안 뜨는지 볼 때
+      // 콘솔 도구 — 동기화가 이상할 때 여기부터 본다
       window.__lj = {
         state: () => __ljState,
         gates: () => ({
@@ -27453,71 +27535,16 @@ const originalBase64 = event.target.result;
           sgg5: __ljState.ctx?.sgg5,
           드라이브준비: !!window.__gdriveReady,
           토큰: !!window.__gdriveAccessToken,
-          내려받기: __ljPull.busy ? "받는 중" : __ljPull.why || "정상",
-          로컬매물수: "__lj.rows() 로 확인",
-          시트수정기준: __ljModGet(__ljState.ctx?.sgg5 || ""),
-          이미물어본변경: __ljAskedGet(__ljState.ctx?.aptId || ""),
+          시트: __ljState.sid || "(모름)",
+          사정: __ljState.why || "정상",
         }),
-        // 게이트(쓰로틀·'안 바뀜')를 모두 무시하고 지금 다시 본다 — reset 을 따로 부를 필요가 없다
-        check: () => {
-          __ljAutoAt.clear();
-          try { localStorage.removeItem(__ljAskedKey(String(__ljState.ctx?.aptId))); } catch (_) {}
-          return __ljAutoCheck(__ljState.ctx, { retried: true });
+        // 시트를 지금 다시 읽는다(캐시 무시)
+        read: async () => {
+          const r = await __ljReadRegion(__ljState.ctx, true);
+          try { await __ljRenderList(); } catch (_) {}
+          return `매물 ${r.recs?.length || 0}건` + (r.why ? ` · ${r.why}` : "");
         },
-        scan: () => __ljScanSheet(__ljState.ctx, {}),
-        // 드라이브에서 지금 바로 받아 오기(쓰로틀·캐시 무시) — 다른 기기 수정이 안 보일 때
-        // 드라이브 쪽을 그대로 들여다본다 — "폴더가 없다" 가 계정 문제인지 빈 폴더인지 가른다.
-        // 2026-09-28: 엣지에서 메모조차 안 보이는데 원인을 좁히지 못해 만들었다.
-        // sgg5 를 주면 그걸로, 안 주면 지금 열린 단지의 것으로 본다.
-        // ⚠ 값은 전부 **문자열**로 만든다 — 콘솔이 배열·객체를 접어 버려 정작 볼 것이 안 보였다.
-        drive: async (sgg5) => {
-          const want = String(sgg5 || __ljState.ctx?.sgg5 || "");
-          const out = {
-            계정: "?",
-            루트: window.__gdriveRootFolderId || "(없음)",
-            찾는시군구: want || "(모름 — 매물임장 탭을 연 뒤 다시 부르거나 __lj.drive('11590') 처럼 직접 주세요)",
-            단지: __ljState.ctx?.aptName || "(안 열림)",
-          };
-          try {
-            const me = await gapi.client.drive.about.get({ fields: "user(emailAddress,displayName)" });
-            out.계정 = me.result.user?.emailAddress || "?";
-          } catch (e) { out.계정 = "확인 실패: " + (e?.result?.error?.message || e?.message || e); }
-          for (const root of ["listings", "listingImages"]) {
-            try {
-              const rootId = await __dqRootFolder(root);
-              const { nameMap } = await __driveListFolderNameMap(rootId);
-              const kids = Array.from(nameMap.keys());
-              out[root + " 하위폴더"] = kids.length ? kids.join(" | ") : "(비어 있음)";
-              const hit = want ? kids.find((n) => __parseSgg5Prefix(n) === want) : "";
-              out[root + " 이시군구"] = want ? hit || "없음" : "(시군구를 몰라 확인 못 함)";
-              if (hit) {
-                const f = await __lzFindSggFolder(root, want);
-                const list = await __dqList(f, true);
-                const names = Array.from(list.keys());
-                out[root + " 파일수"] = names.length;
-                out[root + " 파일"] = names.slice(0, 8).join(" | ") || "(비어 있음)";
-              }
-            } catch (e) { out[root + " 하위폴더"] = "확인 실패: " + (e?.result?.error?.message || e?.message || e); }
-          }
-          console.table(out);
-          return out;
-        },
-        // 이 기기에 실제로 뭐가 들어 있나 — 동기화가 안 될 때 제일 먼저 볼 것
-        rows: async () => {
-          const all = await __ljAll(true);
-          const mine = all.filter((r) => String(r.aptId) === String(__ljState.ctx?.aptId));
-          return {
-            전체: all.length,
-            살아있음: all.filter((r) => !r.deletedAt).length,
-            이단지: mine.length,
-            이단지목록: mine.map((r) => ({
-              id: r.id, 동호수: r.dongho, sgg5: r.sgg5,
-              사진: __ljShots(r).length, 받은사진: __ljShots(r).filter((it) => __getImgData(it)).length,
-              수정: __ljWhenOut(r.updatedAt), 삭제됨: !!r.deletedAt,
-            })),
-          };
-        },
-        // 지금 보고 있는 매물의 사진을 드라이브에서 강제로 받아 온다
+        // 보고 있는 매물의 사진만 강제로 받기
         shots: async () => {
           const rec = __ljState.rec;
           if (!rec) return "입력 화면을 먼저 열어 주세요";
@@ -27525,48 +27552,355 @@ const originalBase64 = event.target.result;
           if (n && __ljState.view === "form") __ljRenderForm();
           return `${n}장 받음 (총 ${__ljShots(rec).length}장)`;
         },
-        pull: async () => {
-          const n = await __ljPullRegion(__ljState.ctx?.sgg5, true);
-          if (n) { try { await __ljRenderList(); __ljUpdateTabBadge(); } catch (_) {} }
-          return `${n}건 받음`;
-        },
-        reset: () => {
-          try { localStorage.removeItem(__ljAskedKey(String(__ljState.ctx?.aptId))); } catch (_) {}
-          __ljAutoAt.clear();
-          return "초기화 완료 — 탭을 다시 열어 보세요";
-        },
       };
 
-      // 시트를 열기만 한다 — 아무것도 쓰지 않는다 (확인용)
-      async function __ljViewSheet() {
+      // ── 시트 만들기 (2026-09-28) ──
+      // 파트너는 시트만 쓴다. 그래서 시트가 **입력 창구**가 되도록 만들어 준다:
+      //   ① 단지정보 시트(그 시군구만) ② 단지명 드롭다운 ③ 단지코드 VLOOKUP ④ 빈 입력 열
+      // ⚠ 단지코드가 홍부의 aptId 다. 이 값이 없으면 홍부가 그 매물을 어느 단지에 둘지 모른다.
+      const __LJ_BLANK_COLS = 100; // 파트너가 새 매물을 적을 빈 열 (2026-09-28: 10 → 100)
+      const __LJ_GROW_COLS = 50;   // 다 쓰면 홍부가 매물을 더할 때 이만큼씩 늘린다
+      // ⚠ 목록 참조를 **열 전체($G$1:$G)로 두면 안 된다.** 빈 열 100개 × 3목록 = 배열 수식 300개가
+      //   각자 열 전체를 쳐다보게 되어, 구글시트가 계산을 미룬다 → **드롭다운을 처음 누르면 비어 있고
+      //   다시 눌러야 나온다**(2026-09-28 실측). 한 단지의 평형·구조·타입이 50가지를 넘을 일은 없다.
+      const __LJ_LIST_ROWS = 50;
+      // 드롭다운이 빌 때 대신 보여 주는 안내. 홍부가 읽을 때도 이 값은 버린다.
+      const __LJ_HINT_APT = "← 단지명을 먼저 고르세요";
+      const __LJ_HINT_NONE = "평형 정보가 없는 단지";
+      // 매물 열 [from, to) 에 입력 도구를 심는다 — 단지평형 목록 3개 + 드롭다운 + 자동채움 수식.
+      // 시트를 **만들 때**와 열이 모자라 **늘릴 때**가 같은 코드를 쓰도록 빼 두었다 (2026-09-28).
+      //   idx = 항목키 → 행번호, N = 단지평형 마지막 행, mainId = 매물 탭 sheetId
+      function __ljInputColRequests(idx, N, mainId, from, to) {
+        const colOf = (i, which) => __ljColA1(7 + 3 * i + which); // 단지평형의 G,H,I / J,K,L / …
+        const pyData = [];
+        const data = [];
+        const reqs = [];
+        for (let i = from; i < to; i++) {
+          const c = __ljColA1(2 + i + 1); // 매물 탭의 그 열
+          // ⚠ 단지코드 **칸**을 가리키면 안 된다. 그러면 사슬이 두 단계가 된다:
+          //   단지명 → 단지코드 칸(VLOOKUP) → 이 목록(FILTER). 드롭다운이 목록을 읽는 시점이
+          //   두 번째 갱신보다 앞서서 **처음 누르면 빈 목록이 보이고 다시 눌러야 나온다**
+          //   (2026-09-28 실측). 단지명에서 코드를 여기서 바로 구해 한 단계로 줄인다.
+          const codeExpr = `IFERROR(VLOOKUP('매물'!${c}$${idx.aptName + 1},'${__LJ_INFO_TAB}'!$P:$Q,2,FALSE),"")`;
+          const py = `'매물'!${c}$${idx.pyeong + 1}`;
+          const apt = `'매물'!${c}$${idx.aptName + 1}`;
+          // ⚠ 목록이 비면 드롭다운이 **아무것도 없이** 열려 사용자는 고장인 줄 안다
+          //   (2026-09-28 사용자: "평형 보기가 안 뜰 때가 있다"). 비는 이유는 둘 —
+          //   단지명을 아직 안 골랐거나, 그 단지에 평형표가 없거나(aptDetail 누락 약 0.7%).
+          //   그래서 빈칸 대신 **이유를 한 줄 적어** 둔다. 아래 자동채움은 이 안내를 걸러낸다.
+          const listFx = (body) => `=IF(${apt}="","${__LJ_HINT_APT}",IFERROR(${body},"${__LJ_HINT_NONE}"))`;
+          pyData.push({ range: `'${__LJ_PY_TAB}'!${colOf(i, 0)}1`,
+            values: [[listFx(`SORT(UNIQUE(FILTER($B$2:$B$${N},$A$2:$A$${N}=${codeExpr})))`)]] });
+          // 구조·타입: 평형이 정해졌으면 그 평형만, 아직 안 골랐으면 그 단지 전부
+          for (const [w, src] of [[1, "$C"], [2, "$D"]]) {
+            pyData.push({ range: `'${__LJ_PY_TAB}'!${colOf(i, w)}1`,
+              values: [[listFx(`SORT(UNIQUE(FILTER(${src}$2:${src}$${N},$A$2:$A$${N}=${codeExpr},($B$2:$B$${N}=${py})+(${py}=""))))`)]] });
+          }
+
+          data.push({ range: `'매물'!${c}${idx.__aptCode + 1}`,
+            values: [[`=IFERROR(VLOOKUP(${c}${idx.aptName + 1},'${__LJ_INFO_TAB}'!$P:$Q,2,FALSE),"")`]] });
+          // 연식·세대수도 **단지명에서 바로** 끌어온다.
+          // ⚠ 단지코드 칸을 가리키면 사슬이 두 단계(단지명→단지코드→여기)라, 그 칸이 아직
+          //   안 채워졌거나 홍부가 값으로 덮어쓴 뒤에는 빈칸으로 남는다 (2026-09-28 실측).
+          //   단지코드가 E열이라 VLOOKUP 이 아니라 INDEX/MATCH 를 쓴다.
+          const at = (col) => `=IFERROR(INDEX('${__LJ_INFO_TAB}'!$${col}:$${col},MATCH(${codeExpr},'${__LJ_INFO_TAB}'!$E:$E,0)),"")`;
+          if (idx.buildYear != null) data.push({ range: `'매물'!${c}${idx.buildYear + 1}`, values: [[at("G")]] });
+          if (idx.units != null) data.push({ range: `'매물'!${c}${idx.units + 1}`, values: [[at("H")]] });
+          // 고를 것이 **하나뿐이면 미리 채워 준다** (홍부 입력 표와 같은 규칙).
+          // ⚠ 대가를 알고 쓴다: 셀에 수식이 있으면 드롭다운 화살표를 누를 때 수식이 보인다.
+          for (const [k, w] of [["pyeong", 0], ["structure", 1], ["roomType", 2]]) {
+            if (idx[k] == null) continue;
+            const lc = colOf(i, w);
+            // 후보가 하나뿐일 때만 채우되, **안내 문구는 채우지 않는다**
+            const one = `'${__LJ_PY_TAB}'!$${lc}$1`;
+            const span = `'${__LJ_PY_TAB}'!$${lc}$1:$${lc}$${__LJ_LIST_ROWS}`;
+            data.push({ range: `'매물'!${c}${idx[k] + 1}`,
+              values: [[`=IF(COUNTA(${span})<>1,"",IF(OR(${one}="${__LJ_HINT_APT}",${one}="${__LJ_HINT_NONE}"),"",${one}))`]] });
+            reqs.push({
+              setDataValidation: {
+                range: { sheetId: mainId, startRowIndex: idx[k], endRowIndex: idx[k] + 1, startColumnIndex: 2 + i, endColumnIndex: 3 + i },
+                rule: {
+                  condition: { type: "ONE_OF_RANGE", values: [{ userEnteredValue: `='${__LJ_PY_TAB}'!$${lc}$1:$${lc}$${__LJ_LIST_ROWS}` }] },
+                  showCustomUi: true,
+                  strict: false, // 평형표가 없는 단지에서 막히면 안 된다
+                },
+              },
+            });
+          }
+        }
+        // 값이 정해져 있는 칸은 **범위 없이** 목록을 바로 건다 — 열마다 목록을 만들 필요가 없어
+        // 요청도 칸당 하나면 된다 (2026-09-28 사용자 요청: 거주자도 드롭다운으로).
+        for (const [k, list] of [["resident", __LJ_RESIDENTS], ["direction", __LJ_DIRS], ["roomType", __LJ_ROOMTYPES]]) {
+          if (idx[k] == null || k === "roomType") continue; // 타입은 단지별 목록을 쓰므로 제외
+          reqs.push({
+            setDataValidation: {
+              range: { sheetId: mainId, startRowIndex: idx[k], endRowIndex: idx[k] + 1, startColumnIndex: 2 + from, endColumnIndex: 2 + to },
+              rule: {
+                condition: { type: "ONE_OF_LIST", values: list.map((v) => ({ userEnteredValue: v })) },
+                showCustomUi: true,
+                strict: false, // 목록에 없는 말도 적을 수 있게
+              },
+            },
+          });
+        }
+        // 단지명 드롭다운도 여기서 — 늘린 열에도 같이 걸리게
+        if (idx.aptName != null) {
+          reqs.push({
+            setDataValidation: {
+              range: { sheetId: mainId, startRowIndex: idx.aptName, endRowIndex: idx.aptName + 1, startColumnIndex: 2 + from, endColumnIndex: 2 + to },
+              rule: {
+                condition: { type: "ONE_OF_RANGE", values: [{ userEnteredValue: `='${__LJ_INFO_TAB}'!$P$2:$P` }] },
+                showCustomUi: true,
+                strict: false, // 목록에 없는 이름도 적을 수 있게 — 막으면 신축·분양권에서 막힌다
+              },
+            },
+          });
+        }
+        return { pyData, data, reqs };
+      }
+      // 시트에 매물 열이 모자라면 늘린다(입력 도구까지 같이 심는다).
+      // 홍부에서 매물을 더할 때 부른다 — 100칸을 다 쓰면 50칸씩 붙는다.
+      async function __ljGrowCols(sid, sgg5, needCi) {
+        const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+        const props = (meta.result.sheets || []).map((p) => p.properties);
+        const main = props[0];
+        const py = props.find((p) => p.title === __LJ_PY_TAB);
+        const have = main?.gridProperties?.columnCount || 0;
+        if (needCi + 1 < have) return false; // 아직 자리가 있다
+        const from = have - 2;                       // 지금 쓰는 매물 열 수
+        const to = from + __LJ_GROW_COLS;
+        const idx = {};
+        __LJ_SHEET_ROWS.forEach((f, i) => { idx[f.k] = i; });
+        const N = __ljPyeongTable(sgg5).length + 1;
+        const grow = [{ updateSheetProperties: { properties: { sheetId: main.sheetId, gridProperties: { columnCount: 2 + to } }, fields: "gridProperties.columnCount" } }];
+        if (py) grow.push({ updateSheetProperties: { properties: { sheetId: py.sheetId, gridProperties: { columnCount: 6 + 3 * to } }, fields: "gridProperties.columnCount" } });
+        await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: grow } });
+        if (!py) { console.warn("[lj] 단지평형 탭이 없어 드롭다운 없이 열만 늘렸습니다"); return true; }
+        const r = __ljInputColRequests(idx, N, main.sheetId, from, to);
+        await gapi.client.sheets.spreadsheets.values.batchUpdate({ spreadsheetId: sid, resource: { valueInputOption: "USER_ENTERED", data: r.pyData.concat(r.data) } });
+        if (r.reqs.length) await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: r.reqs } });
+        console.log(`[lj] 입력 칸 ${__LJ_GROW_COLS}개 늘림 (이제 ${to}칸)`);
+        return true;
+      }
+      const __LJ_INFO_TAB = "단지정보";
+      // aptcnt.html 의 '그룹핑' 시트와 **같은 파일**을 쓴다 — 구조가 어긋날 여지를 없애려고
+      // 역산하지 않고 원본을 받는다 (2026-09-28 사용자 확정). 21.6MB 라 한 번만 받아 들고 있는다.
+      const __LJ_INFO_HEADERS = ["시도명", "시군구", "읍면동", "유형", "단지코드", "단지명", "사용승인일",
+        "총세대수", "전용면적", "구조", "방수", "욕실수", "평형명", "평형별 세대수"];
+      const __LJ_PY_TAB = "단지평형";
+      // 이 시군구 단지의 평형표 — [단지코드, 평형(공급평수), 구조(방N화M), 타입(계단식…)]
+      // ⚠ 그룹핑 표에는 공급평수가 없다(전용면적만). 그래서 홍부의 타입정보로 만든다.
+      // ⚠ 이름이 엇갈린다: 타입정보의 '구조'(계단식/복도식)가 우리 표에서는 '타입' 이다.
+      function __ljPyeongTable(sgg5) {
+        const out = [];
+        const seen = new Set();
+        if (typeof __syncAptIndex === "undefined" || typeof apartmentDetailData === "undefined") return out;
+        for (const [id, rg] of __syncAptIndex) {
+          if (String(rg?.sgg5) !== String(sgg5)) continue;
+          const types = apartmentDetailData[String(id)]?.타입정보;
+          if (!Array.isArray(types)) continue;
+          for (const t of types) {
+            const py = __ljNum(t["공급평수"]);
+            if (py == null) continue;
+            const st = __ljStructOf(t);
+            const rt = String(t["구조"] ?? "").trim();
+            // 표기는 "32평(전용84)" — 소수점을 버리고 전용면적을 붙인다 (2026-09-28 사용자 요청).
+            // ⚠ 이 글자가 시트 셀에 **그대로 들어간다**(구글시트 드롭다운은 보이는 글자가 곧 값이다).
+            //   그래서 구조·타입을 거르는 수식도 이 글자로 맞춰야 하고, 홍부가 읽을 때는
+            //   앞의 숫자만 떼어 쓴다(__ljFromSheet). 32.1 → 32 로 평단가가 0.3% 달라지는 건 감수한다.
+            const ex = __ljNum(t["전용면적"]);
+            const label = `${Math.round(py)}평` + (ex != null ? `(전용${Math.round(ex)})` : "");
+            const key = `${id}|${label}|${st}|${rt}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push([Number(id) || id, label, st, rt]);
+          }
+        }
+        out.sort((a, b) => (a[0] - b[0]) || (parseFloat(a[1]) - parseFloat(b[1])));
+        return out;
+      }
+      let __ljAptCntCache = null;
+      async function __ljLoadAptCnt() {
+        if (__ljAptCntCache) return __ljAptCntCache;
+        const res = await fetch("aptCntApartments.json", { cache: "force-cache" });
+        if (!res.ok) throw new Error("aptCntApartments.json 로드 실패: HTTP " + res.status);
+        __ljAptCntCache = await res.json();
+        return __ljAptCntCache;
+      }
+      // 이 시군구의 단지정보 행 + 드롭다운용 중복 없는 단지 목록.
+      // ⚠ 시도명·시군구 **이름으로 거르지 않는다** — 표기가 조금만 달라도 통째로 빈다.
+      //   apt.json 인덱스에서 그 시군구의 단지 id 집합을 만들어 단지코드로 거른다(정확하다).
+      async function __ljAptInfoRows(sgg5) {
+        try { if (typeof __loadAptIndexForSync === "function") await __loadAptIndexForSync(); } catch (_) {}
+        const mine = new Set();
+        if (typeof __syncAptIndex !== "undefined") {
+          for (const [id, rg] of __syncAptIndex) if (String(rg?.sgg5) === String(sgg5)) mine.add(String(id));
+        }
+        if (!mine.size) throw new Error(`시군구 ${sgg5} 의 단지 목록을 못 구했습니다`);
+        const all = await __ljLoadAptCnt();
+        const rows = [];
+        const byName = new Map(); // 단지명 → Set(단지코드) — 동명 단지 가려내기
+        for (const r of all) {
+          const code = String(r["단지코드"] ?? "").trim();
+          if (!mine.has(code)) continue;
+          rows.push(__LJ_INFO_HEADERS.map((h) => r[h] ?? ""));
+          const nm = String(r["단지명"] ?? "").trim();
+          if (!nm) continue;
+          if (!byName.has(nm)) byName.set(nm, new Map());
+          byName.get(nm).set(code, String(r["읍면동"] ?? "").trim());
+        }
+        // 드롭다운 목록: 같은 이름이 둘 이상이면 "단지명 (읍면동)" 으로 갈라 준다
+        const picks = [];
+        for (const [nm, codes] of byName) {
+          const dup = codes.size > 1;
+          for (const [code, emd] of codes) picks.push([dup && emd ? `${nm} (${emd})` : nm, Number(code) || code]);
+        }
+        picks.sort((a, b) => String(a[0]).localeCompare(String(b[0]), "ko"));
+        return { rows, picks };
+      }
+      async function __ljCreateSheet(ctx, setB) {
+        const sgg5 = String(ctx.sgg5);
+        // 진행을 **화면에도** 보낸다 — 1~2분 걸리는데 아무 표시가 없으면 멈춘 줄 안다
+        const say = (m) => { console.log("[lj]", m); try { setB && setB(m); } catch (_) {} };
+        say("단지정보 표를 받는 중… (처음 한 번만)");
+        const info = await __ljAptInfoRows(sgg5);
+
+        say("시트 만드는 중…");
+        const sid = await __ljEnsureSheet(sgg5, __ljSheetTitle(ctx), ctx.sigunguName);
+        const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+        const props = (meta.result.sheets || []).map((s) => s.properties);
+        const main = props[0];
+        const mainId = main.sheetId;
+
+        // 이미 있던 단지정보 탭은 지우고 새로 만든다(반쯤 만들다 만 시트 복구)
+        const old = props.find((p) => p.title === __LJ_INFO_TAB);
+        if (old) await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: [{ deleteSheet: { sheetId: old.sheetId } }] } });
+
+        // ⚠ 새 시트는 **빈 채로** 시작한다 (2026-09-28).
+        //   예전엔 로컬 IndexedDB(hongbuListing)의 기록을 심었다 — 시트를 원본으로 바꾸기 전의
+        //   이관 장치였다. 이관이 끝난 지금은 그 DB 를 아무도 갱신하지 않아, 시트를 다시 만들 때마다
+        //   **낡은 값이 되살아나** 시트에서 고친 내용과 어긋난다(사용자: "처음 만드는데 메모가 왜 들어가 있지?").
+        const cols = [];
+        const nSeed = 0;
+        const nCol = 2 + nSeed + __LJ_BLANK_COLS;
+        const nRow = __LJ_SHEET_ROWS.length;
+        const idx = {};
+        __LJ_SHEET_ROWS.forEach((f, i) => { idx[f.k] = i; });
+
+        say("틀 만드는 중…");
+        await gapi.client.sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sid,
+          resource: {
+            requests: [
+              { updateSheetProperties: { properties: { sheetId: mainId, title: "매물", gridProperties: { rowCount: nRow, columnCount: nCol } }, fields: "title,gridProperties(rowCount,columnCount)" } },
+              { addSheet: { properties: { title: __LJ_INFO_TAB, gridProperties: { rowCount: info.rows.length + 1, columnCount: __LJ_INFO_HEADERS.length + 3 } } } },
+            ],
+          },
+        });
+
+        // 매물 탭 — A열 묶음 / B열 항목명 / C열부터 기존 매물
+        await gapi.client.sheets.spreadsheets.values.update({
+          spreadsheetId: sid,
+          range: `'매물'!A1:${__ljColA1(2 + nSeed)}${nRow}`,
+          valueInputOption: "RAW",
+          resource: { values: __ljGridFrom(cols) },
+        });
+
+        // 단지정보 탭 — 그룹핑 원본 + 드롭다운용 목록(P·Q열)
+        say(`단지정보 ${info.rows.length}줄 쓰는 중…`);
+        await gapi.client.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sid,
+          resource: {
+            valueInputOption: "RAW",
+            data: [
+              { range: `'${__LJ_INFO_TAB}'!A1`, values: [__LJ_INFO_HEADERS].concat(info.rows) },
+              { range: `'${__LJ_INFO_TAB}'!P1`, values: [["단지 고르기", "단지코드"]].concat(info.picks) },
+            ],
+          },
+        });
+
+        // 단지평형 탭 — 평형 드롭다운의 원천.
+        // ⚠ 그룹핑 표에는 **공급평수(=평형)가 없다**(전용면적만 있다). 그래서 홍부가 들고 있는
+        //   타입정보로 따로 만든다. 이름이 엇갈리는 것도 여기서 홍부 기준으로 맞춘다:
+        //   구조 = "방2화1"(방 갯수+화장실 갯수), 타입 = 타입정보의 '구조'(계단식·복도식).
+        const pyRows = __ljPyeongTable(sgg5);
+        say(`평형표 ${pyRows.length}줄 쓰는 중…`);
+        const nInput = nSeed + __LJ_BLANK_COLS;
+        const add = await gapi.client.sheets.spreadsheets.batchUpdate({
+          spreadsheetId: sid,
+          resource: {
+            requests: [{ addSheet: { properties: {
+              title: __LJ_PY_TAB, hidden: true,
+              gridProperties: { rowCount: Math.max(pyRows.length + 2, 100), columnCount: 6 + 3 * nInput },
+            } } }],
+          },
+        });
+        const pyId = add.result.replies[0].addSheet.properties.sheetId;
+
+        // 열마다 입력 도구를 심는다 — 생성과 확장이 같은 코드를 쓴다(__ljInputColRequests).
+        const N = pyRows.length + 1;
+        const built = __ljInputColRequests(idx, N, mainId, 0, nInput);
+        const pyData = [{ range: `'${__LJ_PY_TAB}'!A1`, values: [["단지코드", "평형", "구조", "타입"]].concat(pyRows) }]
+          .concat(built.pyData);
+        await gapi.client.sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sid, resource: { valueInputOption: "USER_ENTERED", data: pyData },
+        });
+        const data = built.data;
+        if (data.length) {
+          await gapi.client.sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: sid,
+            resource: { valueInputOption: "USER_ENTERED", data }, // 수식으로 들어가야 한다
+          });
+        }
+
+        say("서식 입히는 중…");
+        const reqs = __ljFormatRequests(mainId, nSeed + __LJ_BLANK_COLS);
+        // 평형·구조·타입 드롭다운 — 열마다 자기 목록을 가리킨다(__ljInputColRequests 가 만든다)
+        reqs.push(...built.reqs);
+        // 기록ID 줄은 숨긴다 — 파트너가 볼 것이 아니고, 지우면 짝짓기가 깨진다
+        if (idx.__id != null) {
+          reqs.push({
+            updateDimensionProperties: {
+              range: { sheetId: mainId, dimension: "ROWS", startIndex: idx.__id, endIndex: idx.__id + 1 },
+              properties: { hiddenByUser: true }, fields: "hiddenByUser",
+            },
+          });
+        }
+        await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: reqs } });
+        say(`✅ ${ctx.sigunguName || sgg5} 시트를 만들었습니다 (빈 칸 ${__LJ_BLANK_COLS}개)`);
+        return sid;
+      }
+
+      // 🖼 사진 시트만 올리기 — 내보내기를 없애면서 따로 뺀 진입점 (2026-09-28)
+      async function __ljShotSheetsOnly() {
         const ctx = __ljState.ctx;
         if (!ctx?.sgg5) { alert("이 단지의 시군구를 알 수 없습니다."); return; }
-        let hasToken = !!window.__gdriveAccessToken;
-        try { hasToken = hasToken || !!localStorage.getItem("__hongbuDriveToken"); } catch (_) {}
-        if (!hasToken) { alert("구글 로그인이 먼저 필요합니다."); return; }
-
-        const url = (id) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
-        // 이름까지 확인해 둔 시트가 있으면 바로 연다 — 클릭 직후 동기 호출이라야 팝업 차단에 안 걸린다.
-        // ⚠ localStorage 를 직접 읽지 않는다(다른 시군구 id 가 들어 있을 수 있다).
-        let sid = __ljSheetIdCached(ctx.sgg5);
-        if (sid) { window.open(url(sid), "_blank"); return; }
-
-        // 기억이 없으면 찾아본다. 찾는 동안 빈 탭을 미리 열어 둬야 차단되지 않는다.
-        const win = window.open("", "_blank");
+        const foot = __ljPanelEl()?.querySelector("#ljFoot");
+        let prog = null;
+        if (foot) {
+          foot.innerHTML = "";
+          prog = document.createElement("button");
+          prog.type = "button";
+          prog.className = "lj-btn";
+          prog.disabled = true;
+          prog.textContent = "⏳ 준비 중…";
+          foot.appendChild(prog);
+        }
+        const setB = (t) => { if (prog) prog.textContent = t; };
         try {
           if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-          sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
-          if (!sid) {
-            if (win) win.close();
-            alert("이 시군구의 시트가 아직 없습니다.\n먼저 한 번 내보내기를 해 주세요.");
-            return;
-          }
-          if (win) win.location.href = url(sid);
-          else window.open(url(sid), "_blank");
+          const sid = await __ljFindSheetId(ctx.sgg5, ctx.sigunguName);
+          if (!sid) { alert("이 시군구의 시트가 아직 없습니다.\n📄 구글시트 보기로 먼저 만들어 주세요."); return; }
+          const rows = await __ljByApt(ctx.aptId);
+          const r = await __ljWriteShotSheets(sid, rows, setB);
+          alert(r.sheets
+            ? `사진 시트 ${r.sheets}개 · 사진 ${r.photos}장을 올렸습니다.` + (r.skipped ? `\n(사진을 못 찾은 매물 ${r.skipped}건은 건너뜀)` : "")
+            : "이 단지에는 사진이 있는 매물이 없습니다.");
         } catch (e) {
-          if (win) win.close();
-          console.error("[lj] 시트 열기 실패:", e);
-          alert("시트를 열지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+          console.error("[lj] 사진 시트 실패:", e);
+          alert("사진 시트를 올리지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+        } finally {
+          __ljRenderList().catch(() => {});
         }
       }
 
@@ -27618,7 +27952,8 @@ const originalBase64 = event.target.result;
         if (!shots.length) return [];
         const sgg5 = String(rec.sgg5 || "");
         if (!/^\d{5}$/.test(sgg5)) return [];
-        const folder = await __dqSggFolder("listingImages", sgg5);
+        const folder = await __ljPhotoFolder(sgg5, true);
+        if (!folder) return [];
         const list = await __dqList(folder, true);
         const out = [];
         for (const it of shots) {
@@ -27642,8 +27977,11 @@ const originalBase64 = event.target.result;
       // (동호수를 고쳐 이름이 바뀌면 탭 이름만 갈아 끼운다 — 탭이 불어나지 않게).
       async function __ljWriteShotSheets(sid, rows, setB) {
         const targets = rows.filter((r) => __ljShots(r).length);
-        const out = { sheets: 0, photos: 0, skipped: 0 };
-        if (!targets.length) return out;
+        // 사진이 하나도 없는 매물 중 **이미 탭이 있는 것**은 비워야 한다 —
+        // 안 비우면 지워진 파일을 가리키는 =IMAGE() 가 깨진 그림으로 남는다 (2026-09-28)
+        const empties = rows.filter((r) => !__ljShots(r).length);
+        const out = { sheets: 0, photos: 0, skipped: 0, cleared: 0 };
+        if (!targets.length && !empties.length) return out;
         if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
 
         const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
@@ -27669,6 +28007,17 @@ const originalBase64 = event.target.result;
         }
         const taken = new Map(props.map((p) => [p.title, p.sheetId])); // 탭 이름 → sheetId
 
+        for (const r of empties) {
+          const t = tabOf.get(String(r.id));
+          if (!t) continue;
+          try {
+            await gapi.client.sheets.spreadsheets.values.clear({ spreadsheetId: sid, range: `'${t.title}'`, resource: {} });
+            out.cleared++;
+          } catch (e) {
+            console.warn("[lj] 빈 사진 탭 비우기 실패(무시):", t.title, e?.result?.error?.message || e?.message || e);
+          }
+        }
+
         for (let i = 0; i < targets.length; i++) {
           const rec = targets[i];
           setB(`⏳ 사진 시트 ${i + 1}/${targets.length}…`);
@@ -27678,7 +28027,11 @@ const originalBase64 = event.target.result;
           } catch (e) {
             console.warn("[lj] 사진 준비 실패(건너뜀):", rec.id, e?.result?.error?.message || e?.message || e);
           }
-          if (!shots.length) { out.skipped++; continue; }
+          if (!shots.length) {
+            console.warn("[lj] 사진 파일을 못 찾아 탭을 건너뜀:", rec.id, "sgg5=", rec.sgg5);
+            out.skipped++;
+            continue;
+          }
           for (const s of shots) await __ljSharePublic(s.fileId);
 
           // 탭 이름 정하기 — 남이 쓰고 있으면 기록ID 뒤 4자리를 붙인다
@@ -27759,238 +28112,13 @@ const originalBase64 = event.target.result;
             valueInputOption: "USER_ENTERED", // =IMAGE() 가 수식으로 들어가야 한다
             resource: { values: vals },
           });
+          console.log(`[lj] 사진 탭 '${title}' — 사진 ${shots.length}장`);
           out.sheets++;
           out.photos += shots.length;
         }
         return out;
       }
 
-      // 내보내기 범위 고르기 — 시군구 전체 / 이 단지만
-      async function __ljExportChoose() {
-        const ctx = __ljState.ctx;
-        const all = await __ljAll();
-        const nApt = all.filter((x) => String(x.aptId) === String(ctx.aptId)).length;
-        const nSgg = all.filter((x) => String(x.sgg5) === String(ctx.sgg5)).length;
-        const foot = document.getElementById("ljFoot");
-        if (!foot) return;
-        foot.innerHTML = "";
-        const q = document.createElement("p");
-        q.style.cssText = "margin:0 2px 1px;font-size:12px;color:#5a5a5a";
-        q.textContent = "구글시트에 어디까지 내보낼까요?";
-        foot.appendChild(q);
-        const mk = (text, cls, fn) => {
-          const b = document.createElement("button");
-          b.type = "button";
-          b.className = "lj-btn" + (cls ? " " + cls : "");
-          b.textContent = text;
-          b.onclick = fn;
-          foot.appendChild(b);
-        };
-        mk(`${ctx.sigunguName || "이 시군구"} 전체 (${nSgg}건)`, "pri", () => __ljExport("sgg"));
-        mk(`${ctx.aptName || "이 단지"}만 (${nApt}건) — 시트의 이 단지만 새로 씀`, "", () => __ljExport("apt"));
-        mk("취소", "", () => { __ljRenderList().catch(() => {}); });
-      }
-
-      async function __ljExport(scope) {
-        const ctx = __ljState.ctx;
-        const isApt = scope === "apt";
-        const foot = document.getElementById("ljFoot");
-        let prog = null;
-        if (foot) {
-          foot.innerHTML = "";
-          prog = document.createElement("button");
-          prog.type = "button";
-          prog.className = "lj-btn";
-          prog.disabled = true;
-          foot.appendChild(prog);
-        }
-        const setB = (t) => { if (prog) prog.textContent = t; };
-        if (!ctx?.sgg5) {
-          alert("이 단지의 시군구를 알 수 없어 내보낼 수 없습니다.\n새로고침한 뒤 다시 시도해 주세요.");
-          await __ljRenderList();
-          return;
-        }
-        let hasToken = !!window.__gdriveAccessToken;
-        try { hasToken = hasToken || !!localStorage.getItem("__hongbuDriveToken"); } catch (_) {}
-        if (!hasToken) {
-          alert("구글 로그인이 먼저 필요합니다.\n지도 화면에서 구글 로그인을 한 뒤 다시 눌러 주세요.");
-          await __ljRenderList();
-          return;
-        }
-        try {
-          setB("⏳ 준비 중…");
-          if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-
-          // 저장 당시 시군구를 못 구한 레코드는 지금 apt.json 인덱스로 보정하고 되써 둔다
-          const all = await __ljAll();
-          const fixed = [];
-          for (const r of all) {
-            if (r.sgg5) continue;
-            const rg = typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(r.aptId)) : null;
-            if (rg?.sgg5) {
-              r.sgg5 = rg.sgg5;
-              r.sidoName = rg.sidoName;
-              r.sigunguName = rg.sigunguName;
-              fixed.push(r);
-            }
-          }
-          for (const r of fixed) { try { await __ljPut(r); __ljSync(r); } catch (_) {} }
-
-          const rows = all
-            .filter((x) => (isApt ? String(x.aptId) === String(ctx.aptId) : String(x.sgg5) === String(ctx.sgg5)))
-            .sort(
-              (a, b) =>
-                String(a.aptName || "").localeCompare(String(b.aptName || ""), "ko") ||
-                (a.createdAt || 0) - (b.createdAt || 0)
-            );
-          if (!rows.length) {
-            alert(isApt ? "이 단지에 기록된 매물이 없습니다." : "이 시군구에 기록된 매물이 없습니다.");
-            await __ljRenderList();
-            return;
-          }
-
-          setB("⏳ 시트 여는 중…");
-          const title = __ljSheetTitle(ctx);
-          const sid = await __ljEnsureSheet(ctx.sgg5, title, ctx.sigunguName);
-          const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
-          const props = meta.result.sheets[0].properties;
-          const sheetId = props.sheetId;
-          const gp = props.gridProperties || {};
-
-          // 홍부 밖에서 시트를 고친 흔적이 있으면 덮어쓰기 전에 알린다 (파일 단위 modifiedTime)
-          const modNow = await __ljSheetMod(sid);
-          const modKnown = __ljModGet(ctx.sgg5);
-          if (modNow && modKnown && modNow !== modKnown) {
-            const go = confirm(
-              `이 시트는 마지막 내보내기 뒤에 수정됐습니다.\n(시트 수정: ${__ljModWhen(modNow)})\n\n` +
-                (isApt
-                  ? "지금 내보내면 이 단지 열에 한 수정은 사라집니다.\n"
-                  : "지금 내보내면 시트에서 고친 내용이 모두 사라집니다.\n") +
-                "\n계속할까요?\n취소하고 '📥 시트에서 수정분 가져오기' 를 먼저 하시길 권합니다."
-            );
-            if (!go) { await __ljRenderList(); return; }
-          }
-
-          // '이 단지만' 이면 시트에서 다른 단지 열은 살리고 이 단지 열만 갈아 끼운다.
-          // 반드시 병합 해제·비우기 **전에** 읽어야 한다.
-          let cols = [];
-          if (isApt) {
-            setB("⏳ 시트 읽는 중…");
-            let kept = null;
-            try {
-              kept = await __ljKeepOtherCols(sid, Math.max(gp.columnCount || 0, 8), Math.max(gp.rowCount || 0, 30), ctx.aptId);
-            } catch (e) {
-              console.warn("[lj] 기존 시트 읽기 실패:", e?.result?.error?.message || e?.message || e);
-            }
-            if (kept === null) {
-              if (!confirm("시트의 기존 내용을 알아볼 수 없습니다.\n(다른 형식이거나 아직 비어 있는 시트)\n\n이 단지 것만으로 새로 쓸까요?\n기존 내용은 지워집니다.")) {
-                await __ljRenderList();
-                return;
-              }
-            } else {
-              cols = kept;
-            }
-          }
-          const calcs = rows.map(__ljCalc);
-          cols = cols.concat(rows.map((r, i) => __ljRecCol(r, calcs[i])));
-          cols = __ljSortCols(cols); // 같은 단지끼리 묶고 가격 오름차순
-
-          setB(`⏳ ${rows.length}건 올리는 중…`);
-          const grid = __ljGridFrom(cols);
-          const needRow = grid.length;
-          const needCol = 2 + cols.length;
-
-          // 시트 크기 확보 + 병합 해제. 병합된 칸에는 값을 못 쓰므로 반드시 먼저 푼다.
-          const finalRow = Math.max(needRow, gp.rowCount || 0, 30);
-          const finalCol = Math.max(needCol, gp.columnCount || 0, 8);
-          const sizeReq = {
-            updateSheetProperties: {
-              properties: { sheetId, gridProperties: { rowCount: finalRow, columnCount: finalCol } },
-              fields: "gridProperties(rowCount,columnCount)",
-            },
-          };
-          try {
-            await gapi.client.sheets.spreadsheets.batchUpdate({
-              spreadsheetId: sid,
-              resource: { requests: [{ unmergeCells: { range: { sheetId } } }, sizeReq] },
-            });
-          } catch (e) {
-            // 병합이 하나도 없으면 unmergeCells 가 거절될 수 있다 — 크기 조정만 다시
-            console.warn("[lj] 병합 해제 생략:", e?.result?.error?.message || e?.message || e);
-            try {
-              await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: [sizeReq] } });
-            } catch (_) {}
-          }
-
-          // 값만 비운다 — 지난 회차가 더 넓었어도 남은 칸이 깨끗해진다
-          await gapi.client.sheets.spreadsheets.values.clear({
-            spreadsheetId: sid,
-            range: `A1:${__ljColA1(finalCol)}${finalRow}`,
-            resource: {},
-          });
-          await gapi.client.sheets.spreadsheets.values.update({
-            spreadsheetId: sid,
-            range: `A1:${__ljColA1(needCol)}${needRow}`,
-            valueInputOption: "RAW",
-            resource: { values: grid },
-          });
-          setB("⏳ 서식 입히는 중…");
-          await gapi.client.sheets.spreadsheets.batchUpdate({
-            spreadsheetId: sid,
-            resource: { requests: __ljFormatRequests(sheetId, cols.length) },
-          });
-
-          // 사진이 있는 매물은 탭을 따로 만든다 (실패해도 취합표는 이미 끝났으므로 삼킨다)
-          let shotOut = { sheets: 0, photos: 0, skipped: 0 };
-          try {
-            shotOut = await __ljWriteShotSheets(sid, rows, setB);
-          } catch (e) {
-            console.error("[lj] 사진 시트 실패:", e);
-            alert("취합표는 올렸지만 사진 시트에서 실패했습니다.\n" + (e?.result?.error?.message || e?.message || e));
-          }
-
-          // 방금 우리가 쓴 뒤의 값을 기억 — 이 뒤로 달라지면 사람이 시트에서 고친 것
-          __ljModSet(ctx.sgg5, await __ljSheetMod(sid));
-
-          setB("✅ 내보내기 완료");
-          const url = `https://docs.google.com/spreadsheets/d/${sid}/edit`;
-          const shotLine = shotOut.sheets
-            ? `\n사진 시트 ${shotOut.sheets}개 · 사진 ${shotOut.photos}장` +
-              (shotOut.skipped ? ` (사진을 못 찾은 매물 ${shotOut.skipped}건은 건너뜀)` : "")
-            : "";
-          const what = isApt
-            ? `${ctx.aptName || "이 단지"} 매물 ${rows.length}건을 갈아 끼웠습니다.\n(시트 전체 ${cols.length}건)${shotLine}`
-            : `${ctx.sigunguName || "이 시군구"} — 단지 ${new Set(rows.map((r) => r.aptId)).size}곳 · 매물 ${rows.length}건을 내보냈습니다.${shotLine}`;
-          if (confirm(`${what}\n\n시트를 지금 열까요?`)) {
-            window.open(url, "_blank");
-          }
-        } catch (e) {
-          console.error("[lj] 내보내기 실패:", e);
-          const err = e?.result?.error || {};
-          const msg = err.message || e?.message || String(e);
-          // 구글 클라우드 프로젝트에서 Sheets API 를 아직 안 켠 경우 — 콘솔에서 1회 '사용 설정'하면 끝.
-          // 응답 details 에 활성화 링크가 들어 있으니 그대로 열어 준다.
-          const dis = (err.details || []).find((d) => d.reason === "SERVICE_DISABLED");
-          if (dis || /has not been used in project|SERVICE_DISABLED/i.test(msg)) {
-            const link =
-              dis?.metadata?.activationUrl ||
-              "https://console.cloud.google.com/apis/library/sheets.googleapis.com";
-            if (
-              confirm(
-                "구글 클라우드 프로젝트에 Google Sheets API 가 아직 켜져 있지 않습니다.\n\n" +
-                  "열리는 페이지에서 [사용] 버튼을 누르고 1~2분 기다린 뒤 다시 내보내기를 눌러 주세요.\n" +
-                  "처음 한 번만 하면 됩니다.\n\n지금 그 페이지를 열까요?"
-              )
-            ) {
-              window.open(link, "_blank");
-            }
-          } else {
-            alert("내보내기에 실패했습니다.\n" + msg);
-          }
-        } finally {
-          setTimeout(() => { __ljRenderList().catch(() => {}); }, 1200);
-        }
-      }
 
       (function () {
         try {
