@@ -8643,8 +8643,34 @@
           panel.style.left = "50%";
           panel.style.transform = "translate(-50%, -50%)";
           panel.style.removeProperty("height");
-          panel.style.removeProperty("max-height");
           panel.style.bottom = "";
+          // ⚠ vh 도 dvh 도 원하는 만큼 안 찼다 (2026-09-28 실측: 90dvh 인데 보이는 높이의 80% 남짓).
+          //   단위 의미에 기대지 말고 **실제로 보이는 높이를 재서** 넣는다.
+          //   visualViewport 는 주소창이 차지한 만큼까지 빼 준 값이라 innerHeight 보다 정확하다.
+          //   주소창이 접히고 펴질 때마다 relayout 이 다시 불려 값이 따라온다.
+          //
+          // ⚠ 이 분기는 "폰" 이 아니라 "PC 도킹이 아닌 것" 전부다 — PC 에서 창을 1281px
+          //   아래로 좁혀도 여기로 온다. 그때까지 화면을 꽉 채우면 너무 늘어나 보인다
+          //   (2026-09-28 사용자 확인). 화면을 최대한 쓰고 싶은 건 주소창에 눌리는 폰 쪽이라,
+          //   손가락(pointer: coarse)일 때만 꽉 채우고 마우스면 90% 로 둔다.
+          const vv = window.visualViewport;
+          const vh = Math.round((vv && vv.height) || window.innerHeight || 0);
+          let touch = true;
+          try { touch = window.matchMedia("(pointer: coarse)").matches; } catch (e) {}
+          if (vh > 200) {
+            // ⚠ 패널은 content-box(전역 box-sizing 규칙이 없다) — max-height 는 내용 영역만
+            //   제한하고 상하 패딩·테두리가 그 위에 더 붙는다. 그냥 넣으면 그만큼 화면 밖으로
+            //   삐져나간다(2026-09-28 실측: 971 을 넣었는데 실제 993, 화면은 987).
+            //   PC 분기가 이미 같은 이유로 여백을 빼고 있다.
+            const cs = getComputedStyle(panel);
+            const chrome =
+              (parseFloat(cs.paddingTop) || 0) +
+              (parseFloat(cs.paddingBottom) || 0) +
+              (parseFloat(cs.borderTopWidth) || 0) +
+              (parseFloat(cs.borderBottomWidth) || 0);
+            const want = touch ? vh - 16 : Math.round(vh * 0.9);
+            panel.style.maxHeight = Math.max(120, Math.round(want - chrome)) + "px";
+          } else panel.style.removeProperty("max-height"); // 값이 이상하면 CSS 에 맡긴다
           return;
         }
         const mapEl = document.getElementById("map");
@@ -8678,6 +8704,15 @@
         window.addEventListener("scroll", relayout, { passive: true });
         window.addEventListener("resize", relayout);
         window.addEventListener("orientationchange", relayout);
+        // 주소창이 접히고 펴지면 보이는 높이만 바뀐다 — window resize 가 안 오는 브라우저가 있어
+        // visualViewport 쪽도 같이 듣는다(모바일 분기의 max-height 가 이 값으로 계산된다).
+        try {
+          const vv = window.visualViewport;
+          if (vv) {
+            vv.addEventListener("resize", relayout);
+            vv.addEventListener("scroll", relayout);
+          }
+        } catch (e) {}
         // 툴바 줄 수가 바뀌면(체크박스를 켜고 끄면 2줄↔3줄) 지도 높이만 변하고 window resize 는 오지 않는다.
         try {
           const mapEl = document.getElementById("map");
