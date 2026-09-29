@@ -26748,7 +26748,10 @@ const originalBase64 = event.target.result;
         bDel.onclick = () => __ljDeleteSheet();
         foot.appendChild(bNew);
         foot.appendChild(bView);
-        foot.appendChild(bDel);
+        // 시트가 없으면 지울 것도 없다 — 단추를 아예 숨긴다 (2026-09-29 사용자 요청).
+        // __ljState.sid 는 이 함수 맨 위의 __ljByApt 가 **이번 읽기 결과로** 채운 값이라
+        // 믿을 수 있다(시트를 못 읽었으면 "" 가 된다). 지운 직후에도 ""가 되어 바로 사라진다.
+        if (__ljState.sid) foot.appendChild(bDel);
         // 사진 시트는 사진을 넣고 지울 때 저절로 맞춰진다 → **실패했을 때만** 고칠 단추를 보여 준다
         if (__ljShotFail.has(String(ctx.aptId))) foot.appendChild(bShot);
       }
@@ -28928,6 +28931,32 @@ const originalBase64 = event.target.result;
       }
 
       // 📄 시트 보기 = 유일한 시트 진입점. 있으면 열고, 없으면 만들어서 연다 (2026-09-28 사용자 확정).
+      /* ── 구글 서버의 일시적 오류를 넘긴다 (2026-09-29) ──
+         실제로 겪은 것: 시트를 만드는 중에 `502 Server Error — The server encountered a
+         temporary error... Please try again in 30 seconds.` 가 떨어져 통째로 실패했다.
+         시트 만들기는 API 호출 10여 번을 1~2분에 걸쳐 하므로 그 사이 한 번만 흔들려도 끝난다.
+         ⚠ 아무 호출이나 다시 하면 안 된다 — files.create 를 그냥 재시도하면 시트가 둘 생길 수 있다.
+            **이름으로 먼저 찾는 경로(__ljEnsureSheet)를 지나는 것만** 감싼다.
+      */
+      const __LJ_RETRY_MS = [1500, 4000, 9000];
+      function __ljTransient(e) {
+        const st = Number(e?.status ?? e?.result?.error?.code ?? 0);
+        return st === 429 || (st >= 500 && st <= 599); // 할당량 초과·서버 오류만
+      }
+      async function __ljRetry(fn, label, say) {
+        for (let i = 0; ; i++) {
+          try {
+            return await fn();
+          } catch (e) {
+            if (!__ljTransient(e) || i >= __LJ_RETRY_MS.length) throw e;
+            const ms = __LJ_RETRY_MS[i];
+            console.warn(`[lj] ${label} 일시적 실패(${e?.status || e?.result?.error?.code}) — ${ms}ms 뒤 다시`, e);
+            try { say && say(`⏳ 구글 서버가 잠시 불안정합니다 — 다시 시도 중 (${i + 1}/${__LJ_RETRY_MS.length})…`); } catch (_) {}
+            await new Promise((r) => setTimeout(r, ms));
+          }
+        }
+      }
+
       // 시군구 시트를 **매물 사진 폴더까지 통째로** 지운다 (2026-09-29 사용자 요청).
       // ⚠⚠ 휴지통이 아니라 **영구 삭제**(files.delete)다. 사용자가 "복구할 수 없습니다" 라고
       //   말해 주기를 지정했으므로 실제 동작도 그래야 한다 — 말과 동작이 다르면 안 된다.
@@ -29048,11 +29077,18 @@ const originalBase64 = event.target.result;
         let sid = "";
         try {
           if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
-          sid = await __ljFindSheetId(ctx.sgg5);
-          if (!sid) sid = await __ljCreateSheet(ctx, setB);
+          sid = await __ljRetry(() => __ljFindSheetId(ctx.sgg5), "시트 찾기", setB);
+          // ⚠ 통째로 다시 시도해도 안전하다 — __ljEnsureSheet 가 이름으로 먼저 찾고,
+          //   탭도 있으면 지우고 새로 만든다(반쯤 만들다 만 시트를 복구하는 경로가 이미 있다).
+          if (!sid) sid = await __ljRetry(() => __ljCreateSheet(ctx, setB), "시트 만들기", setB);
         } catch (e) {
           console.error("[lj] 시트 준비 실패:", e);
-          alert("시트를 준비하지 못했습니다.\n" + (e?.result?.error?.message || e?.message || e));
+          const msg = e?.result?.error?.message || e?.message || String(e);
+          alert(
+            __ljTransient(e)
+              ? "구글 서버가 일시적으로 응답하지 않습니다.\n잠시 뒤 '구글시트 보기' 를 다시 눌러 주세요.\n\n(" + msg + ")"
+              : "시트를 준비하지 못했습니다.\n" + msg
+          );
           await __ljRenderList().catch(() => {});
           return;
         }
