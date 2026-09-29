@@ -2091,6 +2091,12 @@
       #smList .sm-meta{color:#64748b;font-size:12px;margin-left:6px;}
       #smList .sm-unset{color:#d97706;font-size:12px;margin-left:4px;}
       #smList .sm-new{background:#d9531e;color:#fff;border-radius:999px;padding:1px 7px;font-size:11px;margin-left:6px;vertical-align:1px;}
+      /* 창을 먼저 띄우고 목록이 준비될 때까지 보여 주는 안내 (2026-09-29 사용자 요청) */
+      #smList .sm-wait{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:48px 16px;color:#475569;font-size:15px;text-align:center;}
+      #smList .sm-wait span{font-size:12.5px;color:#94a3b8;}
+      #smList .sm-wait .sm-spin{width:26px;height:26px;border:3px solid #e2e8f0;border-top-color:#d9531e;border-radius:50%;animation:smSpin .8s linear infinite;}
+      @keyframes smSpin{to{transform:rotate(360deg);}}
+      #smList .sm-wait.bad{color:#b3261e;}
       #smList .sm-del-btn{padding:5px 10px;border:1px solid #fecaca;border-radius:999px;background:#fff;color:#dc2626;cursor:pointer;font-size:12px;font-weight:700;justify-self:end;line-height:1.3;white-space:nowrap;}
       #smList .sm-del-btn:hover:not(:disabled){background:#dc2626;border-color:#dc2626;color:#fff;}
       #smList .sm-del-btn:disabled{opacity:.6;cursor:default;}
@@ -18873,7 +18879,15 @@ const originalBase64 = event.target.result;
         return (deviceSet && deviceSet.has(String(sgg5))) ? 'auto' : 'thumb';
       }
       // 이 기기에 글·사진 원본이 있는 시군구 집합 (한 번의 스캔; 폴리곤 제외)
-      async function __smDeviceSet() {
+      // ⚠ 이 훑기가 비싸다 — apartmentNotes 는 단지메모 **사진 원본이 레코드 안에** 들어 있어
+      //   673건을 읽는 데 6초가 걸린다(2026-09-29 실측). photoMemos(100MB)까지 더하면 한 번에 5초쯤.
+      //   그런데 __smOpenPopup 이 이것을 부르고 __smAllRegions 가 **또** 불러 두 번 돌았다(13.6초).
+      //   → ① 결과를 잠깐 기억하고 ② __smAllRegions 에 이미 구한 것을 넘긴다.
+      //   TTL 을 짧게 둔 이유: 메모를 저장한 직후 설정을 열면 그 지역이 빠질 수 있어서다.
+      let __smDevSet = null; // { at, set }
+      const __SM_DEVSET_TTL = 30 * 1000;
+      async function __smDeviceSet(force) {
+        if (!force && __smDevSet && Date.now() - __smDevSet.at < __SM_DEVSET_TTL) return __smDevSet.set;
         const set = new Set();
         try {
           try { await __loadAptIndexForSync(); } catch (_) {}
@@ -18902,6 +18916,7 @@ const originalBase64 = event.target.result;
           // 면적그리기(폴리곤)는 세지 않는다 — 선로드가 통째로 받으므로 로그인만 해도 📱 가 붙어 기본값이 자동으로 잡히던 문제 (2026-09-19 사용자 결정)
           try { db.close(); } catch (_) {}
         } catch (e) { console.warn('[mode] 기기 메모 지역 집합 실패(무시):', e?.message || e); }
+        __smDevSet = { at: Date.now(), set };
         return set;
       }
       // (2026-09-20) 지역 동기화 진행 상황은 지도 위 토스트 대신 ⚙ 동기화 설정 단추 오른쪽에 표시 (사용자: 스크롤 안 내리면 안 보이게)
@@ -18951,19 +18966,67 @@ const originalBase64 = event.target.result;
         }
       }
       // 전체 지역 목록 = 드라이브에 살아있는 지역 ∪ 이 기기에 메모가 있는 지역
-      async function __smAllRegions() {
+      // deviceSet 을 이미 구해 놨으면 넘긴다 — 안 넘기면 위의 비싼 훑기가 한 번 더 돈다
+      async function __smAllRegions(deviceSet) {
         const set = new Set();
         for (const [sgg5, alive] of __lz.alive) if (alive) set.add(String(sgg5));
-        for (const sgg5 of await __smDeviceSet()) set.add(String(sgg5));
+        for (const sgg5 of (deviceSet || await __smDeviceSet())) set.add(String(sgg5));
+        return Array.from(set);
+      }
+      // 훑지 않고 아는 지역 — 드라이브에 살아 있는 곳 ∪ **설정이 저장된 곳**. 둘 다 즉시 읽힌다.
+      // ⚠ 설정은 localStorage 에 있고 로그인 때 __smAfterPrefetch 가 모든 지역에 기본값을 저장한다.
+      //   그래서 평소에는 이것만으로 목록이 완성되고, 비싼 __smDeviceSet 을 부를 이유가 없다
+      //   (2026-09-29 사용자 지적: "원본이냐 썸네일이냐만 알면 되는 거 아닌가").
+      function __smKnownRegions() {
+        const set = new Set();
+        for (const [sgg5, alive] of __lz.alive) if (alive) set.add(String(sgg5));
+        for (const k of Object.keys(__smAll())) if (/^\d{5}$/.test(k)) set.add(k);
         return Array.from(set);
       }
       // 팝업: 시도 → 시군구 계층, 지역별 라디오(자동/썸네일만). 설정된 지역은 현재 값, 미설정은 기본값이 미리 선택.
+      // 창이 뜰 때까지 걸리는 동안 보여 줄 안내. bad=true 면 실패 표시.
+      function __smWait(msg, sub, bad) {
+        const ul = document.getElementById('smList');
+        if (!ul) return;
+        ul.innerHTML = '';
+        const box = document.createElement('div');
+        box.className = 'sm-wait' + (bad ? ' bad' : '');
+        if (!bad) { const sp = document.createElement('div'); sp.className = 'sm-spin'; box.appendChild(sp); }
+        box.appendChild(document.createTextNode(msg));
+        if (sub) { const s = document.createElement('span'); s.textContent = sub; box.appendChild(s); }
+        ul.appendChild(box);
+      }
+
       async function __smOpenPopup(list, mode) {
         const o = document.getElementById('syncModeOverlay'), ul = document.getElementById('smList');
         if (!o || !ul) return;
-        try { if (typeof __syncAptIndex !== 'undefined' && __syncAptIndex.size === 0) await __loadAptIndexForSync(); } catch (_) {}
-        const deviceSet = await __smDeviceSet();
-        const all = Array.from(new Set([...(list || []), ...(await __smAllRegions())]));
+        // ⚠ 모바일에서 여기까지 10초쯤 걸렸다(아파트 색인 21,568건 + SIG 격자 + 메모·사진 전수 훑기).
+        //   그동안 아무 반응이 없어 **눌리지 않은 줄 알았다**(2026-09-29 사용자 지적).
+        //   그래서 창을 **먼저 띄우고** 안내를 보여 준 뒤 목록을 채운다.
+        __smWait('잠시만 기다려 주세요…', '지역 목록을 불러오는 중입니다');
+        const reason0 = document.getElementById('smReason');
+        if (reason0) reason0.style.display = 'none';
+        o.style.display = 'flex';
+        try {
+          if (typeof __syncAptIndex !== 'undefined' && __syncAptIndex.size === 0) await __loadAptIndexForSync();
+        } catch (_) {}
+        // 먼저 훑지 않고 아는 것만으로 목록을 만든다
+        let all = Array.from(new Set([...(list || []), ...__smKnownRegions()]));
+        // 비싼 훑기는 **정말 필요할 때만**:
+        //   · PC 는 기본값이 언제나 '원본' 이라(__smDefault) 이 집합이 필요 없다
+        //   · 모바일이라도 모든 지역에 설정이 저장돼 있으면 기본값을 정할 일이 없다
+        let deviceSet = null;
+        const needDev = __smIsMobile() && all.some((s) => !__smGet(s));
+        if (needDev) {
+          __smWait('잠시만 기다려 주세요…', '이 기기의 메모를 확인하는 중입니다');
+          try {
+            deviceSet = await __smDeviceSet();
+            all = Array.from(new Set([...all, ...Array.from(deviceSet)])); // 이 기기에만 있는 지역도 넣는다
+          } catch (e) {
+            // 실패해도 빈 화면으로 두지 않는다 — 왜 안 뜨는지 알 수 없으면 다시 누를 수도 없다
+            console.warn('[mode] 기기 메모 확인 실패(기본값은 썸네일):', e?.message || e);
+          }
+        }
         // 자동으로 뜬 경우(미설정 지역 목록이 있음): 왜 떴는지·어느 지역인지 위에 보여 준다 (2026-09-19 사용자 지적)
         const hiSet = new Set((list || []).map(String));
         const reason = document.getElementById('smReason');
@@ -19000,7 +19063,7 @@ const originalBase64 = event.target.result;
             const row = document.createElement('div');
             row.className = 'sm-row' + (hiSet.has(sgg5) ? ' sm-hi' : ''); // 이름 칸 폭 고정(9~12em) → 토글이 모든 행에서 같은 x. 좁으면 목록이 가로 스크롤
             row.dataset.sgg5 = sgg5; row.dataset.sido = sd; row.dataset.prev = cur;
-            row.innerHTML = `<span class="sm-name" title="${name}${lastTxt ? ' · ' + lastTxt + ' 업데이트' : ''}${cur ? '' : ' · 미설정'}"><b>${name}</b>${cur ? '' : '<span class="sm-unset" title="미설정">❔</span>'}<span class="sm-meta">${lastTxt}${deviceSet.has(sgg5) ? ' 📱' : ''}</span>${c ? `<span class="sm-new">새 ${c.notes + c.photos}</span>` : ''}</span>` +
+            row.innerHTML = `<span class="sm-name" title="${name}${lastTxt ? ' · ' + lastTxt + ' 업데이트' : ''}${cur ? '' : ' · 미설정'}"><b>${name}</b>${cur ? '' : '<span class="sm-unset" title="미설정">❔</span>'}<span class="sm-meta">${lastTxt}${deviceSet && deviceSet.has(sgg5) ? ' 📱' : ''}</span>${c ? `<span class="sm-new">새 ${c.notes + c.photos}</span>` : ''}</span>` +
               `<span class="sm-seg"><label><input type="radio" name="sm_${sgg5}" value="auto" ${sel === 'auto' ? 'checked' : ''}><span>🔁 원본</span></label><label><input type="radio" name="sm_${sgg5}" value="thumb" ${sel === 'thumb' ? 'checked' : ''}><span>썸네일</span></label></span>` +
               `<span></span>` +
               `<button type="button" data-del="${sgg5}" class="sm-del-btn" title="완전 삭제 — 이 지역의 메모·사진·면적그리기·매물임장을 이 기기와 구글드라이브에서 모두 삭제. 다른 기기도 로그인하면 함께 제거. 되돌릴 수 없음">삭제</button>`;
@@ -19014,6 +19077,18 @@ const originalBase64 = event.target.result;
           document.querySelectorAll('#smNetRow input[name=netPolicy]').forEach((r) => { r.checked = r.value === v; if (r.value === 'wifi' && __NET_IOS) r.closest('label').style.display = 'none'; });
           const nr = document.getElementById('smNetRow'); if (nr && __NET_IOS) nr.title = '이 기기는 Wi-Fi 연결 여부를 알 수 없어 항상 모바일 데이터로 간주합니다';
         } catch (_) {}
+        // 📱 는 "이 기기에 메모가 있다" 는 **표시일 뿐**이라 목록을 막을 이유가 없다.
+        // 훑기를 건너뛴 경우에는 먼저 목록을 보여 주고, 끝나면 뒤에서 붙인다 (2026-09-29).
+        if (!deviceSet) {
+          __smDeviceSet().then((ds) => {
+            const o2 = document.getElementById('syncModeOverlay');
+            if (!o2 || o2.style.display === 'none') return; // 그새 닫혔으면 그만
+            for (const s of ds) {
+              const meta = document.querySelector(`#smList [data-sgg5="${s}"] .sm-meta`);
+              if (meta && !meta.textContent.includes('📱')) meta.textContent += ' 📱';
+            }
+          }).catch((e) => console.warn('[mode] 📱 표시 실패(무시):', e?.message || e));
+        }
         const note = document.getElementById('smNote');
         if (note) note.textContent = `기본값: ${__smIsMobile() ? '모바일 — 이 기기에 메모가 있는 지역(📱)은 원본, 나머지 썸네일' : 'PC — 원본'} · 원본→썸네일로 바꾸면 이 기기의 사진 원본을 비움(드라이브엔 남음) · 📱 = 이 기기에 메모 있음 · ❔ 미설정 · 날짜 = 마지막 업데이트 · 삭제 = 이 기기와 드라이브에서 완전 삭제(복구 불가)${unsetCount ? ` · 미설정 ${unsetCount}개` : ''}`;
         o.style.display = 'flex';
