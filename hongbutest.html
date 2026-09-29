@@ -6279,8 +6279,8 @@
       //     이미 9 가 된 브라우저가 VersionError 로 죽는다.
       //   (siseVer2.html 의 HONGSISE_DB_VERSION 은 hongSise 라는 다른 DB 라 이 흐름과 무관하다.)
       //   → claude_docs/indexeddb.md
-      const HONGBU_DB_VERSION = 9;
-      const HONGBU_MEMO_DB_VERSION = 9;
+      const HONGBU_DB_VERSION = 10;
+      const HONGBU_MEMO_DB_VERSION = 10;
       const DB_OPEN_TIMEOUT_MS = 5000; // IndexedDB open 최후 안전망(blocked/무응답 시 초기화 체인 정지 방지)
 
       window.__memoPresenceCache = window.__memoPresenceCache || new Map();
@@ -11320,6 +11320,12 @@ const originalBase64 = event.target.result;
         if (!db.objectStoreNames.contains(__PHOTO_INDEX_STORE)) {
           db.createObjectStore(__PHOTO_INDEX_STORE, { keyPath: "id" });
         }
+        // ✅ 단지메모 경량 인덱스 (2026-09-29, v10) — images 의 **사진 데이터만** 뺀 사영.
+        //    포토메모와 같은 이유다: 단지메모는 사진 원본이 레코드 안에 들어 있어
+        //    673건 훑는 데 6초가 걸렸다(동기화 설정이 13.6초였던 원인).
+        if (!db.objectStoreNames.contains(__NOTE_INDEX_STORE)) {
+          db.createObjectStore(__NOTE_INDEX_STORE, { keyPath: "id" });
+        }
       }
 
       /* ===== 포토메모 경량 인덱스 (photoIndex) — 2026-09-29 =====
@@ -11340,6 +11346,7 @@ const originalBase64 = event.target.result;
            아래 정합성 검사가 헛돌지 않는다. 걸러내는 건 읽는 쪽 몫이다.
       */
       const __PHOTO_INDEX_STORE = "photoIndex";
+      const __NOTE_INDEX_STORE = "noteIndex";
 
       function __hasPhotoIndex(db) {
         try {
@@ -11490,6 +11497,168 @@ const originalBase64 = event.target.result;
       async function __photoHasAny(db) {
         if (__hasPhotoIndex(db) && (await __photoCountOf(db, __PHOTO_INDEX_STORE)) > 0) return true;
         return (await __photoCountOf(db, "photoMemos")) > 0; // 인덱스가 비었어도 원본엔 있을 수 있다
+      }
+
+      /* ── 단지메모 경량 인덱스 (2026-09-29, v10) ──
+         apartmentNotes 는 사진 원본이 `images: [{data, addedAt}]` 로 레코드 안에 들어 있다.
+         그래서 좌표·글자만 필요한 훑기가 사진 1,210장을 다 읽어 **673건에 6초**가 걸렸다
+         (⚙ 동기화 설정이 13.6초였던 주범). photoIndex 와 같은 방식으로 사영을 따로 둔다.
+
+         사영 규칙: `images` 의 각 항목을 `{addedAt, fid, has}` 로 줄인다.
+           has = 이 기기에 그 사진의 **원본 데이터가 있는가** (__getImgData 가 값을 주는가).
+         그래야 "이 기기에 원본이 있는 시군구" 같은 물음에 원본을 읽지 않고 답할 수 있다.
+
+         ⚠ apartmentNotes 가 언제나 진실이다. noteIndex 는 파생 캐시라 없으면 옛 방식으로 떨어진다.
+         ⚠ **__MEMO_REQUIRED_STORES 에는 넣지 않는다** — 캐시가 없다는 이유로 DB 삭제·재생성을
+            부르면 손익이 맞지 않는다(photoIndex 와 같은 판단).
+         ⚠ 사영에서 사진 데이터가 빠지므로, **레코드를 합쳐 되쓰는 경로(__lzMergeNote 등)에는
+            절대 쓰면 안 된다.** 쓰면 사진이 날아간다. 메타만 보는 훑기에만 쓴다.
+      */
+      function __hasNoteIndex(db) {
+        try {
+          return !!db && db.objectStoreNames.contains(__NOTE_INDEX_STORE);
+        } catch (_) {
+          return false;
+        }
+      }
+      function __noteTxStores(db) {
+        return __hasNoteIndex(db) ? ["apartmentNotes", __NOTE_INDEX_STORE] : ["apartmentNotes"];
+      }
+      function __noteIndexEntry(rec) {
+        if (!rec) return rec;
+        const out = {};
+        for (const k in rec) {
+          if (k === "images") continue;
+          out[k] = rec[k];
+        }
+        const imgs = Array.isArray(rec.images) ? rec.images : [];
+        out.images = imgs.map((it) =>
+          typeof it === "string"
+            ? { addedAt: 0, fid: "", has: !!it } // 옛 날것 문자열(addedAt 이 없다)
+            : { addedAt: Number(it?.addedAt) || 0, fid: it?.fid || "", has: !!__getImgData(it) }
+        );
+        return out;
+      }
+      function __noteIndexPut(tx, rec) {
+        try {
+          if (tx.objectStoreNames.contains(__NOTE_INDEX_STORE)) {
+            tx.objectStore(__NOTE_INDEX_STORE).put(__noteIndexEntry(rec));
+          }
+        } catch (_) {}
+      }
+      /* apartmentNotes 스토어를 감싸 noteIndex 를 **같은 트랜잭션에서** 함께 맞춘다.
+         ⚠ 쓰기 지점마다 객체 리터럴을 변수로 빼지 않아도 되도록 스토어 자체를 감쌌다.
+         ⚠ 커서로 고치는 곳(c.update)은 이걸 지나지 않으므로 그 자리에서 __noteIndexPut 을 부른다. */
+      function __noteStore(tx) {
+        const st = tx.objectStore("apartmentNotes");
+        let idx = null;
+        try {
+          if (tx.objectStoreNames.contains(__NOTE_INDEX_STORE)) idx = tx.objectStore(__NOTE_INDEX_STORE);
+        } catch (_) {}
+        if (!idx) return st;
+        return {
+          get: (...a) => st.get(...a),
+          getAll: (...a) => st.getAll(...a),
+          getAllKeys: (...a) => st.getAllKeys(...a),
+          count: (...a) => st.count(...a),
+          openCursor: (...a) => st.openCursor(...a),
+          openKeyCursor: (...a) => st.openKeyCursor(...a),
+          index: (...a) => st.index(...a),
+          put: (rec, ...a) => { try { idx.put(__noteIndexEntry(rec)); } catch (_) {} return st.put(rec, ...a); },
+          delete: (k, ...a) => { try { idx.delete(k); } catch (_) {} return st.delete(k, ...a); },
+          clear: () => { try { idx.clear(); } catch (_) {} return st.clear(); },
+        };
+      }
+      // 키 집합만 견준다(본문을 안 읽어 싸다)
+      function __noteIndexInSync(db) {
+        return new Promise((resolve) => {
+          let a = null;
+          let b = null;
+          try {
+            const tx = db.transaction(["apartmentNotes", __NOTE_INDEX_STORE], "readonly");
+            const qa = tx.objectStore("apartmentNotes").getAllKeys();
+            const qb = tx.objectStore(__NOTE_INDEX_STORE).getAllKeys();
+            qa.onsuccess = () => { a = qa.result || []; };
+            qb.onsuccess = () => { b = qb.result || []; };
+            tx.oncomplete = () => {
+              if (!a || !b || a.length !== b.length) return resolve(false);
+              const set = new Set(b.map(String));
+              resolve(a.every((k) => set.has(String(k))));
+            };
+            tx.onerror = () => resolve(false);
+            tx.onabort = () => resolve(false);
+          } catch (_) {
+            resolve(false);
+          }
+        });
+      }
+      function __noteIndexRebuild(db) {
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction(["apartmentNotes", __NOTE_INDEX_STORE], "readwrite");
+            const dst = tx.objectStore(__NOTE_INDEX_STORE);
+            dst.clear();
+            let n = 0;
+            const q = tx.objectStore("apartmentNotes").openCursor();
+            q.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) return;
+              dst.put(__noteIndexEntry(c.value));
+              n++;
+              c.continue();
+            };
+            tx.oncomplete = () => resolve(n);
+            tx.onerror = () => resolve(-1);
+            tx.onabort = () => resolve(-1);
+          } catch (_) {
+            resolve(-1);
+          }
+        });
+      }
+      /* 접속 뒤 한가할 때 미리 만들어 둔다 (2026-09-29 사용자 요청).
+         ⚠ 읽는 쪽(__noteMetaScan)이 알아서 다시 만들기는 한다. 다만 그러면 **그것을 처음 쓰는
+            사람이** 673건 3.3초를 기다린다. 어차피 한 번은 해야 하는 일이라 미리 해 둔다.
+         ⚠ 이미 맞으면 키 비교(getAllKeys 두 번)만 하고 끝나므로 값이 거의 없다 — 매 접속에 돌려도 된다.
+         ⚠ 부팅 직후에는 지도·마커가 바쁘다. 8초 뒤 + requestIdleCallback 으로 미룬다.
+            이 읽기는 사진 원본까지 올려 메인 스레드를 한 번 붙잡으므로 이른 시점에 하면 지도가 끊긴다. */
+      let __noteWarmDone = false;
+      async function __warmNoteIndex(why) {
+        if (__noteWarmDone) return;
+        __noteWarmDone = true;
+        let db = null;
+        try {
+          await initMemoIndexedDB();
+          db = await __openHongbuMemoDb();
+          if (!__hasNoteIndex(db)) return; // 스토어가 없는 DB — 옛 방식으로 돌 뿐이라 할 일이 없다
+          if (await __noteIndexInSync(db)) return;
+          const t0 = performance.now();
+          const n = await __noteIndexRebuild(db);
+          console.log(`[noteIndex] 미리 만들기(${why}) ${n}건 · ${Math.round(performance.now() - t0)}ms`);
+        } catch (e) {
+          __noteWarmDone = false; // 다음 기회에 다시
+          console.warn("[noteIndex] 미리 만들기 실패(무시):", e?.message || e);
+        } finally {
+          try { if (db) db.close(); } catch (_) {}
+        }
+      }
+      (function () {
+        const go = () => { __warmNoteIndex("부팅"); };
+        const later = () => {
+          if (typeof requestIdleCallback === "function") requestIdleCallback(go, { timeout: 20000 });
+          else go();
+        };
+        if (document.readyState === "complete") setTimeout(later, 8000);
+        else window.addEventListener("load", () => setTimeout(later, 8000), { once: true });
+      })();
+
+      // 메타만 필요한 전체 훑기 — 어긋나 있으면 먼저 맞춘다
+      async function __noteMetaScan(db) {
+        if (!__hasNoteIndex(db)) return await __photoStoreCursorAll(db, "apartmentNotes");
+        if (!(await __noteIndexInSync(db))) {
+          const n = await __noteIndexRebuild(db);
+          console.log(`[noteIndex] 어긋남 발견 → 재구성 ${n}건`);
+        }
+        return await __photoStoreCursorAll(db, __NOTE_INDEX_STORE);
       }
 
       function __photoStoreCursorAll(db, storeName) {
@@ -16202,8 +16371,8 @@ const originalBase64 = event.target.result;
         const db = await __openHongbuMemoDb();
         const now = Date.now();
         await new Promise((resolve, reject) => {
-          const tx = db.transaction(['apartmentNotes'], 'readwrite');
-          const store = tx.objectStore('apartmentNotes');
+          const tx = db.transaction(__noteTxStores(db), 'readwrite');
+          const store = __noteStore(tx);
           tx.oncomplete = () => { db.close(); resolve(); };
           tx.onerror = (e) => { db.close(); reject(e.target.error); };
           // (2026-09-19) 기존 레코드의 sgg5 를 보존 — apt.json 에 없는 옛 단지번호는 sgg5 가 없으면 업로드 큐가 시군구를 못 찾는다
@@ -16331,7 +16500,7 @@ const originalBase64 = event.target.result;
             // eslint-disable-next-line no-constant-condition
             while (true) {
               const processed = await new Promise((resolve) => {
-                const tx = db.transaction(['apartmentNotes'], 'readwrite');
+                const tx = db.transaction(__noteTxStores(db), 'readwrite');
                 let count = 0, nextKey = lastKey;
                 tx.oncomplete = () => resolve({ count, nextKey });
                 tx.onerror = () => resolve({ count, nextKey });
@@ -16369,7 +16538,7 @@ const originalBase64 = event.target.result;
                     }
                   }
                   if ('_driveIndexed' in v) { delete v._driveIndexed; changed = true; }
-                  if (changed) { c.update(v); noteChanged++; }
+                  if (changed) { c.update(v); __noteIndexPut(tx, v); noteChanged++; }
                   nextKey = c.key;
                   count++;
                   if (count >= CHUNK) return;
@@ -16469,7 +16638,7 @@ const originalBase64 = event.target.result;
             return;
           }
           await new Promise((resolve) => {
-            const tx = db.transaction(['apartmentNotes'], 'readwrite');
+            const tx = db.transaction(__noteTxStores(db), 'readwrite');
             tx.oncomplete = resolve;
             tx.onerror = resolve;
             tx.onabort = resolve;
@@ -16498,6 +16667,7 @@ const originalBase64 = event.target.result;
                   v.images = deduped;
                   v.updatedAt = Date.now();
                   c.update(v);
+                  __noteIndexPut(tx, v); // 커서 수정은 __noteStore 를 지나지 않는다
                   changedNotes++;
                   const sgg5 = String(v.sgg5 || '').trim();
                   const aptId = String(v.id || '').trim();
@@ -18580,8 +18750,8 @@ const originalBase64 = event.target.result;
           req.onerror = () => resolve(false);
           req.onsuccess = (e) => {
             const db = e.target.result;
-            const tx = db.transaction(['apartmentNotes'], 'readwrite');
-            const st = tx.objectStore('apartmentNotes');
+            const tx = db.transaction(__noteTxStores(db), 'readwrite');
+            const st = __noteStore(tx);
             const g = st.get(String(id));
             g.onsuccess = () => {
               const rec = g.result; if (!rec) return;
@@ -18900,13 +19070,17 @@ const originalBase64 = event.target.result;
             req.onsuccess = (e) => { const c = e.target.result; if (!c) { resolve(); return; } try { fn(c.value); } catch (_) {} c.continue(); };
             req.onerror = () => resolve();
           });
-          await scan('apartmentNotes', (n) => {
-            if (!n || n.deletedAt || n.lazy) return;
-            const has = (n.memo || '').trim() || (Array.isArray(n.images) && n.images.some((it) => __getImgData(it)));
-            if (!has) return;
+          // ⚠ 예전에는 apartmentNotes 를 통째로 훑었다 — 사진 원본이 레코드 안에 있어 673건에 6초.
+          //   noteIndex 는 사진 데이터 대신 `has`(이 기기에 원본이 있나)만 들고 있어 같은 답을 훨씬 싸게 준다.
+          for (const n of await __noteMetaScan(db)) {
+            if (!n || n.deletedAt || n.lazy) continue;
+            const imgs = Array.isArray(n.images) ? n.images : [];
+            const has = (n.memo || '').trim()
+              || imgs.some((it) => (typeof it === 'object' && 'has' in it) ? it.has : !!__getImgData(it));
+            if (!has) continue;
             const sgg5 = n.sgg5 || __syncAptIndex.get(String(n.id))?.sgg5;
             if (sgg5 && sgg5 !== '00000') set.add(String(sgg5));
-          });
+          }
           await scan('photoMemos', (ph) => {
             if (!ph || ph.deletedAt) return;
             if (!(typeof ph.imageDataUrl === 'string' && ph.imageDataUrl.startsWith('data:'))) return;
@@ -20013,9 +20187,9 @@ const originalBase64 = event.target.result;
           if (pendingNoteFixes.length > 0) {
             const tFix = performance.now();
             await new Promise((res, rej) => {
-              const tx = db.transaction(['apartmentNotes'], 'readwrite');
+              const tx = db.transaction(__noteTxStores(db), 'readwrite');
               tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
-              const s = tx.objectStore('apartmentNotes');
+              const s = __noteStore(tx);
               for (const { record } of pendingNoteFixes) s.put(record);
             }).catch((e) => {
               window.hongbuDebugLog?.('ERR', '[sync] 단지 자동 백필 실패', e?.message || e);
@@ -20315,8 +20489,8 @@ const originalBase64 = event.target.result;
                   req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                   req.onsuccess = (e) => {
                     const idbInstance = e.target.result;
-                    const tx = idbInstance.transaction(['apartmentNotes'], 'readwrite');
-                    tx.objectStore('apartmentNotes').put(record);
+                    const tx = idbInstance.transaction(__noteTxStores(idbInstance), 'readwrite');
+                    __noteStore(tx).put(record);
                     tx.oncomplete = () => { idbInstance.close(); res(); };
                     tx.onerror = (err) => { idbInstance.close(); rej(err?.target?.error || err); };
                   };
@@ -20499,9 +20673,9 @@ const originalBase64 = event.target.result;
           await __perfStage(`localIdbPuts(notes=${noteLocalPuts.length}/${noteLocalDels.length}del photos=${photoLocalPuts.length}/${photoLocalDels.length}del polygons=${polygonLocalPuts.length}/${polygonLocalDels.length}del)`,
             () => Promise.all([
               (noteLocalPuts.length || noteLocalDels.length) ? new Promise((res, rej) => {
-                const tx = db.transaction(['apartmentNotes'], 'readwrite');
+                const tx = db.transaction(__noteTxStores(db), 'readwrite');
                 tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
-                const s = tx.objectStore('apartmentNotes');
+                const s = __noteStore(tx);
                 for (const r of noteLocalPuts) s.put(r);
                 for (const id of noteLocalDels) s.delete(id);
               }) : Promise.resolve(),
@@ -22285,8 +22459,8 @@ const originalBase64 = event.target.result;
         request.onsuccess = function (event) {
           try {
             const db = event.target.result;
-            const tx = db.transaction(["apartmentNotes"], "readwrite");
-            const store = tx.objectStore("apartmentNotes");
+            const tx = db.transaction(__noteTxStores(db), "readwrite");
+            const store = __noteStore(tx);
 
             const getRequest = store.get(id);
             getRequest.onerror = function (event) {
@@ -22432,10 +22606,10 @@ const originalBase64 = event.target.result;
             await initMemoIndexedDB();
             const wbDb = await __openHongbuMemoDb();
             await new Promise((res) => {
-              const tx = wbDb.transaction(['apartmentNotes'], 'readwrite');
+              const tx = wbDb.transaction(__noteTxStores(wbDb), 'readwrite');
               tx.oncomplete = () => { wbDb.close(); res(); };
               tx.onerror = () => { wbDb.close(); res(); };
-              const st = tx.objectStore('apartmentNotes');
+              const st = __noteStore(tx);
               const g = st.get(id);
               g.onsuccess = () => {
                 const rec = g.result;
@@ -22699,8 +22873,8 @@ const originalBase64 = event.target.result;
                   req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                   req.onsuccess = (e) => {
                     const db = e.target.result;
-                    const tx = db.transaction(["apartmentNotes"], "readwrite");
-                    const store = tx.objectStore("apartmentNotes");
+                    const tx = db.transaction(__noteTxStores(db), "readwrite");
+                    const store = __noteStore(tx);
                     batch.forEach((item) => {
                       const put = store.put(item);
                       put.onsuccess = () => totalNoteOkEarly++;
@@ -23148,8 +23322,8 @@ const originalBase64 = event.target.result;
             return;
           }
 
-          const tx = db.transaction(["apartmentNotes"], "readwrite");
-          const store = tx.objectStore("apartmentNotes");
+          const tx = db.transaction(__noteTxStores(db), "readwrite");
+          const store = __noteStore(tx);
           const clearRequest = store.clear();
 
           clearRequest.onsuccess = function () {
