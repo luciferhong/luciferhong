@@ -6190,8 +6190,31 @@
       // - 마커가 생성/갱신될 때 해당 id의 메모 존재 여부만 IndexedDB에서 확인(getKey/get)
       // - 결과는 캐시(Map)하여 반복 조회 방지
       // ================================
-      const HONGBU_DB_VERSION = 8;
-      const HONGBU_MEMO_DB_VERSION = 6;
+      // ⚠⚠ 2026-09-29 두 DB 버전을 9 로 통일했다 (hongbu 8→9, hongbuMemo 6→9).
+      //   hongbu.html 과 hongbutest.html 은 **같은 오리진의 같은 DB** 를 쓴다. 이 파일을 9 로 배포하고
+      //   어떤 브라우저에서 한 번 열면 그 브라우저의 DB 가 9 가 되고, 8/6 인 hongbu.html(운영)은
+      //   그때부터 VersionError 로 지도·메모가 죽는다.
+      //   **이 고장은 일시적이다** — 운영도 9 로 올려 배포하면 DB 가 이미 9 라 그대로 열린다.
+      //   영구적인 것은 '버전을 내릴 수 없다' 는 사실뿐이다.
+      //
+      //   배포 순서 (2026-09-29 사용자 확정)
+      //   1. **hongbutest.html 만 먼저** 올린다.
+      //      ⚠ memoBackup.html 은 6 으로 **남겨 둔다.** 운영 화면의 '📦 메모 백업' 버튼(hongbu.html)이
+      //        memoBackup.html 을 여는데, 이것을 9 로 올리면 **운영만 쓰는 사용자가 그 버튼을 누르는
+      //        순간** DB 가 9 로 올라가 운영이 죽는다. (그 대가로, 이 파일을 9 로 연 브라우저에서는
+      //        memoBackup 이 안 열린다 — 이유는 화면에 그대로 표시된다.)
+      //   2. 확인 뒤 **'운영에 반영하고 푸시'** — 반드시 hongbutest 를 **통째로 복사**해야 한다.
+      //      ⚠ 버전 숫자만 9 로 고치면 안 된다. 지금 hongbu.html 은 hongbuMemo 를 25곳에서 여는데
+      //        핸들러가 2곳뿐이고(23곳 누락) photoIndex 도 모른다 → 새 기기에서 **스토어 없는 v9 DB**
+      //        가 굳는다(이건 일시적이 아니라 그 기기에서 영구).
+      //   3. 그 다음 memoBackup.html 을 9 로.
+      //
+      //   ⚠ 되돌릴 일이 생겨도 **버전 상수는 9 로 남긴다.** 코드를 되돌리더라도 8/6 으로 내리면
+      //     이미 9 가 된 브라우저가 VersionError 로 죽는다.
+      //   (siseVer2.html 의 HONGSISE_DB_VERSION 은 hongSise 라는 다른 DB 라 이 흐름과 무관하다.)
+      //   → claude_docs/indexeddb.md
+      const HONGBU_DB_VERSION = 9;
+      const HONGBU_MEMO_DB_VERSION = 9;
       const DB_OPEN_TIMEOUT_MS = 5000; // IndexedDB open 최후 안전망(blocked/무응답 시 초기화 체인 정지 방지)
 
       window.__memoPresenceCache = window.__memoPresenceCache || new Map();
@@ -6219,6 +6242,7 @@
             // ✅ 매번 새로운 DB 연결 열기 (캐시된 연결이 아닌 독립적인 연결)
             return await new Promise((resolve) => {
               const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+              req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
               req.onsuccess = (e) => {
                 const db = e.target.result;
                 try {
@@ -11192,6 +11216,18 @@ const originalBase64 = event.target.result;
       }
 
       // hongbuMemo DB의 3개 스토어를 멱등 생성 (open/재오픈 공통 사용)
+      //
+      // ⚠⚠ **`indexedDB.open("hongbuMemo", …)` 하는 모든 지점에 이것을 붙여야 한다** (2026-09-29).
+      //   `onupgradeneeded` 는 버전이 오를 때 **DB 당 딱 한 번**, 그때 마침 DB 를 연 **그 지점에서만**
+      //   돈다. 여는 곳이 27군데인데 핸들러가 2군데뿐이었다 — 버전을 올리는 순간 나머지 25곳 중
+      //   하나가 먼저 열면 **버전만 오르고 스토어는 안 만들어진 채 굳는다.** 그 뒤로는 버전이 같아
+      //   `onupgradeneeded` 가 다시는 안 돈다.
+      //   siseVer2 의 hongSise v6 `fileCache` 누락 사고가 정확히 이 형태였다
+      //   (claude_docs/indexeddb.md). 그쪽은 14곳 전부에 붙여서 해결했고, 여기도 27곳 전부에 붙였다.
+      // ⚠ 새로 `indexedDB.open("hongbuMemo", …)` 를 쓰는 코드를 만들면 **이 줄을 같이 쓴다**:
+      //     req.onupgradeneeded = (e) => __createMemoStores(e.target.result);
+      //   `hongbu` DB 처럼 여는 곳을 하나로 모으는 것이 더 낫지만, 25곳이 제각기 `db.close()` 를
+      //   해서 공유 인스턴스를 닫아 버리는 구조라 한 번에 바꾸기 어렵다. 우선 누락만 막았다.
       function __createMemoStores(db) {
         if (!db.objectStoreNames.contains("apartmentNotes")) {
           db.createObjectStore("apartmentNotes", { keyPath: "id" });
@@ -11206,6 +11242,146 @@ const originalBase64 = event.target.result;
           const store = db.createObjectStore("polygonMemos", { keyPath: "id" });
           store.createIndex("createdAt", "createdAt", { unique: false });
         }
+        // ✅ 포토메모 경량 인덱스 (2026-09-29, v9) — photoMemos 에서 imageDataUrl 만 뺀 사영.
+        //    파생 캐시이므로 없어도 동작해야 한다(아래 __hasPhotoIndex 참고).
+        if (!db.objectStoreNames.contains(__PHOTO_INDEX_STORE)) {
+          db.createObjectStore(__PHOTO_INDEX_STORE, { keyPath: "id" });
+        }
+      }
+
+      /* ===== 포토메모 경량 인덱스 (photoIndex) — 2026-09-29 =====
+         왜: 부팅마다 부르는 __loadPhotoMemoIndexFromLocal() 이 photoMemos 를 커서로 훑는데,
+             IndexedDB 커서는 레코드를 **통째로** 읽는다. 실측(247건) 102.83MB 중 imageDataUrl 이
+             100.49MB(97.7%)였고, 정작 쓰는 건 좌표·메모·썸네일(2.35MB)뿐이라 100MB가 그대로
+             버려져 GC 를 불렀다. 그래서 imageDataUrl 만 뺀 사영을 따로 저장한다 → 약 44배 감소.
+
+         원칙
+         - photoMemos 가 언제나 진실이다. photoIndex 는 **파생 캐시**다.
+         - 그래서 스토어가 없어도(버전이 이미 높아 onupgradeneeded 가 돌지 않은 DB) 죽지 않고
+           옛 방식(photoMemos 훑기)으로 떨어진다. __MEMO_REQUIRED_STORES 에는 **넣지 않는다** —
+           거기 넣으면 캐시가 없다는 이유로 DB 삭제·재생성(무손실 복구)을 부르게 되는데,
+           파생 캐시 때문에 사용자 데이터를 건드리는 건 손익이 맞지 않는다.
+         - 쓰기는 photoMemos 를 쓰는 **같은 트랜잭션 안에서** 같이 맞춘다(원자성).
+           트랜잭션 스토어 목록은 __photoTxStores(db) 로 만든다.
+         - tombstone(deletedAt) 레코드도 그대로 담는다 — 그래야 키 집합이 photoMemos 와 같아
+           아래 정합성 검사가 헛돌지 않는다. 걸러내는 건 읽는 쪽 몫이다.
+      */
+      const __PHOTO_INDEX_STORE = "photoIndex";
+
+      function __hasPhotoIndex(db) {
+        try {
+          return !!db && db.objectStoreNames.contains(__PHOTO_INDEX_STORE);
+        } catch (_) {
+          return false;
+        }
+      }
+
+      // photoMemos 트랜잭션을 열 때 쓸 스토어 목록 (스토어가 없는 DB 도 그대로 동작)
+      function __photoTxStores(db) {
+        return __hasPhotoIndex(db) ? ["photoMemos", __PHOTO_INDEX_STORE] : ["photoMemos"];
+      }
+
+      // 사영: imageDataUrl 만 뺀다. 새 필드가 생기면 자동으로 따라온다.
+      function __photoIndexEntry(rec) {
+        if (!rec) return rec;
+        const out = {};
+        for (const k in rec) {
+          if (k === "imageDataUrl") continue;
+          out[k] = rec[k];
+        }
+        return out;
+      }
+
+      // ↓ 세 함수는 **이미 열려 있는 readwrite 트랜잭션** 안에서 부른다.
+      function __photoIndexPut(tx, rec) {
+        try {
+          if (tx.objectStoreNames.contains(__PHOTO_INDEX_STORE)) {
+            tx.objectStore(__PHOTO_INDEX_STORE).put(__photoIndexEntry(rec));
+          }
+        } catch (_) {}
+      }
+      function __photoIndexDel(tx, id) {
+        try {
+          if (tx.objectStoreNames.contains(__PHOTO_INDEX_STORE)) {
+            tx.objectStore(__PHOTO_INDEX_STORE).delete(String(id));
+          }
+        } catch (_) {}
+      }
+      function __photoIndexClear(tx) {
+        try {
+          if (tx.objectStoreNames.contains(__PHOTO_INDEX_STORE)) {
+            tx.objectStore(__PHOTO_INDEX_STORE).clear();
+          }
+        } catch (_) {}
+      }
+
+      // 정합성 검사 — 키만 읽으므로(getAllKeys) 레코드 본문을 올리지 않아 싸다.
+      // 추가·삭제·clear 로 생긴 어긋남을 정확히 잡는다. (필드만 바뀐 경우는 위 세 함수가 책임진다)
+      function __photoIndexInSync(db) {
+        return new Promise((resolve) => {
+          let a = null;
+          let b = null;
+          try {
+            const tx = db.transaction(["photoMemos", __PHOTO_INDEX_STORE], "readonly");
+            const qa = tx.objectStore("photoMemos").getAllKeys();
+            const qb = tx.objectStore(__PHOTO_INDEX_STORE).getAllKeys();
+            qa.onsuccess = () => { a = qa.result || []; };
+            qb.onsuccess = () => { b = qb.result || []; };
+            tx.oncomplete = () => {
+              if (!a || !b || a.length !== b.length) return resolve(false);
+              const set = new Set(b.map(String));
+              resolve(a.every((k) => set.has(String(k))));
+            };
+            tx.onerror = () => resolve(false);
+            tx.onabort = () => resolve(false);
+          } catch (_) {
+            resolve(false);
+          }
+        });
+      }
+
+      // 어긋났을 때만 photoMemos 에서 다시 만든다. 커서라 한 건씩 흐르므로 getAll 보다 최대 메모리가 낮다.
+      function __photoIndexRebuild(db) {
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction(["photoMemos", __PHOTO_INDEX_STORE], "readwrite");
+            const dst = tx.objectStore(__PHOTO_INDEX_STORE);
+            dst.clear();
+            let n = 0;
+            const q = tx.objectStore("photoMemos").openCursor();
+            q.onsuccess = (e) => {
+              const c = e.target.result;
+              if (!c) return;
+              dst.put(__photoIndexEntry(c.value));
+              n++;
+              c.continue();
+            };
+            tx.oncomplete = () => resolve(n);
+            tx.onerror = () => resolve(-1);
+            tx.onabort = () => resolve(-1);
+          } catch (_) {
+            resolve(-1);
+          }
+        });
+      }
+
+      function __photoStoreCursorAll(db, storeName) {
+        return new Promise((resolve) => {
+          const out = [];
+          try {
+            const tx = db.transaction([storeName], "readonly");
+            const q = tx.objectStore(storeName).openCursor();
+            q.onsuccess = (e) => {
+              const c = e.target.result;
+              if (c) { out.push(c.value); c.continue(); }
+            };
+            tx.oncomplete = () => resolve(out);
+            tx.onerror = () => resolve(out);
+            tx.onabort = () => resolve(out);
+          } catch (_) {
+            resolve(out);
+          }
+        });
       }
 
       const __MEMO_REQUIRED_STORES = ["apartmentNotes", "photoMemos", "polygonMemos"];
@@ -11371,6 +11547,7 @@ const originalBase64 = event.target.result;
 
         return new Promise((resolve) => {
           const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = () => {
             window.__hongbuMemoKeySet = new Set();
             window.__hongbuMemoKeySetReady = true;
@@ -11465,6 +11642,7 @@ const originalBase64 = event.target.result;
       function __openHongbuMemoDb() {
         return new Promise((resolve, reject) => {
           const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           request.onsuccess = (event) => resolve(event.target.result);
           request.onerror = (e) => reject(e.target.error);
         });
@@ -11550,6 +11728,7 @@ const originalBase64 = event.target.result;
               const numId = Number(id);
               if (!Number.isNaN(numId) && numId !== 0) {
                 const db2 = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                db2.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                 db2.onsuccess = (e) => {
                   const d = e.target.result;
                   const r = d.transaction(["photoMemos"], "readonly").objectStore("photoMemos").get(numId);
@@ -12385,11 +12564,12 @@ const originalBase64 = event.target.result;
       // ⚠ **읽는 중이면 그것을 함께 기다린다.** __photoMemoIndexLoaded 는 읽기가 끝난 뒤에야
       //   켜지는데, 한 번에 276ms 가 걸려서 그 사이에 들어온 호출이 가드를 그냥 통과해 같은
       //   읽기를 또 시작한다 (2026-09-29 실측: 부팅 1.38초와 1.56초에 두 번).
-      // ⚠ 한 번이 가볍지 않다 — IndexedDB 커서는 레코드를 **통째로** 읽으므로 포토메모 247건의
-      //   사진 데이터까지 다 올린다(실측 100.5MB). 정작 남기는 건 좌표·썸네일뿐이고 나머지는
-      //   그대로 버려져 가비지 컬렉션을 부른다. 이름이 '경량' 인데 실제로는 가장 무거운 읽기다.
-      //   근본 해결은 좌표만 담은 저장소를 따로 두는 것인데 IndexedDB 스토어 추가라 DB 버전을
-      //   올려야 한다(claude_docs/indexeddb.md 의 BLOCKING 절차). 우선 중복만 없앤다.
+      // ✅ (2026-09-29 해결) 예전에는 한 번이 가볍지 않았다 — IndexedDB 커서는 레코드를 **통째로**
+      //   읽으므로 포토메모 247건의 사진 데이터까지 다 올렸다(실측 102.83MB 중 imageDataUrl 이
+      //   100.49MB = 97.7%). 정작 남기는 건 좌표·메모·썸네일뿐이라 100MB 가 그대로 버려져 GC 를
+      //   불렀다. 그래서 v9 에서 photoIndex 스토어(imageDataUrl 만 뺀 사영)를 만들고 여기서 그것만
+      //   읽는다 → 실측 267.9ms/102.82MB 에서 **9.5ms/2.34MB** 로. 자세한 규칙은 __PHOTO_INDEX_STORE
+      //   위 주석 참고.
       let __photoMemoIndexP = null;
       async function loadPhotoMemoIndexOnce() {
         if (window.__photoMemoIndexLoaded) return window.__photoMemoIndex;
@@ -15117,7 +15297,7 @@ const originalBase64 = event.target.result;
         }
         const createdAt = rec.createdAt || Date.now();
         await new Promise((resolve, reject) => {
-          const tx = db.transaction(["photoMemos"], "readwrite");
+          const tx = db.transaction(__photoTxStores(db), "readwrite");
           tx.oncomplete = () => { db.close(); resolve(); };
           tx.onerror = (e) => { db.close(); reject(e.target.error); };
           const entry = {
@@ -15139,6 +15319,7 @@ const originalBase64 = event.target.result;
           };
           // DataURL-only 정책: imageBlob/thumbBlob 필드는 저장하지 않음
           tx.objectStore("photoMemos").put(entry);
+          __photoIndexPut(tx, entry);
         });
       }
 
@@ -15148,20 +15329,24 @@ const originalBase64 = event.target.result;
       }
 
       // IndexedDB에서 포토메모 인덱스 전체 로드
+      // photoIndex(경량 사영)를 훑는다. 스토어가 없는 DB 는 옛 방식(photoMemos 통째 훑기)으로 떨어진다.
       async function __loadPhotoMemoIndexFromLocal() {
         await initMemoIndexedDB();
         const db = await __openHongbuMemoDb();
-        return await new Promise((resolve) => {
-          const results = [];
-          const tx = db.transaction(["photoMemos"], "readonly");
-          const req = tx.objectStore("photoMemos").openCursor();
-          req.onsuccess = (e) => {
-            const c = e.target.result;
-            if (c) { results.push(c.value); c.continue(); }
-            else { db.close(); resolve(results); }
-          };
-          req.onerror = () => { db.close(); resolve([]); };
-        });
+        try {
+          if (!__hasPhotoIndex(db)) {
+            // 버전이 이미 높아 onupgradeneeded 가 돌지 않은 DB — 100MB 를 읽지만 동작은 한다.
+            console.warn("[photoIndex] 스토어 없음 — photoMemos 를 직접 훑습니다(느린 경로)");
+            return await __photoStoreCursorAll(db, "photoMemos");
+          }
+          if (!(await __photoIndexInSync(db))) {
+            const n = await __photoIndexRebuild(db);
+            console.log(`[photoIndex] 어긋남 발견 → 재구성 ${n}건`);
+          }
+          return await __photoStoreCursorAll(db, __PHOTO_INDEX_STORE);
+        } finally {
+          try { db.close(); } catch (_) {}
+        }
       }
 
       // ================================================================
@@ -15957,19 +16142,21 @@ const originalBase64 = event.target.result;
         const lat = Number(existing?.lat) || 0;
         const lng = Number(existing?.lng) || 0;
         await new Promise((resolve, reject) => {
-          const tx = db.transaction(['photoMemos'], 'readwrite');
+          const tx = db.transaction(__photoTxStores(db), 'readwrite');
           tx.oncomplete = () => { db.close(); resolve(); };
           tx.onerror = (e) => { db.close(); reject(e.target.error); };
           // (2026-09-18) createdAt/addedAt/sgg5 보존 — 드라이브 파일명(photo_{sgg5}_{lat}_{lng}_{ts})이 원본과 같아야
           // 삭제 표시가 같은 사진으로 인식된다. 예전엔 createdAt:0 으로 저장돼 `_0_` 이름이 되어 삭제가 전파되지 않았다.
-          tx.objectStore('photoMemos').put({
+          const tomb = {
             id: String(id), lat, lng,
             createdAt: Number(existing?.createdAt) || 0,
             addedAt: Number(existing?.addedAt) || Number(existing?.createdAt) || 0,
             sgg5: existing?.sgg5 || '',
             note: '', thumbDataUrl: '', imageDataUrl: '',
             updatedAt: now, deletedAt: now,
-          });
+          };
+          tx.objectStore('photoMemos').put(tomb);
+          __photoIndexPut(tx, tomb);   // tombstone 도 담는다 (키 집합 일치 유지)
         });
         try {
           const arr = window.__photoMemoIndex || [];
@@ -16128,7 +16315,7 @@ const originalBase64 = event.target.result;
             // eslint-disable-next-line no-constant-condition
             while (true) {
               const processed = await new Promise((resolve) => {
-                const tx = db.transaction(['photoMemos'], 'readwrite');
+                const tx = db.transaction(__photoTxStores(db), 'readwrite');
                 let count = 0, nextKey = lastKey;
                 tx.oncomplete = () => resolve({ count, nextKey });
                 tx.onerror = () => resolve({ count, nextKey });
@@ -16150,7 +16337,7 @@ const originalBase64 = event.target.result;
                     changed = true;
                   }
                   if ('imageFileId' in v) { delete v.imageFileId; changed = true; }
-                  if (changed) { c.update(v); photoChanged++; }
+                  if (changed) { c.update(v); __photoIndexPut(tx, v); photoChanged++; }
                   nextKey = c.key;
                   count++;
                   if (count >= CHUNK) return;
@@ -16835,6 +17022,7 @@ const originalBase64 = event.target.result;
         let added = 0;
         await new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -17266,6 +17454,7 @@ const originalBase64 = event.target.result;
         const store = kind === 'note' ? 'apartmentNotes' : kind === 'photo' ? 'photoMemos' : 'polygonMemos';
         return new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -17315,6 +17504,7 @@ const originalBase64 = event.target.result;
         const store = kind === 'note' ? 'apartmentNotes' : 'photoMemos';
         return new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -17724,6 +17914,7 @@ const originalBase64 = event.target.result;
       function __lzIdbPut(store, rec) {
         return new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -18082,13 +18273,20 @@ const originalBase64 = event.target.result;
               // IDB 에 썸네일만 채움 (원본은 클릭 시)
               await new Promise((resolve) => {
                 const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                 req.onerror = () => resolve();
                 req.onsuccess = (e) => {
                   const db = e.target.result;
-                  const tx = db.transaction(['photoMemos'], 'readwrite');
+                  const tx = db.transaction(__photoTxStores(db), 'readwrite');
                   const os = tx.objectStore('photoMemos');
                   const g = os.get(it.id);
-                  g.onsuccess = () => { if (g.result && !g.result.thumbDataUrl) os.put({ ...g.result, thumbDataUrl: dataUrl }); };
+                  g.onsuccess = () => {
+                    if (g.result && !g.result.thumbDataUrl) {
+                      const next = { ...g.result, thumbDataUrl: dataUrl };
+                      os.put(next);
+                      __photoIndexPut(tx, next);
+                    }
+                  };
                   tx.oncomplete = () => { db.close(); resolve(); };
                   tx.onerror = () => { db.close(); resolve(); };
                 };
@@ -18304,6 +18502,7 @@ const originalBase64 = event.target.result;
       function __rfPutNoteImage(id, addedAt, dataUrl) {
         return new Promise((resolve) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = () => resolve(false);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -18325,10 +18524,11 @@ const originalBase64 = event.target.result;
       function __rfPutPhotoImage(id, dataUrl, thumbDataUrl) {
         return new Promise((resolve) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = () => resolve(false);
           req.onsuccess = (e) => {
             const db = e.target.result;
-            const tx = db.transaction(['photoMemos'], 'readwrite');
+            const tx = db.transaction(__photoTxStores(db), 'readwrite');
             const st = tx.objectStore('photoMemos');
             const g = st.get(String(id));
             g.onsuccess = () => {
@@ -18336,6 +18536,7 @@ const originalBase64 = event.target.result;
               const next = { ...rec, imageDataUrl: dataUrl };
               if (thumbDataUrl && !rec.thumbDataUrl) next.thumbDataUrl = thumbDataUrl;
               st.put(next);
+              __photoIndexPut(tx, next);   // 사영이라 원본(imageDataUrl)은 안 담긴다
             };
             tx.oncomplete = () => { db.close(); resolve(true); };
             tx.onerror = () => { db.close(); resolve(false); };
@@ -19984,6 +20185,7 @@ const originalBase64 = event.target.result;
               try {
                 await new Promise((res, rej) => {
                   const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                  req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                   req.onsuccess = (e) => {
                     const idbInstance = e.target.result;
                     const tx = idbInstance.transaction(['apartmentNotes'], 'readwrite');
@@ -20051,10 +20253,12 @@ const originalBase64 = event.target.result;
               try {
                 await new Promise((res, rej) => {
                   const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
+                  req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                   req.onsuccess = (e) => {
                     const idbInstance = e.target.result;
-                    const tx = idbInstance.transaction(['photoMemos'], 'readwrite');
+                    const tx = idbInstance.transaction(__photoTxStores(idbInstance), 'readwrite');
                     tx.objectStore('photoMemos').put(record);
+                    __photoIndexPut(tx, record);
                     tx.oncomplete = () => { idbInstance.close(); res(); };
                     tx.onerror = (err) => { idbInstance.close(); rej(err?.target?.error || err); };
                   };
@@ -20175,11 +20379,11 @@ const originalBase64 = event.target.result;
                 for (const id of noteLocalDels) s.delete(id);
               }) : Promise.resolve(),
               (photoLocalPuts.length || photoLocalDels.length) ? new Promise((res, rej) => {
-                const tx = db.transaction(['photoMemos'], 'readwrite');
+                const tx = db.transaction(__photoTxStores(db), 'readwrite');
                 tx.oncomplete = () => res(); tx.onerror = e => rej(e.target.error);
                 const s = tx.objectStore('photoMemos');
-                for (const r of photoLocalPuts) s.put(r);
-                for (const id of photoLocalDels) s.delete(id);
+                for (const r of photoLocalPuts) { s.put(r); __photoIndexPut(tx, r); }
+                for (const id of photoLocalDels) { s.delete(id); __photoIndexDel(tx, id); }
               }) : Promise.resolve(),
               (polygonLocalPuts.length || polygonLocalDels.length) ? new Promise((res, rej) => {
                 const tx = db.transaction(['polygonMemos'], 'readwrite');
@@ -20924,6 +21128,7 @@ const originalBase64 = event.target.result;
         const rec = _polygonRecord(polygon);
         return new Promise((resolve, reject) => {
           const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -20963,6 +21168,7 @@ const originalBase64 = event.target.result;
         await initMemoIndexedDB();
         return new Promise((resolve, reject) => {
           const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -20993,6 +21199,7 @@ const originalBase64 = event.target.result;
         await initMemoIndexedDB();
         return new Promise((resolve, reject) => {
           const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
           req.onerror = (e) => reject(e.target.error);
           req.onsuccess = (e) => {
             const db = e.target.result;
@@ -21106,6 +21313,7 @@ const originalBase64 = event.target.result;
           await initMemoIndexedDB();
           await new Promise((resolve, reject) => {
             const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+            req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
             req.onerror = (e) => reject(e.target.error);
             req.onsuccess = (e) => {
               const db = e.target.result;
@@ -21940,6 +22148,7 @@ const originalBase64 = event.target.result;
         const images = aptMemoImageList && aptMemoImageList[id] ? aptMemoImageList[id] : [];
 
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+        request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
 
         request.onerror = function (event) {
           console.error("❌ DB 열기 실패:", event.target.error);
@@ -22120,6 +22329,7 @@ const originalBase64 = event.target.result;
       async function loadNote(id) {
         await initMemoIndexedDB();
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+        request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
         request.onsuccess = function (event) {
           const db = event.target.result;
           const transaction = db.transaction(["apartmentNotes"], "readonly");
@@ -22359,6 +22569,7 @@ const originalBase64 = event.target.result;
                 const batch = records.slice(i, i + BATCH_SIZE);
                 await new Promise((res, rej) => {
                   const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                  req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                   req.onsuccess = (e) => {
                     const db = e.target.result;
                     const tx = db.transaction(["apartmentNotes"], "readwrite");
@@ -22455,10 +22666,12 @@ const originalBase64 = event.target.result;
 
               await new Promise((res, rej) => {
                 const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+                req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
                 req.onsuccess = (e) => {
                   const db = e.target.result;
-                  const tx = db.transaction(["photoMemos"], "readwrite");
+                  const tx = db.transaction(__photoTxStores(db), "readwrite");
                   const put = tx.objectStore("photoMemos").put(record);
+                  __photoIndexPut(tx, record);
                   put.onsuccess = () => totalPhotoOkEarly++;
                   put.onerror = (err) => {
                     totalPhotoFailEarly++;
@@ -22799,6 +23012,7 @@ const originalBase64 = event.target.result;
         if (!confirm("이 기기의 단지메모 캐시를 모두 비웁니다.\nDrive 데이터는 보존되며, 다음 동기화 시 다시 받을 수 있습니다.\n\n계속하시겠습니까?")) return;
 
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+        request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
         request.onsuccess = function (event) {
           const db = event.target.result;
           if (!db.objectStoreNames.contains("apartmentNotes")) {
@@ -22865,6 +23079,7 @@ const originalBase64 = event.target.result;
         if (!confirm("이 기기의 포토메모 캐시를 모두 비웁니다.\nDrive 데이터는 보존되며, 다음 동기화 시 다시 받을 수 있습니다.\n\n계속하시겠습니까?")) return;
 
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+        request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
         request.onsuccess = function (event) {
           const db = event.target.result;
           if (!db.objectStoreNames.contains("photoMemos")) {
@@ -22873,9 +23088,10 @@ const originalBase64 = event.target.result;
             return;
           }
 
-          const tx = db.transaction(["photoMemos"], "readwrite");
+          const tx = db.transaction(__photoTxStores(db), "readwrite");
           const store = tx.objectStore("photoMemos");
           const clearRequest = store.clear();
+          __photoIndexClear(tx);
 
           clearRequest.onsuccess = function () {
             try {
