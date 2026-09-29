@@ -2091,15 +2091,15 @@
       #smList .sm-meta{color:#64748b;font-size:12px;margin-left:6px;}
       #smList .sm-unset{color:#d97706;font-size:12px;margin-left:4px;}
       #smList .sm-new{background:#d9531e;color:#fff;border-radius:999px;padding:1px 7px;font-size:11px;margin-left:6px;vertical-align:1px;}
-      #smList .sm-acts{display:inline-flex;gap:6px;justify-self:end;}
-      #smList .sm-xp-btn{padding:5px 10px;border:1px solid #bfdbfe;border-radius:999px;background:#fff;color:#1d4ed8;cursor:pointer;font-size:12px;font-weight:700;line-height:1.3;white-space:nowrap;}
-      #smList .sm-xp-btn:hover:not(:disabled){background:#1d4ed8;border-color:#1d4ed8;color:#fff;}
-      #smList .sm-xp-btn:disabled{opacity:.6;cursor:default;}
-      #smList .sm-del-btn{padding:5px 10px;border:1px solid #fecaca;border-radius:999px;background:#fff;color:#dc2626;cursor:pointer;font-size:12px;font-weight:700;line-height:1.3;white-space:nowrap;}
+      #smList .sm-del-btn{padding:5px 10px;border:1px solid #fecaca;border-radius:999px;background:#fff;color:#dc2626;cursor:pointer;font-size:12px;font-weight:700;justify-self:end;line-height:1.3;white-space:nowrap;}
       #smList .sm-del-btn:hover:not(:disabled){background:#dc2626;border-color:#dc2626;color:#fff;}
       #smList .sm-del-btn:disabled{opacity:.6;cursor:default;}
       #syncModePanel .sm-foot{display:flex;gap:8px;justify-content:flex-end;flex:none;padding-top:10px;border-top:1px solid #e2e8f0;}
       #syncModePanel .sm-btn{padding:10px 18px;border:none;border-radius:10px;font-size:15px;cursor:pointer;}
+      /* 📤 내보내기 — 하단 단추 (2026-09-29 사용자 요청: 행마다 두지 말고 아래로) */
+      #syncModePanel .sm-btn.xp{background:#fff;border:1px solid #bfdbfe;color:#1d4ed8;font-weight:700;margin-right:auto;}
+      #syncModePanel .sm-btn.xp:hover:not(:disabled){background:#eff6ff;border-color:#1d4ed8;}
+      #syncModePanel .sm-btn.xp:disabled{opacity:.6;cursor:default;}
       #syncModePanel .sm-btn.ghost{background:transparent;color:#64748b;}
       #syncModePanel .sm-btn.ghost:hover{background:#f1f5f9;color:#1e293b;}
       #syncModePanel .sm-btn.primary{background:linear-gradient(135deg,#d9531e,#a83c12);color:#fff;font-weight:700;box-shadow:0 2px 6px rgba(168, 60, 18,0.3);}
@@ -2137,6 +2137,7 @@
         </div>
         <div id="smList"></div>
         <div class="sm-foot">
+          <button id="smXpBtn" class="sm-btn xp" onclick="__xpRunSelected()" title="지도 위쪽에서 고른 시군구의 단지메모·포토메모·매물임장을 구글시트 한 장으로 내보냅니다. 사진은 셀 안에 보이게 넣습니다(사진 파일을 링크 공개로 바꿉니다).">📤 메모 시트로 내보내기</button>
           <button class="sm-btn ghost" onclick="__smClose()">나중에</button>
           <button class="sm-btn primary" onclick="__smConfirm()">확인</button>
         </div>
@@ -18976,6 +18977,11 @@ const originalBase64 = event.target.result;
             그래서 시군구 단위로 나누고, 그래도 많으면 __XP_IMG_CAP 에서 자른다(잘린 수를 알린다).
       */
       const __XP_FOLDER = "export";      // HongbuMemo/export/
+      // ⚠ 탭을 셋으로 나누지 않는다 — **한 장에 다 담는다** (2026-09-29 사용자 확정).
+      //   사진은 한 장이 한 칸(=IMAGE 수식 하나)이고, 여러 장이면 오른쪽으로 칸이 늘어난다.
+      const __XP_TAB = "기록";
+      const __XP_HEAD = ["구분", "단지명", "동호수·좌표", "날짜", "평형", "매매가", "전세가", "부동산", "메모"];
+      const __XP_IMG_AT = __XP_HEAD.length; // 사진이 시작하는 열(0부터)
       const __XP_ROW_H = 130;            // 사진이 보이는 행 높이(px)
       const __XP_IMG_W = 150;            // 사진 열 너비(px)
       const __XP_MAX_SHOTS = 6;          // 한 줄에 실을 사진 수 (넘으면 "+N")
@@ -19060,7 +19066,8 @@ const originalBase64 = event.target.result;
         return { notes, photos, lj, aptMap, phMap, ljMap };
       }
 
-      // 모은 것을 탭 3장의 값으로 (사진은 =IMAGE 수식). 상한을 넘으면 자르고 몇 장 잘렸는지 돌려준다.
+      // 모은 것을 **한 장**의 값으로 (사진은 =IMAGE 수식 — 한 장이 한 칸).
+      // 상한을 넘으면 자르고 몇 장 잘렸는지 돌려준다.
       function __xpGrids(d) {
         let used = 0;
         const cut = [];
@@ -19074,41 +19081,62 @@ const originalBase64 = event.target.result;
           try { return __ljAptCtx(id)?.aptName || ""; } catch (_) { return ""; }
         };
 
-        // ① 단지메모
-        const g1 = [["단지명", "단지코드", "메모", "사진"]];
+        // 한 줄 = 기록 1건. 앞 9칸은 세 종류가 같은 자리를 쓰고(빈칸은 그냥 빈칸),
+        // 그 뒤로 사진이 한 장씩 한 칸에 들어간다.
+        const rows = [__XP_HEAD.slice()];
+        const line = (kind, o, shots) => {
+          rows.push([
+            kind, __xpText(o.apt || ""), __xpText(o.where || ""), __xpText(o.when || ""),
+            __xpText(o.pyeong || ""), __xpText(o.sale || ""), __xpText(o.jeonse || ""),
+            __xpText(o.agency || ""), __xpText(o.memo || ""), ...shots,
+          ]);
+        };
+        const counts = { 단지메모: 0, 포토메모: 0, 매물임장: 0 };
+
+        // ① 단지메모 — 최신순
         for (const n of d.notes.slice().sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))) {
           const id = String(n.id ?? n.aptId ?? "").trim();
           const imgs = (Array.isArray(n.images) ? n.images : [])
             .map((it) => (it && typeof it === "object" ? it.addedAt : it))
             .filter(Boolean);
-          const cells = imgs.slice(0, __XP_MAX_SHOTS)
+          const shots = imgs.slice(0, __XP_MAX_SHOTS)
             .map((at) => take(d.aptMap.get(__aptImgFilename({ sgg5: String(n.sgg5 || ""), id }, at)), "단지메모"));
-          if (imgs.length > __XP_MAX_SHOTS) cells.push(`+${imgs.length - __XP_MAX_SHOTS}장 더`);
-          g1.push([__xpText(aptName(id) || id), __xpText(id), __xpText(n.memo || ""), ...cells]);
+          if (imgs.length > __XP_MAX_SHOTS) shots.push(`+${imgs.length - __XP_MAX_SHOTS}장 더`);
+          const ts = Number(n.updatedAt) || 0;
+          line("단지메모", {
+            apt: aptName(id) || id,
+            when: ts ? new Date(ts).toLocaleDateString("ko-KR") : "",
+            memo: n.memo || "",
+          }, shots);
+          counts.단지메모++;
         }
 
-        // ② 포토메모
-        const g2 = [["찍은 날", "좌표", "메모", "사진"]];
+        // ② 포토메모 — 최신순. 사진은 1장이라 한 칸.
         for (const p of d.photos.slice().sort((a, b) => (Number(b.addedAt || b.createdAt) || 0) - (Number(a.addedAt || a.createdAt) || 0))) {
           const ts = Number(p.addedAt || p.createdAt) || 0;
-          const when = ts ? new Date(ts).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }) : "";
           const fid = d.phMap.get(__photoImgFilename({ ...p, sgg5: String(p.sgg5 || "") }));
-          g2.push([__xpText(when), __xpText(`${Number(p.lat).toFixed(6)}, ${Number(p.lng).toFixed(6)}`),
-                   __xpText(p.note || ""), take(fid, "포토메모")]);
+          line("포토메모", {
+            where: `${Number(p.lat).toFixed(6)}, ${Number(p.lng).toFixed(6)}`,
+            when: ts ? new Date(ts).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" }) : "",
+            memo: p.note || "",
+          }, [take(fid, "포토메모")]);
+          counts.포토메모++;
         }
 
         // ③ 매물임장
-        const g3 = [["단지명", "예약일자", "동호수", "평형", "매매가", "전세가", "부동산", "메모", "사진"]];
         for (const r of d.lj) {
-          const cells = (Array.isArray(r.photos) ? r.photos : []).slice(0, __XP_MAX_SHOTS)
+          const shots = (Array.isArray(r.photos) ? r.photos : []).slice(0, __XP_MAX_SHOTS)
             .map((at) => take(d.ljMap.get(__ljImgFilename(r, at)), "매물임장"));
           const n = Array.isArray(r.photos) ? r.photos.length : 0;
-          if (n > __XP_MAX_SHOTS) cells.push(`+${n - __XP_MAX_SHOTS}장 더`);
-          g3.push([__xpText(r.aptName || ""), __xpText(__ljDateText(r.visitDate || "")), __xpText(r.dongho || ""),
-                   __xpText(r.pyeong || ""), __xpText(r.priceSale || ""), __xpText(r.priceJeonse || ""),
-                   __xpText(r.agency || ""), __xpText(r.memo || ""), ...cells]);
+          if (n > __XP_MAX_SHOTS) shots.push(`+${n - __XP_MAX_SHOTS}장 더`);
+          line("매물임장", {
+            apt: r.aptName || "", where: r.dongho || "", when: __ljDateText(r.visitDate || ""),
+            pyeong: r.pyeong || "", sale: r.priceSale || "", jeonse: r.priceJeonse || "",
+            agency: r.agency || "", memo: r.memo || "",
+          }, shots);
+          counts.매물임장++;
         }
-        return { g1, g2, g3, imgCount: used, cut: cut.length };
+        return { rows, counts, imgCount: used, cut: cut.length };
       }
 
       // export 폴더의 시트를 찾거나 만든다. ⚠ 이름으로 먼저 찾는다 — 다시 눌러도 둘 생기지 않게.
@@ -19126,11 +19154,7 @@ const originalBase64 = event.target.result;
         if (hit) return hit.id;
         say("구글시트를 만드는 중…");
         const created = await gapi.client.sheets.spreadsheets.create({
-          resource: { properties: { title }, sheets: [
-            { properties: { title: "단지메모" } },
-            { properties: { title: "포토메모" } },
-            { properties: { title: "매물임장" } },
-          ] },
+          resource: { properties: { title }, sheets: [{ properties: { title: __XP_TAB } }] },
           fields: "spreadsheetId",
         });
         const sid = created.result.spreadsheetId;
@@ -19138,7 +19162,31 @@ const originalBase64 = event.target.result;
         return sid;
       }
 
-      async function __xpRun(sgg5, row) {
+      // 지도 위쪽 시군구 필터에서 고른 코드(5자리). 비어 있으면 [].
+      // ⚠ selectedSigunguSet 의 값은 5자리보다 길 수 있어 앞 5자리만 쓴다(다른 곳과 같은 규칙).
+      function __xpSelectedSgg5() {
+        try {
+          return Array.from(new Set(
+            Array.from(selectedSigunguSet).map((c) => String(c).slice(0, 5)).filter((c) => /^\d{5}$/.test(c))
+          ));
+        } catch (_) { return []; }
+      }
+      async function __xpRunSelected() {
+        const sel = __xpSelectedSgg5();
+        if (!sel.length) {
+          alert("먼저 시군구를 선택해 주세요.\n\n지도 위쪽의 '시군구' 목록에서 한 곳을 고르면\n그 지역의 기록만 내보냅니다.");
+          return;
+        }
+        if (sel.length > 1) {
+          const names = sel.map((s) => __syncSigunguNameByCode5.get(s) || s).join(", ");
+          alert(`시군구가 ${sel.length}곳 선택돼 있습니다.\n한 곳만 남기고 다시 눌러 주세요.\n\n(한 시군구 = 시트 한 장입니다)\n\n지금 선택: ${names}`);
+          return;
+        }
+        await __xpRun(sel[0], document.getElementById("smXpBtn"));
+      }
+
+      // btn: 진행을 보여 줄 단추(없어도 동작한다)
+      async function __xpRun(sgg5, btn) {
         sgg5 = String(sgg5 || "");
         if (!/^\d{5}$/.test(sgg5)) return;
         if (__xpBusy.has(sgg5)) return;
@@ -19150,7 +19198,6 @@ const originalBase64 = event.target.result;
           `구글시트가 사진을 서버에서 가져오기 때문이고, 다른 방법이 없습니다.\n\n계속할까요?`
         )) return;
 
-        const btn = row ? row.querySelector("button[data-xp]") : null;
         const was = btn ? btn.textContent : "";
         const say = (m) => { if (btn) btn.textContent = m; };
         if (btn) btn.disabled = true;
@@ -19159,14 +19206,12 @@ const originalBase64 = event.target.result;
           if (!(await __ljEnsureSheetsApi())) throw new Error("Sheets API 를 불러오지 못했습니다");
           const d = await __xpCollect(sgg5, say);
           const g = __xpGrids(d);
-          if (!(g.g1.length > 1 || g.g2.length > 1 || g.g3.length > 1)) { alert(`${name} 에 내보낼 기록이 없습니다.`); return; }
+          if (g.rows.length < 2) { alert(`${name} 에 내보낼 기록이 없습니다.`); return; }
 
           const ids = [];
-          for (const grid of [g.g1, g.g2, g.g3]) {
-            for (const r of grid) for (const c of r) {
-              const m = String(c).match(/googleusercontent\.com\/d\/([^"]+)/);
-              if (m) ids.push(m[1]);
-            }
+          for (const r of g.rows) for (const c of r) {
+            const m = String(c).match(/googleusercontent\.com\/d\/([^"]+)/);
+            if (m) ids.push(m[1]);
           }
           if (ids.length) await __xpShareAll(ids, say);
 
@@ -19175,44 +19220,42 @@ const originalBase64 = event.target.result;
           const sid = await __xpEnsureSheet(sgg5, title, say);
 
           say("시트에 쓰는 중…");
-          const tabs = [["단지메모", g.g1], ["포토메모", g.g2], ["매물임장", g.g3]];
-          await gapi.client.sheets.spreadsheets.values.batchClear({
-            spreadsheetId: sid, resource: { ranges: tabs.map(([t]) => `'${t}'!A1:ZZ5000`) },
-          });
-          await gapi.client.sheets.spreadsheets.values.batchUpdate({
-            spreadsheetId: sid,
-            resource: {
-              valueInputOption: "USER_ENTERED", // =IMAGE 가 수식으로 들어가야 한다
-              data: tabs.map(([t, grid]) => ({ range: `'${t}'!A1`, values: grid })),
-            },
+          // ⚠ 예전 판이 만든 시트에는 탭이 셋(단지메모·포토메모·매물임장)이라 '기록' 이 없다 → 있으면 쓰고 없으면 만든다
+          let meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
+          let shId = (meta.result.sheets || []).find((s) => s.properties?.title === __XP_TAB)?.properties?.sheetId;
+          if (shId == null) {
+            const add = await gapi.client.sheets.spreadsheets.batchUpdate({
+              spreadsheetId: sid, resource: { requests: [{ addSheet: { properties: { title: __XP_TAB, index: 0 } } }] },
+            });
+            shId = add.result.replies[0].addSheet.properties.sheetId;
+          }
+          await gapi.client.sheets.spreadsheets.values.clear({ spreadsheetId: sid, range: `'${__XP_TAB}'!A1:ZZ5000`, resource: {} });
+          await gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId: sid, range: `'${__XP_TAB}'!A1`,
+            valueInputOption: "USER_ENTERED", // =IMAGE 가 수식으로 들어가야 한다
+            resource: { values: g.rows },
           });
 
           // 행 높이·열 너비를 주지 않으면 =IMAGE(…,1) 이 납작해져 사진이 안 보인다
-          const meta = await gapi.client.sheets.spreadsheets.get({ spreadsheetId: sid, fields: "sheets.properties" });
-          const byTitle = new Map((meta.result.sheets || []).map((s) => [s.properties.title, s.properties.sheetId]));
-          const reqs = [];
-          for (const [t, grid] of tabs) {
-            const shId = byTitle.get(t);
-            if (shId == null || grid.length < 2) continue;
-            const firstImgCol = t === "단지메모" ? 3 : t === "포토메모" ? 3 : 8;
-            const width = grid.reduce((m, r) => Math.max(m, r.length), 0);
+          const width = g.rows.reduce((m, r) => Math.max(m, r.length), 0);
+          const reqs = [
+            { updateDimensionProperties: {
+              range: { sheetId: shId, dimension: "ROWS", startIndex: 1, endIndex: g.rows.length },
+              properties: { pixelSize: __XP_ROW_H }, fields: "pixelSize" } },
+            { updateSheetProperties: {
+              properties: { sheetId: shId, gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },
+          ];
+          if (width > __XP_IMG_AT) {
             reqs.push({ updateDimensionProperties: {
-              range: { sheetId: shId, dimension: "ROWS", startIndex: 1, endIndex: grid.length },
-              properties: { pixelSize: __XP_ROW_H }, fields: "pixelSize" } });
-            if (width > firstImgCol) {
-              reqs.push({ updateDimensionProperties: {
-                range: { sheetId: shId, dimension: "COLUMNS", startIndex: firstImgCol, endIndex: width },
-                properties: { pixelSize: __XP_IMG_W }, fields: "pixelSize" } });
-            }
-            reqs.push({ updateSheetProperties: {
-              properties: { sheetId: shId, gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } });
+              range: { sheetId: shId, dimension: "COLUMNS", startIndex: __XP_IMG_AT, endIndex: width },
+              properties: { pixelSize: __XP_IMG_W }, fields: "pixelSize" } });
           }
-          if (reqs.length) await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: reqs } });
+          await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: reqs } });
 
           const url = `https://docs.google.com/spreadsheets/d/${sid}/edit`;
           alert(
             `${name} 내보내기 완료\n\n` +
-            `단지메모 ${g.g1.length - 1} · 포토메모 ${g.g2.length - 1} · 매물임장 ${g.g3.length - 1}\n` +
+            `단지메모 ${g.counts.단지메모} · 포토메모 ${g.counts.포토메모} · 매물임장 ${g.counts.매물임장}\n` +
             `사진 ${g.imgCount}장` + (g.cut ? ` (${g.cut}장은 너무 많아 생략)` : "") + `\n\n` +
             `HongbuMemo/export/${title}`
           );
@@ -19222,7 +19265,7 @@ const originalBase64 = event.target.result;
           alert("내보내기에 실패했습니다.\n" + (e?.result?.error?.message || e?.message || e));
         } finally {
           __xpBusy.delete(sgg5);
-          if (btn) { btn.disabled = false; btn.textContent = was || "📤 시트"; }
+          if (btn) { btn.disabled = false; btn.textContent = was || "📤 메모 시트로 내보내기"; }
         }
       }
 
@@ -19271,13 +19314,8 @@ const originalBase64 = event.target.result;
             row.innerHTML = `<span class="sm-name" title="${name}${lastTxt ? ' · ' + lastTxt + ' 업데이트' : ''}${cur ? '' : ' · 미설정'}"><b>${name}</b>${cur ? '' : '<span class="sm-unset" title="미설정">❔</span>'}<span class="sm-meta">${lastTxt}${deviceSet.has(sgg5) ? ' 📱' : ''}</span>${c ? `<span class="sm-new">새 ${c.notes + c.photos}</span>` : ''}</span>` +
               `<span class="sm-seg"><label><input type="radio" name="sm_${sgg5}" value="auto" ${sel === 'auto' ? 'checked' : ''}><span>🔁 원본</span></label><label><input type="radio" name="sm_${sgg5}" value="thumb" ${sel === 'thumb' ? 'checked' : ''}><span>썸네일</span></label></span>` +
               `<span></span>` +
-              `<span class="sm-acts">` +
-              `<button type="button" data-xp="${sgg5}" class="sm-xp-btn" title="이 지역의 단지메모·포토메모·매물임장을 구글시트 한 장으로 내보냅니다. 사진은 셀 안에 보이게 넣습니다(사진 파일을 링크 공개로 바꿉니다).">📤 시트</button>` +
-              `<button type="button" data-del="${sgg5}" class="sm-del-btn" title="완전 삭제 — 이 지역의 메모·사진·면적그리기·매물임장을 이 기기와 구글드라이브에서 모두 삭제. 다른 기기도 로그인하면 함께 제거. 되돌릴 수 없음">삭제</button>` +
-              `</span>`;
+              `<button type="button" data-del="${sgg5}" class="sm-del-btn" title="완전 삭제 — 이 지역의 메모·사진·면적그리기·매물임장을 이 기기와 구글드라이브에서 모두 삭제. 다른 기기도 로그인하면 함께 제거. 되돌릴 수 없음">삭제</button>`;
             row.querySelector('button[data-del]').onclick = () => { __smDeleteOne(sgg5, row).catch((e) => console.warn('[mode] 완전 삭제 실패:', e?.message || e)); };
-            const xpBtn = row.querySelector('button[data-xp]');
-            if (xpBtn) xpBtn.onclick = () => { __xpRun(sgg5, row).catch((e) => console.warn('[xp] 내보내기 실패:', e?.message || e)); };
             group.appendChild(row);
           }
           ul.appendChild(group);
