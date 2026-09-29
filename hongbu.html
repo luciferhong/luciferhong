@@ -26930,7 +26930,8 @@ const originalBase64 = event.target.result;
         const foot = panel.querySelector("#ljFoot");
         if (foot) foot.innerHTML = "";
       }
-      async function __ljRenderList() {
+      // force=true 면 캐시를 건너뛰고 시트를 다시 읽는다 — 방금 만들거나 고친 직후에 쓴다.
+      async function __ljRenderList(force) {
         __ljState.view = "list";
         __resumeSet({ tab: "lj", recId: null, label: "" }); // 보던 자리 기억
         __ljState.rec = null;
@@ -26940,7 +26941,7 @@ const originalBase64 = event.target.result;
         const panel = __ljPanelEl();
         if (!panel || !ctx) return; // 모달이 다시 그려져 패널이 사라진 뒤 늦게 도착한 호출
         const q = (sel) => panel.querySelector(sel);
-        const rows = await __ljByApt(ctx.aptId);
+        const rows = await __ljByApt(ctx.aptId, force);
         const back = q("#ljBack");
         if (back) back.style.display = "none"; // 목록이 이 탭의 첫 화면 — 되돌아갈 곳이 없다
         const ttl = q("#ljTitle");
@@ -28512,21 +28513,40 @@ const originalBase64 = event.target.result;
         return !!sgg5 && String(name || "").endsWith("_" + String(sgg5));
       }
 
-      // ── maemool 폴더 (2026-09-28) ──
-      // 이 id 는 한 번 만들어지면 **절대 안 바뀐다** — 유일하게 기억해도 되는 값이다.
-      // 시트·사진폴더 id 는 기억하지 않는다: 테스트로 지웠다 만들면 옛 id 가 휴지통을 가리키는데,
-      // 구글은 휴지통 파일에도 쓰기를 성공시켜 "저장됨" 이라 말하면서 값은 안 보인다.
+      /* ── maemool 폴더 (2026-09-28, 2026-09-29 고침) ──
+         ⚠⚠ **쓰는 쪽과 읽는 쪽이 이 폴더를 서로 다르게 구하고 있었다.**
+            · 쓰기(`__ljEnsureSheet`) : `__driveFindOrCreateFolder` 로 **매번 새로 찾는다**
+            · 읽기(`__ljRegionFiles`) : localStorage 에 기억해 둔 id 를 **확인 없이 그대로** 썼다
+            기억해 둔 id 가 낡으면(다른 폴더·휴지통) 둘이 엇갈린다 —
+            **시트는 진짜 maemool 에 만들어지는데, 목록은 엉뚱한 폴더를 뒤진다.**
+            ⚠ 게다가 없는 부모로 `files.list` 를 하면 **오류가 아니라 빈 목록**이 온다.
+              그래서 `__ljMaemoolForget()` 이 영영 안 돌고, 그 브라우저에서는
+              **"이 시군구 시트가 아직 없습니다" 가 계속** 뜬다(새로고침해도 그대로).
+              2026-09-29 사용자 신고: "드라이브에 시트가 있는데 감지하지 못한다".
+         그래서 **길을 하나로 합쳤다** — 쓰기도 읽기도 이 함수를 쓴다. 이번 세션에 한 번만
+         실제로 구하고(왕복 1~2회), 그 뒤로는 기억해 둔 값을 쓴다. */
       const __LJ_MAE_KEY = "__ljMaemoolId_v1";
       let __ljMaeP = null;
+      let __ljMaeOk = false; // 이번 세션에 **실제로 확인한** id 인가
       async function __ljMaemoolFolder() {
-        try { const v = localStorage.getItem(__LJ_MAE_KEY); if (v) return v; } catch (_) {}
+        if (__ljMaeOk) {
+          try { const v = localStorage.getItem(__LJ_MAE_KEY); if (v) return v; } catch (_) {}
+        }
         if (__ljMaeP) return await __ljMaeP;
         __ljMaeP = (async () => {
-          const root = window.__gdriveRootFolderId;
+          // ⚠ 쓰기 쪽과 **똑같은 방법**으로 구한다 — 그래야 둘이 엇갈릴 수 없다
+          const root = window.__gdriveRootFolderId || (await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null));
           if (!root) return "";
-          const id = await __ljFindFolder(__LJ_FOLDER, root);
-          if (id) { try { localStorage.setItem(__LJ_MAE_KEY, id); } catch (_) {} }
-          return id || "";
+          const id = await __driveFindOrCreateFolder(__LJ_FOLDER, root);
+          if (!id) return "";
+          let had = "";
+          try { had = localStorage.getItem(__LJ_MAE_KEY) || ""; } catch (_) {}
+          if (had && had !== id) {
+            console.warn(`[lj] 기억해 둔 maemool 폴더가 달랐습니다 — ${had} → ${id} 로 고칩니다`);
+          }
+          try { localStorage.setItem(__LJ_MAE_KEY, id); } catch (_) {}
+          __ljMaeOk = true;
+          return id;
         })();
         try { return await __ljMaeP; } finally { __ljMaeP = null; }
       }
@@ -28568,6 +28588,24 @@ const originalBase64 = event.target.result;
             if (f.mimeType === "application/vnd.google-apps.folder") folder = folder || f.id;
             else if (f.mimeType === "application/vnd.google-apps.spreadsheet") sid = sid || f.id;
           }
+          // ⚠ 아무것도 없으면 **폴더를 잘못 보고 있을 수 있다**(없는 부모로 물어도 오류가 아니라
+          //   빈 목록이 온다). 이번 세션에 확인하지 않은 id 였다면 다시 구해 한 번만 더 본다.
+          if (!sid && !files.length) {
+            console.log(`[lj] ${k} — maemool(${mae}) 아래가 비어 있습니다. 폴더를 다시 확인합니다`);
+            __ljMaeOk = false;
+            const again = await __ljMaemoolFolder();
+            if (again && again !== mae) {
+              const r2 = await gapi.client.drive.files.list({
+                q: `'${again}' in parents and trashed=false`,
+                fields: "files(id,name,mimeType)", spaces: "drive", pageSize: 200,
+              });
+              for (const f of r2.result.files || []) {
+                if (!__ljSheetNameOk(f.name, k)) continue;
+                if (f.mimeType === "application/vnd.google-apps.folder") folder = folder || f.id;
+                else if (f.mimeType === "application/vnd.google-apps.spreadsheet") sid = sid || f.id;
+              }
+            }
+          }
           if (sid) __ljSheetOk.set(k, sid); // '구글시트 보기' 버튼 노출 판정용
           return { sid, folder };
         })().catch((e) => { __ljRegionCache.delete(k); throw e; });
@@ -28599,7 +28637,10 @@ const originalBase64 = event.target.result;
       async function __ljEnsureSheet(sgg5, title, sigunguName) {
         const key = "__ljSheet_" + sgg5;
         const root = window.__gdriveRootFolderId || (await __driveFindOrCreateFolder(__DRIVE_ROOT_NAME, null));
-        const folder = await __driveFindOrCreateFolder(__LJ_FOLDER, root);
+        // ⚠ 읽기(__ljRegionFiles)와 **같은 함수**로 구한다. 예전에는 여기만 따로 찾아서,
+        //   기억해 둔 id 가 낡은 브라우저에서 "만들어지는 곳" 과 "찾는 곳" 이 엇갈렸다.
+        const folder = await __ljMaemoolFolder();
+        if (!folder) throw new Error("maemool 폴더를 만들지 못했습니다");
 
         const settle = async (id, curName) => {
           try { await __ljMoveTo(id, folder); } catch (e) { console.warn("[lj] 시트 이동 실패(그대로 사용):", e); }
@@ -28939,7 +28980,10 @@ const originalBase64 = event.target.result;
         if (!(await __ljDriveWait(20000))) return { sid: "", recs: [], why: "구글 드라이브에 연결되지 않았습니다" };
         if (!(await __ljEnsureSheetsApi())) return { sid: "", recs: [], why: "Sheets API 를 불러오지 못했습니다" };
         // 시트와 사진 폴더를 **한 번의 조회**로 같이 구한다 (둘 다 maemool 바로 아래, 이름도 같다)
-        const { sid, folder: photoDir } = await __ljRegionFiles(sgg5);
+        let { sid, folder: photoDir } = await __ljRegionFiles(sgg5);
+        // ⚠ 목록 조회가 못 찾아도 **이번 세션에 이름까지 확인했거나 방금 만든** 시트가 있으면 그것을 쓴다.
+        //   __ljSheetOk 는 시트를 지울 때 같이 비우므로(__ljDeleteSheet) 유령이 되살아나지 않는다.
+        if (!sid) sid = __ljSheetIdCached(sgg5) || "";
         if (!sid) return { sid: "", recs: [], why: "이 시군구 시트가 아직 없습니다 — 📄 구글시트 보기로 만드세요" };
 
         // ⚠ 크기를 알려고 spreadsheets.get 을 먼저 부르지 않는다 — 왕복이 하나 늘 뿐이다.
@@ -29656,20 +29700,23 @@ const originalBase64 = event.target.result;
               ? "구글 서버가 일시적으로 응답하지 않습니다.\n잠시 뒤 '구글시트 보기' 를 다시 눌러 주세요.\n\n(" + msg + ")"
               : "시트를 준비하지 못했습니다.\n" + msg
           );
-          await __ljRenderList().catch(() => {});
+          await __ljRenderList(true).catch(() => {});
           return;
         }
         // 만드는 데 오래 걸렸으면 사용자 조작과 멀어져 팝업이 막힐 수 있다.
         // 그때는 억지로 열지 않고 **누를 수 있는 단추**를 남긴다(그건 진짜 조작이라 안 막힌다).
+        // ⚠ **force 로 다시 읽는다.** 만들기 끝에서 캐시를 비우긴 하지만, 만들다가 중간에
+        //   실패하면(시트 파일은 이미 생긴 뒤) 그 줄까지 못 가서 "시트가 아직 없습니다" 가 남는다
+        //   (2026-09-29 사용자: "시트는 만들어졌는데 홍부에서는 그대로다").
         if (window.open(url(sid), "_blank")) {
-          await __ljRenderList().catch(() => {});
+          await __ljRenderList(true).catch(() => {});
           return;
         }
         if (prog) {
           prog.disabled = false;
           prog.className = "lj-btn pri";
           prog.textContent = "📄 준비 완료 — 시트 열기";
-          prog.onclick = () => { window.open(url(sid), "_blank"); __ljRenderList().catch(() => {}); };
+          prog.onclick = () => { window.open(url(sid), "_blank"); __ljRenderList(true).catch(() => {}); };
         } else {
           alert("시트가 준비됐습니다.\n다시 눌러 주세요.");
         }
