@@ -10834,7 +10834,15 @@ const originalBase64 = event.target.result;
           panel.querySelector("#metroLinesClose").addEventListener("click", hide);
         }
         function place() {
-          const r = btn.getBoundingClientRect();
+          /* ⚠ 이 패널은 자기 단추에 붙는데, 그 단추는 [도구] 패널 안에 있고 **도구를 고르면
+             그 패널이 닫힌다**(2026-09-30). 닫힌 뒤에는 rect 가 전부 0 이라 패널이 화면
+             왼쪽 위(4,4)에 처박혔다 — 자료를 받아 오느라 place() 가 나중에 불리기 때문이다.
+             그럴 때는 [도구] 단추를 기준으로 삼는다. */
+          let r = btn.getBoundingClientRect();
+          if (!r.width) {
+            const anchor = document.getElementById("tbToolsBtn") || document.getElementById("tbLayersBtn");
+            if (anchor) r = anchor.getBoundingClientRect();
+          }
           panel.style.top = r.bottom + 4 + "px";
           panel.style.left = Math.max(4, Math.min(r.left, window.innerWidth - panel.offsetWidth - 8)) + "px";
         }
@@ -22265,15 +22273,28 @@ const originalBase64 = event.target.result;
         function place(btn, panel) {
           const r = btn.getBoundingClientRect();
           if (isSheet()) {
-            /* 폰: 좌우는 CSS 가 잡고, **위끝을 여기서 누른 단추 바로 아래에 붙인다**.
-               PC 와 같은 자리다 — 예전엔 화면 아래에 붙여 놓아서 배경·도구처럼 짧은 메뉴가
-               단추와 멀리 떨어져 떴다 (2026-09-30 사용자 지적).
-               높이는 거기서부터 화면 아래 여백(12px)까지 — 그래야 긴 레이어도 안 잘린다.
-               ⚠ 내용이 이보다 짧으면 카드는 그만큼만 자란다(max-height 이지 height 가 아니다). */
-            panel.style.top = Math.round(r.bottom + 6) + "px";
+            /* 폰: 좌우는 CSS 가 잡고, **위끝을 여기서 잡는다**.
+               ① 기본은 누른 단추 바로 아래 — PC 와 같은 자리다. 예전엔 화면 아래에 붙여 놓아서
+                  배경·도구처럼 짧은 메뉴가 단추와 멀리 떨어져 떴다 (2026-09-30 사용자 지적).
+               ② 거기서부터 화면 아래까지로 **내용이 안 들어가면 그만큼 위로 올린다.**
+                  ⚠ 툴바를 덮어도 좋다 — 스크롤이 안 생기는 쪽이 우선이다
+                    (2026-09-30 사용자 확정: "툴바를 침범해도 좋으니 스크롤 안생기는걸 우선").
+                  패널이 z-index 10060 이라 툴바 위로 그려진다.
+               ⚠ 재려면 max-height 를 먼저 풀어야 한다. 걸린 채로 scrollHeight 를 읽으면
+                 잘린 높이가 아니라 내용 전체가 나오긴 하지만, 2열 격자가 높이 제한에 따라
+                 다시 흐를 수 있어 풀고 재는 쪽이 안전하다. */
+            const GAP = 6, BOTTOM = 12, TOP_MIN = 4;
             panel.style.bottom = "auto";
-            const room = Math.round(window.innerHeight - r.bottom - 6 - 12);
-            panel.style.maxHeight = Math.max(220, room) + "px";
+            panel.style.maxHeight = "none";
+            panel.style.top = TOP_MIN + "px";
+            const need = panel.scrollHeight;
+            const want = Math.round(r.bottom + GAP);
+            const room = window.innerHeight - BOTTOM - want;
+            const top = need > room
+              ? Math.max(TOP_MIN, Math.round(window.innerHeight - BOTTOM - need))
+              : want;
+            panel.style.top = top + "px";
+            panel.style.maxHeight = Math.round(window.innerHeight - BOTTOM - top) + "px";
             return;
           }
           panel.style.top = Math.round(r.bottom + 6) + "px";
@@ -22310,6 +22331,19 @@ const originalBase64 = event.target.result;
 
         for (const [b, pn] of PAIRS) {
           el(b)?.addEventListener("click", (e) => { e.stopPropagation(); open(b, pn); });
+        }
+        /* 도구를 하나 고르면 패널을 닫는다 (2026-09-30 사용자 지적: 모바일에서 단지 리스트를
+           열면 그 위에 패널이 남고 바깥을 눌러도 안 사라진다).
+           까닭 둘: ⓐ 패널(10060)이 단지 리스트 오버레이(10050)보다 위라 가린다.
+                   ⓑ 오버레이가 **iframe** 이라 그 안을 눌러도 부모 문서까지 클릭이 오지 않아
+                     아래의 바깥 클릭 처리가 아예 안 걸린다.
+           ⚠ 닫는 것은 `.tb-item`(창을 열거나 한 번 실행하는 단추)뿐이다. 체크박스는 여러 개를
+             잇달아 켜는 게 보통이라 그대로 열어 둔다.
+           ⚠ **캡처 단계**로 듣는다 — 지하철 노선 단추가 자기 핸들러에서 전파를 끊는다. */
+        for (const [, pn] of PAIRS) {
+          el(pn)?.addEventListener("click", (e) => {
+            if (e.target?.closest?.(".tb-item")) close();
+          }, true);
         }
         /* 바깥을 누르면 닫는다. 패널 안 클릭은 살려 둔다(체크를 여러 개 켜는 게 보통이라).
            ⚠⚠ **캡처 단계**로 듣는다. 거품 단계로 들었더니 **지도를 눌러도 안 닫혔다**
