@@ -1220,6 +1220,54 @@
         flex-direction: column;
         gap: 11px;
       }
+      /* ⚠ 스크롤 막대를 **늘 보이게** (2026-10-01 사용자 지적: "모바일에서 스크롤이 있는지
+         개발자가 아니고는 알기 어렵다 — 스크롤하면 잠시 후 사라지기 때문").
+         폰 브라우저는 기본이 겹쳐 뜨는(overlay) 막대라 가만히 있으면 사라진다.
+         `::-webkit-scrollbar` 를 꾸미면 **자리를 차지하는 옛날식 막대**로 바뀌어 늘 보인다.
+         ⚠ 그만큼(8px) 내용 폭이 줄어든다 — 칸 크기·줄바꿈을 다시 실측했다.
+         ⚠ `overflow-y: auto` 라 넘칠 때만 생긴다. 안 넘치면 막대도 없다(있다고 오해할 일 없음). */
+      .tb-panel,
+      #metroLinesPanel {
+        scrollbar-width: thin;                      /* 파이어폭스 */
+        scrollbar-color: #94a3b8 #eef2f7;
+      }
+      .tb-panel::-webkit-scrollbar,
+      #metroLinesPanel::-webkit-scrollbar { width: 8px; }
+      .tb-panel::-webkit-scrollbar-track,
+      #metroLinesPanel::-webkit-scrollbar-track { background: #eef2f7; border-radius: 4px; }
+      .tb-panel::-webkit-scrollbar-thumb,
+      #metroLinesPanel::-webkit-scrollbar-thumb {
+        background: #94a3b8;
+        border-radius: 4px;
+        border: 1px solid #eef2f7;
+      }
+      .tb-panel::-webkit-scrollbar-thumb:active,
+      #metroLinesPanel::-webkit-scrollbar-thumb:active { background: #64748b; }
+
+      /* ⚠ 위의 막대 꾸미기는 PC 에서만 먹는다 — **폰은 겹쳐 뜨는 막대라 폭이 0 이고 가만히 있으면
+         사라진다**(2026-10-01 실측: 막대 폭 0px). 그래서 '아래에 더 있다'를 직접 그린다.
+         패널 아래 가장자리에 옅게 깔리는 띠 + ▾. 넘치지 않으면 뜨지 않는다.
+         ⚠ 패널 밖에 따로 띄운다 — 패널 안에 넣으면 내용과 함께 밀려 올라간다.
+         ⚠ 패널(10060)보다 한 칸 위. 손가락은 통과시킨다(pointer-events: none). */
+      #tbMore {
+        position: fixed;
+        z-index: 10061;
+        pointer-events: none;
+        box-sizing: border-box;
+        height: 34px;
+        padding-bottom: 3px;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        gap: 3px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #475569;
+        background: linear-gradient(to bottom, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.92) 55%, #fff 100%);
+        border-radius: 0 0 13px 13px;
+      }
+      #tbMore[hidden] { display: none; }
+
       .tb-panel[hidden] { display: none; }
       .tb-sec { display: flex; flex-direction: column; gap: 6px; }
       .tb-sec + .tb-sec { border-top: 1px solid #eef2f7; padding-top: 12px; }
@@ -3279,6 +3327,9 @@
         <input type="file" id="photoMemoCameraInput" accept="image/*" capture="environment" style="display: none" />
         <input type="file" id="photoMemoFileInput" accept="image/*" style="display: none" />
       </div>
+
+      <!-- 패널에 아래로 더 있을 때 뜨는 띠 (2026-10-01). 자리는 __tbInit 이 잡는다. -->
+      <div id="tbMore" hidden aria-hidden="true">▾ 아래로 더 있습니다</div>
 
       <!-- ── 그리는 중에만 뜨는 바 (2026-10-01) ──
            ⚠ 여기 단추들은 **새로 만든 것이 아니라** 지도 아래 버튼줄에 있던 그 요소다.
@@ -22519,6 +22570,7 @@ const originalBase64 = event.target.result;
             : want;
           panel.style.top = top + "px";
           panel.style.maxHeight = Math.round(window.innerHeight - BOTTOM - top) + "px";
+          syncMore();
         }
 
         function close(id) {
@@ -22532,6 +22584,8 @@ const originalBase64 = event.target.result;
             panel.style.bottom = "";
             btn.setAttribute("aria-expanded", "false");
           }
+          const more = el("tbMore");
+          if (more) more.hidden = true;   // 패널이 닫히면 띠도 같이 사라진다
         }
 
         function open(btnId, panelId) {
@@ -22562,6 +22616,26 @@ const originalBase64 = event.target.result;
           replace();
           requestAnimationFrame(replace);
           setTimeout(replace, 400);
+        }
+
+        /* '아래로 더 있습니다' 띠 — 열린 패널 아래 가장자리에 붙인다.
+           폰은 겹쳐 뜨는 스크롤 막대라 가만히 있으면 사라져, 더 있는지 알 길이 없다
+           (2026-10-01 사용자 지적). 넘칠 때만, 그리고 **끝까지 내리면 사라진다**. */
+        function syncMore() {
+          const more = el("tbMore");
+          if (!more) return;
+          const p = PAIRS.map(([, pn]) => el(pn)).find((x) => x && !x.hidden);
+          if (!p) { more.hidden = true; return; }
+          const left = Math.round(p.scrollHeight - p.scrollTop - p.clientHeight);
+          if (left <= 1) { more.hidden = true; return; }
+          const r = p.getBoundingClientRect();
+          more.style.left = Math.round(r.left + 1) + "px";
+          more.style.width = Math.max(0, Math.round(r.width - 2)) + "px";
+          more.style.top = Math.round(r.bottom - 35) + "px";
+          more.hidden = false;
+        }
+        for (const [, pn] of PAIRS) {
+          el(pn)?.addEventListener("scroll", syncMore, { passive: true });
         }
 
         for (const [b, pn] of PAIRS) {
