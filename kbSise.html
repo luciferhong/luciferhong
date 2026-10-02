@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KB 주간 시세열</title>
+<style>
+:root {
+  --bg:#f7f7f5; --card:#fff; --ink:#222; --sub:#777; --line:#e3e3e3;
+  /* 상단바·카드 제목 = 스틸 블루(흰 글자) — 2026-10-02 토프 → 사용자가 비교 파일 4종(웜 그레이·세이지·스틸 블루·더스티 블루) 중 최종 선택 */
+  --top:#5b7fa6; --head:#5b7fa6; --hl:#fff35c; --me:#fff6d6;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font-family:'Malgun Gothic','맑은 고딕',sans-serif; font-size:13px; }
+header { background:var(--top); padding:8px 16px; display:flex; flex-wrap:wrap; gap:8px 14px; align-items:center; position:sticky; top:0; z-index:5; }
+/* 상단바 토프 위 글자·탭은 흰색 계열 */
+header h1 { margin:0; font-size:20px; font-weight:800; color:#fff; }
+select, input, button { font:inherit; }
+select, input { padding:3px 6px; border:1px solid #ccc; border-radius:4px; background:#fff; }
+button { padding:5px 12px; border:0; border-radius:4px; background:#333; color:#fff; cursor:pointer; font-weight:700; }
+button:disabled { background:#999; cursor:wait; }
+#status { font-size:12px; color:#e6edf5; }
+#status b { color:#fff; }
+#status .err { color:#ffe0d6; }
+.err { color:#c0392b; font-weight:700; }
+.panel { display:none; padding:10px 16px 16px; }
+.panel.on { display:block; }
+.bar { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; margin-bottom:8px; font-size:12px; color:#555; }
+.bar label { display:inline-flex; gap:4px; align-items:center; }
+.chips { display:flex; flex-wrap:wrap; gap:4px; }
+.chip { padding:2px 8px; border:1px solid #d0d0d0; border-radius:12px; background:#fff; color:#333; font-weight:400; font-size:12px; }
+.chip.on { background:#333; color:#fff; border-color:#333; }
+#kbFindMsg { color:#555; }
+/* [상세 숨기기]: 오른쪽 지역 상세 칸을 빼고 표를 전체 폭으로 */
+#kbGrid.nodet { grid-template-columns:minmax(0, 1fr); }
+#kbGrid.nodet .side { display:none; }
+.side { display:grid; gap:12px; align-content:start; }
+/* 최신 주 상승 TOP — 매매·전세 두 줄 나란히, 값은 표와 같은 증감 색 */
+.tops { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:8px; }
+.tcol .th { font-size:12px; font-weight:700; text-align:center; padding:3px 0; border-bottom:1px solid #e2ded8; margin-bottom:2px; }
+.tcol .th.sale { color:#a3442a; } .tcol .th.rent { color:#33658a; }
+.tcol ol { list-style:none; margin:0; padding:0; }
+.tcol li { display:flex; align-items:center; gap:5px; font-size:12px; padding:3px 2px; border-bottom:1px solid #f1efeb; cursor:pointer; }
+.tcol li:hover { background:#f6f4f0; }
+.tcol .rk { width:16px; text-align:right; color:#8a847a; font-size:11px; flex:none; }
+.tcol .nm { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tcol .nm small { color:#8a847a; font-size:10.5px; }
+.tcol .v { flex:none; min-width:38px; text-align:right; padding:1px 4px; border-radius:3px; font-variant-numeric:tabular-nums; }
+/* 52주 넘는 과거를 받는 동안 표 위에 띄우는 안내(표의 고정 머리보다 위) */
+.mxcard { position:relative; }
+.busy { position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); z-index:50; background:rgba(31,58,95,.92); color:#fff;
+        padding:12px 20px; border-radius:8px; font-size:14px; font-weight:600; box-shadow:0 4px 16px rgba(0,0,0,.25); display:flex; gap:10px; align-items:center; }
+.busy[hidden] { display:none; }
+.spin { width:16px; height:16px; border:2px solid rgba(255,255,255,.35); border-top-color:#fff; border-radius:50%; animation:spin .8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.grid { display:grid; grid-template-columns:minmax(0, 1fr) 360px; gap:12px; align-items:start; }
+@media (max-width:1100px) { .grid { grid-template-columns:1fr; } }
+.card { background:var(--card); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.card h2 { margin:0; background:var(--head); color:#fff; text-align:center; font-size:15px; font-weight:600; padding:5px; }
+.scroll { max-height:calc(100vh - 170px); overflow:auto; }
+/* 캡처용 스냅: 가로 = 지역 경계, 세로 = 줄 경계 (scroll-snap-align 은 [세로 가로] 순) */
+/* 세로 줄 맞춤은 JS(bindMxScroll — 보이는 줄만 그려서 CSS 세로 스냅이 안 걸린다) */
+/* 가로·세로 줄 맞춤은 둘 다 JS(bindMxScroll) — CSS 스냅은 보이는 줄만 그리는 방식에서 기준 칸이 사라져 안 걸렸다 */
+.mx tr.sp td { padding:0; border:0; background:transparent; }
+table { border-collapse:collapse; width:100%; }
+/* collapse 테두리는 고정 머리 사이로 아래 숫자가 비쳐서 separate + 오른쪽·아래 선만 */
+/* 표 위 테두리는 머리 칸이 갖는다 — 표에 두면 고정 머리 밑으로 1px 어긋난다 */
+/* 시안 3번과 계산된 스타일까지 같게(2026-10-02 "시안과 완전히 똑같게") — 표 위·왼쪽 테두리 없음, 칸 여백 2px 5px */
+.mx { border-collapse:separate; border-spacing:0; }
+.mx td, .mx th { box-sizing:content-box; border:0; border-right:1px solid #efede9; border-bottom:1px solid #efede9; padding:2px 5px; font-size:11.5px; text-align:right; white-space:nowrap; }
+.mx { width:auto; }
+.mx th { cursor:pointer; }
+/* 머리(1~2줄)는 칸별이 아니라 thead 통째로 고정 — 칸별로 둘째 줄 top 을 맞추면 테두리만큼 틈이 생긴다 */
+.mx thead { position:sticky; top:0; z-index:3; }
+/* 표 머리 = 시안 3번 '웜 그레이'(2026-10-02 사용자가 10개 시안 중 선택, _header_options.html) — 따뜻한 베이지 회색 +
+   짙은 갈회색 글자, 얇은 선, 시도 줄 옅은 글자까지 시안과 같게 */
+.mx thead th { background:#efede9; color:#3d3a35; text-align:center; border-right-color:#e2ded8; border-bottom-color:#e2ded8; }
+.mx thead tr:last-child th { border-bottom-color:#cbc5bb; }
+/* 지역 머리 = 두 줄 고정(위 시도·아래 시군구), 각 줄은 줄바꿈 없이 — 길면 열이 넓어진다 */
+/* 시도 줄이 없는 칸(전국·서울 등)은 한 줄로 칸 정가운데 — 그래서 위아래도 가운데(middle) */
+.mx th.rg { min-width:52px; white-space:nowrap; vertical-align:middle; font-weight:600; padding:2px 5px; }
+.mx th.rg .sd, .mx th.rg .sg { display:block; }
+.mx th.rg .sd { color:#8a847a; font-weight:500; }   /* 시안 3번 그대로: 시도 줄은 옅은 갈회색·가는 글씨(사용자가 시안과 다르다고 해 맞춤) */
+.mx th.rg.grp { background:#e4e1dc; }
+.mx th.rg.sel { background:var(--me); }
+.mx th.rg.flash { animation:flash 1.2s ease-out; }
+@keyframes flash { 0%, 40% { background:#ffe066; } 100% { background:var(--me); } }
+.mx th.rg:hover { text-decoration:underline; }
+.mx th.dt { text-align:left; position:sticky; left:0; background:#f8f7f5; color:#5b5750; z-index:1; font-weight:600; border-right-color:#e2ded8; }
+.mx thead th.dt { z-index:3; background:#efede9; color:#3d3a35; text-align:center; vertical-align:middle; border-bottom-color:#cbc5bb; }   /* '주간' 칸 정가운데 */
+.mx tr.sumrow th.dt { background:#f1efeb; }
+.mx th.kn { font-size:10.5px; font-weight:600; padding:2px 5px; min-width:40px; }
+/* 매매·전세 칸은 바탕을 거의 흰색으로 두고 글자색으로만 구분(바탕색이면 증감 색과 헷갈린다) */
+.mx th.kn.sale { background:#efede9; color:#a3442a; } .mx th.kn.rent { background:#efede9; color:#33658a; }
+/* 매매/전세 나란히일 때 지역 사이 굵은 선(2px #c9c9c9)은 뺐다 — 시안 3번과 느낌이 달라지는 주원인(2026-10-02).
+   지역 구분은 머리의 지역명 칸(두 칸 병합)으로 충분 */
+/* 굵은 선은 테두리 대신 그림자 — 테두리면 이 줄만 2px 높아져 줄 높이가 고르지 않다 */
+.mx tr.sumrow.first td, .mx tr.sumrow.first th { box-shadow:inset 0 2px #bbb; }
+.mx td.sum { background:#fafafa; font-weight:600; }
+.tiles { padding:8px; display:grid; grid-template-columns:repeat(2, 1fr); gap:6px; }
+.tile { border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+.tile .k { font-size:11px; color:var(--sub); }
+.tile .v { font-size:18px; font-weight:800; }
+.tile .s { font-size:11px; color:var(--sub); }
+.pos { color:#d9480f; } .neg { color:#1c5fd1; }
+.empty { padding:24px; text-align:center; color:var(--sub); }
+header .src { margin-left:auto; font-size:11px; color:#e6edf5; cursor:help; white-space:nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KB 주간 시계열</h1>
+  <span id="status">불러오는 중…</span>
+  <!-- 출처는 상단 오른쪽에 짧게, 자세한 설명은 마우스를 올리면 -->
+  <span class="src" title="KB부동산 주간 아파트 매매·전세가격 증감률(전국 상위 묶음 + 시도별 하위 시군구, 2008년~, 서버가 매일 갱신)&#10;열 때마다 서버에서 최근 52주를 받고, 52주를 넘게 보면 그때 과거를 받습니다.">출처: KB부동산</span>
+</header>
+
+<section class="panel on" id="tab-kb">
+  <div class="bar">
+    <label>지역 묶음 <select id="kbGroup"></select></label>
+    <label>값 <select id="kbKind"><option value="sale">매매</option><option value="rent">전세</option><option value="both">매매/전세</option></select></label>
+    <label>최근 <input id="kbWeeks" type="number" min="4" max="930" value="52" style="width:56px"> 주</label>
+    <label title="표 아래 최신·4주 평균·52주 누적·연속 주수 4줄"><input id="kbSums" type="checkbox" checked> 요약 줄</label>
+    <label>지역 검색 <input id="kbFind" type="search" list="kbNames" placeholder="예: 분당구 (Enter=다음)" style="width:170px"></label>
+    <datalist id="kbNames"></datalist><span id="kbFindMsg"></span>
+    <button id="kbDetToggle" class="chip" title="오른쪽 지역 상세 칸을 숨겨 표를 넓게 봅니다">상세 숨기기 ▸</button>
+    <button id="kbXlsx" class="chip" title="지금 보이는 표(지역 묶음·정렬·최근 N주)를 KB 엑셀과 같은 색 규칙으로 내려받습니다">⬇ 엑셀</button>
+  </div>
+  <div class="grid" id="kbGrid">
+    <div class="card mxcard"><h2 id="mxTitle">지역별 주간 증감률</h2><div class="scroll"><table class="mx" id="mx"></table></div>
+      <div id="kbBusy" class="busy" hidden><span class="spin"></span><span id="kbBusyMsg">데이터를 가져오는 중입니다…</span></div></div>
+    <!-- 오른쪽 열: 지역 상세 + 그 아래 최신 주 상승 TOP(매매·전세 나란히) -->
+    <div class="side">
+      <div class="card detcard"><h2 id="detTitle">지역 상세</h2><div class="tiles" id="tiles"></div></div>
+      <div class="card topcard"><h2 id="topTitle">최신 주 상승 TOP</h2><div class="tops" id="kbTops"></div></div>
+    </div>
+  </div>
+</section>
+
+<script>
+// KB 주간 시세 — kbSupply.html 에서 KB 시세 탭만 떼어 낸 서비스용 페이지(2026-10-02). 공급 탭·공급 코드 없음.
+// 데이터는 오라클 VM(kb_weekly.py → sise_server.py /kb_weekly)에서 받는다. 개인 정보(앞마당 등)를 넣지 말 것.
+const UI_KEY = "kbSiseUI_v1";
+const TOP = "TOP";   // 전국 상위 묶음 그룹 키
+const ALL = "ALL";   // 전체 지역(가상 묶음 — 저장 데이터엔 없고 그릴 때 합친다)
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct = v => v == null ? "-" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+const cls = v => v > 0 ? "pos" : (v < 0 ? "neg" : "");
+const fmtDate = s => s ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : "-";
+
+// KB: {updated, dates, groups:{key:{name, rows:[{code,name,sale:[],rent:[]}]}}, order:[key]}
+let KB = null;
+const KB_WEEKS_START = 52;   // 열 때마다 '최근 N주'는 52주로 시작 — 저장값 무시
+// 처음 접속(저장값 없음) = 요약 줄·오른쪽 상세 보임. 그 뒤엔 사용자가 마지막에 고른 상태(localStorage)를 그대로 쓴다.
+let UI = {kbGroup:"ALL", kbKind:"both", kbWeeks:KB_WEEKS_START, kbSel:"0000000000", kbSums:true, kbHideDet:false};
+
+// 데이터는 브라우저에 저장하지 않는다(받는 데 1초 안팎) — 화면 설정만 localStorage.
+function saveUI() { try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) {} }
+
+// ── 데이터 받기 ──
+// KB 는 이 페이지가 KB 를 직접 부르지 않는다 — 서버(오라클 VM)의 kb_weekly.py 가 매일 갱신해 둔 파일을 받는다.
+// 열 때마다 최근 52주(gzip 약 190KB, 0.3~0.9초)를 받고, 52주를 넘게 볼 때만 그 이전 파일(gzip 약 2.5MB, 약 0.8초)을
+// "가져오는 중" 안내와 함께 받아 앞에 붙인다(KB.full — 그 창을 닫으면 사라짐). 값은 KB 원값 그대로(엑셀과 같은 경계 색).
+const KB_SERVER = "https://sise-cloud.luciferhong.com/kb_weekly";
+async function getJson(url) {
+  const r = await fetch(url, {cache:"no-store"});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const d = await r.json();
+  if (!d?.dates?.length || !d.groups) throw new Error("데이터 형식이 바뀜");
+  return d;
+}
+async function loadKb() {
+  return {...await getJson(KB_SERVER + "?span=52"), full:false};
+}
+// 52주를 넘게 볼 때만: 그 이전 파일을 받아 앞에 붙인다. 화면에 "가져오는 중" 안내를 띄우고 끝나면 지운다.
+let OLD_LOADING = null;
+async function ensureOld() {
+  if (!KB || KB.full) return true;
+  if (OLD_LOADING) return OLD_LOADING;
+  $("kbBusyMsg").textContent = "데이터를 가져오는 중입니다…";
+  $("kbBusy").hidden = false;
+  OLD_LOADING = (async () => {
+    try {
+      const old = await getJson(KB_SERVER + "?span=old");
+      KB = {...mergeKb(old, KB), full:true, fetched_at:KB.fetched_at};
+      return true;
+    } catch (e) {
+      renderStatus([`과거 데이터: ${e.message}`]);
+      return false;
+    } finally {
+      $("kbBusy").hidden = true; OLD_LOADING = null;
+    }
+  })();
+  return OLD_LOADING;
+}
+// prev(전체 보관본)에 cur(최근분)를 합친다: 날짜는 합집합(새 주는 뒤에), 겹치는 주는 cur 값으로 덮어쓴다.
+// cur 에 없는 묶음·지역은 prev 그대로(새 주 칸은 null), cur 에만 있는 새 지역은 과거 칸 null.
+function mergeKb(prev, cur) {
+  const dates = [...prev.dates, ...cur.dates.filter(d => d > prev.dates[prev.dates.length - 1])];
+  const at = Object.fromEntries(dates.map((d, i) => [d, i])), L = dates.length;
+  const pad = a => { const x = (a || []).slice(); while (x.length < L) x.push(null); return x; };
+  const out = {updated:cur.updated, dates, groups:{}, order:[...cur.order, ...prev.order.filter(k => !cur.order.includes(k))], full:!!prev.full};
+  for (const k of out.order) {
+    const pg = prev.groups[k], cg = cur.groups[k];
+    const prow = Object.fromEntries((pg?.rows || []).map(r => [r.code, r]));
+    const rows = (cg?.rows || []).map(r => {
+      const p = prow[r.code], sale = pad(p?.sale), rent = pad(p?.rent);
+      cur.dates.forEach((d, i) => { sale[at[d]] = r.sale[i] ?? null; rent[at[d]] = r.rent[i] ?? null; });
+      return {...r, sale, rent};
+    });
+    const seen = new Set(rows.map(r => r.code));
+    (pg?.rows || []).filter(r => !seen.has(r.code)).forEach(r => rows.push({...r, sale:pad(r.sale), rent:pad(r.rent)}));
+    out.groups[k] = {name:(cg || pg).name, rows};
+  }
+  return out;
+}
+// 열 때: KB 최근 52주를 받아 그린다(저장본 없음)
+let LOADING = false;
+async function refresh() {
+  LOADING = true; renderStatus();
+  const errs = [];
+  try { KB = await loadKb(); } catch (e) { errs.push("KB: " + e.message); }
+  LOADING = false;
+  renderAll(errs);
+}
+
+// ── 공통 상단 ──
+function renderStatus(errs) {
+  const st = [];
+  if (KB) st.push(`KB 발표 <b>${fmtDate(KB.updated)}</b> (${fmtDate(KB.dates[0])}부터 ${KB.dates.length}주)`);
+  if (KB?.fetched_at) st.push(`서버 갱신 ${new Date(KB.fetched_at).toLocaleString("ko-KR")}`);
+  if (LOADING) st.push("불러오는 중…");
+  if (errs?.length) st.push(`<span class="err">불러오지 못했습니다 — ${esc(errs.join(" / "))}</span>`);
+  $("status").innerHTML = st.join(" · ");
+}
+function renderAll(errs) { renderStatus(errs); renderKb(); }
+
+// ── KB 탭 ──
+function findRow(code) {
+  for (const k of KB.order) { const r = KB.groups[k].rows.find(x => x.code === code); if (r) return [k, r]; }
+  return [null, null];
+}
+// KB 주간시계열 엑셀(1.매매증감·2.전세증감)의 조건부 서식 그대로 — 우선순위 순 첫 일치, between 은 양끝 포함.
+// (KB 주간시계열 20260420·20260921 판 모두 동일 확인)
+const KB_XLSX_FILLS = [
+  [v => v >= -0.4 && v <= -0.2, "#DBEEF4"], [v => v >= 0.2 && v <= 0.4, "#FCD5B5"],
+  [v => v < -0.8, "#2B68D5"], [v => v >= -0.8 && v <= -0.6, "#678FD7"], [v => v >= -0.6 && v <= -0.4, "#A4BCE6"],
+  [v => v >= 0.4 && v <= 0.6, "#FCCA3E"], [v => v >= 0.6 && v <= 0.8, "#FF9C19"], [v => v >= 0.8, "#FF750D"],
+];
+const kbFill = v => v == null ? null : (KB_XLSX_FILLS.find(([hit]) => hit(v)) || [])[1] || null;
+function heat(v) {
+  if (v == null) return "<td>-</td>";
+  const c = KB_XLSX_FILLS.find(([hit]) => hit(v));
+  return c ? `<td style="background:${c[1]}">${v.toFixed(2)}</td>` : `<td>${v.toFixed(2)}</td>`;
+}
+// 전체(2008~) 보관이라 신설 지역은 앞쪽이 null(예: 화성시 동탄구 2026-02-09~). null 은 '자료 없음' —
+// 연속 주수는 null 에서 끊고, 평균·누적은 구간에 null 이 하나라도 있으면 null('-')로 둔다.
+// pre = 서버(kb_weekly.py)가 전체 기간(2008~)으로 미리 센 연속 주수 [주 수, 기간 내내(0/1)] — 52주만 받았을 때
+// 52주 안에서만 세면 '52+'가 되므로 이 값을 쓴다(2026-10-02). 과거까지 받아 전체를 가진 뒤(KB.full)엔 직접 센다.
+function stats(a, pre) {
+  const last = a.length - 1;
+  const first = a.findIndex(v => v != null);
+  let streak = 0;
+  if (a[last] != null) for (let i = last; i >= 0; i--) { if (a[i] != null && a[i] !== 0 && (a[i] > 0) === (a[last] > 0)) streak++; else break; }
+  if (pre && !KB?.full) return {...statsRest(a, last), streak:pre[0], full:!!pre[1]};
+  const win = (f, t) => { const x = a.slice(f, t); return x.length && x.every(v => v != null) ? x : null; };
+  const avg = (f, t) => { const x = win(f, t); return x ? x.reduce((p, c) => p + c, 0) / x.length : null; };
+  const cum = k => { const x = win(-k); return x ? (x.reduce((p, c) => p * (1 + c / 100), 1) - 1) * 100 : null; };
+  return {last:a[last], streak, full:first >= 0 && streak >= a.length - first, m4:avg(-4), p4:avg(-8, -4), c52:cum(52)};
+}
+function statsRest(a, last) {
+  const win = (f, t) => { const x = a.slice(f, t); return x.length && x.every(v => v != null) ? x : null; };
+  const avg = (f, t) => { const x = win(f, t); return x ? x.reduce((p, c) => p + c, 0) / x.length : null; };
+  const cum = k => { const x = win(-k); return x ? (x.reduce((p, c) => p * (1 + c / 100), 1) - 1) * 100 : null; };
+  return {last:a[last], m4:avg(-4), p4:avg(-8, -4), c52:cum(52)};
+}
+const f1 = v => v == null ? "-" : v.toFixed(1);
+// 전체 지역 = KB 엑셀 열 순서처럼 전국·서울·권역·시도 행을 차례로 두고, 하위가 있는 시도 바로 뒤에 그 하위 지역을 잇는다.
+// 시도 묶음 응답에는 시도 자신이 없고 '중구'처럼 시도마다 겹치는 이름이 있어 하위 이름 앞에 시도를 붙인다
+// (그래서 '서울'·'경기 수원시' 가 접두 규칙으로 상위 묶음 열이 된다).
+function allGroup() {
+  const rows = [], seen = new Set();
+  for (const r of KB.groups[TOP].rows) {
+    if (seen.has(r.code)) continue;
+    seen.add(r.code); rows.push({...r, sd:"", sg:r.name});
+    for (const c of KB.groups[r.code]?.rows || []) {
+      if (seen.has(c.code)) continue;
+      // sd/sg = 열 머리 두 줄(위 시도, 아래 시군구)
+      seen.add(c.code); rows.push({...c, name:`${r.name} ${c.name}`, sd:r.name, sg:c.name});
+    }
+  }
+  return {name:"전체 지역", rows};
+}
+let mxSort = {col:null, dir:-1};
+function renderKb() {
+  const sel = $("kbGroup");
+  if (!KB) { $("mx").innerHTML = `<tr><td class="empty">KB 데이터를 불러오는 중이거나 서버에 연결하지 못했습니다</td></tr>`; return; }
+  sel.innerHTML = `<option value="${ALL}">전체 지역</option>` + KB.order.map(k => `<option value="${k}">${esc(KB.groups[k].name)}</option>`).join("");
+  if (UI.kbGroup !== ALL && !KB.groups[UI.kbGroup]) UI.kbGroup = ALL;
+  sel.value = UI.kbGroup; $("kbKind").value = UI.kbKind; $("kbWeeks").value = UI.kbWeeks;
+  const g = UI.kbGroup === ALL ? allGroup() : KB.groups[UI.kbGroup], kind = UI.kbKind, n = Math.max(4, Math.min(+UI.kbWeeks || KB_WEEKS_START, KB.dates.length));
+  // 이름 앞부분이 다른 행 이름의 접두면 묶음(예: 수원시 ⊃ 수원시 장안구)
+  const names = g.rows.map(r => r.name);
+  // 매매/전세(both)면 지역마다 [매매 | 전세] 두 칸. 정렬은 매매 기준.
+  const kinds = kind === "both" ? ["sale", "rent"] : [kind], sk = kinds[0], both = kinds.length > 1;
+  // 열 머리 두 줄: 전체 지역은 allGroup 이 sd/sg 를 준다. 시도 묶음은 위 = 그 시도, 전국·권역 묶음은 위를 비운다.
+  const sdOf = r => r.sd ?? (UI.kbGroup === TOP ? "" : g.name), sgOf = r => r.sg ?? r.name;
+  let rows = g.rows.map(r => ({...r, sd:sdOf(r), sg:sgOf(r), sts:Object.fromEntries(kinds.map(k => [k, stats(r[k], r.stk?.[k])])), grp:names.some(o => o !== r.name && o.startsWith(r.name + " "))}));
+  rows.forEach(r => { r.st = r.sts[sk]; });
+  if (mxSort.col) {
+    const key = r => mxSort.col === "nm" ? r.name : mxSort.col.startsWith("w") ? r[sk][r[sk].length - 1 - +mxSort.col.slice(1)] : r.st[mxSort.col];
+    rows.sort((a, b) => { const x = key(a), y = key(b); return (x > y ? 1 : x < y ? -1 : 0) * mxSort.dir; });
+  }
+  const L = KB.dates.length;
+  // KB 엑셀처럼 세로: 행 = 주간(위가 과거, 맨 아래가 최신), 열 = 지역. 요약 4줄은 맨 아래(최신 주 바로 밑).
+  // 줄 머리(주간·요약)를 누르면 그 값으로 지역 열을 정렬, 지역 머리를 누르면 오른쪽 상세.
+  const wk = [...Array(n).keys()].reverse();   // n-1 … 0 (0 = 최신)
+  const arrow = c => mxSort.col === c ? (mxSort.dir > 0 ? " ▲" : " ▼") : "";
+  const sums = [["last", "최신", s => s.last?.toFixed(2) ?? "-", s => s.last],
+                ["m4", "4주 평균", s => s.m4?.toFixed(2) ?? "-", s => s.m4],
+                ["c52", "52주 누적", s => f1(s.c52), s => s.c52],
+                ["streak", "연속 주수", s => s.full ? s.streak + "+" : String(s.streak), s => s.last]];
+  const KN = {sale:"매매", rent:"전세"};
+  $("mxTitle").textContent = `${g.name} — ${both ? "매매·전세" : KN[kind]} 주간 증감률 (%)`;
+  $("mx").classList.toggle("both", both);
+  // 몸통 줄 = 주간 n줄 + 요약 0/4줄. 줄 하나를 HTML 로 만드는 함수만 들고 있다가 보이는 줄만 그린다(MXV).
+  const sumRows = UI.kbSums === false ? [] : sums;
+  const rowHtml = j => {
+    if (j < n) { const i = wk[j], d = KB.dates[L - 1 - i];
+      return `<tr><th class="dt" data-c="w${i}">${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}${arrow("w" + i)}</th>` +
+        rows.map(r => kinds.map(k => heat(r[k][L - 1 - i])).join("")).join("") + `</tr>`; }
+    const k = j - n, [c, t, f, col] = sumRows[k];
+    return `<tr class="sumrow${k ? "" : " first"}"><th class="dt" data-c="${c}">${t}${arrow(c)}</th>` +
+      rows.map(r => kinds.map(kk => `<td class="sum ${cls(col(r.sts[kk]))}">${f(r.sts[kk])}</td>`).join("")).join("") + `</tr>`;
+  };
+  $("mx").innerHTML = `<thead><tr><th class="dt" data-c="nm"${both ? ' rowspan="2"' : ""}>주간${arrow("nm")}</th>` +
+    rows.map(r => `<th class="rg ${r.grp ? "grp" : ""} ${r.code === UI.kbSel ? "sel" : ""}" data-code="${r.code}"${both ? ' colspan="2"' : ""} title="${esc(r.name)}">${r.sd ? `<span class="sd">${esc(r.sd)}</span>` : ""}<span class="sg">${esc(r.sg)}</span></th>`).join("") +
+    `</tr>` + (both ? `<tr class="kn">${rows.map(() => kinds.map(k => `<th class="kn ${k}">${KN[k]}</th>`).join("")).join("")}</tr>` : "") +
+    `</thead><tbody></tbody>`;
+  MXV = {total:n + sumRows.length, cols:1 + rows.length * kinds.length, step:kinds.length, rowHtml, a:-1, b:-1,
+         rows, kinds, n, group:g.name};   // 엑셀 내려받기가 지금 보이는 그대로 쓴다
+  const sc = $("mx").parentElement;
+  // 처음엔 맨 아래(최신) 몇 줄만 그려 줄 높이를 재고, 칸 높이를 맞춘 뒤 맨 아래로 내려 그 자리를 그린다
+  paintMx(Math.max(0, MXV.total - 3), MXV.total);
+  fitMx();
+  sc.scrollTop = sc.scrollHeight;   // 엑셀처럼 최신 주가 보이게 맨 아래로
+  paintVisible();
+  KB_DIRTY = false;
+  if (!$("kbNames").options.length) $("kbNames").innerHTML = allGroup().rows.map(r => `<option value="${esc(r.name)}">`).join("");
+  renderKbDetail();
+  renderTops();
+}
+// ── 보이는 줄만 그리기 ──
+// 930주 × 576칸을 한 번에 그리면 8초 멈췄다(2026-10-02 실측). 줄 높이가 모두 같으므로(fitMx 주석) 위아래 안 보이는 줄은
+// 빈 칸(spacer) 높이로만 두고, 스크롤할 때 보이는 범위 ± 여유 줄만 다시 그린다.
+let MXV = null, ROW_H = 21, KB_DIRTY = true;
+const MX_BUF = 15;
+function paintMx(a, b) {
+  const v = MXV, body = $("mx").tBodies[0];
+  if (!v || !body) return;
+  const sp = h => h > 0 ? `<tr class="sp"><td colspan="${v.cols}" style="height:${h}px"></td></tr>` : "";
+  let html = sp(a * ROW_H);
+  for (let j = a; j < b; j++) html += v.rowHtml(j);
+  body.innerHTML = html + sp((v.total - b) * ROW_H);
+  v.a = a; v.b = b;
+}
+function paintVisible() {
+  const v = MXV, sc = $("mx").parentElement;
+  if (!v) return;
+  const head = $("mx").tHead.getBoundingClientRect().height;
+  const top = Math.floor(sc.scrollTop / ROW_H), cnt = Math.ceil((sc.clientHeight - head) / ROW_H) + 1;
+  if (top >= v.a + 3 && top + cnt <= v.b - 3 || (v.a === 0 && v.b === v.total)) return;   // 아직 여유 안
+  paintMx(Math.max(0, top - MX_BUF), Math.min(v.total, top + cnt + MX_BUF));
+}
+// 표 칸 높이 = 머리 + 줄 높이 × (화면에 들어가는 정수 줄 수) + 가로 스크롤바.
+// 이렇게 해야 맨 아래(최신)로 내렸을 때 맨 위 줄이 머리 밑에 반쯤 걸리지 않고 딱 맞는다(줄 높이는 모두 같게 CSS 로 맞춤).
+function fitMx() {
+  const t = $("mx"), sc = t.parentElement, row = t.tBodies[0]?.querySelector("tr:not(.sp)");
+  if (!row || !MXV) return;
+  sc.style.maxHeight = "";
+  // 머리 줄 높이를 정수 픽셀로 — 소수면 칸 높이(정수로 반올림됨)와 어긋나 맨 아래가 0.x px 비친다
+  for (const tr of t.tHead.rows) { tr.style.height = ""; tr.style.height = Math.ceil(tr.getBoundingClientRect().height) + "px"; }
+  const head = t.tHead.getBoundingClientRect().height;
+  ROW_H = row.getBoundingClientRect().height || ROW_H;
+  const bar = sc.offsetHeight - sc.clientHeight;
+  const room = window.innerHeight - sc.getBoundingClientRect().top - 16;
+  let k = Math.max(3, Math.floor((room - head - bar) / ROW_H));
+  if (k < MXV.total) {
+    sc.style.maxHeight = (head + k * ROW_H + bar) + "px";
+    // 소수 픽셀 반올림으로 페이지가 1px 넘쳐 세로 스크롤바가 생기면 한 줄씩 줄인다
+    while (k > 3 && document.documentElement.scrollHeight > window.innerHeight) { k--; sc.style.maxHeight = (head + k * ROW_H + bar) + "px"; }
+  }
+  sc.style.scrollPaddingTop = head + "px";
+}
+// 가장 가까운 지역 경계(지역 칸 왼쪽 끝이 고정 '주간' 열 오른쪽 끝에 붙는 위치)의 scrollLeft.
+// 기준은 항상 그려져 있는 머리의 지역 칸 — 표 안 위치는 스크롤과 무관하게 getBoundingClientRect 차이로 잰다.
+function snapLeftOf(sc) {
+  const t = $("mx"), tl = t.getBoundingClientRect().left;
+  const sticky = t.tHead.rows[0].cells[0].getBoundingClientRect().width;
+  const max = sc.scrollWidth - sc.clientWidth;
+  let best = sc.scrollLeft, bd = Infinity;
+  for (const th of t.tHead.rows[0].querySelectorAll("th.rg")) {
+    const s = th.getBoundingClientRect().left - tl - sticky;
+    if (s < 0 || s > max) continue;
+    const d = Math.abs(s - sc.scrollLeft);
+    if (d < bd) { bd = d; best = s; }
+  }
+  // 맨 끝까지 밀었으면 그대로(마지막 지역들이 경계에 안 맞아도 끝은 보이게)
+  return sc.scrollLeft >= max - 1 ? max : (sc.scrollLeft < 1 ? 0 : best);
+}
+// 줄·지역 맞춤: 스크롤이 멈추면(120ms) 세로는 줄 높이의 배수로, 가로는 가장 가까운 지역 경계로 맞춘다
+let mxSnapT = 0;
+function bindMxScroll() {
+  const sc = $("mx").parentElement;
+  sc.addEventListener("scroll", () => {
+    requestAnimationFrame(paintVisible);
+    clearTimeout(mxSnapT);
+    mxSnapT = setTimeout(() => {
+      const y = Math.round(sc.scrollTop / ROW_H) * ROW_H, x = snapLeftOf(sc);
+      if (Math.abs(y - sc.scrollTop) > 0.5 || Math.abs(x - sc.scrollLeft) > 0.5) sc.scrollTo({top:y, left:x});
+    }, 120);
+  }, {passive:true});
+  // 줄 머리(주간·요약) = 정렬, 지역 머리 = 선택(표 전체를 다시 그리지 않고 표시만 바꾼다)
+  $("mx").onclick = e => {
+    const th = e.target.closest("th");
+    if (!th) return;
+    if (th.classList.contains("dt") && th.dataset.c) {
+      const c = th.dataset.c; mxSort = {col:c, dir:mxSort.col === c ? -mxSort.dir : (c === "nm" ? 1 : -1)}; renderKb();
+    } else if (th.classList.contains("rg")) {
+      UI.kbSel = th.dataset.code; saveUI();
+      $("mx").querySelectorAll("th.rg.sel").forEach(x => x.classList.remove("sel"));
+      th.classList.add("sel");
+      renderKbDetail();
+    }
+  };
+}
+// ── 엑셀 내려받기 ──
+// 지금 보이는 표(지역 묶음·정렬 순서·최근 N주)를 KB 주간시계열 엑셀과 같은 모양·같은 색 규칙으로 만든다.
+// 색은 칸마다 칠하지 않고 KB 파일의 조건부 서식(1.매매증감·2.전세증감 B5:… — 우선순위·between 양끝 포함까지 같게)을
+// 그대로 넣는다 → 엑셀에서 값을 고쳐도 KB 파일과 똑같이 반응한다. 매매/전세는 KB 처럼 시트를 나눈다. 값은 원값.
+const EXCELJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js";
+let excelJsLoading = null;
+function loadExcelJs() {
+  if (window.ExcelJS) return Promise.resolve();
+  return excelJsLoading ||= new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = EXCELJS_URL; s.onload = ok; s.onerror = () => { excelJsLoading = null; no(new Error("엑셀 라이브러리를 불러오지 못했습니다")); };
+    document.head.appendChild(s);
+  });
+}
+// KB 엑셀 조건부 서식 — KB_XLSX_FILLS 와 같은 표, 같은 우선순위. ExcelJS cellIs 에 '이상'이 없어 ≥0.8 은 between 0.8~1e9.
+const KB_XLSX_CF = [
+  ["between", ["-0.4", "-0.2"], "DBEEF4"], ["between", ["0.2", "0.4"], "FCD5B5"],
+  ["lessThan", ["-0.8"], "2B68D5"], ["between", ["-0.8", "-0.6"], "678FD7"], ["between", ["-0.6", "-0.4"], "A4BCE6"],
+  ["between", ["0.4", "0.6"], "FCCA3E"], ["between", ["0.6", "0.8"], "FF9C19"], ["between", ["0.8", "1000000000"], "FF750D"],
+];
+async function exportXlsx() {
+  if (!MXV || !KB) return;
+  const btn = $("kbXlsx");
+  btn.disabled = true;
+  $("kbBusyMsg").textContent = "엑셀 파일을 만드는 중입니다…"; $("kbBusy").hidden = false;
+  try {
+    await loadExcelJs();
+    const {rows, n, group} = MXV, L = KB.dates.length;
+    const kinds = ["sale", "rent"];   // 화면이 매매·전세 어느 쪽이든 세 시트(매매 / 전세 / 나란히)를 다 넣는다
+    const wb = new ExcelJS.Workbook();
+    const KN = {sale:["매매증감", "아파트 매매가격증감률"], rent:["전세증감", "아파트 전세가격증감률"]};
+    const colL = c => { let s = ""; for (c++; c > 0; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(65 + (c - 1) % 26) + s; return s; };
+    // 머리 색 = 화면과 같은 회청(증감 색과 헷갈리지 않게), 글자 남색
+    // 화면과 같은 시안 3번 '웜 그레이'
+    const HEAD_FILL = {type:"pattern", pattern:"solid", fgColor:{argb:"FFEFEDE9"}};
+    const DATE_FILL = {type:"pattern", pattern:"solid", fgColor:{argb:"FFF8F7F5"}};   // 날짜 열 = 더 옅은 웜 그레이
+    const HEAD_LINE = {style:"thin", color:{argb:"FFCBC5BB"}};                        // 헤더 아래·날짜 열 오른쪽 얇은 선
+    const HEAD_FONT = {bold:true, color:{argb:"FF3D3A35"}};
+    const SD_FONT = {bold:false, color:{argb:"FF8A847A"}};   // 시도 줄 = 화면처럼 옅은 갈회색
+    const cfRules = () => KB_XLSX_CF.map(([op, f, rgb], p) => ({
+      type:"cellIs", operator:op, formulae:f, priority:p + 1, stopIfTrue:p >= 2,
+      style:{fill:{type:"pattern", pattern:"solid", bgColor:{argb:"FF" + rgb}}},
+    }));
+    const dateCell = (cell, i) => {
+      const d = KB.dates[i]; cell.value = new Date(Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)));
+      cell.numFmt = "yyyy-mm-dd"; cell.fill = DATE_FILL; cell.font = {bold:true, color:{argb:"FF5B5750"}}; cell.border = {right:HEAD_LINE};
+    };
+    // 마지막 헤더 줄 아래 남색 굵은 선(기존 테두리는 살린다)
+    const underline = (ws, r) => ws.getRow(r).eachCell({includeEmpty:false}, c => { c.border = {...(c.border || {}), bottom:HEAD_LINE}; });
+    kinds.forEach((k, si) => {
+      const ws = wb.addWorksheet(`${si + 1}.${KN[k][0]}`, {views:[{state:"frozen", xSplit:1, ySplit:3}]});
+      // 1행 제목, 2행 시도, 3행 시군구(KB 엑셀처럼 머리 위·데이터 아래), 4행~ 주간(위 과거 → 아래 최신)
+      ws.getCell(1, 1).value = `${KN[k][1]} (전주대비:%) — ${group} · KB부동산 주간 · 기준 ${fmtDate(KB.updated)}`;
+      ws.getCell(1, 1).font = {bold:true};
+      // '주간'과 시도 없는 칸(전국·서울 등)은 2~3행을 합쳐 칸 정가운데(화면과 같게)
+      ws.getCell(2, 1).value = "주간"; ws.mergeCells(2, 1, 3, 1);
+      rows.forEach((r, j) => {
+        if (r.sd) { ws.getCell(2, j + 2).value = r.sd; ws.getCell(3, j + 2).value = r.sg; }
+        else { ws.getCell(2, j + 2).value = r.sg; ws.mergeCells(2, j + 2, 3, j + 2); }
+      });
+      for (const rr of [2, 3]) ws.getRow(rr).eachCell(c => {
+        c.font = HEAD_FONT; c.alignment = {horizontal:"center", vertical:"middle"}; c.fill = HEAD_FILL;
+      });
+      rows.forEach((r, j) => { if (r.sd) ws.getCell(2, j + 2).font = SD_FONT; });
+      underline(ws, 3);
+      for (let x = 0; x < n; x++) {
+        const i = L - n + x, row = ws.getRow(4 + x);
+        dateCell(row.getCell(1), i);
+        rows.forEach((r, j) => { const v = r[k][i]; if (v != null) row.getCell(j + 2).value = v; });
+      }
+      const last = 3 + n, lastCol = colL(rows.length);
+      for (let c = 2; c <= rows.length + 1; c++) { ws.getColumn(c).numFmt = "0.00"; ws.getColumn(c).width = Math.max(8, ...[rows[c - 2].sd, rows[c - 2].sg].map(s => (s || "").length * 2 + 2)); }
+      ws.getColumn(1).width = 12;
+      ws.addConditionalFormatting({ref:`B4:${lastCol}${last}`, rules:cfRules()});
+    });
+    // 3.매매전세증감 — 화면 '매매/전세'처럼 지역마다 [매매 | 전세] 나란히. 2행 시도·3행 시군구(두 칸 병합), 4행 매매/전세, 5행~ 주간
+    {
+      const ws = wb.addWorksheet("3.매매전세증감", {views:[{state:"frozen", xSplit:1, ySplit:4}]});
+      ws.getCell(1, 1).value = `아파트 매매·전세가격증감률 (전주대비:%) — ${group} · KB부동산 주간 · 기준 ${fmtDate(KB.updated)}`;
+      ws.getCell(1, 1).font = {bold:true};
+      ws.getCell(2, 1).value = "주간"; ws.mergeCells(2, 1, 4, 1);   // 머리 3줄을 합쳐 정가운데
+      rows.forEach((r, j) => {
+        const c = 2 + j * 2;
+        if (r.sd) {
+          ws.getCell(2, c).value = r.sd; ws.mergeCells(2, c, 2, c + 1);
+          ws.getCell(3, c).value = r.sg; ws.mergeCells(3, c, 3, c + 1);
+        } else { ws.getCell(2, c).value = r.sg; ws.mergeCells(2, c, 3, c + 1); }   // 시도 없는 칸은 2~3행 합쳐 정가운데
+        ws.getCell(4, c).value = "매매"; ws.getCell(4, c + 1).value = "전세";
+        const w = Math.max(7, ((r.sg || "").length * 2 + 2) / 2);
+        ws.getColumn(c).width = w; ws.getColumn(c + 1).width = w;
+        ws.getColumn(c).numFmt = "0.00"; ws.getColumn(c + 1).numFmt = "0.00";
+      });
+      // 2·3행 = 회청 머리, 4행 매매/전세 = 옅은 회청 + 글자색(화면과 같게 — 증감 색 계열 바탕은 피한다)
+      const KN_FILL = HEAD_FILL;   // 매매/전세 줄도 같은 회색, 글자색으로만 구분
+      for (const rr of [2, 3, 4]) ws.getRow(rr).eachCell(cell => {
+        cell.alignment = {horizontal:"center", vertical:"middle"};
+        if (rr < 4 || cell.col === 1) { cell.font = HEAD_FONT; cell.fill = HEAD_FILL; }
+        else { cell.font = {bold:true, color:{argb:cell.value === "매매" ? "FFA3442A" : "FF33658A"}}; cell.fill = KN_FILL; }
+      });
+      rows.forEach((r, j) => { if (r.sd) ws.getCell(2, 2 + j * 2).font = SD_FONT; });
+      underline(ws, 4);
+      for (let x = 0; x < n; x++) {
+        const i = L - n + x, row = ws.getRow(5 + x);
+        dateCell(row.getCell(1), i);
+        rows.forEach((r, j) => {
+          const s = r.sale[i], t = r.rent[i];
+          if (s != null) row.getCell(2 + j * 2).value = s;
+          if (t != null) row.getCell(3 + j * 2).value = t;
+        });
+      }
+      ws.getColumn(1).width = 12;
+      ws.addConditionalFormatting({ref:`B5:${colL(rows.length * 2)}${4 + n}`, rules:cfRules()});
+    }
+    const buf = await wb.xlsx.writeBuffer();
+    const a = document.createElement("a");
+    const kindName = "매매전세";
+    a.href = URL.createObjectURL(new Blob([buf], {type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}));
+    a.download = `KB주간_${group.replace(/[\\/:*?"<>|· ]+/g, "")}_${kindName}_${n}주_${KB.updated}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  } catch (e) {
+    renderStatus([`엑셀: ${e.message}`]);
+  } finally {
+    $("kbBusy").hidden = true; btn.disabled = false;
+  }
+}
+
+addEventListener("resize", () => { if (KB && MXV) { fitMx(); const sc = $("mx").parentElement; sc.scrollTop = sc.scrollHeight; paintVisible(); } });
+
+// 지역 검색 → 그 지역 열로 가로 스크롤 + 선택(오른쪽 상세). 공백 무시 부분 일치, 이름 끝이 맞는 것 먼저.
+// 같은 말로 Enter 를 다시 누르면 다음 후보. 지금 묶음에 없으면 전체 지역으로 바꿔서 찾는다.
+let findState = {q:"", i:0};
+function kbFind(next) {
+  const norm = s => String(s).replace(/\s+/g, "");
+  const q = norm($("kbFind").value);
+  if (!q || !KB) { $("kbFindMsg").textContent = ""; return; }
+  const hitsIn = rows => rows.filter(r => norm(r.name).includes(q))
+    .sort((a, b) => norm(b.name).endsWith(q) - norm(a.name).endsWith(q));
+  let hits = hitsIn((UI.kbGroup === ALL ? allGroup() : KB.groups[UI.kbGroup]).rows), switched = false;
+  if (!hits.length && UI.kbGroup !== ALL) { hits = hitsIn(allGroup().rows); if (hits.length) { UI.kbGroup = ALL; switched = true; } }
+  if (!hits.length) { $("kbFindMsg").innerHTML = `<span class="err">'${esc($("kbFind").value)}' 없음</span>`; return; }
+  findState = next && findState.q === q ? {q, i:(findState.i + 1) % hits.length} : {q, i:0};
+  const r = hits[findState.i];
+  UI.kbSel = r.code;
+  if (switched) renderKb();   // 묶음이 바뀔 때만 다시 그린다
+  goToRegion(r.code);
+  $("kbFindMsg").textContent = hits.length > 1 ? `${findState.i + 1}/${hits.length} — ${r.name} (Enter=다음)` : r.name;
+}
+// 지역 선택 + 그 열로 이동(검색·상승 TOP 클릭 공용): 오른쪽 상세를 바꾸고, 고정 '주간' 열 오른쪽 끝에 그 지역 열을 딱 붙인다
+function goToRegion(code) {
+  UI.kbSel = code; saveUI();
+  $("mx").querySelectorAll("th.rg.sel").forEach(x => x.classList.remove("sel"));
+  renderKbDetail();
+  const th = document.querySelector(`#mx th.rg[data-code="${code}"]`);
+  if (th) {
+    const sc = $("mx").parentElement, a = th.getBoundingClientRect();
+    const stickyRight = $("mx").tHead.rows[0].cells[0].getBoundingClientRect().right;
+    sc.scrollLeft += a.left - stickyRight;
+    th.classList.add("sel", "flash"); setTimeout(() => th.classList.remove("flash"), 1200);
+  }
+}
+// ── 최신 주 상승 TOP(오른쪽 상세 아래, 2026-10-02) ──
+// 지금 지역 묶음 안의 실제 지역만(전국·권역·시도 합계와 하위 구가 있는 시는 뺀다 — 전국·권역 묶음을 볼 때만 그 행들끼리) 최신 주 증감률 내림차순.
+const TOP_N = 10;
+function renderTops() {
+  if (!MXV || !KB) { $("kbTops").innerHTML = ""; return; }
+  const L = KB.dates.length, i = L - 1;
+  const leaves = MXV.rows.filter(r => !r.grp && (UI.kbGroup === TOP || r.sd));
+  $("topTitle").textContent = `최신 주 상승 TOP ${TOP_N} · ${fmtDate(KB.dates[i])}`;
+  const col = (k, label) => {
+    const list = leaves.filter(r => r[k][i] != null).sort((a, b) => b[k][i] - a[k][i]).slice(0, TOP_N);
+    return `<div class="tcol"><div class="th ${k}">${label}</div><ol>` + list.map((r, n) => {
+      const v = r[k][i], f = kbFill(v);
+      return `<li data-code="${r.code}" title="${esc(r.name)}"><span class="rk">${n + 1}</span>` +
+        `<span class="nm">${r.sd ? `<small>${esc(r.sd)}</small> ` : ""}${esc(r.sg)}</span>` +
+        `<span class="v"${f ? ` style="background:${f}"` : ""}>${v.toFixed(2)}</span></li>`;
+    }).join("") + `</ol></div>`;
+  };
+  $("kbTops").innerHTML = col("sale", "매매") + col("rent", "전세");
+  $("kbTops").querySelectorAll("li").forEach(li => li.onclick = () => goToRegion(li.dataset.code));
+}
+function renderKbDetail() {
+  const [gk, r] = findRow(UI.kbSel);
+  if (!r) { $("detTitle").textContent = "지역 상세"; $("tiles").innerHTML = `<div class="empty">왼쪽 표에서 지역을 누르세요</div>`; return; }
+  const parent = KB.groups[gk];
+  const s = stats(r.sale, r.stk?.sale), j = stats(r.rent, r.stk?.rent), L = KB.dates.length;
+  // 같은 묶음 안 순위(하위 묶음 행 제외)
+  const names = parent.rows.map(x => x.name);
+  const leaves = parent.rows.filter(x => !names.some(o => o !== x.name && o.startsWith(x.name + " ")));
+  const ranked = leaves.map(x => [x.code, x.sale[L - 1]]).sort((a, b) => b[1] - a[1]);
+  const pos = ranked.findIndex(x => x[0] === r.code) + 1;
+  $("detTitle").textContent = `${gk === TOP ? "" : parent.name + " "}${r.name}`;
+  const tiles = [
+    ["최신 주 매매", pct(s.last), cls(s.last), fmtDate(KB.dates[L - 1])],
+    ["최신 주 전세", pct(j.last), cls(j.last), fmtDate(KB.dates[L - 1])],
+    ["매매 연속", s.full ? `${s.streak}주+` : `${s.streak}주`, cls(s.last), `연속 ${s.last > 0 ? "상승" : "하락"}${s.full ? "(조회 기간 내내)" : ""}`],
+    ["묶음 내 매매 순위", pos ? `${pos}위` : "-", "", `${parent.name} ${ranked.length}곳 중`],
+    ["매매 4주 평균", pct(s.m4), cls(s.m4), `그 전 4주 ${pct(s.p4)}`],
+    ["전세 4주 평균", pct(j.m4), cls(j.m4), `그 전 4주 ${pct(j.p4)}`],
+    ["매매 52주 누적", s.c52 == null ? "-" : `${s.c52 >= 0 ? "+" : ""}${f1(s.c52)}%`, cls(s.c52), "주간 증감률 복리"],
+    ["전세 52주 누적", j.c52 == null ? "-" : `${j.c52 >= 0 ? "+" : ""}${f1(j.c52)}%`, cls(j.c52), "주간 증감률 복리"],
+  ];
+  $("tiles").innerHTML = tiles.map(t => `<div class="tile"><div class="k">${t[0]}</div><div class="v ${t[2]}">${t[1]}</div><div class="s">${t[3]}</div></div>`).join("");
+}
+
+(async function init() {
+  try { const s = JSON.parse(localStorage.getItem(UI_KEY) || "null"); if (s) UI = Object.assign(UI, s); } catch (e) {}
+  UI.kbWeeks = KB_WEEKS_START;
+  UI.kbKind = "both";   // '값'은 열 때마다 매매/전세로 시작
+  $("kbGroup").onchange = () => { UI.kbGroup = $("kbGroup").value; saveUI(); renderKb(); };
+  $("kbKind").onchange = () => { UI.kbKind = $("kbKind").value; saveUI(); renderKb(); };
+  $("kbWeeks").onchange = async () => {
+    UI.kbWeeks = +$("kbWeeks").value || KB_WEEKS_START; saveUI();
+    if (KB && !KB.full && UI.kbWeeks > KB.dates.length) await ensureOld();   // 갖고 있는 것보다 길게 보면 과거를 받는다
+    renderKb();
+  };
+  const applyDet = () => {
+    $("kbGrid").classList.toggle("nodet", !!UI.kbHideDet);
+    $("kbDetToggle").textContent = UI.kbHideDet ? "◂ 상세 보이기" : "상세 숨기기 ▸";
+  };
+  applyDet();
+  $("kbXlsx").onclick = exportXlsx;
+  $("kbDetToggle").onclick = () => {
+    UI.kbHideDet = !UI.kbHideDet; saveUI(); applyDet();
+    if (MXV) { fitMx(); paintVisible(); }   // 폭이 바뀌면 가로 스크롤바 유무가 바뀔 수 있어 높이를 다시 맞춘다
+  };
+  $("kbSums").checked = UI.kbSums !== false;
+  $("kbSums").onchange = () => { UI.kbSums = $("kbSums").checked; saveUI(); renderKb(); };
+  $("kbFind").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); kbFind(true); } };
+  // 목록에서 고르면(값이 지역명과 정확히 같아지면) 바로 이동
+  $("kbFind").oninput = () => { if ([...$("kbNames").options].some(o => o.value === $("kbFind").value)) kbFind(false); };
+  bindMxScroll();
+  renderAll();   // 받기 전 "불러오는 중" 자리 표시
+  refresh();
+})();
+</script>
+</body>
+</html>
