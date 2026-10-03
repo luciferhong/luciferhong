@@ -7797,6 +7797,72 @@
         return min;
       }
 
+      // ===== 단지 마커 겹침 정리 (2026-10-03) — 신네부와 같은 칸 방식 =====
+      // 신네부 줌14 응답을 실측해 보니 서버가 범위 안 690단지 중 79개만 골랐다: **화면을 '지금 줌+2' 타일
+      // (=64px) 칸으로 나눠 칸마다 대표 하나**(신네부는 조회수 1등, 41칸 중 40칸 일치). 홍부도 **조회수 1등**
+      // (사용자 지정) — 전용 확장 [👁 조회수]로 한 번 받아 시세 서버에 둔 신네부 viewCount 를
+      // `/apt_viewcount.json`(토큰 없으면 가벼운 판 {v:{단지번호:조회수}}, gzip ~150KB)으로 받는다.
+      // 조회수가 같거나 없으면 세대수, 그것도 같으면 id. 파일을 아직 못 받았으면 세대수로 고르고, 받으면 다시 그린다.
+      // 예전엔 필터를 통과한 단지를 전부 그려 줌14 강남에 340개 — 이름표가 겹쳐
+      // 안 읽히고, 네이버 지도가 줌·끌기 끝마다 마커 전부를 재배치하느라 70~110ms 씩 끊겼다(크롬 실측).
+      // 줌을 당기면 칸이 작아져 숨었던 단지가 자연스럽게 나타나고, **줌 15 부터는 솎지 않는다**(신네부와 같음).
+      // 신네부와 남는 차이: apt.json 에 없는 소규모 단지(DMC 줌14 실측 40곳 중 36곳), 받아 둔 조회수와 지금 값의
+      // 순위 차, 신네부가 칸 대표 일부(~20%)를 작은 점으로 낮춰 그리는 것(홍부는 이름표 하나뿐).
+      // 칸과 무관하게 늘 보이는 것: ?focus= 로 연 단지, 지금 모달로 보고 있는 단지.
+      const __APT_CELL_PX = 64;
+      const __APT_DECLUTTER_MAX_ZOOM = 14; // 이 줌까지만 칸 정리, 15 부터는 전부(신네부와 같음)
+      let __aptView = null; // 단지번호 → 신네부 조회수
+      let __aptViewP = null;
+      function __aptViewLoad() {
+        if (__aptViewP) return __aptViewP;
+        __aptViewP = __fetchTimeout(`${__parcelApiBase()}/apt_viewcount.json`, 15000)
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+          .then((d) => {
+            __aptView = (d && d.v) || null;
+            // 세대수로 골라 둔 화면을 조회수 기준으로 다시 그린다
+            try { if (__aptView && window.map) updateMarkers(window.map.getBounds()); } catch (_) {}
+          })
+          .catch((e) => console.warn("[조회수] 못 받음 — 칸 대표를 세대수로 고른다:", e));
+        return __aptViewP;
+      }
+      // a 가 b 보다 칸 대표로 앞서는가 — 조회수 → 세대수 → id(작은 쪽: 지도를 조금 움직여도 대표가 안 바뀌게)
+      function __aptRepBetter(a, b) {
+        const va = (__aptView && __aptView[String(a.id)]) || 0;
+        const vb = (__aptView && __aptView[String(b.id)]) || 0;
+        if (va !== vb) return va > vb;
+        const ua = a.units || 0, ub = b.units || 0;
+        if (ua !== ub) return ua > ub;
+        return String(a.id) < String(b.id);
+      }
+      function __aptDeclutter(list) {
+        if (!window.map || !list.length) return list;
+        if (!__aptViewP) __aptViewLoad();
+        const z = window.map.getZoom();
+        // 신네부도 줌 15 부터는 화면 안 단지를 전부 내려준다(precision 15·15.5·16·17 실측, 2026-10-03) — 같게 맞춘다
+        if (z >= __APT_DECLUTTER_MAX_ZOOM + 1) return list;
+        const scale = (256 * Math.pow(2, z)) / __APT_CELL_PX; // 세계 좌표(px) → 칸 번호
+        const info = document.getElementById("apartmentInfo");
+        const openId = info && info.style.display !== "none" ? String(info.getAttribute("data-id") || "") : "";
+        const always = [];
+        const best = new Map();
+        for (const a of list) {
+          const id = String(a.id);
+          if ((window.__forceShowAptId && id === window.__forceShowAptId) || (openId && id === openId)) {
+            always.push(a);
+            continue;
+          }
+          const sn = Math.sin((a.lat * Math.PI) / 180);
+          const cx = Math.floor(((a.lng + 180) / 360) * scale);
+          const cy = Math.floor((0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * scale);
+          const key = cx + "_" + cy;
+          const cur = best.get(key);
+          if (!cur || __aptRepBetter(a, cur)) best.set(key, a);
+        }
+        const out = always;
+        for (const a of best.values()) if (!out.includes(a)) out.push(a);
+        return out;
+      }
+
       function updateMarkers(bounds) {
         const showApartments = document.getElementById("toggleApartments").checked;
         if (!showApartments) {
@@ -7849,7 +7915,7 @@
         const presaleKeepYm = nowYm + 3;
 
         // ▼ 여기서 시도/시군구 필터까지 적용
-        const filtered = apartmentData.filter((apartment) => {
+        const filteredAll = apartmentData.filter((apartment) => {
           const inBounds = bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng));
           // ?focus= 로 연 단지는 필터(세대수·대형·연도·분양권)와 무관하게 화면 안이면 항상 표시
           if (window.__forceShowAptId && String(apartment.id) === window.__forceShowAptId) return inBounds;
@@ -7875,7 +7941,10 @@
             if (minArea !== undefined) areaOK = minArea <= 85;
           }
           return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK && presaleOK;
-        });
+        }).filter((apartment) => !(apartment.name.includes("도시형") || apartment.name.includes("생활형"))); // 원래 그리지 않던 것 — 칸 경쟁에서도 뺀다
+
+        // 겹침 정리 — 64px 칸마다 조회수 1등만 (위 __aptDeclutter 주석)
+        const filtered = __aptDeclutter(filteredAll);
 
         // [시세보기 훅] 스냅샷 로드 트리거·300개 초과 가드 (hongbuSise.js 미로드 시 무동작)
         if (window.__siseDbHook?.beforeRender?.(filtered) === false) return;
