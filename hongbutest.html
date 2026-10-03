@@ -6608,14 +6608,15 @@
       }
       // 화면(+여유)이 걸친 칸의 상자를 받아 push(items) 로 넘긴다. 이미 받은/받는 중인 상자는 다시 받지 않는다.
       // 새로 보탠 동 수를 돌려준다.
-      async function __bgLoadView(layer, push) {
+      // pad = 화면 너비·높이 대비 사방 여유(기본 0.3). 미리 받기(__bgPrefetchAround)는 1.0 = 화면 한 장씩.
+      async function __bgLoadView(layer, push, pad = 0.3) {
         if (!window.map) return 0;
         const g = __BG[layer];
         const idx = await __bgIndex(layer);
         const size = idx.size || 0.05;
         const b = window.map.getBounds();
         const sw = b.getSW(), ne = b.getNE();
-        const padX = (ne.lng() - sw.lng()) * 0.3, padY = (ne.lat() - sw.lat()) * 0.3; // 조금 옮겨도 다시 받지 않게
+        const padX = (ne.lng() - sw.lng()) * pad, padY = (ne.lat() - sw.lat()) * pad; // 조금 옮겨도 다시 받지 않게
         const i0 = Math.floor((sw.lng() - padX) / size), i1 = Math.floor((ne.lng() + padX) / size);
         const j0 = Math.floor((sw.lat() - padY) / size), j1 = Math.floor((ne.lat() + padY) / size);
         const homes = new Set();
@@ -6654,11 +6655,11 @@
       }
 
       // 이름은 옛날 그대로지만 이제 '한 번'이 아니다 — 부를 때마다 **지금 화면**의 상자를 받아 보탠다.
-      async function loadEmdBoundaryOnce() {
+      async function loadEmdBoundaryOnce(pad) {
         if (!emdPrepared) emdPrepared = [];
         await __bgLoadView("emd", (list) => {
           for (const f of list) emdPrepared.push(f);
-        });
+        }, pad);
       }
 
       async function loadEmdPopulationOnce() {
@@ -6694,11 +6695,11 @@
       // ✅ ADM(행정동) boundary loader
       // ==============================
       // 이름은 옛날 그대로지만 이제 '한 번'이 아니다 — 부를 때마다 **지금 화면**의 격자 상자를 받아 보탠다(위 __bgLoadView).
-      async function loadAdmBoundaryOnce() {
+      async function loadAdmBoundaryOnce(pad) {
         if (!admPrepared) admPrepared = [];
         await __bgLoadView("adm", (list) => {
           for (const f of list) admPrepared.push(f);
-        });
+        }, pad);
         admLoaded = true;
       }
 
@@ -7029,9 +7030,24 @@
           drawBoundaryCanvas();
           return;
         }
+        // (2026-10-04) 받아 둔 것으로 **먼저 그리고**, 새 상자가 오면 다시 그린다 — 예전엔 새 칸 상자를 다 받을 때까지
+        // 기다렸다 그려 지도를 옮기면 경계가 뒤늦게 나타났다(사용자 보고). 그린 뒤 주변 화면 한 장씩을 미리 받아 둔다.
+        const stamp = () => __BG.emd.got.size + "|" + __BG.adm.got.size + "|" + !!sigPrepared + "|" + !!emdPopulationMap + "|" + !!admPopulationMap;
+        const before = stamp();
+        if ((emdPrepared && emdPrepared.length) || (admPrepared && admPrepared.length) || sigPrepared) drawBoundaryCanvas();
         Promise.all(loaders)
-          .then(() => drawBoundaryCanvas())
+          .then(() => {
+            if (stamp() !== before) drawBoundaryCanvas();
+            __bgPrefetchAround();
+          })
           .catch((e) => console.error("Boundary 데이터 로드 실패:", e));
+      }
+
+      // 지금 화면 사방으로 화면 한 장씩 법정동·행정동 상자를 미리 받아 둔다(그리지는 않음 — 옮겨 갔을 때 바로 그리게)
+      function __bgPrefetchAround() {
+        if (!window.map || window.map.getZoom() < 15 || __sigLockOn()) return;
+        if (isBoundaryCheckboxOn()) loadEmdBoundaryOnce(1.0).catch(() => {});
+        if (isAdminBoundaryCheckboxOn()) loadAdmBoundaryOnce(1.0).catch(() => {});
       }
 
       function scheduleEmdRedraw() {
@@ -7903,9 +7919,23 @@
 
       // ===== 시험용 줌 배지 (2026-10-03 사용자 요청 — 오른쪽 위 상시 표시) =====
       // 전체화면 단추 아래. '줌 N · 정리/전부 · 단지 수'. 지도가 다시 만들어져도 따라가도록 0.4초마다 확인한다.
+      // **평소엔 숨김**(2026-10-04 사용자 지정 — 시험용으로 살려 둠). 켜는 법: 주소에 `?zoombadge=1`, 또는 콘솔에서
+      // `__zoomBadge(true)`(이 브라우저에 기억, `__zoomBadge(false)` 로 끔).
       (function __zoomBadgeInit() {
         let last = "";
-        setInterval(() => {
+        let timer = null;
+        const want = () => {
+          if (/[?&]zoombadge=1\b/.test(location.search)) return true;
+          try { return localStorage.getItem("hb_zoomBadge") === "1"; } catch (_) { return false; }
+        };
+        window.__zoomBadge = (on) => {
+          try { on ? localStorage.setItem("hb_zoomBadge", "1") : localStorage.removeItem("hb_zoomBadge"); } catch (_) {}
+          if (on && !timer) start();
+          if (!on && timer) { clearInterval(timer); timer = null; last = ""; document.getElementById("zoomBadge")?.remove(); }
+          return !!timer;
+        };
+        if (want()) start();
+        function start() { timer = setInterval(() => {
           const mapEl = document.getElementById("map");
           if (!mapEl || !window.map || typeof window.map.getZoom !== "function") return;
           let el = document.getElementById("zoomBadge");
@@ -7928,7 +7958,7 @@
             : z <= __APT_DECLUTTER_MAX_ZOOM ? "칸 정리" : "전부";
           const txt = `줌 ${Math.round(z * 100) / 100} · ${mode} · ${n}개`;
           if (txt !== last) el.textContent = last = txt;
-        }, 400);
+        }, 400); }
       })();
 
       function updateMarkers(bounds) {
@@ -23888,10 +23918,11 @@ const originalBase64 = event.target.result;
           const ruler = S.mode === "ruler";
           const col = ruler ? RULER : "#2196F3";
           if (!S.pvLine) {
-            // 거리 미리보기: 노란 점선만으로는 밝은 지도에서 안 보여(2026-10-04 사용자 지적) 어두운 바탕선을 깔고 굵게
-            if (ruler) S.pvCase = new naver.maps.Polyline({ map: window.map, path: [S.a, pos], strokeColor: "#333333", strokeWeight: 6, strokeOpacity: 0.55, clickable: false });
+            // 거리 미리보기 (2026-10-04 사용자 지적 2회): 옅은 노란 점선은 안 보이고, 회색 바탕+노란 점선은 공사 테이프 같았다
+            // → 확정 선과 같은 모양(흰 테두리 + 노란 실선)을 조금 투명하게. 둥근 끝.
+            if (ruler) S.pvCase = new naver.maps.Polyline({ map: window.map, path: [S.a, pos], strokeColor: "#ffffff", strokeWeight: 7, strokeOpacity: 0.75, strokeLineCap: "round", clickable: false });
             S.pvLine = ruler
-              ? new naver.maps.Polyline({ map: window.map, path: [S.a, pos], strokeColor: col, strokeWeight: 4, strokeOpacity: 1, strokeStyle: "shortdash", clickable: false })
+              ? new naver.maps.Polyline({ map: window.map, path: [S.a, pos], strokeColor: col, strokeWeight: 4, strokeOpacity: 0.85, strokeLineCap: "round", clickable: false })
               : new naver.maps.Circle({ map: window.map, center: S.a, radius: km * 1000, strokeColor: col, strokeWeight: 2, strokeOpacity: 0.6, strokeStyle: "shortdash", fillColor: col, fillOpacity: 0.06, clickable: false });
             const pv = document.createElement("div");
             pv.className = "ms-ov";
@@ -24057,6 +24088,12 @@ const originalBase64 = event.target.result;
           if (Date.now() - (+menu.dataset.openedAt || 0) > 400) closeMenu();
         });
         document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeDrop(); closeMenu(); } });
+        // 메뉴 바깥을 누르면 닫는다 — 지도 위 클릭은 네이버 지도가 document 의 click 까지 올려보내지 않아 위 리스너로는
+        // 안 닫혔다(2026-10-04 사용자 보고). 캡처 단계 pointerdown 이라 지도가 삼키기 전에 받는다. 다시 우클릭하면
+        // 이 pointerdown 으로 닫히고 이어지는 rightclick 이 새 자리에 연다.
+        document.addEventListener("pointerdown", (e) => {
+          if (!menu.hidden && !menu.contains(e.target)) closeMenu();
+        }, true);
 
         // ── 패널 ──
         function ensurePanel() {
