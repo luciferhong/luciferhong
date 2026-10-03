@@ -1192,6 +1192,7 @@
       #msCard button:last-child { border-bottom: 0; }
       #msCard button:hover { background: #f3f4f6; transform: none; box-shadow: none; }
       #msCard button svg { width: 22px; height: 22px; }
+      #msCard button .ms-km { display: block; height: 22px; line-height: 22px; font-size: 16px; font-weight: 800; letter-spacing: -0.3px; }
       /* 켜진 도구는 노란 배경 — 파란 글자로는 구분이 안 됐다(2026-10-03 사용자 지정: 강남 → 거리·반경도 같게) */
       #msCard button.on,
       #msCard button.on:hover { background: #f0c000; color: #000; }
@@ -11891,49 +11892,156 @@ const originalBase64 = event.target.result;
       // ⚠ 거쳐 온 방식: 라벨째 위로 한 칸(~67px)씩 쌓기 → 더현대 서울이 한강 위·갤러리아 명품관이 압구정본점과 너무 멂.
       //   '라벨 한 줄만 비키기' 시험 후 되돌림. '로고끼리만 안 겹치게' → 라벨이 옆 로고를 덮음(더현대 라벨이 IFC몰 로고를 가림).
       // '마커 겹침 조정'(adjustMarkerOverlap, transform 기반)과는 독립이라 함께 켜져도 된다.
+      // 이름표 자리(2026-10-04 사용자 요청 "이름까지도 최대한 안 겹치게") — 로고는 그대로 두고 이름표를 로고의
+      // 아래(기본)·오른쪽·왼쪽·위 중 빈 쪽에 단다. 몸체가 로고 크기라 이름표는 absolute.
+      const __FAC_LABEL_GAP = 3;
+      const __FAC_SIDE_CSS = {
+        below: { left: "50%", right: "auto", top: "100%", bottom: "auto", transform: "translateX(-50%)" },
+        right: { left: "100%", right: "auto", top: "50%", bottom: "auto", transform: `translate(${__FAC_LABEL_GAP}px,-50%)` },
+        left: { left: "auto", right: "100%", top: "50%", bottom: "auto", transform: `translate(-${__FAC_LABEL_GAP}px,-50%)` },
+        above: { left: "50%", right: "auto", top: "auto", bottom: "100%", transform: `translate(-50%,-${__FAC_LABEL_GAP}px)` },
+      };
+      function __facLabelSide(lab, side) {
+        if (!lab || lab.dataset.side === side) return;
+        lab.dataset.side = side;
+        Object.assign(lab.style, __FAC_SIDE_CSS[side] || __FAC_SIDE_CSS.below);
+      }
+      // 로고 사각형 I 기준 이름표 사각형
+      function __facLabelRect(I, side, lw, lh) {
+        const cx = (I.x0 + I.x1) / 2, cy = (I.y0 + I.y1) / 2, g = __FAC_LABEL_GAP;
+        if (side === "right") return { x0: I.x1 + g, x1: I.x1 + g + lw, y0: cy - lh / 2, y1: cy + lh / 2 };
+        if (side === "left") return { x0: I.x0 - g - lw, x1: I.x0 - g, y0: cy - lh / 2, y1: cy + lh / 2 };
+        if (side === "above") return { x0: cx - lw / 2, x1: cx + lw / 2, y0: I.y0 - g - lh, y1: I.y0 - g };
+        return { x0: cx - lw / 2, x1: cx + lw / 2, y0: I.y1, y1: I.y1 + lh };
+      }
+
       function _declutterFacilityMarkers(entries) {
         const proj = window.map.getProjection && window.map.getProjection();
         const reset = (e) => {
+          __facLabelSide(e.el.lastChild, "below");
           if (e.dx || e.dy) { e.dx = 0; e.dy = 0; e.marker.setIcon({ content: e.el, anchor: new naver.maps.Point(e.ax || 16, e.ay || 32) }); }
         };
         if (!proj || entries.length < 2) { entries.forEach(reset); return; }
         const GAP = 2;
         const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
         const sh = (r, dx, dy) => ({ x0: r.x0 + dx, x1: r.x1 + dx, y0: r.y0 + dy, y1: r.y1 + dy });
-        // 화면 사각형. 마커 내용은 세로 flex·가운데 정렬 — 내용 왼쪽 끝 = 좌표점 - ax, 아이콘 아래 끝 = 좌표점 y,
-        // 아이콘·라벨은 각각 내용 폭의 가운데, 라벨은 아이콘 바로 아래.
+        // 화면 사각형. 몸체 = 로고(anchor = 로고 아래 가운데 = 좌표점). 이름표 크기는 자리와 무관하게 같다.
         const items = entries.map((e) => {
           const p = proj.fromCoordToOffset(e.marker.getPosition());
           const ax = e.ax || 16, iw = ax * 2, ih = e.ay || 32;
           const lab = e.el.lastChild;
           const lw = (lab && lab.offsetWidth) || Math.min(182, e.el.textContent.length * 12 + 22);
           const lh = (lab && lab.offsetHeight) || 26;
-          const w = Math.max(iw, lw);
-          const left = p.x - ax;
-          const icon = { x0: left + (w - iw) / 2, x1: left + (w + iw) / 2, y0: p.y - ih, y1: p.y };
-          const label = { x0: left + (w - lw) / 2, x1: left + (w + lw) / 2, y0: p.y, y1: p.y + lh };
-          return { e, icon, label };
+          const icon = { x0: p.x - ax, x1: p.x + ax, y0: p.y - ih, y1: p.y };
+          const label = __facLabelRect(icon, "below", lw, lh);
+          return { e, icon, label, lw, lh };
         }).sort((a, b) => b.icon.y1 - a.icon.y1 || a.icon.x0 - b.icon.x0);
-        const placed = [];
-        const conflict = (it, dx, dy) => {
-          const I = sh(it.icon, dx, dy), L = sh(it.label, dx, dy);
-          for (const q of placed) if (hit(I, q.icon)) return [I, q.icon]; // 로고끼리만 — 라벨이 덮는 건 아래 zIndex 로 해결
-          return null;
+        // (2026-10-04 사용자 지정) **이름표는 최대한 아래, 그러려고 마커가 움직여도 괜찮다 — 근처 마커가 다 같이 조금씩.**
+        // ① 다 같이 비키기: 모두 이름표 아래로 놓고, 겹친 두 마커(로고·이름표 사각형 어느 것이든)를 겹친 만큼의 **반씩**
+        //    서로 반대쪽으로 민다(덜 겹친 축 — 이름표가 넓어 대개 위아래). 겹침이 없어질 때까지 되풀이. 한 마커만 많이
+        //    움직이지 않고 이웃이 나눠 진다(사용자 제안 "근처 마크를 다 같이 움직이면 어느 하나만 많이 움직이지 않아도").
+        // ② 그래도 RELAX_MAX(90px) 넘게 밀렸거나 겹침이 남은 마커만 제자리로 되돌려, 나머지를 장애물로 두고 주변 격자 탐색
+        //    [이동 거리 + 자리 벌점(아래 0·좌우 80·위 90) + 겹침 벌점]으로 자리를 찾는다 — 정 안 되면 이름표를 옆·위로.
+        // ③ 그래도 로고끼리 겹치면 이름표 아래 + 로고를 위로만 빈 곳까지 — 로고는 반드시 보이게.
+        // 남는 '이름표가 로고를 덮는' 경우는 아래 앞뒤 순서(남쪽이 앞)로 해결.
+        // (거쳐 온 것: 로고 고정 + 이름표 네 방향 → 코스트코 양평 이름표가 옆으로 감. 한 마커씩 차례로 격자 탐색 → 잠실
+        //  롯데마트 혼자 64px. 지금 방식으로 바꿈.)
+        const RELAX_MAX = 90, RELAX_GAP = 2;
+        const rectsOf = (it) => {
+          const I = sh(it.icon, it.dx, it.dy);
+          return [I, sh(__facLabelRect(it.icon, it.side, it.lw, it.lh), it.dx, it.dy)];
         };
-        for (const it of items) {
-          let dx = 0, dy = 0; // 화면에서 옮길 양(+x 오른쪽, +y 아래)
-          for (let k = 0; k < 12; k++) {
-            const pair = conflict(it, dx, dy);
-            if (!pair) break;
-            const [a, b] = pair;
-            const moves = [[0, b.y0 - a.y1 - GAP], [0, b.y1 - a.y0 + GAP], [b.x0 - a.x1 - GAP, 0], [b.x1 - a.x0 + GAP, 0]];
-            const best = moves.reduce((m, v) => (Math.hypot(dx + v[0], dy + v[1]) < Math.hypot(dx + m[0], dy + m[1]) ? v : m));
-            dx += best[0]; dy += best[1];
+        items.forEach((it) => { it.dx = 0; it.dy = 0; it.side = "below"; });
+        const overlapsAny = (it) => {
+          const A = rectsOf(it);
+          return items.some((o) => o !== it && rectsOf(o).some((rb) => A.some((ra) => hit(ra, rb))));
+        };
+        let relaxIters = 0;
+        for (let iter = 0; iter < 150; iter++) {
+          relaxIters = iter + 1;
+          let pushed = false;
+          for (let i = 0; i < items.length; i++) {
+            for (let j = i + 1; j < items.length; j++) {
+              const a = items[i], b = items[j];
+              const A = rectsOf(a), B = rectsOf(b);
+              let done = false;
+              for (const ra of A) {
+                for (const rb of B) {
+                  if (!hit(ra, rb)) continue;
+                  const px = Math.min(ra.x1 - rb.x0, rb.x1 - ra.x0), py = Math.min(ra.y1 - rb.y0, rb.y1 - ra.y0);
+                  // 방향은 **두 마커 로고의 위치**로(사각형 쌍마다 정하면 위·옆을 오가며 끝나지 않았다 — 잠실 실측 150회).
+                  // 기본은 위아래(이름표가 넓다). 옆으로 겹친 폭이 세로 겹침의 절반도 안 될 때만 옆으로.
+                  // 같은 높이면 a(남쪽 먼저 정렬)가 아래로, b 가 위로.
+                  const ay = a.icon.y1 + a.dy, by = b.icon.y1 + b.dy, axc = a.icon.x0 + a.dx, bxc = b.icon.x0 + b.dx;
+                  if (px >= py * 0.5) {
+                    const need = ay < by ? ra.y1 - rb.y0 : rb.y1 - ra.y0; // 위 마커의 사각형 아래 끝이 아래 마커 사각형 위 끝보다 위로
+                    const s = (Math.max(need, 0) + RELAX_GAP) / 2, dir = ay < by ? -1 : 1;
+                    a.dy += dir * s; b.dy -= dir * s;
+                  } else {
+                    const need = axc < bxc ? ra.x1 - rb.x0 : rb.x1 - ra.x0;
+                    const s = (Math.max(need, 0) + RELAX_GAP) / 2, dir = axc < bxc ? -1 : 1;
+                    a.dx += dir * s; b.dx -= dir * s;
+                  }
+                  pushed = done = true;
+                  break;
+                }
+                if (done) break;
+              }
+            }
           }
-          // 사방으로 오가다 자리를 못 찾았으면(왕십리 이마트↔엔터식스 실측) 그 자리에서 **위로만** 빈 곳까지 올린다 — 로고는 반드시 보이게
-          for (let k = 0, pair; k < 40 && (pair = conflict(it, dx, dy)); k++) dy += pair[1].y0 - pair[0].y1 - GAP;
-          placed.push({ icon: sh(it.icon, dx, dy), label: sh(it.label, dx, dy), e: it.e });
-          dx = Math.round(dx); dy = Math.round(dy);
+          if (!pushed) break;
+        }
+        // ② 너무 멀리 밀렸거나 겹침이 남은 마커만 다시
+        const SIDES = [["below", 0], ["right", 80], ["left", 80], ["above", 90]];
+        const R = 96, STEP = 4;
+        const offs = [];
+        for (let x = -R; x <= R; x += STEP) for (let y = -R; y <= R; y += STEP) { const d = Math.hypot(x, y); if (d <= R) offs.push([x, y, d]); }
+        offs.sort((a, b) => a[2] - b[2]);
+        const area = (a, b) => Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+        const redo = items.filter((it) => Math.hypot(it.dx, it.dy) > RELAX_MAX || overlapsAny(it));
+        const dbg = { iters: relaxIters, redo: redo.map((it) => (it.e.el.lastChild.textContent || "").slice(0, 12) + (Math.hypot(it.dx, it.dy) > RELAX_MAX ? "(멀리)" : "(겹침)")), fallback: [] };
+        window.__facDeclutterInfo = dbg; // 콘솔 확인용
+        redo.forEach((it) => { it.dx = 0; it.dy = 0; it.redo = true; });
+        for (const it of redo) {
+          const nb = items.filter((q) => q !== it && !q.redo && Math.abs(q.icon.x0 - it.icon.x0) < 520 && Math.abs(q.icon.y0 - it.icon.y0) < 300)
+            .map((q) => { const [I, L] = rectsOf(q); return { icon: I, label: L }; });
+          let best = null;
+          for (const [side, sp] of SIDES) {
+            const L0 = __facLabelRect(it.icon, side, it.lw, it.lh);
+            for (const [ox, oy, d] of offs) {
+              const base = d + sp;
+              if (best && base >= best.cost) break; // offs 는 가까운 순 — 이보다 먼 자리는 더 볼 필요 없다
+              const I = sh(it.icon, ox, oy), L = sh(L0, ox, oy);
+              // 로고끼리 겹치는 자리는 후보에서 뺀다(로고는 반드시 보여야). 이름표 겹침은 넓이만큼 벌점.
+              if (nb.some((q) => hit(I, q.icon))) continue;
+              let cost = base;
+              for (const q of nb) {
+                cost += (area(L, q.icon) + area(I, q.label)) * 6 + area(L, q.label) * 2;
+                if (best && cost >= best.cost) break;
+              }
+              if (!best || cost < best.cost) best = { side, dx: ox, dy: oy, cost };
+            }
+          }
+          if (best) { it.side = best.side; it.dx = best.dx; it.dy = best.dy; }
+          if (!best) {
+            // ③ 반경 안에 로고가 안 겹치는 자리가 없다 → 이름표 아래, 제자리에서 위로만 빈 곳까지(왕십리 이마트↔엔터식스 실측)
+            it.side = "below"; it.dx = 0; it.dy = 0;
+            dbg.fallback.push((it.e.el.lastChild.textContent || "").slice(0, 12));
+            for (let k = 0; k < 40; k++) {
+              const I = sh(it.icon, 0, it.dy);
+              const o = nb.find((q) => hit(I, q.icon));
+              if (!o) break;
+              it.dy += o.icon.y0 - I.y1 - GAP;
+            }
+          }
+          it.redo = false; // 다음 redo 마커에는 장애물
+        }
+        const placed = [];
+        for (const it of items) {
+          const [I, L] = rectsOf(it);
+          placed.push({ icon: I, label: L, e: it.e });
+          __facLabelSide(it.e.el.lastChild, it.side);
+          const dx = Math.round(it.dx), dy = Math.round(it.dy);
           if ((it.e.dx || 0) !== dx || (it.e.dy || 0) !== dy) {
             it.e.dx = dx; it.e.dy = dy;
             it.e.marker.setIcon({ content: it.e.el, anchor: new naver.maps.Point((it.e.ax || 16) - dx, (it.e.ay || 32) - dy) });
@@ -12009,20 +12117,29 @@ const originalBase64 = event.target.result;
         const byName = facility.category === 10 &&
           __BRAND_LOGO_BY_NAME.find(([d, re]) => d === facility.description && re.test(facility.name || ""));
         const logo = facility.category === 10 && (byName ? byName[2] : __BRAND_LOGO[facility.description]);
-        const iconSrc = logo ? `images/brand/${logo}.png` : sub === "dept" ? "depart.png" : sub === "mart" ? "mart.png" : "hospital.png";
+        // 병원·마트 기본 아이콘은 원만 잘라 낸 정사각 사본(images/fac_*.png, 2026-10-04). 원본 hospital.png·mart.png 는
+        // 40×46 인데 원이 위 32줄에만 있어, 정사각 칸에 넣으면 원이 위로 쏠린 납작한 타원이 되고 오른쪽·왼쪽에 단
+        // 이름표가 원보다 낮아 보였다(사용자 지적 '씨엠병원 이름과 로고 높이가 안 맞다'). 원본은 운영 hongbu.html 이 쓴다.
+        const plainCircle = !logo && sub !== "dept";
+        const iconSrc = logo ? `images/brand/${logo}.png` : sub === "dept" ? "depart.png" : sub === "mart" ? "images/fac_mart.png" : "images/fac_hospital.png";
         const markerElement = document.createElement("div");
         markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
         const markerIcon = document.createElement("img");
         markerIcon.src = iconSrc;
         // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
         //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
-        // 상급종합병원은 종합병원과 구분(2026-10-03 사용자 확정): **아이콘만** 40px + 빨간 ★ 배지. 라벨은 종합병원과 같다
-        // ('상급' 글자·빨간 테두리는 넣었다가 같은 날 사용자 지시로 뺐다). 기준점(anchor)도 아이콘 크기에 맞춰 (20,40).
+        // 상급종합병원은 종합병원과 구분(2026-10-03 사용자 확정): **아이콘만** 크게(원 32px, 종합 26px) + 빨간 ★ 배지. 라벨은 종합병원과 같다
+        // ('상급' 글자·빨간 테두리는 넣었다가 같은 날 사용자 지시로 뺐다). 기준점(anchor)은 아이콘 크기에서 계산.
         const tertiary = sub === "tertiary";
         // 브랜드 로고는 35px(기본 아이콘 32px 의 약 1.08배, 2026-10-03 사용자 확정 — 30%·15% 를 거쳐 8% 로). window.__facLogoPx 로 바꿔 비교 가능
-        const S = tertiary ? 40 : logo ? (window.__facLogoPx || 35) : 32;
+        // 원 아이콘은 예전 화면의 원 크기에 맞춘다(32칸에 그려지던 원 ≈ 26px, 상급종합 40칸 ≈ 32px)
+        const S = tertiary ? 32 : logo ? (window.__facLogoPx || 35) : plainCircle ? 26 : 32;
         // 가로형 로고(띠 모양, pick_logos.py WIDE)는 [폭, 높이] 그대로 — 정사각에 넣으면 너무 가늘어진다
         const [IW, IH] = (logo && __BRAND_WIDE[logo]) || [S, S];
+        // ⚠ (2026-10-04) 마커 몸체 = 로고 크기, 이름표는 몸체 밖에 떠 있다(absolute, __facLabelSide 가 아래·오른쪽·왼쪽·위 중 고름).
+        //   예전엔 세로 flex 로 몸체 폭이 이름표 폭(최대 140px)이었는데 anchor 는 로고 폭의 절반이라, **로고가 실제 위치보다
+        //   (이름표폭-로고폭)/2 만큼 오른쪽에** 그려졌다(실측 40~65px). 이제 anchor (IW/2, IH) = 로고 아래 가운데 = 좌표점.
+        markerElement.style = `position:relative; width:${IW}px; height:${IH}px;`;
         markerIcon.style = `width: ${IW}px; height: ${IH}px; display:block;`;
         const iconBox = document.createElement("div");
         iconBox.style = `position:relative; width:${IW}px; height:${IH}px;`;
@@ -12034,7 +12151,7 @@ const originalBase64 = event.target.result;
           iconBox.appendChild(star);
         }
         const infoBox = document.createElement("div");
-        infoBox.style = "background:white;border:1px solid gray;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        infoBox.style = "position:absolute;background:white;border:1px solid gray;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;text-align:center;box-sizing:content-box;";
         infoBox.textContent = facility.category === 10
           ? `${__BRAND_LABEL[facility.description] || facility.description} (${facility.name})` : facility.name;
         if (tertiary) infoBox.style.maxWidth = "180px"; // 대학병원 이름이 길다
@@ -12057,6 +12174,7 @@ const originalBase64 = event.target.result;
         });
         markerElement.appendChild(iconBox);
         markerElement.appendChild(infoBox);
+        __facLabelSide(infoBox, "below");
         const ax = IW / 2, ay = IH;
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(facility.lat, facility.lng),
@@ -23798,7 +23916,7 @@ const originalBase64 = event.target.result;
             ";font-size:12.5px;font-weight:700;padding:3px 6px 3px 9px;border-radius:11px;white-space:nowrap;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.28);";
           const t = document.createElement("span");
           t.textContent = text;
-          if (onText) { t.style.cursor = "pointer"; t.title = "눌러서 색 바꾸기"; }
+          if (onText) { t.style.cursor = "pointer"; t.title = "눌러서(또는 우클릭) 색 바꾸기"; }
           const x = document.createElement("span");
           x.textContent = "✕";
           x.title = "이 측정 지우기";
@@ -23808,6 +23926,7 @@ const originalBase64 = event.target.result;
           ["mousedown", "pointerdown", "touchstart", "click", "dblclick"].forEach((ev) => w.addEventListener(ev, (e) => e.stopPropagation()));
           x.addEventListener("click", onDel);
           if (onText) t.addEventListener("click", (e) => onText(e, w));
+          if (onText) w.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); onText(e, w); });
           return w;
         }
 
@@ -23815,7 +23934,8 @@ const originalBase64 = event.target.result;
         const ICON = {
           ruler: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="10" rx="1.5"/><path d="M6.5 7v4M10 7v2.6M13.5 7v4M17 7v2.6"/></svg>',
           radius: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 12 18 6.5"/></svg>',
-          gangnam: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="14" rx="3"/><path d="M5 10.5h14M9 14h.01M15 14h.01M8.5 21l2-4M15.5 21l-2-4"/></svg>',
+          // 강남 = 강남역까지 거리 → 아이콘 대신 'km' 글자(2026-10-04 사용자 지정, 예전엔 지하철 그림)
+          gangnam: '<b class="ms-km">km</b>',
           clear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>',
         };
         function ensureCard() {
@@ -24007,23 +24127,99 @@ const originalBase64 = event.target.result;
           });
           pop.appendChild(b);
         });
+        // 직접 고르기 막대(강남거리지도와 같다, 2026-10-04) — 끌면서 바로 칠하고 팔레트는 열어 둔다
+        const custom = document.createElement("input");
+        custom.type = "color";
+        custom.title = "직접 색상 선택";
+        custom.style.cssText = "grid-column:1 / -1;width:100%;height:28px;padding:0;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;";
+        custom.addEventListener("input", () => {
+          const it = S.colorTarget;
+          if (!it) return;
+          it.color = custom.value;
+          it.circle.setOptions({ strokeColor: custom.value, fillColor: custom.value });
+          it.labelEl.style.background = custom.value;
+        });
+        pop.appendChild(custom);
         ["mousedown", "pointerdown", "touchstart", "click"].forEach((ev) => pop.addEventListener(ev, (e) => e.stopPropagation()));
+        function placePop(x, y) {
+          const w = pop.offsetWidth, h = pop.offsetHeight;
+          if (x + w > window.innerWidth - 8) x = window.innerWidth - w - 8;
+          if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+          pop.style.left = Math.max(8, Math.round(x)) + "px";
+          pop.style.top = Math.max(8, Math.round(y)) + "px";
+        }
         function openPop(it, anchorEl) {
           S.colorTarget = it;
+          custom.value = it.color || COLORS[0];
           pop.hidden = false;
           const r = anchorEl.getBoundingClientRect();
-          const w = pop.offsetWidth, h = pop.offsetHeight;
-          let x = Math.round(r.left), y = Math.round(r.bottom + 6);
-          if (x + w > window.innerWidth - 8) x = window.innerWidth - w - 8;
-          if (y + h > window.innerHeight - 8) y = Math.round(r.top - h - 6);
-          pop.style.left = Math.max(8, x) + "px";
-          pop.style.top = Math.max(8, y) + "px";
+          const h = pop.offsetHeight;
+          const below = r.bottom + 6 + h <= window.innerHeight - 8;
+          placePop(r.left, below ? r.bottom + 6 : r.top - h - 6);
         }
+        function openPopAt(it, x, y) {
+          S.colorTarget = it;
+          custom.value = it.color || COLORS[0];
+          pop.hidden = false;
+          placePop(x + 4, y + 4);
+        }
+        // 반경 원 **안쪽**을 우클릭하면 색 팔레트(2026-10-04 사용자 지정 "원 안은 길찾기 대신 색상창") — 강남거리지도와 같다.
+        // 업무지구 길찾기·우클릭 1km 원·강남 지점 등록보다 먼저 받아야 해서 문서 **캡처 단계**의 pointerdown 에서 판정하고,
+        // 잡았으면 이어지는 mousedown·mouseup·contextmenu 까지 지도로 가지 않게 막는다. 원이 겹치면 가장 작은 원.
+        // 측정 중(S.mode)·경로/면적 그리는 중에는 하지 않는다(그때 우클릭은 각자의 뜻이 있다).
+        function radiusAtClient(cx, cy) {
+          const mapEl = document.getElementById("map");
+          if (!window.map || !mapEl) return null;
+          const rs = S.items.filter((it) => it.kind === "radius");
+          if (!rs.length) return null;
+          const mr = mapEl.getBoundingClientRect();
+          const b = window.map.getBounds(), sw = b.getSW(), ne = b.getNE();
+          const my = (lat) => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+          const toXY = (lat, lng) => [mr.left + ((lng - sw.lng()) / (ne.lng() - sw.lng())) * mr.width,
+            mr.top + ((my(ne.lat()) - my(lat)) / (my(ne.lat()) - my(sw.lat()))) * mr.height];
+          let best = null;
+          for (const it of rs) {
+            const c = it.circle.getCenter();
+            const [px, py] = toXY(c.lat(), c.lng());
+            // 반경 px = 중심에서 동쪽으로 반경만큼 간 점까지의 화면 거리
+            const dLng = (it.circle.getRadius() / (111320 * Math.cos((c.lat() * Math.PI) / 180)));
+            const rpx = Math.abs(toXY(c.lat(), c.lng() + dLng)[0] - px);
+            const d = Math.hypot(cx - px, cy - py);
+            if (d <= rpx + 4 && (!best || rpx < best.rpx)) best = { it, rpx };
+          }
+          return best && best.it;
+        }
+        let ctxUntil = 0;
+        document.addEventListener("pointerdown", (e) => {
+          if (e.button !== 2 || S.mode || drawing()) return;
+          const mapEl = document.getElementById("map");
+          if (!mapEl || !mapEl.contains(e.target) || e.target.closest("#msCard,#gnPanel")) return;
+          const it = radiusAtClient(e.clientX, e.clientY);
+          if (!it) return;
+          e.stopPropagation();
+          e.preventDefault();
+          ctxUntil = Date.now() + 1000;
+          openPopAt(it, e.clientX, e.clientY);
+        }, true);
+        ["mousedown", "mouseup", "pointerup", "contextmenu", "auxclick"].forEach((ev) => document.addEventListener(ev, (e) => {
+          if (Date.now() >= ctxUntil) return;
+          if (ev !== "contextmenu" && e.button !== 2) return;
+          e.stopPropagation();
+          e.preventDefault();
+          if (ev === "contextmenu") ctxUntil = 0;
+        }, true));
         function closePop() {
           pop.hidden = true;
           S.colorTarget = null;
         }
         document.addEventListener("click", () => { if (!pop.hidden) closePop(); });
+        // 팔레트 바깥을 누르면 닫는다 — 지도 위 클릭은 네이버 지도가 document 의 click 까지 올려보내지 않아 위로는 안 닫혔다
+        // (2026-10-04 사용자 지적). 캡처 단계 pointerdown. 방금 우클릭으로 연 그 누름(ctxUntil 안)은 건너뛴다.
+        document.addEventListener("pointerdown", (e) => {
+          if (pop.hidden || pop.contains(e.target)) return;
+          if (Date.now() < ctxUntil && e.button === 2) return;
+          closePop();
+        }, true);
 
         // ── 막대 단추·키 ──
         el("msBarCancel")?.addEventListener("click", stop);
