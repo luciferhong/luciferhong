@@ -1327,6 +1327,10 @@
          동기화 설정 163 / 로그아웃 185 처럼 어긋나던 것을 없앤다 — 2026-10-01 실측) */
       #controls .tb-panel .tb-row.tb-even { display: grid; grid-template-columns: 1fr 1fr; }
       #controls .tb-panel .tb-row.tb-even > * { min-width: 0; width: 100%; }
+      /* 환경 하위 두 줄(백화점·쇼핑몰/대형마트, 상급종합병원/종합병원)은 **같은 2칸 격자** — flex 로 두면
+         글자 길이대로 나눠져 둘째 칸 시작점이 줄마다 어긋났다(2026-10-03 사용자 지적) */
+      #controls .tb-panel #facGroup > .tb-row { display: grid; grid-template-columns: 1fr 1fr; }
+      #controls .tb-panel #facGroup > .tb-row > * { min-width: 0; }
       #controls .tb-panel .tb-row > span > .tb-item { width: 100%; }
       /* 드라이브 배지·상태는 제 한 줄을 쓴다 — 폰에서 2열 격자의 한 칸을 차지해
          '동기화 설정' 옆에 떡하니 앉아 있었다(2026-10-01 사용자 지적) */
@@ -1545,6 +1549,8 @@
         /* 경계 묶음도 2열 — 딸린 '단위'와 '하이라이트'가 한 줄에 들어간다 */
         #boundaryGroup { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
         #boundaryGroup > .tb-row { grid-column: 1 / -1; }
+        /* 환경 묶음 — 하위 두 줄은 두 칸을 다 쓴다(묶음 span 이 contents 라 .tb-sec > .tb-row 규칙이 안 걸린다) */
+        #facGroup > .tb-row { grid-column: 1 / -1; }
         /* ⚠ 폰에서도 줄은 flex 그대로 둔다 (2026-10-01). 격자(1fr 1fr)로 잡았더니 칸이
            글자보다 좁아져도 그 자리에서 **줄바꿈**됐다. flex + min-width: max-content 면
            안 들어갈 때 다음 줄로 내려간다. 세로 틈만 0 으로. */
@@ -3176,10 +3182,22 @@
         </div>
         <div class="tb-sec">
           <div class="tb-sec-t">생활</div>
-          <div class="tb-row">
+          <!-- 환경 묶음 (2026-10-03 사용자 요청) — 하위 4개는 '환경' 을 켜야 활성.
+               분류는 facility.json 의 `sub`(dept·mart·tertiary·general, _tools/facility_crawl 가 붙인다).
+               ⚠ 하위는 기본 켜짐이다. '레이어 전부 끄기' 가 하위까지 끄므로, 환경을 다시 켤 때
+                 하위가 전부 꺼져 있으면 전부 다시 켠다(__updateFacSubVis). -->
+          <span id="facGroup" class="tb-sub">
             <label><input type="checkbox" id="toggleFacilities" />환경</label>
-            <label><input type="checkbox" id="toggleStarbucks" />스벅</label>
-          </div>
+            <div class="tb-row">
+              <label class="tb-child fac-child" style="opacity:0.45" title="환경을 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleFacDept" checked />백화점·쇼핑몰</label>
+              <label class="tb-child fac-child" style="opacity:0.45" title="환경을 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleFacMart" checked />대형마트</label>
+            </div>
+            <div class="tb-row">
+              <label class="tb-child fac-child" style="opacity:0.45" title="환경을 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleFacTertiary" checked />상급종합병원</label>
+              <label class="tb-child fac-child" style="opacity:0.45" title="환경을 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleFacGeneral" checked />종합병원</label>
+            </div>
+          </span>
+          <label><input type="checkbox" id="toggleStarbucks" />스벅</label>
         </div>
         <!-- ── 배경 (2026-09-30 사용자 요청: "배경을 자주 바꿀 일이 없다. 생활과 경계 사이에 넣어줘")
              툴바의 [배경] 단추를 없애고 이 구획으로 옮겼다.
@@ -11253,63 +11271,190 @@ const originalBase64 = event.target.result;
         }
       }
 
-      // 시설 마커끼리 라벨이 겹치면(같은 건물·인접 건물) 위쪽 마커를 필요한 만큼 위로 올려 모두 보이게 한다(2026-10-03 사용자 요청).
-      // 좌표는 그대로 두고 anchor 만 바꾼다 — 화면 픽셀 기준이라 줌마다 다시 계산(idle → updateFacilityMarkers).
-      // 남쪽(화면 아래) 마커가 제자리, 그 위에 겹치는 마커가 차례로 올라간다. ⚠ 고정 순서로 쌓으면 북쪽 마커 위로
-      //   다시 올라가 겹친다(왕십리 이마트/엔터식스 실측) — 반드시 화면 y 순서로 배치.
+      // 시설 마커 겹침 해소(2026-10-03 사용자 확정): **로고(아이콘)는 무조건 보여야 한다. 원래 위치에서 최소 이동.**
+      // - 라벨은 자기 아이콘 **아래**에 달리므로, 라벨이 덮을 수 있는 건 자기보다 남쪽(화면 아래) 마커의 로고뿐이다.
+      //   → **남쪽 마커일수록 앞(zIndex 큼)에 그린다.** 그러면 '라벨이 로고를 덮는' 경우는 옮기지 않고 앞뒤 순서로 해결된다
+      //   (사용자 제안: "롯데백화점 로고가 보라매병원보다 위로 나오면 굳이 옮기지 않아도 된다").
+      // - 위치는 **로고끼리 겹칠 때만** 옮긴다. 위·아래·왼쪽·오른쪽 중 총 이동이 가장 짧은 쪽으로 상대에 딱 붙을 만큼(+GAP).
+      //   라벨끼리 겹치는 것은 괜찮다.
+      // - 좌표는 그대로, anchor 만 바꾼다. 화면 픽셀 기준이라 줌마다 다시 계산(idle → updateFacilityMarkers).
+      // ⚠ 거쳐 온 방식: 라벨째 위로 한 칸(~67px)씩 쌓기 → 더현대 서울이 한강 위·갤러리아 명품관이 압구정본점과 너무 멂.
+      //   '라벨 한 줄만 비키기' 시험 후 되돌림. '로고끼리만 안 겹치게' → 라벨이 옆 로고를 덮음(더현대 라벨이 IFC몰 로고를 가림).
       // '마커 겹침 조정'(adjustMarkerOverlap, transform 기반)과는 독립이라 함께 켜져도 된다.
       function _declutterFacilityMarkers(entries) {
         const proj = window.map.getProjection && window.map.getProjection();
-        if (!proj || entries.length < 2) {
-          entries.forEach((e) => { if (e.dy) { e.dy = 0; e.marker.setIcon({ content: e.el, anchor: new naver.maps.Point(16, 32) }); } });
-          return;
-        }
-        const H = 62; // 아이콘 32 + 라벨 ~28 + 여백
+        const reset = (e) => {
+          if (e.dx || e.dy) { e.dx = 0; e.dy = 0; e.marker.setIcon({ content: e.el, anchor: new naver.maps.Point(e.ax || 16, e.ay || 32) }); }
+        };
+        if (!proj || entries.length < 2) { entries.forEach(reset); return; }
+        const GAP = 2;
+        const hit = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+        const sh = (r, dx, dy) => ({ x0: r.x0 + dx, x1: r.x1 + dx, y0: r.y0 + dy, y1: r.y1 + dy });
+        // 화면 사각형. 마커 내용은 세로 flex·가운데 정렬 — 내용 왼쪽 끝 = 좌표점 - ax, 아이콘 아래 끝 = 좌표점 y,
+        // 아이콘·라벨은 각각 내용 폭의 가운데, 라벨은 아이콘 바로 아래.
         const items = entries.map((e) => {
           const p = proj.fromCoordToOffset(e.marker.getPosition());
-          const w = e.el.offsetWidth || Math.min(162, e.el.textContent.length * 12 + 22);
-          return { e, x: p.x - 16, y: p.y, w };
-        }).sort((a, b) => b.y - a.y || a.x - b.x);
+          const ax = e.ax || 16, iw = ax * 2, ih = e.ay || 32;
+          const lab = e.el.lastChild;
+          const lw = (lab && lab.offsetWidth) || Math.min(182, e.el.textContent.length * 12 + 22);
+          const lh = (lab && lab.offsetHeight) || 26;
+          const w = Math.max(iw, lw);
+          const left = p.x - ax;
+          const icon = { x0: left + (w - iw) / 2, x1: left + (w + iw) / 2, y0: p.y - ih, y1: p.y };
+          const label = { x0: left + (w - lw) / 2, x1: left + (w + lw) / 2, y0: p.y, y1: p.y + lh };
+          return { e, icon, label };
+        }).sort((a, b) => b.icon.y1 - a.icon.y1 || a.icon.x0 - b.icon.x0);
         const placed = [];
+        const conflict = (it, dx, dy) => {
+          const I = sh(it.icon, dx, dy), L = sh(it.label, dx, dy);
+          for (const q of placed) if (hit(I, q.icon)) return [I, q.icon]; // 로고끼리만 — 라벨이 덮는 건 아래 zIndex 로 해결
+          return null;
+        };
         for (const it of items) {
-          let dy = 0;
-          for (let k = 0; k < 10; k++) {
-            const top = it.y - dy;
-            const hits = placed.filter((q) => it.x < q.x + q.w && q.x < it.x + it.w && Math.abs(top - q.top) < H);
-            if (!hits.length) break;
-            dy = Math.max(...hits.map((q) => it.y - q.top + H));
+          let dx = 0, dy = 0; // 화면에서 옮길 양(+x 오른쪽, +y 아래)
+          for (let k = 0; k < 12; k++) {
+            const pair = conflict(it, dx, dy);
+            if (!pair) break;
+            const [a, b] = pair;
+            const moves = [[0, b.y0 - a.y1 - GAP], [0, b.y1 - a.y0 + GAP], [b.x0 - a.x1 - GAP, 0], [b.x1 - a.x0 + GAP, 0]];
+            const best = moves.reduce((m, v) => (Math.hypot(dx + v[0], dy + v[1]) < Math.hypot(dx + m[0], dy + m[1]) ? v : m));
+            dx += best[0]; dy += best[1];
           }
-          placed.push({ x: it.x, w: it.w, top: it.y - dy });
-          if ((it.e.dy || 0) !== dy) {
-            it.e.dy = dy;
-            it.e.marker.setIcon({ content: it.e.el, anchor: new naver.maps.Point(16, 32 + dy) });
+          // 사방으로 오가다 자리를 못 찾았으면(왕십리 이마트↔엔터식스 실측) 그 자리에서 **위로만** 빈 곳까지 올린다 — 로고는 반드시 보이게
+          for (let k = 0, pair; k < 40 && (pair = conflict(it, dx, dy)); k++) dy += pair[1].y0 - pair[0].y1 - GAP;
+          placed.push({ icon: sh(it.icon, dx, dy), label: sh(it.label, dx, dy), e: it.e });
+          dx = Math.round(dx); dy = Math.round(dy);
+          if ((it.e.dx || 0) !== dx || (it.e.dy || 0) !== dy) {
+            it.e.dx = dx; it.e.dy = dy;
+            it.e.marker.setIcon({ content: it.e.el, anchor: new naver.maps.Point((it.e.ax || 16) - dx, (it.e.ay || 32) - dy) });
           }
         }
+        // 앞뒤 순서: 옮긴 뒤의 로고 아래 끝이 화면에서 아래(남쪽)일수록 앞에. 시설 마커끼리만의 상대 순서라 작은 수(1~n)를 쓴다.
+        placed.slice().sort((a, b) => a.icon.y1 - b.icon.y1 || a.icon.x0 - b.icon.x0)
+          .forEach((q, i) => { if (q.e.z !== i + 1) { q.e.z = i + 1; q.e.marker.setZIndex(i + 1); } });
       }
 
+      // 환경 하위 분류(2026-10-03) — facility.json 의 sub 가 없던 옛 데이터(캐시)도 description 으로 추정한다
+      const __FAC_SUB_CB = { dept: "toggleFacDept", mart: "toggleFacMart", tertiary: "toggleFacTertiary", general: "toggleFacGeneral" };
+      function __facSub(f) {
+        if (f.sub) return f.sub;
+        if (f.category === 9) return f.description === "상급종합병원" ? "tertiary" : "general";
+        return /백화점|아울렛|몰|스타필드|엔터식스|AK|이랜드|리빙파워/.test(f.description || "") ? "dept" : "mart";
+      }
+      function __facShow(f) {
+        const cb = document.getElementById(__FAC_SUB_CB[__facSub(f)]);
+        return !cb || cb.checked;
+      }
+      function __updateFacSubVis(fromParent) {
+        const on = !!document.getElementById("toggleFacilities")?.checked;
+        const cbs = Object.values(__FAC_SUB_CB).map((id) => document.getElementById(id)).filter(Boolean);
+        // 환경을 켰는데 하위가 전부 꺼져 있으면(레이어 전부 끄기 뒤) 전부 다시 켠다 — 안 그러면 켜도 아무것도 안 보인다
+        if (fromParent && on && cbs.length && cbs.every((c) => !c.checked)) cbs.forEach((c) => { c.checked = true; });
+        cbs.forEach((c) => {
+          c.disabled = !on;
+          const lab = c.closest("label");
+          if (lab) { lab.style.opacity = on ? "" : "0.45"; lab.title = on ? "" : "환경을 켜야 사용할 수 있습니다"; }
+        });
+      }
+      document.addEventListener("DOMContentLoaded", () => {
+        try {
+          __updateFacSubVis(false);
+          document.getElementById("toggleFacilities")?.addEventListener("change", () => __updateFacSubVis(true));
+          Object.values(__FAC_SUB_CB).forEach((id) =>
+            document.getElementById(id)?.addEventListener("change", () => updateFacilityMarkers()));
+        } catch (e) {}
+      });
+      setTimeout(() => { try { __updateFacSubVis(false); } catch (e) {} }, 1500);
+
+      // 브랜드 로고(2026-10-03 사용자 요청) — images/brand/<key>.png (64px, _tools/facility_crawl/pick_logos.py 가 만든다).
+      // 로고를 못 구한 BIFC몰·리빙파워센터는 공통 빌딩 아이콘(building). 표에 없는 새 브랜드는 기본 쇼핑백·카트. AK& 는 AK플라자, 뉴코아·동아는 이랜드 공통 e.
+      const __BRAND_LOGO = {
+        // 롯데 정리(2026-10-03 사용자 확정): 프리미엄아울렛은 롯데아울렛에, 롯데월드몰은 롯데몰에 통합(데이터 description 도 통합).
+        // 옛 이름 두 줄은 캐시된 옛 facility.json 대비.
+        "롯데백화점": "lotte_dept", "롯데아울렛": "lotte_outlet", "롯데프리미엄아울렛": "lotte_outlet", "롯데몰": "lotte_worldmall",
+        "롯데월드몰": "lotte_worldmall", "롯데마트": "lottemart", "롯데맥스": "lottemaxx",
+        "신세계백화점": "shinsegae", "신세계프리미엄아울렛": "ssg_outlet", "스타필드": "starfield", "이마트": "emart", "이마트트레이더스": "traders",
+        "현대백화점": "hyundai_dept", "현대프리미엄아울렛": "hyundai_outlets", "현대시티아울렛": "hyundai_outlets",
+        "갤러리아백화점": "galleria", "AK플라자": "ak", "AK&": "ak", "홈플러스": "homeplus", "코스트코": "costco",
+        "이케아": "ikea", "메가마트": "megamart", "엔터식스": "enter6", "아이파크몰": "iparkmall", "IFC몰": "ifcmall", "GIFC몰": "gifcmall", "BIFC몰": "building", "리빙파워센터": "building",
+        "이랜드리테일(nc)": "nc", "이랜드리테일(2001)": "2001", "이랜드리테일(뉴코아)": "eland", "이랜드리테일(동아)": "eland",
+      };
+      // 라벨에만 쓰는 짧은 브랜드명(2026-10-03 사용자 확정 — 라벨 폭 140px 에서 '…' 로 잘리는 것 줄이기).
+      // ⚠ 데이터의 description 은 그대로 둔다(로고·하위 분류·수집 도구가 그 이름으로 연결된다).
+      const __BRAND_LABEL = {
+        "이랜드리테일(nc)": "NC백화점", "이랜드리테일(뉴코아)": "뉴코아", "이랜드리테일(2001)": "2001아울렛",
+        "이랜드리테일(동아)": "동아백화점", "이마트트레이더스": "트레이더스",
+      };
+      // 지점명으로 갈리는 로고 [브랜드(description), 지점명 정규식, key] — 사용자 지정(2026-10-03)
+      const __BRAND_LOGO_BY_NAME = [
+        ["현대백화점", /^더현대/, "thehyundai"],        // 더현대 서울·대구
+        // (신세계백화점 타임스퀘어점은 타임스퀘어 로고로 했다가 같은 날 사용자 지시로 신세계 로고로 되돌림)
+      ];
+      // 가로형 로고의 화면 크기 [폭, 높이] — 파일은 3배(pick_logos.py 가 출력에 알려 준다)
+      const __BRAND_WIDE = {}; // 현대백화점 띠(59×16)를 넣었다가 "높이가 낮다"는 지적으로 정사각으로 되돌림(2026-10-03)
+
       function _buildFacilityMarkerEntry(facility) {
-        const iconSrc = facility.category === 10
-          ? (facility.description.includes("백화점") ? "depart.png" : "mart.png")
-          : facility.category === 9 ? "hospital.png" : "default.png";
+        const sub = __facSub(facility);
+        // 같은 브랜드 안에서 지점명으로 갈리는 로고(__BRAND_LOGO_BY_NAME) → 없으면 브랜드 로고
+        const byName = facility.category === 10 &&
+          __BRAND_LOGO_BY_NAME.find(([d, re]) => d === facility.description && re.test(facility.name || ""));
+        const logo = facility.category === 10 && (byName ? byName[2] : __BRAND_LOGO[facility.description]);
+        const iconSrc = logo ? `images/brand/${logo}.png` : sub === "dept" ? "depart.png" : sub === "mart" ? "mart.png" : "hospital.png";
         const markerElement = document.createElement("div");
         markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
         const markerIcon = document.createElement("img");
         markerIcon.src = iconSrc;
         // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
         //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
-        markerIcon.style = "width: 32px; height: 32px;";
+        // 상급종합병원은 종합병원과 구분(2026-10-03 사용자 확정): **아이콘만** 40px + 빨간 ★ 배지. 라벨은 종합병원과 같다
+        // ('상급' 글자·빨간 테두리는 넣었다가 같은 날 사용자 지시로 뺐다). 기준점(anchor)도 아이콘 크기에 맞춰 (20,40).
+        const tertiary = sub === "tertiary";
+        // 브랜드 로고는 35px(기본 아이콘 32px 의 약 1.08배, 2026-10-03 사용자 확정 — 30%·15% 를 거쳐 8% 로). window.__facLogoPx 로 바꿔 비교 가능
+        const S = tertiary ? 40 : logo ? (window.__facLogoPx || 35) : 32;
+        // 가로형 로고(띠 모양, pick_logos.py WIDE)는 [폭, 높이] 그대로 — 정사각에 넣으면 너무 가늘어진다
+        const [IW, IH] = (logo && __BRAND_WIDE[logo]) || [S, S];
+        markerIcon.style = `width: ${IW}px; height: ${IH}px; display:block;`;
+        const iconBox = document.createElement("div");
+        iconBox.style = `position:relative; width:${IW}px; height:${IH}px;`;
+        iconBox.appendChild(markerIcon);
+        if (tertiary) {
+          const star = document.createElement("span");
+          star.textContent = "★";
+          star.style = "position:absolute;top:-4px;right:-7px;width:17px;height:17px;border-radius:50%;background:#dc2626;color:#fff;border:1.5px solid #fff;font-size:11px;line-height:16px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,0.35);";
+          iconBox.appendChild(star);
+        }
         const infoBox = document.createElement("div");
         infoBox.style = "background:white;border:1px solid gray;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;text-align:center;";
-        infoBox.textContent = facility.category === 10 ? `${facility.description} (${facility.name})` : facility.name;
-        markerElement.appendChild(markerIcon);
+        infoBox.textContent = facility.category === 10
+          ? `${__BRAND_LABEL[facility.description] || facility.description} (${facility.name})` : facility.name;
+        if (tertiary) infoBox.style.maxWidth = "180px"; // 대학병원 이름이 길다
+        // 이름이 길어 '…' 로 잘리면 마우스를 올렸을 때 전체 이름을 펼친다(2026-10-03 사용자 요청, 환경 마커 전체).
+        // 펼친 동안은 마커를 맨 앞으로 — 옆 마커에 가리지 않게. title 은 터치·접근성용 보조.
+        infoBox.title = infoBox.textContent;
+        markerElement.addEventListener("mouseenter", () => {
+          if (infoBox.scrollWidth <= infoBox.clientWidth) return;
+          infoBox.dataset.mw = infoBox.style.maxWidth;
+          infoBox.style.maxWidth = "none";
+          const host = markerElement.parentElement;
+          if (host) { infoBox.dataset.z = host.style.zIndex; host.style.zIndex = "100000"; }
+        });
+        markerElement.addEventListener("mouseleave", () => {
+          if (infoBox.dataset.mw === undefined) return;
+          infoBox.style.maxWidth = infoBox.dataset.mw;
+          delete infoBox.dataset.mw;
+          const host = markerElement.parentElement;
+          if (host && infoBox.dataset.z !== undefined) { host.style.zIndex = infoBox.dataset.z; delete infoBox.dataset.z; }
+        });
+        markerElement.appendChild(iconBox);
         markerElement.appendChild(infoBox);
+        const ax = IW / 2, ay = IH;
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(facility.lat, facility.lng),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(ax, ay) },
         });
         addMarkerRightClickEvent(marker, markerElement);
-        return { marker, lat: facility.lat, lng: facility.lng, el: markerElement, dy: 0 };
+        return { marker, lat: facility.lat, lng: facility.lng, el: markerElement, dy: 0, f: facility, ax, ay };
       }
 
       async function rebuildFacilityPool() {
@@ -11336,7 +11481,7 @@ const originalBase64 = event.target.result;
           if (!window.__facilityMarkerPool) { await rebuildFacilityPool(); }
           const shown = [];
           window.__facilityMarkerPool.forEach((entry) => {
-            const on = bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng));
+            const on = __facShow(entry.f) && bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng));
             entry.marker.setMap(on ? window.map : null);
             if (on) shown.push(entry);
           });
@@ -11346,6 +11491,7 @@ const originalBase64 = event.target.result;
           const visibleKeys = new Set();
           const toShow = [];
           for (const facility of window.facilityData) {
+            if (!__facShow(facility)) continue;
             if (!bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng))) continue;
             const key = `${facility.name}|${facility.lat}|${facility.lng}`;
             visibleKeys.add(key);
