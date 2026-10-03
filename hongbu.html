@@ -3241,6 +3241,10 @@
               <select id="boundaryLevelSel" style="font-size:11px;padding:1px 2px;"><option value="auto">자동</option><option value="sgg">시군구</option></select>
             </label>
             <label id="sggHighlightWrap" class="tb-child" style="opacity:0.45" title="법정동경계나 행정동경계를 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleSggHighlight" />하이라이트</label>
+            <!-- 배경 흐리게 (2026-10-03 사용자 요청 — 카카오맵 법정경계처럼 바탕 지도만 흐리게, 흰 막 30%)
+                 기본 체크(처음엔 켜짐). 그 뒤로는 uiState_v1 이 사용자가 바꾼 값을 저장·복원한다 —
+                 applyUIState 는 저장된 키만 되돌리므로, 이 키가 없는 기존 사용자도 처음엔 켜진 상태로 시작한다. -->
+            <label id="mapVeilWrap" class="tb-child" style="opacity:0.45" title="법정동경계나 행정동경계를 켜야 사용할 수 있습니다"><input type="checkbox" id="toggleMapVeil" checked />배경 흐리게</label>
           </span>
           <label>🏢 아파트 경계
             <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
@@ -5663,6 +5667,34 @@
       }
       const DIM_COLOR = "rgba(0,0,0,0.35)";
 
+      // [배경 흐리게] (2026-10-03 사용자 요청) — 경계(법정동/행정동)가 켜져 있고 체크되면 바탕 지도 타일 위에 흰 막 20% 를 깐다.
+      // 위치: 지도 내부 타일 층 위 · 경계 캔버스(z50)·마커 묶음(z100) 아래(z40) → 바탕만 흐려지고 경계선·마커·폴리곤은 선명.
+      //   (_boundaryCanvasHost 와 같은 DIV — 드래그 때 transform 이 안 걸려 화면에 고정된 막 하나로 충분하다)
+      // 세기는 카카오맵 법정경계보다 연하게: 35%·20% 시험판 → 20% 로 넣었다가 "너무 약하다" 로 30% 확정(2026-10-03).
+      const __MAP_VEIL_ALPHA = 0.3;
+      function __syncMapVeil() {
+        try {
+          const cb = document.getElementById("toggleMapVeil");
+          const on = !!(cb && cb.checked) && __hlBoundaryOn();
+          const pane = window.map && window.map.getPanes && window.map.getPanes().overlayLayer;
+          const overlayBox = pane && pane.parentElement;
+          const host = overlayBox && overlayBox.parentElement;
+          let v = document.getElementById("__mapVeil");
+          if (!on) { if (v) v.style.display = "none"; return; }
+          if (!host) return;
+          if (!v) {
+            v = document.createElement("div");
+            v.id = "__mapVeil";
+            v.style.cssText = `position:absolute;left:-10000px;top:-10000px;width:20000px;height:20000px;pointer-events:none;z-index:40;background:rgba(255,255,255,${__MAP_VEIL_ALPHA});`;
+            host.insertBefore(v, overlayBox);
+          }
+          v.style.display = "";
+        } catch (e) {}
+      }
+      document.addEventListener("DOMContentLoaded", () => {
+        document.getElementById("toggleMapVeil")?.addEventListener("change", __syncMapVeil);
+      });
+      setTimeout(__syncMapVeil, 4000); // uiState 가 '켜짐' 으로 복원됐는데 그때 지도가 아직 없었을 때 대비
       // 하이라이트는 법정동경계·행정동경계 중 하나라도 켜져 있고 [하이라이트] 체크가 켜졌을 때만 동작한다
       function __hlBoundaryOn() {
         return isBoundaryCheckboxOn() || isAdminBoundaryCheckboxOn();
@@ -5702,6 +5734,15 @@
                         : "법정동경계나 행정동경계를 켜야 사용할 수 있습니다";
         }
         if (lsel) lsel.disabled = !on;
+        // [배경 흐리게] 도 같은 조건에서만 활성
+        const vw = document.getElementById("mapVeilWrap");
+        const vcb = document.getElementById("toggleMapVeil");
+        if (vw) {
+          vw.style.opacity = on ? "" : "0.45";
+          vw.title = on ? "바탕 지도를 흐리게 해 경계선이 잘 보이게 한다(경계선·마커는 그대로)" : "법정동경계나 행정동경계를 켜야 사용할 수 있습니다";
+        }
+        if (vcb) vcb.disabled = !on;
+        __syncMapVeil();
         if (!w) return;
         if (!on && (__hoverSgg5 || __pinnedSgg.size)) {
           __hoverSgg5 = null;
