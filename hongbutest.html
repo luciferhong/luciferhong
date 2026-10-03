@@ -25713,9 +25713,26 @@ const originalBase64 = event.target.result;
         try {
           j = await res.json();
         } catch (_) {}
-        if (!res.ok || !j || !j.ok) throw new Error((j && j.error) || `HTTP ${res.status}`);
+        if (!res.ok || !j || !j.ok) {
+          const err = new Error((j && j.error) || `HTTP ${res.status}`);
+          err.code = j && j.code; // 'TOO_CLOSE' = 도보권(네이버 POINTS_ARE_TOO_CLOSE)
+          throw err;
+        }
         __WR.cache.set(key, j);
         return j;
+      }
+
+      // 출발지–목적지 직선거리(m). 도보권 표시용
+      function __wrDistM(a, b) {
+        const R = 6371000, toR = Math.PI / 180;
+        const dLat = (b.lat - a.lat) * toR, dLng = (b.lng - a.lng) * toR;
+        const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toR) * Math.cos(b.lat * toR) * Math.sin(dLng / 2) ** 2;
+        return Math.round(2 * R * Math.asin(Math.sqrt(h)));
+      }
+      // 실패 상태 → 표시 문구. 너무 가까우면(TOO_CLOSE) '실패'가 아니라 '도보권 · 약 Nm' (2026-10-03 사용자 보고: 시청역 근처에서 '실패')
+      function __wrErrText(s, dest) {
+        if (s && s.code === "TOO_CLOSE") return `도보권 · 약 ${__wrDistM(__WR.start, dest)}m`;
+        return "실패";
       }
 
       // 선택한 경로 하나를 지도에 그린다 (도보 = 회색 점선, 대중교통 = 노선색 실선 + 흰 케이싱)
@@ -25916,7 +25933,7 @@ const originalBase64 = event.target.result;
           row.className = "rdp-row" + (d.id === __WR.selId ? " on" : "");
           let right = '<span class="rdp-meta">조회 중…</span>';
           if (s.status === "err") {
-            right = `<span class="rdp-err">실패</span>`;
+            right = s.code === "TOO_CLOSE" ? `<span class="rdp-meta">${__wrErrText(s, d)}</span>` : `<span class="rdp-err">실패</span>`;
           } else if (s.summary) {
             const r = (s.summary.routes || [])[0];
             right = r
@@ -25941,6 +25958,14 @@ const originalBase64 = event.target.result;
         const s = __WR.selId ? __WR.state.get(__WR.selId) : null;
         const dest = __WR.dests.find((x) => x.id === __WR.selId);
         if (!s || !dest) {
+          __wrRenderFoot(null);
+          return;
+        }
+        // 조회 실패한 목적지를 고르면 '불러오는 중…' 에서 멈춰 있었다 → 이유를 보여 준다
+        if (s.status === "err") {
+          head.textContent = s.code === "TOO_CLOSE"
+            ? `${dest.name} — ${__wrErrText(s, dest)}. 걸어갈 거리라 대중교통 경로가 없습니다`
+            : `${dest.name} 경로를 불러오지 못했습니다${s.error ? " (" + s.error + ")" : ""}`;
           __wrRenderFoot(null);
           return;
         }
@@ -26038,7 +26063,7 @@ const originalBase64 = event.target.result;
           .catch((e) => {
             if (seq !== __WR.seq) return;
             console.warn("경로 상세 조회 실패:", dest.name, e);
-            __WR.state.set(id, { status: "err", error: String(e.message || e) });
+            __WR.state.set(id, { status: "err", error: String(e.message || e), code: e.code });
             __wrRender();
           });
       }
@@ -26081,7 +26106,7 @@ const originalBase64 = event.target.result;
             .catch((e) => {
               if (seq !== __WR.seq) return;
               console.warn("경로 조회 실패:", d.name, e);
-              __WR.state.set(d.id, { status: "err", error: String(e.message || e) });
+              __WR.state.set(d.id, { status: "err", error: String(e.message || e), code: e.code });
               __wrRender();
             });
         });
