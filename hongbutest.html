@@ -7805,25 +7805,50 @@
       // 조회수가 같거나 없으면 세대수, 그것도 같으면 id. 파일을 아직 못 받았으면 세대수로 고르고, 받으면 다시 그린다.
       // 예전엔 필터를 통과한 단지를 전부 그려 줌14 강남에 340개 — 이름표가 겹쳐
       // 안 읽히고, 네이버 지도가 줌·끌기 끝마다 마커 전부를 재배치하느라 70~110ms 씩 끊겼다(크롬 실측).
-      // 줌을 당기면 칸이 작아져 숨었던 단지가 자연스럽게 나타나고, **줌 15 부터는 솎지 않는다**(신네부와 같음).
+      // ⚠ **신네부 줌 번호 = 네이버(홍부) 줌 - 1**(신네부 URL zoom=13 이 보내는 범위가 네이버 줌14 화면과 같다, 실측).
+      // 그래서 홍부 줌 z 는 신네부 precision z-1 → 칸 = 'z+1' 타일 = 화면 **128px**, 2x2 묶음(256px)마다 상위 3개.
+      // 신네부는 precision 15(홍부 줌16)부터 솎지 않는다 → 홍부도 **줌 16 부터 전부**. (처음엔 줌 번호를 같다고 보고
+      // 64px·줌15부터 전부로 넣어 신네부보다 3배 빽빽했다 — 사용자 지적 '홍부가 훨씬 밀집')
       // 신네부와 남는 차이: apt.json 에 없는 소규모 단지(DMC 줌14 실측 40곳 중 36곳), 받아 둔 조회수와 지금 값의
       // 순위 차, 신네부가 칸 대표 일부(~20%)를 작은 점으로 낮춰 그리는 것(홍부는 이름표 하나뿐).
       // 칸과 무관하게 늘 보이는 것: ?focus= 로 연 단지, 지금 모달로 보고 있는 단지.
-      const __APT_CELL_PX = 64;
-      const __APT_DECLUTTER_MAX_ZOOM = 14; // 이 줌까지만 칸 정리, 15 부터는 전부(신네부와 같음)
+      const __APT_CELL_PX = 128; // 홍부 줌 기준 화면 칸 크기(신네부 precision 의 64px 칸이 홍부 줌에선 128px)
+      const __APT_DECLUTTER_MAX_ZOOM = 15; // 이 줌까지만 칸 정리, 16 부터는 전부(신네부 precision 15 와 같음)
+      const __APT_PER_BLOCK = 3; // 2x2 칸 묶음당 최대(신네부 실측)
       let __aptView = null; // 단지번호 → 신네부 조회수
       let __aptViewP = null;
+      // 조회수를 받기 전엔 단지 마커를 그리지 않고 기다린다(최대 __APT_VIEW_WAIT_MS) — 세대수로 먼저 그렸다가
+      // 조회수가 오면 칸 대표가 바뀌어 '단지가 있다가 사라져 보이는' 것을 막는다(2026-10-03 사용자 지적).
+      // 끝내 못 받으면(서버 오류·시간 초과) 세대수로 그린다.
+      const __APT_VIEW_WAIT_MS = 4000;
+      let __aptViewGiveUp = false;
+      function __aptRedraw() {
+        try { if (window.map) updateMarkers(window.map.getBounds()); } catch (_) {}
+      }
       function __aptViewLoad() {
         if (__aptViewP) return __aptViewP;
+        setTimeout(() => {
+          if (!__aptView && !__aptViewGiveUp) { __aptViewGiveUp = true; __aptRedraw(); }
+        }, __APT_VIEW_WAIT_MS);
         __aptViewP = __fetchTimeout(`${__parcelApiBase()}/apt_viewcount.json`, 15000)
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
           .then((d) => {
             __aptView = (d && d.v) || null;
-            // 세대수로 골라 둔 화면을 조회수 기준으로 다시 그린다
-            try { if (__aptView && window.map) updateMarkers(window.map.getBounds()); } catch (_) {}
+            if (!__aptView) __aptViewGiveUp = true;
+            __aptRedraw();
           })
-          .catch((e) => console.warn("[조회수] 못 받음 — 칸 대표를 세대수로 고른다:", e));
+          .catch((e) => {
+            console.warn("[조회수] 못 받음 — 칸 대표를 세대수로 고른다:", e);
+            if (!__aptViewGiveUp) { __aptViewGiveUp = true; __aptRedraw(); }
+          });
         return __aptViewP;
+      }
+      // 칸 정리하는 줌인데 조회수가 아직이면 true(그리기 보류)
+      function __aptViewWaiting() {
+        if (__aptView || __aptViewGiveUp || !window.map) return false;
+        if (window.map.getZoom() > __APT_DECLUTTER_MAX_ZOOM) return false;
+        __aptViewLoad();
+        return true;
       }
       // a 가 b 보다 칸 대표로 앞서는가 — 조회수 → 세대수 → id(작은 쪽: 지도를 조금 움직여도 대표가 안 바뀌게)
       function __aptRepBetter(a, b) {
@@ -7838,13 +7863,14 @@
         if (!window.map || !list.length) return list;
         if (!__aptViewP) __aptViewLoad();
         const z = window.map.getZoom();
-        // 신네부도 줌 15 부터는 화면 안 단지를 전부 내려준다(precision 15·15.5·16·17 실측, 2026-10-03) — 같게 맞춘다
+        // 신네부도 precision 15(=홍부 줌16) 부터는 화면 안 단지를 전부 내려준다(실측, 2026-10-03) — 같게 맞춘다
         if (z >= __APT_DECLUTTER_MAX_ZOOM + 1) return list;
-        const scale = (256 * Math.pow(2, z)) / __APT_CELL_PX; // 세계 좌표(px) → 칸 번호
+        // 칸 격자는 정수 줌 기준(신네부도 precision 의 정수부 +2 타일)
+        const scale = (256 * Math.pow(2, Math.floor(z))) / __APT_CELL_PX; // 세계 좌표(px) → 칸 번호
         const info = document.getElementById("apartmentInfo");
         const openId = info && info.style.display !== "none" ? String(info.getAttribute("data-id") || "") : "";
         const always = [];
-        const best = new Map();
+        const best = new Map(); // 칸 key → { a, bx, by }
         for (const a of list) {
           const id = String(a.id);
           if ((window.__forceShowAptId && id === window.__forceShowAptId) || (openId && id === openId)) {
@@ -7856,12 +7882,54 @@
           const cy = Math.floor((0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * scale);
           const key = cx + "_" + cy;
           const cur = best.get(key);
-          if (!cur || __aptRepBetter(a, cur)) best.set(key, a);
+          if (!cur || __aptRepBetter(a, cur.a)) best.set(key, { a, bx: Math.floor(cx / 2), by: Math.floor(cy / 2) });
+        }
+        // 2x2 칸 묶음(128px)마다 칸 대표 중 상위 __APT_PER_BLOCK 개만 — 신네부는 넷째를 작은 점으로 낮추거나
+        // 빼는데(실측 줌13 23/26·줌14 120/141 일치), 홍부엔 점 모양이 없어 뺀다
+        const blocks = new Map();
+        for (const r of best.values()) {
+          const bk = r.bx + "_" + r.by;
+          let arr = blocks.get(bk);
+          if (!arr) blocks.set(bk, (arr = []));
+          arr.push(r.a);
         }
         const out = always;
-        for (const a of best.values()) if (!out.includes(a)) out.push(a);
+        for (const arr of blocks.values()) {
+          if (arr.length > __APT_PER_BLOCK) arr.sort((p, q) => (__aptRepBetter(p, q) ? -1 : 1));
+          for (let i = 0; i < arr.length && i < __APT_PER_BLOCK; i++) if (!out.includes(arr[i])) out.push(arr[i]);
+        }
         return out;
       }
+
+      // ===== 시험용 줌 배지 (2026-10-03 사용자 요청 — 오른쪽 위 상시 표시) =====
+      // 전체화면 단추 아래. '줌 N · 정리/전부 · 단지 수'. 지도가 다시 만들어져도 따라가도록 0.4초마다 확인한다.
+      (function __zoomBadgeInit() {
+        let last = "";
+        setInterval(() => {
+          const mapEl = document.getElementById("map");
+          if (!mapEl || !window.map || typeof window.map.getZoom !== "function") return;
+          let el = document.getElementById("zoomBadge");
+          if (!el || el.parentNode !== mapEl) {
+            el = el || document.createElement("div");
+            el.id = "zoomBadge";
+            el.style.cssText =
+              "position:absolute;top:56px;right:8px;z-index:10000;pointer-events:none;" +
+              "background:rgba(33,33,33,.82);color:#fff;font:600 12px/1.2 sans-serif;" +
+              "padding:5px 8px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3)";
+            mapEl.appendChild(el);
+          }
+          const z = window.map.getZoom();
+          let n = 0;
+          try {
+            for (const id in apartmentMarkers) if (apartmentMarkers[id].getMap && apartmentMarkers[id].getMap()) n++;
+          } catch (_) {}
+          const mode = z < (window.__siseDbHook?.minZoom?.() ?? 14) ? "단지 숨김"
+            : window.__siseDbHook?.hideFilterActive?.() ? "전부(시세 필터)"
+            : z <= __APT_DECLUTTER_MAX_ZOOM ? "칸 정리" : "전부";
+          const txt = `줌 ${Math.round(z * 100) / 100} · ${mode} · ${n}개`;
+          if (txt !== last) el.textContent = last = txt;
+        }, 400);
+      })();
 
       function updateMarkers(bounds) {
         const showApartments = document.getElementById("toggleApartments").checked;
@@ -7882,6 +7950,7 @@
           apartmentMarkers = {}; // 캐시 초기화
           return; // ✅ 마커 제거 후 더 이상 작업하지 않음
         }
+        if (__aptViewWaiting()) return; // 조회수 도착(또는 포기) 시 __aptRedraw 가 다시 부른다
 
         // ▼ 추가: 현재 선택된 시도/시군구 읽기
         const { sidoSel } = getFilterEls();
@@ -7943,8 +8012,10 @@
           return inBounds && unitOK && sidoOK && sigunguOK && yearOK && areaOK && presaleOK;
         }).filter((apartment) => !(apartment.name.includes("도시형") || apartment.name.includes("생활형"))); // 원래 그리지 않던 것 — 칸 경쟁에서도 뺀다
 
-        // 겹침 정리 — 64px 칸마다 조회수 1등만 (위 __aptDeclutter 주석)
-        const filtered = __aptDeclutter(filteredAll);
+        // 겹침 정리 — 칸마다 조회수 1등만 (위 __aptDeclutter 주석).
+        // 단, 시세보기 매매가·투자금 필터가 켜져 있으면 정리하지 않고 전부(2026-10-04 사용자 지정) — 칸 대표가
+        // 필터에 걸려 칸이 비거나 같은 칸의 다른 일치 단지가 숨는 것을 막는다. 개수는 시세보기 300개 상한이 막는다.
+        const filtered = window.__siseDbHook?.hideFilterActive?.() ? filteredAll : __aptDeclutter(filteredAll);
 
         // [시세보기 훅] 스냅샷 로드 트리거·300개 초과 가드 (hongbuSise.js 미로드 시 무동작)
         if (window.__siseDbHook?.beforeRender?.(filtered) === false) return;
