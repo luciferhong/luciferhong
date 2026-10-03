@@ -11253,6 +11253,40 @@ const originalBase64 = event.target.result;
         }
       }
 
+      // 시설 마커끼리 라벨이 겹치면(같은 건물·인접 건물) 위쪽 마커를 필요한 만큼 위로 올려 모두 보이게 한다(2026-10-03 사용자 요청).
+      // 좌표는 그대로 두고 anchor 만 바꾼다 — 화면 픽셀 기준이라 줌마다 다시 계산(idle → updateFacilityMarkers).
+      // 남쪽(화면 아래) 마커가 제자리, 그 위에 겹치는 마커가 차례로 올라간다. ⚠ 고정 순서로 쌓으면 북쪽 마커 위로
+      //   다시 올라가 겹친다(왕십리 이마트/엔터식스 실측) — 반드시 화면 y 순서로 배치.
+      // '마커 겹침 조정'(adjustMarkerOverlap, transform 기반)과는 독립이라 함께 켜져도 된다.
+      function _declutterFacilityMarkers(entries) {
+        const proj = window.map.getProjection && window.map.getProjection();
+        if (!proj || entries.length < 2) {
+          entries.forEach((e) => { if (e.dy) { e.dy = 0; e.marker.setIcon({ content: e.el, anchor: new naver.maps.Point(16, 32) }); } });
+          return;
+        }
+        const H = 62; // 아이콘 32 + 라벨 ~28 + 여백
+        const items = entries.map((e) => {
+          const p = proj.fromCoordToOffset(e.marker.getPosition());
+          const w = e.el.offsetWidth || Math.min(162, e.el.textContent.length * 12 + 22);
+          return { e, x: p.x - 16, y: p.y, w };
+        }).sort((a, b) => b.y - a.y || a.x - b.x);
+        const placed = [];
+        for (const it of items) {
+          let dy = 0;
+          for (let k = 0; k < 10; k++) {
+            const top = it.y - dy;
+            const hits = placed.filter((q) => it.x < q.x + q.w && q.x < it.x + it.w && Math.abs(top - q.top) < H);
+            if (!hits.length) break;
+            dy = Math.max(...hits.map((q) => it.y - q.top + H));
+          }
+          placed.push({ x: it.x, w: it.w, top: it.y - dy });
+          if ((it.e.dy || 0) !== dy) {
+            it.e.dy = dy;
+            it.e.marker.setIcon({ content: it.e.el, anchor: new naver.maps.Point(16, 32 + dy) });
+          }
+        }
+      }
+
       function _buildFacilityMarkerEntry(facility) {
         const iconSrc = facility.category === 10
           ? (facility.description.includes("백화점") ? "depart.png" : "mart.png")
@@ -11275,7 +11309,7 @@ const originalBase64 = event.target.result;
           icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
         });
         addMarkerRightClickEvent(marker, markerElement);
-        return { marker, lat: facility.lat, lng: facility.lng };
+        return { marker, lat: facility.lat, lng: facility.lng, el: markerElement, dy: 0 };
       }
 
       async function rebuildFacilityPool() {
@@ -11300,9 +11334,13 @@ const originalBase64 = event.target.result;
         const bounds = window.map.getBounds();
         if (selectedSigunguSet.size > 0) {
           if (!window.__facilityMarkerPool) { await rebuildFacilityPool(); }
-          window.__facilityMarkerPool.forEach(({ marker, lat, lng }) => {
-            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+          const shown = [];
+          window.__facilityMarkerPool.forEach((entry) => {
+            const on = bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng));
+            entry.marker.setMap(on ? window.map : null);
+            if (on) shown.push(entry);
           });
+          _declutterFacilityMarkers(shown);
         } else {
           if (!window.__facilityMarkerCache) window.__facilityMarkerCache = new Map();
           const visibleKeys = new Set();
@@ -11316,6 +11354,7 @@ const originalBase64 = event.target.result;
           }
           toShow.forEach(({ marker }) => marker.setMap(window.map));
           window.__facilityMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+          _declutterFacilityMarkers(toShow);
         }
       }
 

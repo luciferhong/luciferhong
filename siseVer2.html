@@ -2481,6 +2481,31 @@ document.getElementById("toggleMiddleSchools").addEventListener("change", () => 
 
 let facilityMarkers = []; // ✅ 지도에 표시된 시설 마커 저장
 
+// 시설 마커끼리 라벨이 겹치면 위쪽 마커를 필요한 만큼 위로 올려 모두 보이게 한다(2026-10-03, hongbutest 와 동일).
+// 좌표는 그대로, anchor 만 바꾼다. 화면 y 순서(남쪽 먼저)로 배치해야 북쪽 마커 위로 다시 겹치지 않는다.
+function _declutterFacilityMarkers(entries) {
+    const proj = window.map.getProjection && window.map.getProjection();
+    if (!proj || entries.length < 2) return;
+    const H = 62; // 아이콘 32 + 라벨 ~28 + 여백
+    const items = entries.map((e) => {
+        const p = proj.fromCoordToOffset(e.marker.getPosition());
+        const w = e.el.offsetWidth || Math.min(162, e.el.textContent.length * 12 + 22);
+        return { e, x: p.x - 16, y: p.y, w };
+    }).sort((a, b) => b.y - a.y || a.x - b.x);
+    const placed = [];
+    for (const it of items) {
+        let dy = 0;
+        for (let k = 0; k < 10; k++) {
+            const top = it.y - dy;
+            const hits = placed.filter((q) => it.x < q.x + q.w && q.x < it.x + it.w && Math.abs(top - q.top) < H);
+            if (!hits.length) break;
+            dy = Math.max(...hits.map((q) => it.y - q.top + H));
+        }
+        placed.push({ x: it.x, w: it.w, top: it.y - dy });
+        if (dy) it.e.marker.setIcon({ content: it.e.el, anchor: new naver.maps.Point(16, 32 + dy) });
+    }
+}
+
 async function loadFacilities() {
     try {
         const facilities = await fetchWithETagCache("facility.json");
@@ -2517,6 +2542,7 @@ function updateFacilityMarkers() {
         bounds.hasLatLng(new naver.maps.LatLng(facility.lat, facility.lng))
     );
 
+    const declutterEntries = [];
     filteredFacilities.forEach(facility => {
     let iconSrc = "default.png"; // 기본 아이콘 (예외처리)
     if (facility.category === 10) {
@@ -2569,7 +2595,9 @@ function updateFacilityMarkers() {
     addMarkerRightClickEvent(marker, markerElement);
 
     facilityMarkers.push(marker);
+    declutterEntries.push({ marker, el: markerElement });
 });
+_declutterFacilityMarkers(declutterEntries);
 
   if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
