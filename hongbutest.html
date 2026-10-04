@@ -1197,6 +1197,21 @@
       #msCard button.on,
       #msCard button.on:hover { background: #f0c000; color: #000; }
       #msCard button[hidden] { display: none; }
+      /* ══ 시세보기 툴바 묶음(#siseToolbarGroup, server/hongbuSise.js 가 그림) 높이 맞춤 (2026-10-04 사용자 지적
+         "항목마다 높이가 전부 다르다") — 실측 높이 14~26px·가운데 16~19px 로 제각각이었다.
+         애드온은 손대지 않고 특이도(body #id …)로 덮는다. 기준 = 이미 26px 인 물건수 선택칸·시세 보정 단추.
+         ⚠ display 는 건드리지 않는다 — 애드온이 인라인 style 로 숨김/표시를 한다(flex 항목이라 inline 이어도 높이가 먹는다). */
+      /* ⚠ 묶음은 inline-flex 로 고정 — __siseCheckMove 의 hideIfEmpty 가 보일 때 display 를 "" 로 되돌리며 애드온의
+           인라인 inline-flex 까지 지워, 묶음이 글줄(inline)이 되어 항목이 제각각 기준선에 붙었다(높이 차이의 주원인).
+           숨길 때의 인라인 display:none 은 이것보다 우선이라 숨기기는 그대로 된다. */
+      body #siseToolbarGroup { display: inline-flex; flex-wrap: wrap; align-items: center; row-gap: 4px; }
+      body #siseToolbarGroup > *,
+      body #siseToolbarGroup > span > * { height: 26px; box-sizing: border-box; align-self: center; align-items: center; margin-top: 0; margin-bottom: 0; }
+      body #siseToolbarGroup #siseRunDate { line-height: 26px; }
+      body #siseToolbarGroup input[type="number"] { height: 26px; box-sizing: border-box; padding: 0 4px; margin: 0 2px; border-radius: 6px; font-size: 12px; vertical-align: middle; }
+      body #siseToolbarGroup input[type="checkbox"] { width: 14px; height: 14px; margin: 0 3px 0 0; flex: none; }
+      body #siseToolbarGroup select { box-sizing: border-box; margin: 0 0 0 3px; }
+      body #siseToolbarGroup button { height: 26px; box-sizing: border-box; margin: 0; }
       /* 모바일에서는 측정 카드(거리·반경·강남·지우기)를 보이지 않는다(2026-10-04 사용자 지정).
          홍부의 모바일 기준(폭 700px 이하) + 가로로 눕힌 폰(터치·높이 500px 이하) */
       @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
@@ -23644,16 +23659,54 @@ const originalBase64 = event.target.result;
             });
             g.style.display = 보임 ? "" : "none";
           };
+          /* 툴바 묶음 맨 앞의 '시세보기' 끄기용 체크박스 (2026-10-04 사용자 요청: "시세보기 체크 시 네부바로연결 앞에
+             시세보기를 끄는 용도로"). 진짜 체크박스는 [도구] › 기타에 있어 끄려면 패널을 열어야 했다.
+             ⚠ 진짜(#toggleSiseDbPrice)를 끄고 change 를 보내는 거울일 뿐 — 애드온 핸들러·uiState 저장은 진짜가 맡는다.
+             ⚠ id 를 주지 않는다: uiState 가 input[id] 를 모두 저장·복원해 엉뚱하게 되살아날 수 있다.
+             애드온이 시세보기를 끄면 묶음 자식을 전부 숨기므로(이것 포함) 켜져 있을 때만 보인다. */
+          const ensureOffToggle = () => {
+            const g = document.getElementById("siseToolbarGroup");
+            const real = document.getElementById("toggleSiseDbPrice");
+            if (!g || !real) return;
+            let lab = g.querySelector("label[data-sise-off]");
+            if (!lab) {
+              lab = document.createElement("label");
+              lab.dataset.siseOff = "1";
+              lab.title = "시세보기 끄기";
+              lab.style.cssText = "color:#6d28d9;font-weight:700;";
+              lab.innerHTML = '<input type="checkbox" style="accent-color:#7c3aed;" />시세보기';
+              const mcb = lab.firstChild;
+              // 브라우저의 체크 전환에 기대지 않는다 — 마우스로 누르면 다른 클릭 처리 때문에 전환이 되돌려져(실측: click 시점에
+              // 이미 원래 값) 꺼지지 않았다. 누르면 기본 동작을 막고 **진짜 체크박스를 대신 누른다**(애드온 핸들러가 그대로 돈다).
+              // 거울의 체크 표시는 아래 동기화가 맞춘다. 라벨 글자를 눌러도 input 으로 클릭이 넘어와 같은 길을 탄다.
+              mcb.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const rc = document.getElementById("toggleSiseDbPrice");
+                if (rc && rc.checked) rc.click();
+              });
+              g.insertBefore(lab, g.firstChild);
+            }
+            const mcb = lab.firstChild;
+            if (mcb.checked !== real.checked) mcb.checked = real.checked;
+            // 켜짐이면 보이고 꺼짐이면 숨긴다. 애드온의 숨김 기억(data-sise-disp)은 지워 두어 애드온이 되살릴 때 엇갈리지 않게.
+            // MutationObserver 가 계속 부르므로 값이 다를 때만 바꾼다(무한 반복 방지).
+            const want = real.checked ? "" : "none";
+            if (lab.style.display !== want) lab.style.display = want;
+            if (real.checked && lab.dataset.siseDisp !== undefined) delete lab.dataset.siseDisp;
+          };
           const move = () => {
             const cb = document.getElementById("toggleSiseDbPrice");
             const lab = cb && cb.closest("label");
             if (lab && lab.parentElement !== slot) {
               slot.appendChild(lab);
-              cb.addEventListener("change", () => setTimeout(hideIfEmpty, 0));
+              cb.addEventListener("change", () => setTimeout(() => { ensureOffToggle(); hideIfEmpty(); }, 0));
+              ensureOffToggle();
               hideIfEmpty();
               replaceSoon();        // 패널 높이가 바뀌므로 자리를 다시 잡는다
               return true;
             }
+            ensureOffToggle();
             hideIfEmpty();
             return !!lab;
           };
