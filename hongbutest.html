@@ -1197,6 +1197,11 @@
       #msCard button.on,
       #msCard button.on:hover { background: #f0c000; color: #000; }
       #msCard button[hidden] { display: none; }
+      /* 모바일에서는 측정 카드(거리·반경·강남·지우기)를 보이지 않는다(2026-10-04 사용자 지정).
+         홍부의 모바일 기준(폭 700px 이하) + 가로로 눕힌 폰(터치·높이 500px 이하) */
+      @media (max-width: 700px), (pointer: coarse) and (max-height: 500px) {
+        #msCard { display: none !important; }
+      }
       #msCard button.ms-clear { height: 46px; color: #b91c1c; }
       /* ══ 강남거리 모드 (2026-10-03) — 측정 카드 [강남]. #gnPanel 은 #map 안, 검색 결과·지점 메뉴는 body 직속 ══ */
       /* 켜져 있는 동안 지도 마커를 전부 숨긴다(사용자 지정). 우리 것(.gn-ov)과 측정(.ms-ov)만 남긴다. */
@@ -2918,7 +2923,8 @@
           <button class="sm-pill" onclick="__smSetAllRadios('auto')">모두 🔁 원본</button>
           <button class="sm-pill" onclick="__smSetAllRadios('thumb')">모두 썸네일</button>
         </div>
-        <div id="smNetRow" class="sm-net" title="셀룰러(모바일 데이터)에 연결되어 있을 때 메모·사진을 올리고 원본을 내려받을지">
+        <!-- (2026-10-04) 모바일 데이터 게이트를 껐으므로(__netLimited 주석) 숨김 — 되살릴 때 style 을 지운다 -->
+        <div id="smNetRow" class="sm-net" style="display:none" title="셀룰러(모바일 데이터)에 연결되어 있을 때 메모·사진을 올리고 원본을 내려받을지">
           <span>📶 모바일 데이터에서 동기화</span>
           <span class="sm-seg">
             <label><input type="radio" name="netPolicy" value="" onchange="__netSetPolicy('')"><span>물어보기</span></label>
@@ -11815,6 +11821,14 @@ const originalBase64 = event.target.result;
         }
         btn.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
         document.addEventListener("click", (e) => { if (panel && panel.style.display !== "none" && !panel.contains(e.target) && e.target !== btn) hide(); });
+        // 지도 위를 누르면 네이버 지도가 click 을 document 까지 올려보내지 않아 위로는 안 닫혔다(2026-10-04 사용자 지적)
+        // → 캡처 단계 pointerdown 으로 창 바깥 누름을 먼저 받는다. 여는 단추는 제외(그 click 이 토글한다).
+        document.addEventListener("pointerdown", (e) => {
+          if (!panel || panel.style.display === "none" || panel.contains(e.target)) return;
+          const cur = document.getElementById("metroLinesBtn") || btn;
+          if (cur.contains(e.target)) return;
+          hide();
+        }, true);
         window.addEventListener("resize", () => { if (panel && panel.style.display !== "none") place(); });
         // 저장된 선택이 있으면 지도 준비 후 자동 복원
         if (selected.size) {
@@ -18938,7 +18952,12 @@ const originalBase64 = event.target.result;
         const t = c.type; if (t === 'cellular') return true; if (t === 'wifi' || t === 'ethernet') return false; return __NET_IOS ? true : null;
       }
       function __netPolicy() { try { const v = localStorage.getItem(__NET_KEY) || ''; return (v === 'wifi' && __NET_IOS) ? '' : v; } catch (_) { return ''; } }
-      function __netLimited() { return __netIsCellular() === true && __netPolicy() !== 'always'; } // 셀룰러이고 '항상' 아님
+      // ⚠ (2026-10-04 사용자 지정) **모바일 데이터 게이트 끔 — 로그인했으면 묻지 않고 그냥 진행.** 로그인 창에 데이터 사용량 경고가
+      //   이미 있고, 임장 중 메모를 저장할 때마다(새 접속·새 시군구·Wi-Fi 잠깐 붙음) '📶 모바일 데이터 사용 안내' 창이 떠
+      //   사용자 불편 신고가 있었다. 올리기 대기열·원본 내려받기·질문 창이 모두 이 함수 하나를 거치므로 여기서만 막는다.
+      //   되살리려면 아래 원래 식으로 되돌리고 동기화 설정 창 #smNetRow 의 display:none 을 지운다.
+      //   원래: return __netIsCellular() === true && __netPolicy() !== 'always'; // 셀룰러이고 '항상' 아님
+      function __netLimited() { return false; }
       function __netSetPolicy(v) {
         try { if (v) localStorage.setItem(__NET_KEY, v); else localStorage.removeItem(__NET_KEY); } catch (_) {}
         console.log('[net] 정책:', v || '물어보기');
