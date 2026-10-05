@@ -7898,10 +7898,15 @@
         return true;
       }
       // 단지의 조회수 — 단지 객체에 한 번 붙여 두고 재사용(조회수 표가 바뀌면 다시 읽음)
+      // ⚠ 표 자체를 단지 객체에 참조로 붙이지 않는다 — 단지 객체를 JSON 으로 바꾸면 표(5만 건)가 단지마다 딸려 들어간다.
+      //   표가 바뀐 것은 번호(__aptViewVer)로 안다.
+      let __aptViewVer = 0;
+      let __aptViewSeen = null;
       function __aptViewOf(a) {
-        if (a.__vRef !== __aptView) {
+        if (__aptViewSeen !== __aptView) { __aptViewSeen = __aptView; __aptViewVer++; }
+        if (a.__vVer !== __aptViewVer) {
           a.__v = (__aptView && __aptView[String(a.id)]) || 0;
-          a.__vRef = __aptView;
+          a.__vVer = __aptViewVer;
         }
         return a.__v;
       }
@@ -8333,12 +8338,15 @@
         return String(school?.schoolCode ?? school?.markerId ?? school?.id ?? school?.schoolName ?? "");
       }
 
-      function drawSchoolZoneById(schoolId) {
+      async function drawSchoolZoneById(schoolId) {
         const id = String(schoolId);
-        const vertexLists = window.schoolZoneMap?.get(id);
+        // 배정범위는 시군구 파일을 받아야 할 수 있다(2026-10-05). 받는 동안 다른 학교를 눌렀으면 이 그림은 버린다.
+        const token = (window.__schoolZoneDrawToken = (window.__schoolZoneDrawToken || 0) + 1);
+        const vertexLists = await __schoolZoneGet(id);
+        if (token !== window.__schoolZoneDrawToken) return;
 
         if (!vertexLists || !vertexLists.length) {
-          //alert("이 학교는 배정범위 데이터가 없습니다. (eliSchools.json에 schoolVertexLists가 있어야 합니다)");
+          //alert("이 학교는 배정범위 데이터가 없습니다.");
           return;
         }
 
@@ -8448,9 +8456,10 @@
         return __hslToHex(bestHue, __SCHOOL_ZONE_SAT, __SCHOOL_ZONE_LIGHT);
       }
 
-      function __addSchoolZoneKeep(schoolId) {
+      async function __addSchoolZoneKeep(schoolId) {
         const id = String(schoolId);
-        const vertexLists = window.schoolZoneMap?.get(id);
+        const vertexLists = await __schoolZoneGet(id); // 시군구 파일을 받아야 할 수 있다(2026-10-05)
+        if (__schoolZoneKeepMap.has(id)) return; // 받는 사이 같은 학교를 다시 눌러 이미 올라갔으면 중복 금지
         if (!vertexLists || !vertexLists.length) return;
         const color = __pickSchoolZoneColor(id);
         const polygons = [];
@@ -8644,10 +8653,42 @@
         return [];
       }
 
+      // 배정범위를 **시군구 파일 단위**로 받아 schoolZoneMap 에 채운다 (2026-10-05, 학교 데이터 분리).
+      // 같은 시군구의 다른 학교를 눌러도 다시 받지 않는다. 받기 실패하면 다음 클릭에 다시 시도.
+      const __schoolZoneFiles = new Map(); // sgg5 → Promise
+      async function __schoolZoneGet(schoolId) {
+        const id = String(schoolId);
+        const hit = window.schoolZoneMap?.get(id);
+        if (hit) return hit;
+        const s = window.__schoolById?.get(id);
+        const sgg5 = String(s?.cortarNo || "").slice(0, 5);
+        if (sgg5.length !== 5) return [];
+        let p = __schoolZoneFiles.get(sgg5);
+        if (!p) {
+          p = fetchWithETagCache("schoolZones/" + sgg5 + ".json")
+            .then((m) => {
+              if (!window.schoolZoneMap) window.schoolZoneMap = new Map();
+              for (const [k, v] of Object.entries(m || {})) {
+                if (!window.schoolZoneMap.has(k)) window.schoolZoneMap.set(k, normalizeVertexLists(v));
+              }
+            })
+            .catch((e) => {
+              __schoolZoneFiles.delete(sgg5);
+              console.warn("[배정범위] " + sgg5 + " 받기 실패:", e?.message || e);
+            });
+          __schoolZoneFiles.set(sgg5, p);
+        }
+        await p;
+        return window.schoolZoneMap?.get(id) || [];
+      }
+
       async function loadSchools() {
         try {
-          // ✅ 분할 파일 4개 로드 (GitHub Pages 같은 정적호스팅 기준)
-          const PARTS = ["eliSchools_1.json", "eliSchools_2.json", "eliSchools_3.json", "eliSchools_4.json"];
+          // ✅ 분리 파일 (2026-10-05): 마커·정보창용 학교 목록만 받는다. 배정범위 폴리곤은 학교를 눌렀을 때
+          //   그 시군구 파일(schoolZones/<sgg5>.json) 하나만 받는다(__schoolZoneGet). 예전엔 eliSchools_1~4.json
+          //   81MB(99% 가 폴리곤)를 레이어를 꺼 둬도 접속 때 전부 받아 메모리 160MB 를 차지했다(모바일 흉내 실측
+          //   힙 265 → 105MB). 원본 4개는 운영 hongbu.html 이 쓰므로 그대로 둔다. 생성: python _tools/_build_school_split.py
+          const PARTS = ["eliSchools_lite.json"];
 
           // ✅ 파일 하나를 "배열 or 래퍼({schools:[]})" 모두 지원해서 배열로 통일
           async function fetchAsArray(url) {
@@ -8659,7 +8700,6 @@
             return [];
           }
 
-          // ✅ 4개 파일 병합 (네트워크 부담 줄이려면 순차 로드)
           const merged = [];
           for (const f of PARTS) {
             const arr = await fetchAsArray(f);
@@ -8685,13 +8725,9 @@
           window.__schoolMarkerPool = null;
           if (!window.__schoolMarkerCache) window.__schoolMarkerCache = new Map();
 
-          // ✅ 배정범위(폴리곤) 빠른 조회용 Map: id -> schoolVertexLists
-          window.schoolZoneMap = new Map(
-            schools.map((s) => [
-              String(s.schoolCode ?? s.markerId ?? s.id ?? s.schoolName ?? ""),
-              normalizeVertexLists(s.schoolVertexLists),
-            ]),
-          );
+          // ✅ 배정범위 캐시: id -> vertexLists. 비어 있다가 학교를 누르면 시군구 단위로 채운다(__schoolZoneGet).
+          window.schoolZoneMap = new Map();
+          window.__schoolById = new Map(schools.map((s) => [_getSchoolZoneId(s), s]));
 
           // ✅ 초기 마커 업데이트
           updateSchoolMarkers(window.map.getBounds());
@@ -13755,6 +13791,7 @@ const originalBase64 = event.target.result;
         };
         if (liveIdx >= 0) window.__photoMemoIndex[liveIdx] = { ...window.__photoMemoIndex[liveIdx], ...localRec };
         else window.__photoMemoIndex.push(localRec);
+        window.__photoMemoIndexVer = (window.__photoMemoIndexVer || 0) + 1; // 묶음 표 캐시 무효화(제자리 교체는 길이가 안 바뀐다)
 
         // ▼ 자동 동기화 훅 (저장 경로): rec.sgg5 우선, 없으면 lat/lng로 추론
         try { __scheduleAutoSync(rec.sgg5 || localRec.sgg5, { lat: rec.lat, lng: rec.lng }, { kind: 'photo', id }); } catch (_) {}
@@ -14092,7 +14129,50 @@ const originalBase64 = event.target.result;
           } catch (e) {}
         }
         window.__photoMemoMarkers.delete(key);
+        // 보관 중인 것도 버린다 — 이 함수는 삭제·썸네일 갱신·드라이브 반영처럼 내용이 바뀌는 경로에서 불린다
+        const pooled = __pmMarkerPool.get(key);
+        if (pooled) {
+          __pmMarkerPool.delete(key);
+          try { pooled.setMap(null); } catch (e) {}
+        }
         __revokePhotoMemoUrl(key);
+      }
+
+      // ── 포토 마커 보관함 (2026-10-05) — 단지 마커(__aptMarkerPool)와 같은 원리 ──
+      // 화면 밖으로 나간 마커를 버리지 않고 setMap(null) 로 떼어 두었다가, 돌아오면 DB 를 다시 읽지 않고
+      // setMap(map) 만 한다(썸네일 디코딩·DOM·리스너 그대로). 지도 이동 갱신(updatePhotoMemoMarkersByBounds)만 보관을 쓴다.
+      // 내용이 바뀌는 경로는 모두 __removePhotoMemoMarker 를 거치므로 거기서 보관분도 버린다.
+      const __PM_MARKER_POOL_MAX = 300;
+      const __pmMarkerPool = new Map(); // id → 마커, Map 순서 = 오래 안 쓴 순
+      function __pmMarkerRelease(id) {
+        const key = String(id);
+        const marker = window.__photoMemoMarkers.get(key);
+        if (!marker) return;
+        window.__photoMemoMarkers.delete(key);
+        try { marker.setMap(null); } catch (e) {}
+        if (marker.__pmMap !== window.map) { __revokePhotoMemoUrl(key); return; }
+        __pmMarkerPool.delete(key);
+        __pmMarkerPool.set(key, marker);
+        while (__pmMarkerPool.size > __PM_MARKER_POOL_MAX) {
+          const oldKey = __pmMarkerPool.keys().next().value;
+          __pmMarkerPool.delete(oldKey);
+          __revokePhotoMemoUrl(oldKey);
+        }
+      }
+      // 보관분을 다시 올린다. 없거나 지도가 다시 만들어졌으면 false → 예전처럼 DB 에서 읽어 만든다
+      function __pmMarkerTake(id) {
+        const key = String(id);
+        const marker = __pmMarkerPool.get(key);
+        if (!marker) return false;
+        __pmMarkerPool.delete(key);
+        if (marker.__pmMap !== window.map || !window.__photoMemoVisible) {
+          __revokePhotoMemoUrl(key);
+          return false;
+        }
+        marker.setMap(window.map);
+        window.__photoMemoMarkers.set(key, marker);
+        __updatePhotoMemoGroupBadge(key); // 보관 중 묶음 장수가 바뀌었을 수 있다
+        return true;
       }
 
       /* ===== 같은 좌표 포토메모 묶음 =====
@@ -14108,35 +14188,62 @@ const originalBase64 = event.target.result;
         return lat.toFixed(7) + "," + lng.toFixed(7);
       }
 
-      // 같은 좌표 묶음을 촬영 순서대로 반환
+      // ── 묶음 표 캐시 (2026-10-05) ──
+      // 예전엔 묶음을 물을 때마다 인덱스 전체를 훑었다. 지도가 멈출 때 화면 안 사진마다, 마커를 만들 때마다
+      // 불려 사진 수의 제곱으로 늘었다(모바일 흉내 실측: 300장에서 끄는 도중 약 0.3초).
+      // → 좌표키 → 묶음 표를 한 번 만들어 두고, 인덱스가 바뀌면 다시 만든다.
+      //   바뀜 판정: 배열 자체(filter·[] 로 새로 만듦) · 길이(push) · __photoMemoIndexVer(제자리 교체 — __photoMemoPut).
+      window.__photoMemoIndexVer = window.__photoMemoIndexVer || 0;
+      let __pmGroupCache = { arr: null, len: -1, ver: -1, byKey: null, byId: null };
+      function __photoMemoGroupTable() {
+        const arr = window.__photoMemoIndex || [];
+        const c = __pmGroupCache;
+        if (c.byKey && c.arr === arr && c.len === arr.length && c.ver === window.__photoMemoIndexVer) return c;
+        const byKey = new Map(); // 좌표키 → 묶음(촬영 순)
+        const byId = new Map(); // id → 인덱스 항목(처음 나온 것)
+        const seenByKey = new Map();
+        for (const e of arr) {
+          const eid = String(e?.id);
+          if (!byId.has(eid)) byId.set(eid, e);
+          const key = __photoMemoCoordKey(e);
+          if (!key) continue;
+          // 인덱스에 같은 id 가 중복으로 들어가 있어도 1건으로 센다 (과거 저장분 방어)
+          let seen = seenByKey.get(key);
+          if (!seen) { seen = new Set(); seenByKey.set(key, seen); byKey.set(key, []); }
+          if (seen.has(eid)) continue;
+          seen.add(eid);
+          byKey.get(key).push(e);
+        }
+        for (const g of byKey.values()) {
+          if (g.length > 1) g.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || String(a.id).localeCompare(String(b.id)));
+        }
+        __pmGroupCache = { arr, len: arr.length, ver: window.__photoMemoIndexVer, byKey, byId };
+        return __pmGroupCache;
+      }
+
+      // 같은 좌표 묶음을 촬영 순서대로 반환 (사본 — 호출부가 고쳐도 표는 그대로)
       function __photoMemoGroupEntries(o) {
         const key = __photoMemoCoordKey(o);
         if (!key) return [];
-        // 인덱스에 같은 id 가 중복으로 들어가 있어도 1건으로 센다 (과거 저장분 방어)
-        const seen = new Set();
-        const out = [];
-        for (const e of window.__photoMemoIndex || []) {
-          if (__photoMemoCoordKey(e) !== key) continue;
-          const eid = String(e.id);
-          if (seen.has(eid)) continue;
-          seen.add(eid);
-          out.push(e);
-        }
-        return out.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || String(a.id).localeCompare(String(b.id)));
+        const g = __photoMemoGroupTable().byKey.get(key);
+        return g ? g.slice() : [];
       }
 
       // 묶음 대표(= 지도에 마커를 그리는 1건) = 가장 먼저 찍은 것
       function __photoMemoGroupLeadId(o) {
-        const g = __photoMemoGroupEntries(o);
-        return g.length ? String(g[0].id) : String(o?.id ?? "");
+        const key = __photoMemoCoordKey(o);
+        const g = key ? __photoMemoGroupTable().byKey.get(key) : null; // 사본 없이 첫 항목만 본다
+        return g && g.length ? String(g[0].id) : String(o?.id ?? "");
       }
 
       function __updatePhotoMemoGroupBadge(leadId) {
         const marker = window.__photoMemoMarkers.get(String(leadId));
         const el = marker && marker.__photoMemoEl;
         if (!el) return;
-        const entry = (window.__photoMemoIndex || []).find((e) => String(e.id) === String(leadId));
-        const n = entry ? __photoMemoGroupEntries(entry).length : 0;
+        const tbl = __photoMemoGroupTable();
+        const entry = tbl.byId.get(String(leadId));
+        const ek = entry ? __photoMemoCoordKey(entry) : "";
+        const n = ek ? (tbl.byKey.get(ek) || []).length : 0;
         let badge = el.querySelector(".pm-count");
         if (n > 1) {
           if (!badge) {
@@ -14381,7 +14488,24 @@ const originalBase64 = event.target.result;
         naver.maps.Event.addListener(marker, "click", () => openPhotoMemoModal());
 
         // 모바일에서 click 누락되는 케이스 보강: 썸네일 DOM의 touchend도 직접 처리
+        // ⚠ 탭일 때만 연다 (2026-10-05). 예전엔 이동거리를 안 봐서, 지도를 끌다가 손가락을 썸네일 위에서 떼면
+        //   사진 모달이 열렸다(모바일 흉내 실측 — 끄는 도중 원본 디코딩까지 따라와 무거웠다).
+        //   눌렀을 때 위치를 적어 두고, 뗄 때 10px 넘게 움직였으면 끌기로 보고 무시한다.
+        const PM_TAP_SLOP = 10;
+        let pmDown = null;
+        // 한 번 판정하면 기록을 지운다 — 다른 곳에서 시작한 끌기가 옛 탭 자리 근처에서 끝나도 탭으로 보지 않게
+        const pmIsTap = (x, y) => {
+          const d = pmDown;
+          pmDown = null;
+          return !!d && Math.hypot(x - d.x, y - d.y) <= PM_TAP_SLOP;
+        };
+        markerElement.addEventListener("pointerdown", (ev) => { pmDown = { x: ev.clientX, y: ev.clientY }; }, { passive: true });
+        markerElement.addEventListener("touchstart", (ev) => {
+          const t = ev.touches && ev.touches[0];
+          if (t) pmDown = { x: t.clientX, y: t.clientY };
+        }, { passive: true });
         markerElement.addEventListener("pointerup", (ev) => {
+          if (!pmIsTap(ev.clientX, ev.clientY)) return;
           try {
             ev.preventDefault();
             ev.stopPropagation();
@@ -14390,6 +14514,8 @@ const originalBase64 = event.target.result;
         });
 
         markerElement.addEventListener("touchend", (ev) => {
+          const t = ev.changedTouches && ev.changedTouches[0];
+          if (!t || !pmIsTap(t.clientX, t.clientY)) return;
           try {
             ev.preventDefault();
             ev.stopPropagation();
@@ -14411,6 +14537,7 @@ const originalBase64 = event.target.result;
         });
 
         marker.__photoMemoEl = markerElement; // 뱃지 갱신용
+        marker.__pmMap = window.map; // 보관함: 지도가 다시 만들어지면 재사용하지 않는다
         window.__photoMemoMarkers.set(id, marker);
         __updatePhotoMemoGroupBadge(id);
         return marker;
@@ -14496,34 +14623,38 @@ const originalBase64 = event.target.result;
         if (!window.__photoMemoIndexLoaded) return; // 인덱스가 아직 로드 안 됨
 
         if (window.map.getZoom() < 14) {
-          window.__photoMemoMarkers.forEach((_, id) => __removePhotoMemoMarker(id));
+          // 줌아웃으로 숨길 때도 보관(다시 줌인하면 재사용) — 2026-10-05
+          Array.from(window.__photoMemoMarkers.keys()).forEach((id) => __pmMarkerRelease(id));
           return;
         }
 
         const bounds = window.map.getBounds?.();
         if (!bounds) return;
+        // 화면 안 판정은 숫자 비교로(사진마다 LatLng 객체를 만들지 않는다)
+        const _sw = bounds.getSW(), _ne = bounds.getNE();
+        const bS = _sw.lat(), bW = _sw.lng(), bN = _ne.lat(), bE = _ne.lng();
 
         const inView = new Set();
         const _inSgg = _makeSigunguChecker();
         for (const entry of window.__photoMemoIndex) {
           try {
             if (typeof entry.lat !== "number" || typeof entry.lng !== "number") continue;
-            if (bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng)) && _inSgg(entry.lat, entry.lng)) {
+            if (entry.lat >= bS && entry.lat <= bN && entry.lng >= bW && entry.lng <= bE && _inSgg(entry.lat, entry.lng)) {
               const id = String(entry.id);
               // 같은 좌표 묶음(연속 촬영)은 대표 1개만 마커로 그린다 — 나머지는 모달 썸네일 줄에서 본다
               if (__photoMemoGroupLeadId(entry) !== id) continue;
               inView.add(id);
-              // 마커 없고 아직 로딩 중이 아닐 때만 DB에서 full record 불러와 마커 생성
+              // 마커 없고 아직 로딩 중이 아닐 때만: 보관함에 있으면 다시 올리고, 없으면 DB 에서 읽어 만든다
               if (!window.__photoMemoMarkers.has(id) && !window.__photoMemoLoadingIds.has(id)) {
-                __loadAndCreatePhotoMemoMarker(entry);
+                if (!__pmMarkerTake(id)) __loadAndCreatePhotoMemoMarker(entry);
               }
             }
           } catch (e) {}
         }
 
-        // 범위 밖이거나 체크박스 OFF 시 마커 제거
+        // 범위 밖 마커는 버리지 않고 보관 (체크박스 OFF 는 다른 경로에서 지운다)
         for (const id of Array.from(window.__photoMemoMarkers.keys())) {
-          if (!inView.has(id)) __removePhotoMemoMarker(id);
+          if (!inView.has(id)) __pmMarkerRelease(id);
         }
       }
 
@@ -20333,7 +20464,8 @@ const originalBase64 = event.target.result;
               });
               const m = (window.__photoMemoIndex || []).find((x) => String(x.id) === it.id);
               if (m) m.thumbDataUrl = dataUrl;
-              if (window.__photoMemoMarkers?.has(it.id)) { try { __removePhotoMemoMarker(it.id); } catch (_) {} }
+              // 보관 중인 마커(회색 자리표시)도 버린다 — 그대로 두면 돌아왔을 때 썸네일 없는 마커가 다시 올라온다
+              if (window.__photoMemoMarkers?.has(it.id) || __pmMarkerPool.has(String(it.id))) { try { __removePhotoMemoMarker(it.id); } catch (_) {} }
               try { updatePhotoMemoMarkersByBounds(); } catch (_) {}
             } catch (e) {
               console.warn('[lazy] 썸네일 실패:', it.id, e?.message || e);
@@ -26785,12 +26917,24 @@ const originalBase64 = event.target.result;
           // ⚠ subtree:false 로 두면 body **자신**의 속성만 본다. 모달은 보통 자식의
           //   style.display 를 바꾸며 열리고 닫히므로(#gdriveProgress 등), 그런 변화를
           //   못 봐서 한번 숨으면 다시 나타나지 않았다(2026-09-26 사용자 보고).
-          new MutationObserver(kick).observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ["style", "class", "hidden"],
+          // ⚠ 그렇다고 subtree:true 로 body 전체를 보면 안 된다 (2026-10-05 모바일 끊김 원인).
+          //   지도를 끄는 동안 네이버 지도가 타일·마커 style(transform)을 프레임마다 바꿔 전부 걸리고,
+          //   80ms 쉴 때마다 __bcModalOpen 이 getComputedStyle·getBoundingClientRect 로 레이아웃을 강제했다
+          //   (폰은 프레임 간격이 80ms 를 넘어 끄는 도중에도 반복). __bcModalOpen 은 body **직속 자식**만 보므로
+          //   감시도 body 의 자식 추가·삭제 + 직속 자식 각각의 속성 변경만 한다. 지도 쪽 자식은 빼고.
+          const BC_SKIP = new Set(["map", "mapWrapper", "bcMenu", "mapBreadcrumb"]);
+          const attrOpts = { attributes: true, attributeFilter: ["style", "class", "hidden"] };
+          const mo = new MutationObserver((recs) => {
+            for (const r of recs) {
+              if (r.type === "childList") r.addedNodes.forEach((n) => watchChild(n));
+            }
+            kick();
           });
+          const watchChild = (n) => {
+            if (n && n.nodeType === 1 && !BC_SKIP.has(n.id)) mo.observe(n, attrOpts);
+          };
+          mo.observe(document.body, { childList: true, ...attrOpts });
+          for (const ch of document.body.children) watchChild(ch);
         } catch (e) {}
         // 모달 내부 요소의 style 변경(예: display 토글)까지 잡으려면 클릭·키 입력 뒤에도 한 번 본다
         document.addEventListener("click", kick, true);

@@ -1730,9 +1730,10 @@ function __pickSchoolZoneColor(schoolId) {
   return __hslToHex(bestHue, __SCHOOL_ZONE_SAT, __SCHOOL_ZONE_LIGHT);
 }
 
-function __addSchoolZoneKeep(schoolId) {
+async function __addSchoolZoneKeep(schoolId) {
   const id = String(schoolId);
-  const vertexLists = window.schoolZoneMap?.get(id);
+  const vertexLists = await __schoolZoneGet(id); // 시군구 파일을 받아야 할 수 있다(2026-10-05, hongbutest 와 동일)
+  if (__schoolZoneKeepMap.has(id)) return; // 받는 사이 같은 학교를 다시 눌러 이미 올라갔으면 중복 금지
   if (!vertexLists || !vertexLists.length) return;
   const color = __pickSchoolZoneColor(id);
   const polygons = [];
@@ -1907,9 +1908,12 @@ function _getSchoolZoneId(school) {
     );
 }
 
-function drawSchoolZoneById(schoolId) {
+async function drawSchoolZoneById(schoolId) {
     const id = String(schoolId);
-    const vertexLists = window.schoolZoneMap?.get(id);
+    // 배정범위는 시군구 파일을 받아야 할 수 있다(2026-10-05). 받는 동안 다른 학교를 눌렀으면 이 그림은 버린다.
+    const token = (window.__schoolZoneDrawToken = (window.__schoolZoneDrawToken || 0) + 1);
+    const vertexLists = await __schoolZoneGet(id);
+    if (token !== window.__schoolZoneDrawToken) return;
 
     if (!vertexLists || !vertexLists.length) {
         return; // 배정범위 데이터 없음
@@ -1990,12 +1994,40 @@ function normalizeVertexLists(v) {
   return [];
 }
 
-
+// 배정범위를 **시군구 파일 단위**로 받아 schoolZoneMap 에 채운다 (2026-10-05, 학교 데이터 분리 — hongbutest 와 동일).
+// 같은 시군구의 다른 학교를 눌러도 다시 받지 않는다. 받기 실패하면 다음 클릭에 다시 시도.
+const __schoolZoneFiles = new Map(); // sgg5 → Promise
+async function __schoolZoneGet(schoolId) {
+  const id = String(schoolId);
+  const hit = window.schoolZoneMap?.get(id);
+  if (hit) return hit;
+  const s = window.__schoolById?.get(id);
+  const sgg5 = String(s?.cortarNo || "").slice(0, 5);
+  if (sgg5.length !== 5) return [];
+  let p = __schoolZoneFiles.get(sgg5);
+  if (!p) {
+    p = fetchWithETagCache("schoolZones/" + sgg5 + ".json")
+      .then((m) => {
+        if (!window.schoolZoneMap) window.schoolZoneMap = new Map();
+        for (const [k, v] of Object.entries(m || {})) {
+          if (!window.schoolZoneMap.has(k)) window.schoolZoneMap.set(k, normalizeVertexLists(v));
+        }
+      })
+      .catch((e) => {
+        __schoolZoneFiles.delete(sgg5);
+        console.warn("[배정범위] " + sgg5 + " 받기 실패:", e?.message || e);
+      });
+    __schoolZoneFiles.set(sgg5, p);
+  }
+  await p;
+  return window.schoolZoneMap?.get(id) || [];
+}
 
 async function loadSchools() {
   try {
-    // ✅ hongbutest와 동일: 분할 파일 4개 로드
-    const PARTS = ["eliSchools_1.json", "eliSchools_2.json", "eliSchools_3.json", "eliSchools_4.json"];
+    // ✅ hongbutest와 동일: 분리 파일(2026-10-05) — 마커·정보창용 학교 목록만. 배정범위는 학교를 누를 때
+    //   그 시군구 파일(schoolZones/<sgg5>.json)만 받는다(__schoolZoneGet). 옛 eliSchools_1~4.json 은 81MB.
+    const PARTS = ["eliSchools_lite.json"];
 
     // ✅ 파일 하나를 "배열 or 래퍼({schools:[]})" 모두 지원해서 배열로 통일
     async function fetchAsArray(url) {
@@ -2024,13 +2056,9 @@ async function loadSchools() {
     // ✅ 전체 학교 데이터 저장 (반드시 배열)
     window.schoolData = schools;
 
-    // ✅ 배정범위(폴리곤) 빠른 조회용 Map: id -> schoolVertexLists
-    window.schoolZoneMap = new Map(
-      schools.map(s => [
-        String(s.schoolCode ?? s.markerId ?? s.id ?? s.schoolName ?? ""),
-        normalizeVertexLists(s.schoolVertexLists)
-      ])
-    );
+    // ✅ 배정범위 캐시: id -> vertexLists. 비어 있다가 학교를 누르면 시군구 단위로 채운다(__schoolZoneGet).
+    window.schoolZoneMap = new Map();
+    window.__schoolById = new Map(schools.map(s => [_getSchoolZoneId(s), s]));
 
     // ✅ 초기 마커 업데이트
     updateSchoolMarkers();
