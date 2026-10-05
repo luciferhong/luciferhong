@@ -5232,6 +5232,8 @@
           });
 
         window.__aptDetailPromise = pAptDetail;
+        // 상세 자료가 오면 L/S 배지가 생긴다 — 그 전에 만들어 보관해 둔 마커는 배지가 없으므로 버린다
+        pAptDetail.then(() => { try { __aptMarkerPoolFlush(); } catch (_) {} });
 
         const pOthers = Promise.allSettled([
           loadSchools()
@@ -7106,6 +7108,9 @@
 
       // ✅ 2. 아파트 데이터를 fetch()로 가져오기
       async function loadApartments() {
+        // 조회수(칸 대표 고르기용)를 apt.json 과 **동시에** 받는다 (2026-10-05). 예전엔 줌 15 이하에 처음 들어갈 때
+        // 받기 시작해 그동안(최대 4초) 단지 마커를 안 그렸다. 139KB 라 5.4MB apt.json 보다 먼저 도착한다.
+        try { __aptViewLoad(); } catch (_) {}
         try {
           //const response = await fetch("https://your-github-username.github.io/data/apt.json"); // ✅ JSON 파일 사용
           //const response = await fetch("apt.json");
@@ -7754,7 +7759,7 @@
               marker.movementLine.setMap(null);
               marker.movementLine = null;
             }
-            marker.setMap(null);
+            __aptMarkerRelease(id, marker); // 버리지 않고 보관(다시 보이면 재사용, 2026-10-05)
             delete apartmentMarkers[id];
 
             // 선도 같이 제거
@@ -7892,10 +7897,152 @@
         __aptViewLoad();
         return true;
       }
+      // 단지의 조회수 — 단지 객체에 한 번 붙여 두고 재사용(조회수 표가 바뀌면 다시 읽음)
+      function __aptViewOf(a) {
+        if (a.__vRef !== __aptView) {
+          a.__v = (__aptView && __aptView[String(a.id)]) || 0;
+          a.__vRef = __aptView;
+        }
+        return a.__v;
+      }
+
+      // ===== 단지 격자 공간 색인 (2026-10-05) =====
+      // 예전엔 지도를 움직일 때마다 전국 21,568 단지 전부에 new naver.maps.LatLng 를 만들어 bounds.hasLatLng 로
+      // 판정했다(CPU 4배 감속 실측 회당 27ms). 위경도 격자로 한 번 나눠 두고, 화면에 걸친 칸의 단지만 숫자로 비교한다.
+      // 칸 안에는 apartmentData 의 **인덱스**를 두고, 결과를 인덱스 순으로 정렬해 예전과 같은 순서를 지킨다.
+      const __APT_GRID_DEG = 0.02; // 약 2km
+      let __aptGrid = { ref: null, len: -1, cells: null };
+      function __aptGridGet() {
+        if (__aptGrid.ref === apartmentData && __aptGrid.len === apartmentData.length && __aptGrid.cells) return __aptGrid.cells;
+        const cells = new Map();
+        for (let i = 0; i < apartmentData.length; i++) {
+          const a = apartmentData[i];
+          if (!Number.isFinite(a.lat) || !Number.isFinite(a.lng)) continue;
+          const key = Math.floor(a.lat / __APT_GRID_DEG) * 100000 + Math.floor(a.lng / __APT_GRID_DEG);
+          let arr = cells.get(key);
+          if (!arr) cells.set(key, (arr = []));
+          arr.push(i);
+        }
+        __aptGrid = { ref: apartmentData, len: apartmentData.length, cells };
+        return cells;
+      }
+      // 화면(bounds) 안 단지 — apartmentData 순서 그대로
+      function __aptInBounds(bounds) {
+        const sw = bounds.getSW(), ne = bounds.getNE();
+        const s = sw.lat(), w = sw.lng(), n = ne.lat(), e = ne.lng();
+        const cells = __aptGridGet();
+        const r0 = Math.floor(s / __APT_GRID_DEG), r1 = Math.floor(n / __APT_GRID_DEG);
+        const c0 = Math.floor(w / __APT_GRID_DEG), c1 = Math.floor(e / __APT_GRID_DEG);
+        const idx = [];
+        if ((r1 - r0 + 1) * (c1 - c0 + 1) > cells.size) {
+          // 화면이 아주 넓으면(칸 수가 단지 칸보다 많음) 칸을 다 훑는 편이 빠르다
+          for (const arr of cells.values()) for (const i of arr) idx.push(i);
+        } else {
+          for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+              const arr = cells.get(r * 100000 + c);
+              if (arr) for (const i of arr) idx.push(i);
+            }
+          }
+        }
+        idx.sort((x, y) => x - y);
+        const out = [];
+        for (const i of idx) {
+          const a = apartmentData[i];
+          if (a.lat >= s && a.lat <= n && a.lng >= w && a.lng <= e) out.push(a);
+        }
+        return out;
+      }
+
+      // ===== 단지 마커 재사용 보관함 (2026-10-05) =====
+      // 예전엔 화면 밖으로 나가거나 칸 대표에서 빠진 마커를 버리고, 다시 보이면 DOM·리스너·네이버 Marker 를
+      // 처음부터 만들었다(CPU 4배 감속 실측 갱신 1회 55ms 중 약 40ms). 이제 setMap(null) 로 지도에서만 떼어
+      // 보관했다가 다시 보이면 setMap(map) 만 한다. ⚠ setVisible(false) 로 숨기지 않는다 — DOM 에 남아 네이버 지도가
+      // 줌·끌기마다 위치를 다시 계산한다(10-03 마커 340개 70~110ms 끊김의 원인).
+      // 낡음 방지: 마커 모양을 바꾸는 전역 상태(백지도·상세 자료 도착·메모 아이콘 토글·필터로 전부 재생성)가 바뀌면
+      // __aptMarkerPoolFlush() 로 버전을 올리고 비운다. 지도가 다시 만들어지면(createMap) __poolMap 이 달라 버린다.
+      // 시세보기·물건수 표시가 켜져 있으면 쓰지 않는다 — hongbuSise.js 가 지도에 올라간 마커에만 가격을 다시 칠한다.
+      const __APT_MARKER_POOL_MAX = 300; // 화면 하나 PC 최대 50~70개 → 화면 5~6장 분량
+      const __aptMarkerPool = new Map(); // 단지번호 → 마커, Map 순서 = 오래 안 쓴 순(LRU)
+      let __aptMarkerVer = 0;
+      function __aptPoolEnabled() {
+        if (document.getElementById("toggleSiseDbPrice")?.checked) return false;
+        if (document.getElementById("siseCntMode")?.value) return false;
+        return true;
+      }
+      function __aptMarkerDestroy(m) {
+        try {
+          naver.maps.Event && naver.maps.Event.clearInstanceListeners && naver.maps.Event.clearInstanceListeners(m);
+          const el = m.getIcon?.()?.content;
+          if (el && el.__hoverHandlers) {
+            el.removeEventListener("mouseenter", el.__hoverHandlers.enter);
+            el.removeEventListener("mouseleave", el.__hoverHandlers.leave);
+            delete el.__hoverHandlers;
+          }
+          m.setMap(null);
+        } catch (e) {}
+      }
+      function __aptMarkerPoolFlush() {
+        __aptMarkerVer++;
+        for (const m of __aptMarkerPool.values()) __aptMarkerDestroy(m);
+        __aptMarkerPool.clear();
+      }
+      // 만든 마커에 보관 자격 표시(이 표시가 없는 마커 — 메모 저장 경로 등에서 따로 만든 것 — 는 보관하지 않고 버린다)
+      function __aptMarkerStamp(m) {
+        if (m) { m.__poolVer = __aptMarkerVer; m.__poolMap = window.map; }
+        return m;
+      }
+      // 지도에서 내린다 — 자격이 되면 보관, 아니면 버림
+      function __aptMarkerRelease(id, m) {
+        if (!m) return;
+        id = String(id);
+        if (__aptPoolEnabled() && m.__poolVer === __aptMarkerVer && m.__poolMap === window.map) {
+          try { m.setMap(null); } catch (_) {}
+          __aptMarkerPool.delete(id);
+          __aptMarkerPool.set(id, m);
+          while (__aptMarkerPool.size > __APT_MARKER_POOL_MAX) {
+            const [oldId, old] = __aptMarkerPool.entries().next().value;
+            __aptMarkerPool.delete(oldId);
+            __aptMarkerDestroy(old);
+          }
+        } else {
+          __aptMarkerDestroy(m);
+        }
+      }
+      // 보관함에서 꺼내 지도에 올린다(없거나 낡았으면 null → 새로 만든다)
+      function __aptMarkerTake(id) {
+        id = String(id);
+        const m = __aptMarkerPool.get(id);
+        if (!m) return null;
+        __aptMarkerPool.delete(id);
+        if (!__aptPoolEnabled() || m.__poolVer !== __aptMarkerVer || m.__poolMap !== window.map) {
+          __aptMarkerDestroy(m);
+          return null;
+        }
+        const el = m.getIcon?.()?.content;
+        if (el) {
+          el.style.transform = ""; // 위치조정(adjustMarkerOverlap) 흔적 — 새 마커와 같게
+          // 메모 아이콘은 보관 중에 바뀌었을 수 있다(드라이브 동기화·다른 경로 저장) → 다시 확인해 붙이거나 뗀다.
+          // 먼저 떼지 않는다(확인이 비동기라 깜박임).
+          const iconOn = !!document.getElementById("toggleMemoIcon")?.checked;
+          if (!iconOn) {
+            el.querySelector?.("img.__hongbu_memo_icon")?.remove();
+          } else {
+            memoExistsLazy(id).then((exists) => {
+              const img = el.querySelector?.("img.__hongbu_memo_icon");
+              if (!exists && img) img.remove();
+              else if (exists && !img) { el.__memoIconChecked = false; applyMemoIconLazy(id, el); }
+            }).catch(() => {});
+          }
+        }
+        m.setMap(window.map);
+        return m;
+      }
+
       // a 가 b 보다 칸 대표로 앞서는가 — 조회수 → 세대수 → id(작은 쪽: 지도를 조금 움직여도 대표가 안 바뀌게)
       function __aptRepBetter(a, b) {
-        const va = (__aptView && __aptView[String(a.id)]) || 0;
-        const vb = (__aptView && __aptView[String(b.id)]) || 0;
+        const va = __aptViewOf(a);
+        const vb = __aptViewOf(b);
         if (va !== vb) return va > vb;
         const ua = a.units || 0, ub = b.units || 0;
         if (ua !== ub) return ua > ub;
@@ -8004,6 +8151,7 @@
             }
           });
           apartmentMarkers = {}; // 캐시 초기화
+          __aptMarkerPoolFlush(); // 보관함도 비운다
           return; // ✅ 마커 제거 후 더 이상 작업하지 않음
         }
         if (__aptViewWaiting()) return; // 조회수 도착(또는 포기) 시 __aptRedraw 가 다시 부른다
@@ -8040,8 +8188,9 @@
         const presaleKeepYm = nowYm + 3;
 
         // ▼ 여기서 시도/시군구 필터까지 적용
-        const filteredAll = apartmentData.filter((apartment) => {
-          const inBounds = bounds.hasLatLng(new naver.maps.LatLng(apartment.lat, apartment.lng));
+        // 화면 안 단지만 격자 색인으로 먼저 추린다(위 __aptInBounds) — 예전엔 전국 전부를 LatLng 로 판정
+        const filteredAll = __aptInBounds(bounds).filter((apartment) => {
+          const inBounds = true;
           // ?focus= 로 연 단지는 필터(세대수·대형·연도·분양권)와 무관하게 화면 안이면 항상 표시
           if (window.__forceShowAptId && String(apartment.id) === window.__forceShowAptId) return inBounds;
           const unitOK = apartment.units >= minUnits;
@@ -8092,21 +8241,8 @@
           if (!keepIds.has(String(id))) {
             const m = apartmentMarkers[id];
             try {
-              if (m && typeof m.setMap === "function") {
-                naver.maps.Event &&
-                  naver.maps.Event.clearInstanceListeners &&
-                  naver.maps.Event.clearInstanceListeners(m);
-
-                /* ✅ 마커 엘리먼트의 호버 리스너도 제거 */
-                const markerElement = m.getIcon?.()?.content;
-                if (markerElement && markerElement.__hoverHandlers) {
-                  markerElement.removeEventListener("mouseenter", markerElement.__hoverHandlers.enter);
-                  markerElement.removeEventListener("mouseleave", markerElement.__hoverHandlers.leave);
-                  delete markerElement.__hoverHandlers;
-                }
-
-                m.setMap(null);
-              }
+              // 버리지 않고 보관 — 칸 대표에서 빠졌다가 돌아오면 재사용(2026-10-05, __aptMarkerRelease 주석)
+              if (m && typeof m.setMap === "function") __aptMarkerRelease(id, m);
             } catch (e) {}
             delete apartmentMarkers[id];
           }
@@ -8120,7 +8256,7 @@
           let marker = apartmentMarkers[apartment.id];
 
           if (!marker) {
-            marker = createDefaultMarker(apartment);
+            marker = __aptMarkerTake(apartment.id) || __aptMarkerStamp(createDefaultMarker(apartment));
             apartmentMarkers[apartment.id] = marker;
           }
 
@@ -8914,6 +9050,7 @@
           }
         });
         apartmentMarkers = {}; // ✅ 마커 캐시도 초기화
+        __aptMarkerPoolFlush(); // 보관 중인 마커도 메모 아이콘 상태가 달라졌다
 
         // ✅ 다시 그리기
         updateMarkers(window.map.getBounds()); // ✅ 즉시 업데이트
@@ -9146,6 +9283,8 @@
         // 3) 캐시 초기화
         apartmentMarkers = {};
         window.apartmentMarkers = {};
+        // 4) 보관함도 — 이 함수는 마커 모양을 바꾸는 토글(시세보기·대형·분양권 등)에서 불린다
+        try { __aptMarkerPoolFlush(); } catch (e) {}
       }
 
       function _applyYearFilterUpdate() {
@@ -25829,6 +25968,7 @@ const originalBase64 = event.target.result;
           if (m instanceof naver.maps.Marker) m.setMap(null);
         });
         apartmentMarkers = {};
+        __aptMarkerPoolFlush(); // 다시 만드는 경로 — 보관 중인 마커도 버린다
 
         // 현재 지도 bounds 기준으로 재생성
         updateMarkers(window.map.getBounds());
