@@ -10457,6 +10457,26 @@
 
         apartmentId = String(apartmentId);
 
+        // (2026-10-05) 패널을 갈아끼우기 전에 쓰던 글을 지킨다.
+        //  - 같은 단지 다시 그리기(상세 자료 늦게 도착 등): 글은 임시본으로, 저장 안 된 사진은 loadNote 가 유지
+        //  - 다른 단지 패널이 열려 있음(닫기 전에 다른 마커를 누름): 그 단지를 먼저 저장
+        let __noteRerender = false;
+        try {
+          const __prevInfo = document.getElementById("apartmentInfo");
+          const __prevOpen = __prevInfo && __prevInfo.style.display === "block";
+          const __prevId = __prevOpen ? String(__prevInfo.getAttribute("data-id") || "") : "";
+          if (__prevId && __prevId === apartmentId) {
+            __noteRerender = true;
+            __noteDraftFlush();
+          } else if (__prevId) {
+            __noteDraftFlush();
+            saveNote(__prevId);
+            // 다른 단지 마커를 누른 것 — 같은 누름이 "패널 바깥 탭"으로도 잡혀 닫기 타이머가 걸려 있다.
+            // 그대로 두면 방금 연 새 단지 패널이 곧바로 닫힌다.
+            clearTimeout(window.__apartmentInfoOutsideCloseTimer);
+          }
+        } catch (e) { console.warn("[note] 다시 그리기 전 저장 실패:", e); }
+
         // ✅ 메모/이미지 메모리 폭증 방지: 현재 선택된 아파트 1개만 캐시 유지
         __currentMemoAptId = apartmentId;
         __memoKeepOnly(apartmentId);
@@ -10675,6 +10695,7 @@
           // 위 한계는 지금까지와 같은 네 줄, 아래 한계는 두 줄. 줄 높이는 기기·미디어쿼리마다
           // 다르므로 상수로 박지 않고 계산된 line-height 에서 잰다.
           noteTextEl.addEventListener("input", __fitNoteText);
+          noteTextEl.addEventListener("input", __noteDraftSchedule); // 입력이 멈추고 1초 뒤 임시본 (2026-10-05)
           __fitNoteText();
           __watchLateBoxes(); // 사진·시세 칸이 나중에 채워지면 메모를 다시 맞춘다
           noteTextEl.addEventListener("focus", function () {
@@ -10688,7 +10709,7 @@
         }
 
         window.__hongbuOpenAptId = String(apartmentId); // 지연 로드가 "아직 이 단지를 보고 있는지" 판단용
-        loadNote(apartmentId);
+        loadNote(apartmentId, { keepUnsaved: __noteRerender });
         // ☁ 다른 기기가 고친 메모가 있으면 드라이브에서 받아 다시 표시 (로그인 상태일 때만, 시군구당 60초 간격)
         try { if (typeof __lzOnNoteOpen === 'function') __lzOnNoteOpen(apartmentId); } catch (_) {}
         // 🏠 매물임장 탭 버튼 — hongbuSise.js 가 탭바를 동기로 주입한 뒤여야 하므로 다음 틱에
@@ -20117,7 +20138,7 @@ const originalBase64 = event.target.result;
             const infoDiv = document.getElementById('apartmentInfo');
             if (infoDiv && infoDiv.style.display !== 'none') {
               console.log(`[lazy] 단지 ${id} 메모를 드라이브에서 받음 — 다시 표시`);
-              loadNote(id);
+              loadNote(id, { keepUnsaved: true }); // 쓰던 글·새 사진은 유지 (2026-10-05)
             }
           }
           if (window.map) { try { updateMarkers(window.map.getBounds()); } catch (_) {} }
@@ -25247,11 +25268,146 @@ const originalBase64 = event.target.result;
 
       /////////////////////////////////////////////////////////////////////////////////////////
 
-      async function saveNote(id) {
-        await initMemoIndexedDB();
+      // ── 단지메모 글 임시본 (2026-10-05) ──────────────────────────────────────────
+      // 글은 패널을 닫을 때만 IndexedDB 에 저장된다. 그 전에 ① 상세 자료가 늦게 와서 패널이 다시 그려지거나
+      // ② 드라이브 확인 뒤 loadNote 가 다시 불리거나 ③ 카메라 앱으로 넘어간 사이 페이지가 정리되면
+      // 쓰던 글이 조용히 사라졌다("메모+사진 올렸는데 메모만 지워짐" 제보).
+      // → 입력이 멈춘 뒤 1초에 한 번, 화면이 가려질 때·다시 그리기 직전엔 즉시 localStorage 에 둔다.
+      //   IndexedDB 로 바로 저장하지 않는 이유: saveNote 는 updatedAt 을 올리고 드라이브 업로드 대기열에 넣는다.
+      //   저장에 성공하면 그 단지의 임시본은 지운다. 사진은 넣지 않는다(글만, 수 KB).
+      const __NOTE_DRAFT_KEY = "__hongbuNoteDrafts_v1"; // { [aptId]: { memo, t } }
+      const __NOTE_DRAFT_TTL = 30 * 24 * 3600 * 1000;
+      let __noteDraftTimer = null;
+      function __noteDraftAll() {
+        try {
+          const o = JSON.parse(localStorage.getItem(__NOTE_DRAFT_KEY) || "{}");
+          return o && typeof o === "object" ? o : {};
+        } catch (_) { return {}; }
+      }
+      function __noteDraftWrite(o) {
+        try {
+          const now = Date.now();
+          for (const k of Object.keys(o)) if (!o[k] || now - (o[k].t || 0) > __NOTE_DRAFT_TTL) delete o[k];
+          if (Object.keys(o).length) localStorage.setItem(__NOTE_DRAFT_KEY, JSON.stringify(o));
+          else localStorage.removeItem(__NOTE_DRAFT_KEY);
+        } catch (_) {}
+      }
+      function __noteDraftGet(id) { return __noteDraftAll()[String(id)] || null; }
+      // savedMemo 를 주면 임시본이 그 글과 같을 때만 지운다(저장 뒤에 더 쓴 글은 남김)
+      function __noteDraftClear(id, savedMemo) {
+        const o = __noteDraftAll();
+        const d = o[String(id)];
+        if (!d) return;
+        if (savedMemo !== undefined && String(d.memo).trim() !== String(savedMemo).trim()) return;
+        delete o[String(id)];
+        __noteDraftWrite(o);
+      }
+      // 지금 열린 단지 패널의 글을 즉시 임시본으로. 불러온 값(baseline)과 같으면 임시본을 지운다.
+      function __noteDraftFlush() {
+        clearTimeout(__noteDraftTimer);
+        __noteDraftTimer = null;
+        try {
+          const info = document.getElementById("apartmentInfo");
+          const el = document.getElementById("noteText");
+          if (!info || !el || info.style.display !== "block") return;
+          const id = info.getAttribute("data-id");
+          if (!id || el.dataset.noteId !== String(id)) return; // 아직 loadNote 가 안 끝난 칸은 건드리지 않음
+          const o = __noteDraftAll();
+          if (el.value === (el.dataset.baseline || "")) delete o[id];
+          else o[id] = { memo: el.value, t: Date.now() };
+          __noteDraftWrite(o);
+        } catch (_) {}
+      }
+      function __noteDraftSchedule() {
+        clearTimeout(__noteDraftTimer);
+        __noteDraftTimer = setTimeout(__noteDraftFlush, 1000);
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") __noteDraftFlush();
+      });
+      window.addEventListener("pagehide", __noteDraftFlush);
 
-        const memo = (document.getElementById("noteText").value || "").trim();
-        const images = aptMemoImageList && aptMemoImageList[id] ? aptMemoImageList[id] : [];
+      // 접속 시 남아 있는 임시본(패널을 닫기 전에 페이지가 정리된 경우)을 IndexedDB 로 옮긴다.
+      // 그 단지를 다시 열지 않아도 저장·드라이브 백업이 되도록. 지금 열려 있는 단지는 건너뜀(닫을 때 저장).
+      // DB 쪽이 임시본보다 새 것(다른 기기가 나중에 저장)이면 임시본을 버린다.
+      // 빈 글 임시본은 삭제로 이어질 수 있어 옮기지 않고 버린다(보수적).
+      async function __noteDraftPromoteAll() {
+        const all = __noteDraftAll();
+        const ids = Object.keys(all);
+        if (!ids.length) return;
+        const openId = (() => {
+          const info = document.getElementById("apartmentInfo");
+          return info && info.style.display === "block" ? String(info.getAttribute("data-id") || "") : "";
+        })();
+        try { await initMemoIndexedDB(); } catch (e) { console.warn("[note] 임시본 옮기기 — DB 열기 실패:", e); return; }
+        for (const id of ids) {
+          if (id === openId) continue;
+          const d = all[id];
+          if (!d || !String(d.memo || "").trim()) { __noteDraftClear(id); continue; }
+          try {
+            const saved = await new Promise((res, rej) => {
+              const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+              req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
+              req.onerror = (e) => rej(e.target.error);
+              req.onsuccess = (e) => {
+                const db = e.target.result;
+                const tx = db.transaction(__noteTxStores(db), "readwrite");
+                const st = __noteStore(tx);
+                let out = null;
+                const g = st.get(id);
+                g.onsuccess = () => {
+                  const rec = g.result || { id, memo: "", images: [] };
+                  if ((Number(rec.updatedAt) || 0) > (d.t || 0)) { out = { skip: "db-newer" }; return; }
+                  const memo = String(d.memo).trim();
+                  if (!rec.deletedAt && (rec.memo || "") === memo) { out = { skip: "same" }; return; }
+                  const next = { ...rec, id, memo, updatedAt: Date.now(), deletedAt: null };
+                  if (rec.deletedAt) next.images = [];
+                  delete next.lazy;
+                  if (!next.sgg5) {
+                    try { const r = __syncAptIndex.get(String(id)); if (r?.sgg5) next.sgg5 = r.sgg5; } catch (_) {}
+                  }
+                  st.put(next);
+                  out = { rec: next };
+                };
+                tx.oncomplete = () => { db.close(); res(out); };
+                tx.onerror = (ev) => { db.close(); rej(ev.target.error); };
+              };
+            });
+            __noteDraftClear(id);
+            if (saved?.rec) {
+              console.log(`[note] 임시본을 IndexedDB 로 옮김: 단지 ${id}`);
+              try { window.__memoPresenceCache?.set(String(id), true); } catch (_) {}
+              try { window.__hongbuMemoKeySet?.add(String(id)); } catch (_) {}
+              try { __scheduleAutoSync(saved.rec.sgg5, { aptId: id }, { kind: "note", id }); } catch (_) {}
+              try { __syncRegionCache.built = false; } catch (_) {}
+            } else if (saved?.skip) {
+              console.log(`[note] 임시본 버림(${saved.skip}): 단지 ${id}`);
+            }
+          } catch (e) {
+            console.warn("[note] 임시본 옮기기 실패(임시본 유지):", id, e);
+          }
+        }
+      }
+      window.addEventListener("load", () => setTimeout(() => { __noteDraftPromoteAll().catch(() => {}); }, 3000));
+
+      async function saveNote(id) {
+        // ⚠ 글·사진은 await 전에 읽는다 (2026-10-05). DB 를 여는 동안 다른 단지가 그려지면
+        //   그 단지의 입력칸(빈 칸이거나 다른 글)을 읽어 이 단지를 삭제 표시하거나 덮어쓸 수 있었다.
+        const __info = document.getElementById("apartmentInfo");
+        if (__info && String(__info.getAttribute("data-id")) !== String(id)) {
+          console.warn("[note] 열린 패널이 다른 단지 — 저장 건너뜀:", id);
+          return;
+        }
+        const __noteEl = document.getElementById("noteText");
+        const memo = ((__noteEl && __noteEl.value) || "").trim();
+        const images = aptMemoImageList && aptMemoImageList[id] ? [...aptMemoImageList[id]] : [];
+        if (__noteEl && __noteEl.dataset.noteId !== String(id) && !memo && images.length === 0) {
+          // loadNote 가 아직 안 끝난 빈 칸 — 그대로 저장하면 기존 메모가 삭제 표시된다
+          console.warn("[note] 메모를 아직 불러오는 중 — 빈 칸 저장 건너뜀:", id);
+          return;
+        }
+
+        await initMemoIndexedDB();
 
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
         request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
@@ -25284,6 +25440,7 @@ const originalBase64 = event.target.result;
                     const now = Date.now();
                     const delReq = store.put({ id, memo: '', images: [], updatedAt: now, deletedAt: now });
                     delReq.onsuccess = function () {
+                      __noteDraftClear(id, "");
                       try {
                         window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), false);
                       } catch (e) {}
@@ -25310,6 +25467,8 @@ const originalBase64 = event.target.result;
                       console.error("❌ 삭제 실패:", event.target.error);
                       alert("❌ 메모 삭제 중 오류가 발생했습니다.");
                     };
+                  } else {
+                    __noteDraftClear(id, "");
                   }
                   return; // 🚫 여기서 끝 — 빈 내용은 저장/생성하지 않음
                 }
@@ -25327,7 +25486,7 @@ const originalBase64 = event.target.result;
                       }
                     }
                   }
-                  if (same) return; // 변경 없음 → 저장 스킵
+                  if (same) { __noteDraftClear(id, memo); return; } // 변경 없음 → 저장 스킵
                 }
 
                 // ✅ 내용이 있으면 저장/갱신 (updatedAt 자동 갱신, deletedAt 초기화)
@@ -25361,6 +25520,7 @@ const originalBase64 = event.target.result;
 
                 const putRequest = store.put(toSave);
                 putRequest.onsuccess = function () {
+                  __noteDraftClear(id, memo);
                   try {
                     window.__memoPresenceCache && window.__memoPresenceCache.set(String(id), true);
                   } catch (e) {}
@@ -25432,7 +25592,10 @@ const originalBase64 = event.target.result;
           } catch (wbErr) { console.warn('[lazy] 단지메모 write-back 실패', wbErr); }
         }, 300);
       }
-      async function loadNote(id) {
+      // opts.keepUnsaved: 같은 단지 패널을 다시 그리거나 드라이브 판으로 다시 불러올 때 —
+      // 아직 저장 안 된 새 사진(문자열 dataURL 항목, 저장된 것은 {data, addedAt} 객체)을 버리지 않는다.
+      async function loadNote(id, opts = {}) {
+        __noteDraftFlush(); // 같은 단지가 열려 있으면 지금 쓰던 글을 먼저 임시본으로
         await initMemoIndexedDB();
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
         request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
@@ -25448,7 +25611,26 @@ const originalBase64 = event.target.result;
             const noteEl = document.getElementById("noteText");
             const preview = document.getElementById("imagePreview");
 
-            if (!result) {
+            // (2026-10-05) 글: DB 값을 기준선으로 두고, 그보다 나중에 쓴 임시본이 있으면 되살린다
+            const dbMemo = result && !result.deletedAt ? result.memo || "" : "";
+            const draft = __noteDraftGet(id);
+            const useDraft = !!(draft && draft.memo !== dbMemo && (draft.t || 0) >= (Number(result?.updatedAt) || 0));
+            if (draft && !useDraft) __noteDraftClear(id); // DB 쪽이 더 새 것(다른 기기 저장) 이거나 같은 글
+            const shownMemo = useDraft ? draft.memo : dbMemo;
+            if (noteEl) {
+              noteEl.dataset.noteId = String(id);
+              noteEl.dataset.baseline = dbMemo;
+            }
+            if (useDraft) console.log(`[note] 단지 ${id} 저장 안 된 글을 임시본에서 되살림`);
+            // 저장 안 된 새 사진(문자열 항목) — keepUnsaved 일 때만 이어 붙인다
+            const dbImgs = __sanitizeImages(result && !result.deletedAt ? result.images || [] : []);
+            let unsaved = [];
+            if (opts.keepUnsaved) {
+              const have = new Set(dbImgs.map(__getImgData).filter(Boolean));
+              unsaved = (aptMemoImageList[id] || []).filter((x) => typeof x === "string" && x && !have.has(x));
+            }
+
+            if (!result && !useDraft && unsaved.length === 0) {
               // ✅ 데이터가 없는 경우 UI 초기화
               if (noteEl) { noteEl.value = ""; __fitNoteText(); }
               if (preview) {
@@ -25461,14 +25643,15 @@ const originalBase64 = event.target.result;
             }
 
             preview.innerHTML = "";
-            document.getElementById("noteText").value = result.memo || "";
+            if (noteEl) noteEl.value = shownMemo;
             __fitNoteText(); // 불러온 글 길이에 칸을 맞춘다
             // 빈 객체 같은 garbage 이미지 항목 자동 정리 (다음 saveNote 시 IndexedDB 도 자가 치유)
-            const cleanImgs = __sanitizeImages(result.images || []);
+            const cleanImgs = dbImgs.concat(unsaved);
             if (cleanImgs.length > 0) {
               preview.style.display = "flex";
             }
             aptMemoImageList[id] = cleanImgs;
+            if (unsaved.length) console.log(`[note] 단지 ${id} 저장 안 된 사진 ${unsaved.length}장 유지`);
 
             const renderImgItem = (item, imageDataUrl, slot) => { // slot: 미리 만들어 둔 자리(목록 순서 유지용, 2026-09-19)
               const wrapper = document.createElement("div");
@@ -25543,7 +25726,7 @@ const originalBase64 = event.target.result;
               return sl;
             };
 
-            const noteSgg5 = String(result.sgg5 || '').trim();
+            const noteSgg5 = String(result?.sgg5 || '').trim();
             for (const item of aptMemoImageList[id]) {
               const data = __getImgData(item);
               const addedAt = (item && typeof item === 'object') ? item.addedAt : null;
