@@ -3492,6 +3492,11 @@
                  켜짐이 기본이다(예전의 '제외 꺼짐'과 같은 뜻). 저장된 옛 값은 applyUIState 가 옮긴다. -->
             <label><input type="checkbox" id="includePresale" checked />분양권 포함</label>
           </div>
+          <!-- 2026-10-05 사용자 요청: 줌 15 이하에서 칸마다 대표(조회수 1등)만 남기는 정리(__aptDeclutter)를 끄고
+               필터를 통과한 단지를 전부 그린다. 최소 줌(14) 미만에서 마커를 숨기는 규칙은 그대로. id 가 있어 uiState_v1 에 저장·복원. -->
+          <div class="tb-row">
+            <label title="줌 15 이하에서도 칸 정리(조회수 1등만) 없이 필터를 통과한 단지를 모두 표시합니다. 밀집 지역에선 이름표가 겹치고 느려질 수 있습니다"><input type="checkbox" id="toggleAllComplexes" />ZOOM 레벨 상관없이 전체 단지 표기</label>
+          </div>
         </div>
         <!-- ── 교통 (2026-10-01 사용자 요청: "지하철 노선을 레이어로 옮기고 아파트와 학교 사이로")
              ⚠ 단추를 새로 만들지 않고 [도구] 에 있던 그 요소를 옮겼다 — 핸들러가 id 로 걸려 있다.
@@ -5583,10 +5588,11 @@
       // ==============================
       // ✅ SIG(시군구) 경계 표시 (줌 14 이하)
       // ==============================
-      const SIG_GEOJSON_PARTS = [
-        "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson",
-        "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson",
-      ];
+      // (2026-10-05) 법정동 합본 27.7MB(127만 점) → 결함 정리 + 30m 간소화본 5.1MB(23만 점). 생성·검증은
+      //   _tools/_build_sig_boundary.py · _tools/sig_simplify/verify.py (아파트 21,568곳 판정 일치, 카카오맵 법정경계 대조).
+      //   바깥 링만 담겨 있다(홍부는 원래 poly[0] 만 씀). 적재 2.1초·힙 +73MB → 0.29초·+13.5MB(CPU 6배 실측).
+      //   운영 hongbu.html 은 옛 두 파일을 그대로 쓰므로 원본은 지우지 않는다.
+      const SIG_GEOJSON_PARTS = ["sig_wgs84_30m.geojson"];
 
       let sigPrepared = null;
       // key -> { polygons: Polygon[], label: Marker|null, isSelected: bool }
@@ -6174,6 +6180,24 @@
       // 좌표가 속한 시군구 코드(5자리).
       // ⚠ 줌 13~14 라도 sigPrepared 가 null 인 경우가 있다(2026-09-22 사용자 보고: 동작구로 옮겨도 하이라이트가 안 넘어감)
       //    → 법정동(emdPrepared)을 먼저 보고, 못 찾으면 시군구(sigPrepared)로 폴백한다. code5 는 어느 쪽이든 같다.
+      // 화성시 4개 구(2026) — 법정동 코드 8자리 → 새 구 코드. 신네부 GUN 판정 + 카카오 coord2RegionCode 로 확정(2026-10-05,
+      // _tools/_build_sig_boundary.py 의 HWASEONG 표와 같다). 경계 파일이 없을 때의 폴백 판정에만 쓴다.
+      const __EMD_TO_NEW_SGG = {
+        "41590116": "41595", "41590117": "41595", "41590119": "41595", "41590120": "41595", "41590121": "41595", "41590122": "41595", "41590125": "41595", "41590126": "41595",
+        "41590123": "41593", "41590124": "41593", "41590253": "41593", "41590310": "41593", "41590320": "41593", "41590410": "41593",
+        "41590118": "41597", "41590127": "41597", "41590128": "41597", "41590129": "41597", "41590130": "41597", "41590131": "41597", "41590132": "41597", "41590133": "41597",
+        "41590134": "41597", "41590135": "41597", "41590136": "41597", "41590137": "41597", "41590138": "41597", "41590139": "41597",
+        "41590140": "41591", "41590256": "41591", "41590259": "41591", "41590262": "41591", "41590330": "41591", "41590340": "41591", "41590350": "41591", "41590360": "41591", "41590370": "41591", "41590400": "41591",
+      };
+      // 행정동 이름 → 새 구 코드 (행정동 상자 폴백용). 동탄1~9동·진안동·병점1/2동·봉담읍 … 은 이름이 유일하다.
+      const __ADM_TO_NEW_SGG = (() => {
+        const m = {};
+        for (const n of ["동탄1동", "동탄2동", "동탄3동", "동탄4동", "동탄5동", "동탄6동", "동탄7동", "동탄8동", "동탄9동"]) m[n] = "41597";
+        for (const n of ["진안동", "병점1동", "병점2동"]) m[n] = "41595"; // 기배동(기산+배양)·화산동은 두 구에 걸쳐 제외
+        for (const n of ["봉담읍", "매송면", "비봉면", "정남면"]) m[n] = "41593";
+        for (const n of ["새솔동", "우정읍", "향남읍", "남양읍", "마도면", "송산면", "서신면", "팔탄면", "장안면", "양감면"]) m[n] = "41591";
+        return m;
+      })();
       function __sggAtLatLng(lat, lng) {
         const hitPrepared = (feats, codeOf) => {
           for (const f of feats || []) {
@@ -6185,10 +6209,13 @@
           }
           return null;
         };
+        // 법정동·행정동 상자의 코드는 분리 전(화성시 41590) 이다 — 시군구 경계(4개 구)와 같은 답이 나오도록 바꿔 준다.
+        // 능동(41590118)은 두 구에 걸쳐 법정동만으로는 못 가르므로 큰 쪽(동탄구 69%)으로 둔다 — 시군구 경계가 있으면 그쪽이 먼저다.
+        const remapOld = (code8) => (code8 && code8.startsWith("41590") ? (__EMD_TO_NEW_SGG[code8.slice(0, 8)] || "41590") : code8);
         try {
           const r = hitPrepared(sigPrepared, (f) => f.properties?.sgg_cd)
-            || hitPrepared(emdPrepared, (f) => getEmdCodeFromProps(f.properties))
-            || hitPrepared(admPrepared, (f) => getAdmCodeFromProps(f.properties));
+            || hitPrepared(emdPrepared, (f) => remapOld(getEmdCodeFromProps(f.properties)))
+            || hitPrepared(admPrepared, (f) => __ADM_TO_NEW_SGG[String(f.properties?.adm_nm || "").split(" ").pop()] || getAdmCodeFromProps(f.properties));
           if (r) return r;
           // ⚠ 줌 13~14 에서 sigPrepared 가, 줌 15+ 가 아니면 emdPrepared 가 비어 있을 수 있다
           //   (2026-09-22 사용자 __hoverDbg() 가 hover:null / 나머지 정상 → 판정용 데이터 부재가 원인).
@@ -7890,10 +7917,15 @@
           });
         return __aptViewP;
       }
+      // [줌 레벨 상관없이 전체 단지 표기] 체크 — 칸 정리를 하지 않는다 (2026-10-05)
+      function __aptShowAll() {
+        return !!document.getElementById("toggleAllComplexes")?.checked;
+      }
       // 칸 정리하는 줌인데 조회수가 아직이면 true(그리기 보류)
       function __aptViewWaiting() {
         if (__aptView || __aptViewGiveUp || !window.map) return false;
         if (window.map.getZoom() > __APT_DECLUTTER_MAX_ZOOM) return false;
+        if (__aptShowAll()) return false; // 전부 그리는 모드는 조회수가 필요 없다
         __aptViewLoad();
         return true;
       }
@@ -8133,6 +8165,7 @@
           } catch (_) {}
           const mode = z < (window.__siseDbHook?.minZoom?.() ?? 14) ? "단지 숨김"
             : window.__siseDbHook?.hideFilterActive?.() ? "전부(시세 필터)"
+            : __aptShowAll() ? "전부(전체 표기)"
             : z <= __APT_DECLUTTER_MAX_ZOOM ? "칸 정리" : "전부";
           const txt = `줌 ${Math.round(z * 100) / 100} · ${mode} · ${n}개`;
           if (txt !== last) el.textContent = last = txt;
@@ -8225,7 +8258,8 @@
         // 겹침 정리 — 칸마다 조회수 1등만 (위 __aptDeclutter 주석).
         // 단, 시세보기 매매가·투자금 필터가 켜져 있으면 정리하지 않고 전부(2026-10-04 사용자 지정) — 칸 대표가
         // 필터에 걸려 칸이 비거나 같은 칸의 다른 일치 단지가 숨는 것을 막는다. 개수는 시세보기 300개 상한이 막는다.
-        const filtered = window.__siseDbHook?.hideFilterActive?.() ? filteredAll : __aptDeclutter(filteredAll);
+        // [줌 레벨 상관없이 전체 단지 표기](2026-10-05 사용자 요청) 가 켜져 있어도 정리하지 않는다
+        const filtered = (window.__siseDbHook?.hideFilterActive?.() || __aptShowAll()) ? filteredAll : __aptDeclutter(filteredAll);
 
         // [시세보기 훅] 스냅샷 로드 트리거·300개 초과 가드 (hongbuSise.js 미로드 시 무동작)
         if (window.__siseDbHook?.beforeRender?.(filtered) === false) return;
@@ -9353,6 +9387,10 @@
       });
 
       // ✅ 분양권 포함(includePresale) 변경 시 지도 즉시 반영
+      document.getElementById("toggleAllComplexes")?.addEventListener("change", () => {
+        clearApartmentMarkersAndCluster(); // 보관함도 비운다 — 칸 정리 여부가 바뀌면 화면의 단지 집합이 달라진다
+        if (window.map) updateMarkers(window.map.getBounds());
+      });
       document.getElementById("includePresale")?.addEventListener("change", () => {
         clearApartmentMarkersAndCluster();
         if (window.map) updateMarkers(window.map.getBounds());
@@ -11407,7 +11445,7 @@ const originalBase64 = event.target.result;
       // 대형포함·분양권 포함은 아파트가 켜져야 의미가 있다 → 아파트 OFF 면 비활성 (2026-09-22 사용자 요청)
       function __updateAptSubVis() {
         const on = !!document.getElementById("toggleApartments")?.checked;
-        ["over85Filter", "includePresale"].forEach((id) => {
+        ["over85Filter", "includePresale", "toggleAllComplexes"].forEach((id) => {
           const cb = document.getElementById(id);
           const lab = cb?.closest("label");
           if (lab) { lab.style.opacity = on ? "" : "0.45"; lab.title = on ? "" : "아파트를 켜야 사용할 수 있습니다"; }
@@ -17597,6 +17635,11 @@ const originalBase64 = event.target.result;
       const __syncAptIndex = new Map(); // aptId -> {sgg5, sidoCode, sidoName, sigunguName}
       const __syncSigunguNameByCode = new Map();
       const __syncSigunguNameByCode5 = new Map();
+      // 분리·폐지된 옛 시군구 코드의 이름 (2026-10-05). 화성시는 2026년 4개 구(41591 만세·41593 효행·41595 병점·41597 동탄)로
+      // 갈라져 경계·apt.json 에서 41590 이 사라졌지만, 그 전에 저장된 포토메모 레코드·드라이브 폴더(41590_경기도_화성시)는
+      // 옛 코드를 그대로 쓴다. 이름을 못 찾으면 동기화 설정·지역 목록에 코드만 보이므로 여기서 받쳐 준다.
+      const __SGG_LEGACY_NAMES = { "41590": "화성시" };
+      for (const [c, n] of Object.entries(__SGG_LEGACY_NAMES)) __syncSigunguNameByCode5.set(c, n);
 
       function __syncRegApt(sidoCodeRaw, sigunguCodeRaw, sigunguNameRaw) {
         const sidoCode = __syncNormSido(sidoCodeRaw);
@@ -17744,10 +17787,9 @@ const originalBase64 = event.target.result;
 
       async function __ensureSyncSigIndex() {
         if (__syncSigIndex.loaded) return;
-        const parts = [
-          'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson',
-          'sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson',
-        ];
+        // (2026-10-05) 예전엔 옛 두 파일(27.7MB)을 여기서 따로, 그것도 cache:'no-store' 로 받았다. 경계 그리기와 같은
+        //   경량본(SIG_GEOJSON_PARTS)을 쓴다 — 포토 시군구 판정·드라이브 폴더가 지도 판정과 어긋나지 않게.
+        const parts = SIG_GEOJSON_PARTS;
         const prepared = [];
         try {
           // 순차 로드 + 즉시 features 추출/raw GC — 모바일 OOM 방지
@@ -18817,7 +18859,11 @@ const originalBase64 = event.target.result;
             const note = c.value;
             const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
             if (id) {
-              const region = __syncAptIndex.get(id);
+              // (2026-10-05) 레코드에 저장된 sgg5 가 있으면 그것이 곧 드라이브의 폴더·파일명이다 — 그쪽을 우선한다.
+              //   apt.json 의 코드가 바뀐 지역(화성시 41590 → 4개 구)에서 옛 레코드를 새 코드로 분류하면
+              //   옛 폴더(41590)를 훑을 때 "로컬에 없음"이 되어 드라이브 판으로 덮고, 새 폴더에선 매번 재업로드를 시도했다.
+              const own = __dqValidSgg5(note?.sgg5) ? String(note.sgg5) : '';
+              const region = own ? { sgg5: own } : __syncAptIndex.get(id);
               if (region?.sgg5 === sgg5) localNotes[id] = note;
             }
             c.continue();
@@ -18845,7 +18891,9 @@ const originalBase64 = event.target.result;
               const photo = c.value;
               const id = String(photo?.id || '').trim();
               if (id) {
-                const region = __syncPhotoRegion(photo);
+                // (2026-10-05) 레코드의 sgg5 우선 — 경계가 바뀐 지역의 옛 사진을 새 코드로 분류하지 않는다(단지메모와 같은 이유)
+                const own = __dqValidSgg5(photo?.sgg5) ? String(photo.sgg5) : '';
+                const region = own ? { sgg5: own } : __syncPhotoRegion(photo);
                 if (region?.sgg5 === sgg5) localPhotos[id] = photo;
               }
               c.continue();
@@ -18876,8 +18924,9 @@ const originalBase64 = event.target.result;
                 const rec = c.value;
                 const id = String(rec?.id || '').trim();
                 if (id) {
-                  const centroid = __polygonMemoCentroid(rec.coords || []);
-                  const region = centroid ? __syncPhotoRegion(centroid) : null;
+                  // (2026-10-05) 레코드에 sgg5 가 있으면(드라이브에서 받았거나 한 번 올라간 것) 그 폴더가 곧 이 폴리곤의 자리 — 우선한다
+                  let region = __dqValidSgg5(rec?.sgg5) ? { sgg5: String(rec.sgg5) } : null;
+                  if (!region) { const centroid = __polygonMemoCentroid(rec.coords || []); region = centroid ? __syncPhotoRegion(centroid) : null; }
                   if (region?.sgg5 === sgg5) localPolygons[id] = rec;
                 }
                 c.continue();
@@ -18910,7 +18959,8 @@ const originalBase64 = event.target.result;
             const note = c.value;
             const id = String(note?.id ?? note?.aptId ?? note?.apartmentId ?? '').trim();
             if (id && !note?.deletedAt) { // (2026-09-19) 삭제 표시는 "있음" 으로 세지 않는다
-              const region = __syncAptIndex.get(id);
+              // (2026-10-05) 레코드의 sgg5 우선 — 지역 색인(__sggLoadLocalForSgg)과 같은 기준이어야 목록과 색인이 어긋나지 않는다
+              const region = __dqValidSgg5(note?.sgg5) ? { sgg5: String(note.sgg5) } : __syncAptIndex.get(id);
               if (region?.sgg5) sgg5Set.add(region.sgg5);
             }
             c.continue();
@@ -18931,7 +18981,7 @@ const originalBase64 = event.target.result;
           if (sigOk) {
             for (const photo of await __photoMetaScan(db)) {   // 쓰는 건 lat·lng·sgg5·deletedAt 뿐
               if (photo?.deletedAt) continue;                  // (2026-09-19) 삭제 표시 제외
-              const region = __syncPhotoRegion(photo);
+              const region = __dqValidSgg5(photo?.sgg5) ? { sgg5: String(photo.sgg5) } : __syncPhotoRegion(photo); // (2026-10-05) 레코드 sgg5 우선
               if (region?.sgg5) sgg5Set.add(region.sgg5);
             }
           }
@@ -18963,8 +19013,8 @@ const originalBase64 = event.target.result;
                   if (!c) { resolve(); return; }
                   const rec = c.value;
                   if (!rec?.deletedAt) { // (2026-09-19) 삭제 표시 제외 — 완전 삭제한 지역이 📱 로 남던 원인
-                    const centroid = __polygonMemoCentroid(rec.coords || []);
-                    const region = centroid ? __syncPhotoRegion(centroid) : null;
+                    let region = __dqValidSgg5(rec?.sgg5) ? { sgg5: String(rec.sgg5) } : null; // (2026-10-05) 레코드 sgg5 우선
+                    if (!region) { const centroid = __polygonMemoCentroid(rec.coords || []); region = centroid ? __syncPhotoRegion(centroid) : null; }
                     if (region?.sgg5) sgg5Set.add(region.sgg5);
                   }
                   c.continue();
@@ -19665,14 +19715,15 @@ const originalBase64 = event.target.result;
         }
         if (!__dqValidSgg5(s)) return '';
         // 자리표시자였던 로컬 레코드는 바로잡아 둔다(훅 없이 직접 put, updatedAt 유지)
-        if (kind !== 'polygon' && rec.sgg5 !== s) {
+        // (2026-10-05) 폴리곤도 기록한다 — 한 번 올라간 폴더(sgg5)를 레코드가 기억해야 경계가 바뀌어도 같은 폴더와 대조된다
+        if (rec.sgg5 !== s) {
           try { await __dqPatchSgg5(kind, rec.id, s); } catch (e) { console.warn('[dq] sgg5 보정 실패(무시):', e?.message || e); }
         }
         return s;
       }
       function __dqPatchSgg5(kind, id, sgg5) {
         // 매물임장('listing')은 이 큐를 타지 않는다 — 원본이 구글시트다 (2026-09-28)
-        const store = kind === 'note' ? 'apartmentNotes' : 'photoMemos';
+        const store = kind === 'note' ? 'apartmentNotes' : kind === 'polygon' ? 'polygonMemos' : 'photoMemos';
         return new Promise((resolve, reject) => {
           const req = indexedDB.open('hongbuMemo', HONGBU_MEMO_DB_VERSION);
           req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
@@ -20111,6 +20162,10 @@ const originalBase64 = event.target.result;
         const id = String(meta.id);
         // 시군구 매칭에서 빠진 로컬 레코드(sgg5 미상 등)를 덮어쓰지 않도록 id 로 한 번 더 확인
         if (!local) { try { local = await __dqReadRecord('note', id); } catch (_) {} }
+        // (2026-10-05) 로컬이 더 새 것이면 덮어쓰지 않는다 — 포토(__lzApplyPhoto)엔 있던 검사가 단지메모엔 없었다.
+        //   시군구 코드가 바뀐 지역(화성시 → 4개 구)에서 옛 코드 레코드가 지역 분류에서 빠지면 "로컬에 없음"으로 보여
+        //   이 기기에서 고친 글이 올라가기 전에 드라이브의 옛 판으로 덮일 수 있었다. 큐가 곧 로컬 판을 올린다.
+        if (local && !local.lazy && (Number(local.updatedAt) || 0) > (Number(meta.updatedAt) || 0)) return local;
         let rec;
         if (meta.deletedAt) {
           rec = { id, memo: '', images: [], sgg5: meta.sgg5, updatedAt: meta.updatedAt, deletedAt: meta.deletedAt };
@@ -20170,6 +20225,17 @@ const originalBase64 = event.target.result;
       }
       async function __lzApplyPolygon(meta) {
         const { schemaVersion, kind, ...rec } = meta;
+        // (2026-10-05) 로컬이 더 새 것이면 덮어쓰지 않는다 — 단지메모·포토와 같은 검사. 폴리곤은 레코드에 sgg5 가 없던 터라
+        //   시군구 코드가 바뀐 지역에서 지역 분류가 어긋나면 "로컬에 없음"으로 보여 드라이브 옛 판이 로컬 수정본을 덮을 수 있었다.
+        try {
+          const local = await __dqReadRecord('polygon', rec.id);
+          if (local && (Number(local.updatedAt) || 0) > (Number(rec.updatedAt) || 0)) {
+            // 로컬이 새 것: 드라이브 파일이 있는 폴더(sgg5)를 레코드에 기록하고, 그 폴더로 올리도록 큐에 넣는다
+            if (!__dqValidSgg5(local.sgg5) && __dqValidSgg5(rec.sgg5)) await __lzIdbPut('polygonMemos', { ...local, sgg5: String(rec.sgg5) });
+            try { __dqEnqueue('polygon', String(rec.id), __dqValidSgg5(rec.sgg5) ? String(rec.sgg5) : (local.sgg5 || ''), true); } catch (_) {}
+            return;
+          }
+        } catch (_) {}
         await __lzIdbPut('polygonMemos', rec);
         const old = __lzFindPolygonOnMap(rec.id);
         if (old) { try { _detachPolygonMemoFromMap(old); } catch (_) {} }
@@ -20382,14 +20448,18 @@ const originalBase64 = event.target.result;
         try {
           if (!window.__gdriveReady || !window.__gdriveAccessToken) return;
           const id = String(aptId);
-          let sgg5 = '';
-          try {
-            if (typeof __syncAptIndex !== 'undefined' && __syncAptIndex.size === 0) await __loadAptIndexForSync();
-            sgg5 = __syncAptIndex.get(id)?.sgg5 || '';
-          } catch (_) {}
-          if (!sgg5) return;
           let localRec = null;
           try { localRec = await __dqReadRecord('note', id); } catch (_) {}
+          let sgg5 = '';
+          try {
+            // (2026-10-05) 로컬 레코드의 sgg5 우선 — 옛 코드(화성시 41590)로 올린 메모는 그 폴더에 있다
+            if (__dqValidSgg5(localRec?.sgg5)) sgg5 = String(localRec.sgg5);
+            else {
+              if (typeof __syncAptIndex !== 'undefined' && __syncAptIndex.size === 0) await __loadAptIndexForSync();
+              sgg5 = __syncAptIndex.get(id)?.sgg5 || '';
+            }
+          } catch (_) {}
+          if (!sgg5) return;
           const f = await __lzFindSggFolder('notes', sgg5);
           if (!f) return;
           const newest = __lzNewest(await __dqList(f, true)).get(`note_${sgg5}_${id}`);
@@ -28735,15 +28805,21 @@ const originalBase64 = event.target.result;
           });
         }
 
-        // 외부 클릭 시 닫기 (wrapper 밖이면 닫음, 안이면 무시)
-        document.addEventListener("click", function (e) {
+        // 외부를 누르면 닫기 (wrapper 밖이면 닫음, 안이면 무시)
+        // ⚠ `click` 만으로는 부족하다 (2026-10-05 사용자 보고 "영역 밖을 클릭해도 안 닫힌다") — 네이버 지도가 지도 위
+        //   포인터 이벤트를 가져가면 `click` 이 문서까지 안 올라온다(특히 터치). 단지 모달 바깥 탭 판정과 같이
+        //   **pointerdown 캡처**(지도 처리기보다 먼저)에서 닫고, 혹시 모를 환경을 위해 click 도 남긴다.
+        const __closeSigunguDropdown = (e) => {
+          if (!_sigunguDropdownExpanded) return;
           const wrapper = document.getElementById("sigunguFilterWrapper");
           if (!wrapper || wrapper.contains(e.target)) return;
           _sigunguDropdownExpanded = false;
           document.getElementById("sigunguFilter")?.classList.remove("expanded");
           const btn = document.getElementById("sigunguToggleBtn");
           if (btn) btn.textContent = "▼";
-        });
+        };
+        document.addEventListener("pointerdown", __closeSigunguDropdown, true);
+        document.addEventListener("click", __closeSigunguDropdown);
       }
 
       // ✅ 선택된 시군구/시도의 "첫 번째 아파트" 좌표로 지도 이동
