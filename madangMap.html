@@ -124,10 +124,10 @@ const map = new naver.maps.Map('map', {
   zoom: 7
 });
 
-const SIG_GEOJSON_PARTS = [
-  "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson",
-  "sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson"
-];
+// (2026-10-06) 법정동 합본 2개(27.7MB) → 결함 정리·30m 간소화·화성시 4개 구 반영 경량본(5.1MB, hongbu 와 같은 파일). 생성: _tools/_build_sig_boundary.py
+const SIG_GEOJSON_PARTS = ["sig_wgs84_30m.geojson"];
+// 시군구 코드가 바뀐 지역: 저장된 앞마당 집합의 옛 코드를 새 코드로 바꾼다 (화성시 41590 → 2026 분리 4개 구)
+const SGG_CODE_SPLIT = { '41590': ['41591', '41593', '41595', '41597'] };
 
 // ✅ 시도 코드(sgg_cd 앞 2자리) → 이름
 const SIDO_NAMES = {
@@ -146,7 +146,17 @@ function loadMadangSet() {
     const raw = localStorage.getItem(MADANG_STORAGE_KEY);
     if (raw) {
       const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) return new Set(arr.map(String));
+      if (Array.isArray(arr)) {
+        // 옛 코드 이관: 화성시(41590)를 앞마당으로 두었다면 4개 구 전부로 바꾼다 — 새 경계 파일엔 41590 이 없어 사라지기 때문
+        const set = new Set();
+        let migrated = false;
+        for (const c of arr.map(String)) {
+          if (SGG_CODE_SPLIT[c]) { SGG_CODE_SPLIT[c].forEach(n => set.add(n)); migrated = true; }
+          else set.add(c);
+        }
+        if (migrated) { try { localStorage.setItem(MADANG_STORAGE_KEY, JSON.stringify([...set])); } catch (e) {} }
+        return set;
+      }
     }
   } catch (e) { console.warn('앞마당 로드 실패:', e); }
   return new Set();
@@ -406,20 +416,25 @@ function getLabelLatLngByPolylabel(geometry, bbox) {
 }
 
 // ✅ SIG 경계 로드 (전국, 2개 파트 병합)
+let _sigLoadingP = null; // 받는 중이면 같은 promise 를 돌려준다 — 예전엔 받는 동안 다시 부르면 두 번 받았다(2026-10-06)
 async function loadSigBoundaryOnce() {
   if (sigGeojsonRaw) return;
-  const results = await Promise.all(SIG_GEOJSON_PARTS.map(p => fetch(p).then(r => {
-    if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
-    return r.json();
-  })));
-  const merged = { type: "FeatureCollection", features: [] };
-  for (const fc of results) {
-    if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
-      merged.features.push(...fc.features);
+  if (_sigLoadingP) return _sigLoadingP;
+  _sigLoadingP = (async () => {
+    const results = await Promise.all(SIG_GEOJSON_PARTS.map(p => fetch(p).then(r => {
+      if (!r.ok) throw new Error(`Fetch failed: ${p} ${r.status}`);
+      return r.json();
+    })));
+    const merged = { type: "FeatureCollection", features: [] };
+    for (const fc of results) {
+      if (fc && fc.type === "FeatureCollection" && Array.isArray(fc.features)) {
+        merged.features.push(...fc.features);
+      }
     }
-  }
-  sigGeojsonRaw = merged;
-  sigPrepared = _prepareFeatureBBoxes(sigGeojsonRaw);
+    sigGeojsonRaw = merged;
+    sigPrepared = _prepareFeatureBBoxes(sigGeojsonRaw);
+  })().catch((e) => { _sigLoadingP = null; throw e; });
+  return _sigLoadingP;
 }
 
 // ✅ 일반시 하위 구인데 원본 sgg_nm에 시 이름이 빠진 경우(청주 서원구 등) 시명을 앞에 붙인다.
