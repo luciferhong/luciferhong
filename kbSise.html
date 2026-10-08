@@ -34,9 +34,9 @@ button:disabled { background:#999; cursor:wait; }
 /* [상세 숨기기]: 오른쪽 지역 상세 칸을 빼고 표를 전체 폭으로 */
 #kbGrid.nodet { grid-template-columns:minmax(0, 1fr); }
 #kbGrid.nodet .side { display:none; }
-.side { display:grid; gap:12px; align-content:start; }
+.side { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; align-content:start; overflow-y:auto; scrollbar-width:thin; }   /* 높이는 fitMx 가 화면에 맞춘다(넘치면 이 칸만 스크롤) */
 /* 최신 주 상승 TOP — 매매·전세 두 줄 나란히, 값은 표와 같은 증감 색 */
-.tops { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:8px; }
+.tops { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:8px; padding:8px; }
 .tcol .th { font-size:12px; font-weight:700; text-align:center; padding:3px 0; border-bottom:1px solid #e2ded8; margin-bottom:2px; }
 .tcol .th.sale { color:#a3442a; } .tcol .th.rent { color:#33658a; }
 .tcol ol { list-style:none; margin:0; padding:0; }
@@ -139,6 +139,7 @@ header .src a { color:#fff; font-weight:600; text-decoration:underline; text-und
     <div class="side">
       <div class="card detcard"><h2 id="detTitle">지역 상세</h2><div class="tiles" id="tiles"></div></div>
       <div class="card topcard"><h2 id="topTitle">최신 주 상승 TOP</h2><div class="tops" id="kbTops"></div></div>
+      <div class="card topcard"><h2 id="dropTitle">최신 주 하락 TOP</h2><div class="tops" id="kbDrops"></div></div>
     </div>
   </div>
 </section>
@@ -383,6 +384,9 @@ function paintVisible() {
 function fitMx() {
   const t = $("mx"), sc = t.parentElement, row = t.tBodies[0]?.querySelector("tr:not(.sp)");
   if (!row || !MXV) return;
+  // 오른쪽 열(상세·상승/하락 TOP)이 화면보다 길면 페이지가 아니라 그 열만 스크롤 — 아래 1px 검사가 표를 줄이지 않게 먼저
+  const side = document.querySelector(".side");
+  side.style.maxHeight = Math.max(200, Math.floor(window.innerHeight - side.getBoundingClientRect().top - 16)) + "px";
   sc.style.maxHeight = "";
   // 머리 줄 높이를 정수 픽셀로 — 소수면 칸 높이(정수로 반올림됨)와 어긋나 맨 아래가 0.x px 비친다
   for (const tr of t.tHead.rows) { tr.style.height = ""; tr.style.height = Math.ceil(tr.getBoundingClientRect().height) + "px"; }
@@ -607,13 +611,15 @@ function goToRegion(code) {
 // ── 최신 주 상승 TOP(오른쪽 상세 아래, 2026-10-02) ──
 // 지금 지역 묶음 안의 실제 지역만(전국·권역·시도 합계와 하위 구가 있는 시는 뺀다 — 전국·권역 묶음을 볼 때만 그 행들끼리) 최신 주 증감률 내림차순.
 const TOP_N = 10;
+// 하락 TOP(2026-10-08): 상승 카드 아래, 같은 모양으로 오름차순.
 function renderTops() {
-  if (!MXV || !KB) { $("kbTops").innerHTML = ""; return; }
+  if (!MXV || !KB) { $("kbTops").innerHTML = $("kbDrops").innerHTML = ""; return; }
   const L = KB.dates.length, i = L - 1;
   const leaves = MXV.rows.filter(r => !r.grp && (UI.kbGroup === TOP || r.sd));
   $("topTitle").textContent = `최신 주 상승 TOP ${TOP_N} · ${fmtDate(KB.dates[i])}`;
-  const col = (k, label) => {
-    const list = leaves.filter(r => r[k][i] != null).sort((a, b) => b[k][i] - a[k][i]).slice(0, TOP_N);
+  $("dropTitle").textContent = `최신 주 하락 TOP ${TOP_N} · ${fmtDate(KB.dates[i])}`;
+  const col = (k, label, up = true) => {
+    const list = leaves.filter(r => r[k][i] != null).sort((a, b) => up ? b[k][i] - a[k][i] : a[k][i] - b[k][i]).slice(0, TOP_N);
     return `<div class="tcol"><div class="th ${k}">${label}</div><ol>` + list.map((r, n) => {
       const v = r[k][i], f = kbFill(v);
       return `<li data-code="${r.code}" title="${esc(r.name)}"><span class="rk">${n + 1}</span>` +
@@ -622,7 +628,8 @@ function renderTops() {
     }).join("") + `</ol></div>`;
   };
   $("kbTops").innerHTML = col("sale", "매매") + col("rent", "전세");
-  $("kbTops").querySelectorAll("li").forEach(li => li.onclick = () => goToRegion(li.dataset.code));
+  $("kbDrops").innerHTML = col("sale", "매매", false) + col("rent", "전세", false);
+  document.querySelectorAll("#kbTops li, #kbDrops li").forEach(li => li.onclick = () => goToRegion(li.dataset.code));
 }
 function renderKbDetail() {
   const [gk, r] = findRow(UI.kbSel);
