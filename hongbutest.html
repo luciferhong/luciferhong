@@ -15989,9 +15989,20 @@ const originalBase64 = event.target.result;
               const rect = __mapEl0.getBoundingClientRect();
               // 지도 영역 밖 탭(완료 버튼 등)은 무시
               if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
-              const proj = window.map && window.map.getProjection && window.map.getProjection();
-              if (!proj || typeof proj.fromOffsetToCoord !== "function") return;
-              const coord = proj.fromOffsetToCoord(new naver.maps.Point(cx - rect.left, cy - rect.top));
+              // 지도를 끌어 옮기거나 핀치한 터치는 꼭짓점이 아니다 (touchstart 위치에서 10px 넘게 움직임)
+              if (e.changedTouches && e.changedTouches.length) {
+                const s = window.__polyTouchStart;
+                if (s && Math.hypot(cx - s.x, cy - s.y) > 10) return;
+                if (e.touches && e.touches.length > 0) return; // 멀티터치(핀치) 도중
+              }
+              // 갤럭시/Android 에서 projection.fromOffsetToCoord 가 어긋나 사각형이 꼬이는 문제 —
+              // 포토메모와 같이 현재 bounds 에 픽셀을 직접 매핑한 좌표를 우선 사용 (2026-10-09)
+              let coord = __coordFromClientXY(cx, cy);
+              if (!coord) {
+                const proj = window.map && window.map.getProjection && window.map.getProjection();
+                if (!proj || typeof proj.fromOffsetToCoord !== "function") return;
+                coord = proj.fromOffsetToCoord(new naver.maps.Point(cx - rect.left, cy - rect.top));
+              }
               if (!coord) return;
               // 직전 vertex와 거의 같은 위치면 dedupe (touchend+click 중복 방지)
               const arr = window.__polyOwnVertices;
@@ -16006,6 +16017,10 @@ const originalBase64 = event.target.result;
           };
           // ⚠️ #map이 아니라 document에 등록 — 네이버 드로잉이 첫 꼭짓점 이후
           // 자체 capture 리스너로 전파를 끊어 #map 리스너에는 touchend가 도달하지 않는다.
+          document.addEventListener("touchstart", (e) => {
+            const t = e.touches && e.touches[0];
+            window.__polyTouchStart = t ? { x: t.clientX, y: t.clientY } : null;
+          }, { capture: true, passive: true });
           document.addEventListener("touchend", recordVertex, { capture: true, passive: true });
         }
         // 그리기 모드 토글마다 vertex 배열 초기화 (drawBtn 핸들러 후행으로 등록)
