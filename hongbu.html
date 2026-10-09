@@ -4162,7 +4162,11 @@
           if (!window.__mapHandlerUIReady) {
             window.__mapHandlerUIReady = true;
             document.getElementById("startPolyline").addEventListener("click", () => window.mapHandler?.startPolylineMode());
-            document.getElementById("undoLastPointButton").addEventListener("click", () => window.mapHandler?.undoLastPoint());
+            document.getElementById("undoLastPointButton").addEventListener("click", () => {
+              // 면적 그리기 중이면 면적용 직전 취소, 아니면 경로용 (2026-10-09)
+              if (document.getElementById("drawPolygonBtn")?.classList.contains("is-drawing")) window.__polyUndoLast?.();
+              else window.mapHandler?.undoLastPoint();
+            });
             document.getElementById("completePolyline").addEventListener("click", () => window.mapHandler?.completePolyline()); // ✅ 추가됨*
             document.getElementById("continuePolyline").addEventListener("click", () => window.mapHandler?.continuePolylineMode());
             document.getElementById("downloadGPX").addEventListener("click", () => window.mapHandler?.downloadGPX());
@@ -15976,6 +15980,8 @@ const originalBase64 = event.target.result;
           window.__polyVertexTrackerInstalled = true;
           const recordVertex = (e) => {
             if (!drawBtn || !drawBtn.classList.contains("is-drawing")) return;
+            // 아래 #drawBar(완료·직전취소·그만두기)는 지도 영역 안에 떠 있다 — 그 단추 탭은 꼭짓점이 아니다
+            try { if (e.target && e.target.closest && e.target.closest("#drawBar")) return; } catch (_) {}
             let cx, cy;
             if (e.changedTouches && e.changedTouches.length) {
               cx = e.changedTouches[0].clientX;
@@ -15989,9 +15995,20 @@ const originalBase64 = event.target.result;
               const rect = __mapEl0.getBoundingClientRect();
               // 지도 영역 밖 탭(완료 버튼 등)은 무시
               if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
-              const proj = window.map && window.map.getProjection && window.map.getProjection();
-              if (!proj || typeof proj.fromOffsetToCoord !== "function") return;
-              const coord = proj.fromOffsetToCoord(new naver.maps.Point(cx - rect.left, cy - rect.top));
+              // 지도를 끌어 옮기거나 핀치한 터치는 꼭짓점이 아니다 (touchstart 위치에서 10px 넘게 움직임)
+              if (e.changedTouches && e.changedTouches.length) {
+                const s = window.__polyTouchStart;
+                if (s && Math.hypot(cx - s.x, cy - s.y) > 10) return;
+                if (e.touches && e.touches.length > 0) return; // 멀티터치(핀치) 도중
+              }
+              // 갤럭시/Android 에서 projection.fromOffsetToCoord 가 어긋나 사각형이 꼬이는 문제 —
+              // 포토메모와 같이 현재 bounds 에 픽셀을 직접 매핑한 좌표를 우선 사용 (2026-10-09)
+              let coord = __coordFromClientXY(cx, cy);
+              if (!coord) {
+                const proj = window.map && window.map.getProjection && window.map.getProjection();
+                if (!proj || typeof proj.fromOffsetToCoord !== "function") return;
+                coord = proj.fromOffsetToCoord(new naver.maps.Point(cx - rect.left, cy - rect.top));
+              }
               if (!coord) return;
               // 직전 vertex와 거의 같은 위치면 dedupe (touchend+click 중복 방지)
               const arr = window.__polyOwnVertices;
@@ -16006,8 +16023,24 @@ const originalBase64 = event.target.result;
           };
           // ⚠️ #map이 아니라 document에 등록 — 네이버 드로잉이 첫 꼭짓점 이후
           // 자체 capture 리스너로 전파를 끊어 #map 리스너에는 touchend가 도달하지 않는다.
+          document.addEventListener("touchstart", (e) => {
+            const t = e.touches && e.touches[0];
+            window.__polyTouchStart = t ? { x: t.clientX, y: t.clientY } : null;
+          }, { capture: true, passive: true });
           document.addEventListener("touchend", recordVertex, { capture: true, passive: true });
         }
+        // 면적 그리기 '직전 취소' — 네이버 드로잉이 그리는 중인 경로의 마지막 점과 자체 추적 배열의 마지막 점을 함께 뺀다.
+        window.__polyUndoLast = () => {
+          try {
+            const ov = window.__polyDrawingManager?._drawingTool?.currentDrawingOverlay;
+            const p = ov && typeof ov.getPath === "function" ? ov.getPath() : null;
+            if (p && typeof p.getLength === "function" && p.getLength() > 0) {
+              if (typeof p.pop === "function") p.pop();
+              else if (typeof p.removeAt === "function") p.removeAt(p.getLength() - 1);
+            }
+          } catch (e) { console.warn("면적 직전 취소 실패:", e); }
+          try { (window.__polyOwnVertices || []).pop(); } catch (_) {}
+        };
         // 그리기 모드 토글마다 vertex 배열 초기화 (drawBtn 핸들러 후행으로 등록)
         if (drawBtn) {
           drawBtn.addEventListener("click", () => { window.__polyOwnVertices = []; });
@@ -16024,7 +16057,17 @@ const originalBase64 = event.target.result;
           setTimeout(() => {
             if (!drawBtn.classList.contains("is-drawing")) return;
             // (A) 자체 추적 vertex가 충분하면 그걸로 폴리곤 생성 (모바일 경로)
-            let verts = (window.__polyOwnVertices || []).slice();
+            // 네이버 드로잉이 화면에 그리던 경로(직전 취소 반영)를 1순위로, 자체 추적은 폴백 (2026-10-09)
+            let verts = [];
+            try {
+              const ov0 = window.__polyDrawingManager?._drawingTool?.currentDrawingOverlay;
+              const p0 = ov0 && typeof ov0.getPath === "function" ? ov0.getPath() : null;
+              const arr0 = [];
+              if (p0 && typeof p0.getLength === "function") { for (let i = 0; i < p0.getLength(); i++) arr0.push(p0.getAt(i)); }
+              else if (Array.isArray(p0)) arr0.push(...p0);
+              if (arr0.length >= 3) verts = arr0;
+            } catch (_) {}
+            if (verts.length < 3) verts = (window.__polyOwnVertices || []).slice();
             if (verts.length < 3) {
               // (A2) 네이버 드로잉 in-progress 오버레이에서 직접 좌표 추출 —
               // 자체 추적이 실패해도 사용자가 화면에서 보던 폴리곤 그대로 커밋
@@ -24242,9 +24285,8 @@ const originalBase64 = event.target.result;
           bar.hidden = !(r || a);
           if (routeDone) routeDone.hidden = !r;
           if (areaDone) areaDone.hidden = !a;
-          // ⚠ '직전 취소'는 경로 전용이다(mapHandler.undoLastPoint). 면적은 네이버 드로잉이 맡아
-          //   우리가 점을 되돌릴 수 없으므로 그때는 숨긴다.
-          if (undo) undo.hidden = !r;
+          // '직전 취소'는 경로(mapHandler.undoLastPoint)·면적(__polyUndoLast) 둘 다 쓴다.
+          if (undo) undo.hidden = !(r || a);
         }
         window.__drawBarSync = sync;
 
