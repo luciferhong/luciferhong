@@ -4162,7 +4162,11 @@
           if (!window.__mapHandlerUIReady) {
             window.__mapHandlerUIReady = true;
             document.getElementById("startPolyline").addEventListener("click", () => window.mapHandler?.startPolylineMode());
-            document.getElementById("undoLastPointButton").addEventListener("click", () => window.mapHandler?.undoLastPoint());
+            document.getElementById("undoLastPointButton").addEventListener("click", () => {
+              // 면적 그리기 중이면 면적용 직전 취소, 아니면 경로용 (2026-10-09)
+              if (document.getElementById("drawPolygonBtn")?.classList.contains("is-drawing")) window.__polyUndoLast?.();
+              else window.mapHandler?.undoLastPoint();
+            });
             document.getElementById("completePolyline").addEventListener("click", () => window.mapHandler?.completePolyline()); // ✅ 추가됨*
             document.getElementById("continuePolyline").addEventListener("click", () => window.mapHandler?.continuePolylineMode());
             document.getElementById("downloadGPX").addEventListener("click", () => window.mapHandler?.downloadGPX());
@@ -16025,6 +16029,18 @@ const originalBase64 = event.target.result;
           }, { capture: true, passive: true });
           document.addEventListener("touchend", recordVertex, { capture: true, passive: true });
         }
+        // 면적 그리기 '직전 취소' — 네이버 드로잉이 그리는 중인 경로의 마지막 점과 자체 추적 배열의 마지막 점을 함께 뺀다.
+        window.__polyUndoLast = () => {
+          try {
+            const ov = window.__polyDrawingManager?._drawingTool?.currentDrawingOverlay;
+            const p = ov && typeof ov.getPath === "function" ? ov.getPath() : null;
+            if (p && typeof p.getLength === "function" && p.getLength() > 0) {
+              if (typeof p.pop === "function") p.pop();
+              else if (typeof p.removeAt === "function") p.removeAt(p.getLength() - 1);
+            }
+          } catch (e) { console.warn("면적 직전 취소 실패:", e); }
+          try { (window.__polyOwnVertices || []).pop(); } catch (_) {}
+        };
         // 그리기 모드 토글마다 vertex 배열 초기화 (drawBtn 핸들러 후행으로 등록)
         if (drawBtn) {
           drawBtn.addEventListener("click", () => { window.__polyOwnVertices = []; });
@@ -24269,9 +24285,8 @@ const originalBase64 = event.target.result;
           bar.hidden = !(r || a);
           if (routeDone) routeDone.hidden = !r;
           if (areaDone) areaDone.hidden = !a;
-          // ⚠ '직전 취소'는 경로 전용이다(mapHandler.undoLastPoint). 면적은 네이버 드로잉이 맡아
-          //   우리가 점을 되돌릴 수 없으므로 그때는 숨긴다.
-          if (undo) undo.hidden = !r;
+          // '직전 취소'는 경로(mapHandler.undoLastPoint)·면적(__polyUndoLast) 둘 다 쓴다.
+          if (undo) undo.hidden = !(r || a);
         }
         window.__drawBarSync = sync;
 
