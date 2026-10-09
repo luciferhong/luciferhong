@@ -169,7 +169,7 @@
 </head>
 <body>
 
-<h1>[루시퍼홍] 홍급지도 <span style="font-size: 14px; color: gray;">(공급데이터 업데이트: 2026-08-26)</span></h1>
+<h1>[루시퍼홍] 홍급지도 <span style="font-size: 14px; color: gray;">(공급데이터 업데이트: 2026-10-09)</span></h1>
 <div id="filterContainer">
     <label>시도: <select id="sidoFilter" style="width: 100px;"></select></label>
     <label>시군구:</label>
@@ -190,6 +190,8 @@
     <input type="number" id="minHouseholds" style="width:70px;" placeholder="0">
 </label>
 
+<button id="markerAdjustBtn" type="button" title="겹친 라벨을 자동으로 밀어 펼침">라벨 위치조정</button>
+<button id="markerResetBtn" type="button" title="라벨 위치 초기화">라벨 위치초기화</button>
 <button id="searchBtn">조회</button> (조회기간을 길게 하면 화면이 버벅일 수 있습니다! 5년 이내를 권장합니다)
    
 </div>
@@ -691,7 +693,7 @@ function updateMarkerSelection(markerElement, isSelected) {
                 let newContent = `
 					<div class="marker-container" 
 						 data-marker-index="${index}" 
-						 style="display: flex; align-items: center; position: relative;">
+						 style="display: flex; align-items: center; position: relative;${marker.__off ? ` transform: translate(${marker.__off.dx}px, ${marker.__off.dy}px);` : ''}">
 						<img src="icon.png" style="width:${markerSize.width}px; height:${markerSize.height}px;">
 						<div class="custom-infowindow" 
 							style="background:${bgColor}; 
@@ -824,6 +826,85 @@ function updateMarkerSelection(markerElement, isSelected) {
         updateMarkers();
     });
 
+
+	// ── 라벨 위치조정 (홍부 hongbutest 의 '라벨 위치조정' 이식) ─────────────────
+	// 마커를 idle 마다 setIcon 으로 다시 그리므로, 밀어낸 값은 marker.__off 에 저장해 두고
+	// updateMarkers 가 content 의 transform 으로 다시 입힌다. 값은 화면 픽셀이라 줌이 바뀌면 버린다.
+	function __markerBox(container) {
+		// 마커 이미지(컨테이너)와 absolute 로 얹힌 라벨 상자의 합집합
+		const r = container.getBoundingClientRect();
+		let l = r.left, t = r.top, rt = r.right, b = r.bottom;
+		const lab = container.querySelector(".custom-infowindow");
+		if (lab && lab.offsetParent !== null) {
+			const lr = lab.getBoundingClientRect();
+			l = Math.min(l, lr.left); t = Math.min(t, lr.top);
+			rt = Math.max(rt, lr.right); b = Math.max(b, lr.bottom);
+		}
+		return { l, t, w: rt - l, h: b - t };
+	}
+
+	function resetMarkerOverlap() {
+		markers.forEach(m => { delete m.__off; });
+		document.querySelectorAll(".marker-container").forEach(el => { el.style.transform = ""; });
+	}
+
+	function adjustMarkerOverlap() {
+		const GAP = 3, MAX_DISP = 160;
+		resetMarkerOverlap();
+
+		const items = [];
+		document.querySelectorAll(".marker-container").forEach(el => {
+			const idx = parseInt(el.getAttribute("data-marker-index"), 10);
+			const m = markers[idx];
+			if (!m) return;
+			const bx = __markerBox(el);
+			if (bx.w === 0 || bx.h === 0) return;
+			const hh = parseInt(m.data.households, 10) || 0;
+			// 세대수가 큰 단지일수록 제자리를 지키고 작은 쪽이 비켜난다
+			items.push({ m, el, cx: bx.l + bx.w / 2, cy: bx.t + bx.h / 2, w: bx.w, h: bx.h,
+				pri: hh >= 1000 ? 0 : hh >= 500 ? 1 : 2, dx: 0, dy: 0 });
+		});
+
+		const clamp = v => Math.max(-MAX_DISP, Math.min(MAX_DISP, v));
+		for (let iter = 0; iter < 150; iter++) {
+			let any = false;
+			for (let i = 0; i < items.length; i++) {
+				for (let j = i + 1; j < items.length; j++) {
+					const a = items[i], b = items[j];
+					const ddx = (a.cx + a.dx) - (b.cx + b.dx);
+					const ddy = (a.cy + a.dy) - (b.cy + b.dy);
+					const ox = (a.w + b.w) / 2 + GAP - Math.abs(ddx);
+					const oy = (a.h + b.h) / 2 + GAP - Math.abs(ddy);
+					if (ox <= 0 || oy <= 0) continue;
+					any = true;
+					// 라벨은 가로로 긴 상자라 겹침이 얕은 축으로 밀어야 가장 덜 움직인다
+					let ux = 0, uy = 0, push;
+					if (oy <= ox) { uy = ddy >= 0 ? 1 : -1; push = oy; }
+					else          { ux = ddx >= 0 ? 1 : -1; push = ox; }
+					if (a.pri < b.pri) {
+						b.dx = clamp(b.dx - ux * push); b.dy = clamp(b.dy - uy * push);
+					} else if (a.pri > b.pri) {
+						a.dx = clamp(a.dx + ux * push); a.dy = clamp(a.dy + uy * push);
+					} else {
+						a.dx = clamp(a.dx + ux * push / 2); a.dy = clamp(a.dy + uy * push / 2);
+						b.dx = clamp(b.dx - ux * push / 2); b.dy = clamp(b.dy - uy * push / 2);
+					}
+				}
+			}
+			if (!any) break;
+		}
+
+		items.forEach(({ m, el, dx, dy }) => {
+			if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+			m.__off = { dx: Math.round(dx), dy: Math.round(dy) };
+			el.style.transform = `translate(${m.__off.dx}px, ${m.__off.dy}px)`;
+		});
+	}
+
+	document.getElementById("markerAdjustBtn").addEventListener("click", adjustMarkerOverlap);
+	document.getElementById("markerResetBtn").addEventListener("click", resetMarkerOverlap);
+	naver.maps.Event.addListener(map, "zoom_changed", resetMarkerOverlap);
+	// ─────────────────────────────────────────────────────────────────
 
 	naver.maps.Event.addListener(map, 'idle', updateMarkers);
 
