@@ -142,13 +142,16 @@
         : p === 'denied' ? '<span class="bad">알림 차단됨 — 주소창 왼쪽 사이트 설정에서 허용으로 바꿔 주세요</span>'
         : '<span class="mute">아직 허용하지 않음</span>';
     }
-    // 서버 상태 + 단지 목록
+    // 서버 상태 + 단지 목록 (endpoint 를 같이 보내 "이 기기" 구독 여부를 받는다)
     try {
-      const d = await api('/push_targets?key=' + encodeURIComponent(KEY));
-      $('stSub').innerHTML = d.subscribed
-        ? (d.disabled ? '<span class="bad">구독이 끊어졌습니다 — 알림 켜기를 다시 눌러 주세요</span>'
-                      : `<span class="ok">등록됨</span> <span class="mute">(${d.endpoint_host || ''}${d.last_sent_at ? ' · 마지막 발송 ' + d.last_sent_at.slice(5, 16) : ''})</span>`)
-        : '<span class="mute">없음 — 아래 알림 켜기</span>';
+      const mySub = await localSub().catch(() => null);
+      const d = await api('/push_targets?key=' + encodeURIComponent(KEY) + (mySub ? '&endpoint=' + encodeURIComponent(mySub.endpoint) : ''));
+      const dc = d.device_count || 0;
+      const at = (d.settings && d.settings.alert_time) || '08:10';
+      $('stSub').innerHTML = (d.subscribed
+        ? (d.disabled ? '<span class="bad">이 기기 구독이 끊어졌습니다 — 알림 켜기를 다시 눌러 주세요</span>'
+                      : `<span class="ok">이 기기 등록됨</span> <span class="mute">(${d.endpoint_host || ''}${d.last_sent_at ? ' · 마지막 발송 ' + d.last_sent_at.slice(5, 16) : ''})</span>`)
+        : '<span class="mute">이 기기 없음 — 아래 알림 켜기</span>') + ` <span class="mute">· 기기 ${dc}대 · 매일 ${at}</span>`;
       renderTargets(d.targets || []);
     } catch (e) {
       $('stSub').innerHTML = '<span class="bad">서버 연결 실패: ' + e.message + '</span>';
@@ -210,9 +213,10 @@
     $('btnOff').disabled = true;
     try {
       const sub = await localSub();
+      const ep = sub ? sub.endpoint : '';
       if (sub) await sub.unsubscribe();
-      await api('/push_unsubscribe', { key: KEY });
-      msg('알림을 꺼서 서버 구독을 지웠습니다. 단지 목록은 남아 있습니다.');
+      await api('/push_unsubscribe', { key: KEY, endpoint: ep });
+      msg('이 기기의 알림을 껐습니다. 단지 목록과 다른 기기는 그대로입니다.');
     } catch (e) { msg('실패: ' + e.message, true); }
     finally { $('btnOff').disabled = false; refresh(); }
   }
@@ -220,7 +224,8 @@
   async function test() {
     $('btnTest').disabled = true;
     try {
-      const d = await api('/push_test', { key: KEY, url: location.href });
+      const mySub = await localSub().catch(() => null);
+      const d = await api('/push_test', { key: KEY, url: location.href, endpoint: mySub ? mySub.endpoint : '' });
       msg(`테스트 발송 ${d.ok ? '성공' : '실패'} (푸시 서비스 응답 ${d.status}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
     } catch (e) { msg('테스트 실패: ' + e.message, true); }
     finally { $('btnTest').disabled = false; }

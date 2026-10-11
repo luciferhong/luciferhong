@@ -34044,12 +34044,14 @@ const originalBase64 = event.target.result;
         const SERVER = (ls.get("realAlertServer") || DEFAULT_SERVER).replace(/\/$/, "");
         const SW_URL = "realAlert/sw.js", SW_SCOPE = "realAlert/";
         const PAGE_URL = new URL("realAlert/", location.href).href;
+        // 키 = 사용자(기기 간 공유). 구글드라이브 `HongbuMemo/realAlert_key.json` 에 저장해 PC·폰이 같은 키를 쓴다(아래 driveKeySync).
         let KEY = ls.get("realAlertKey");
         if (!KEY || !/^[A-Za-z0-9_-]{16,64}$/.test(KEY)) {
           const a = new Uint8Array(16); crypto.getRandomValues(a);
           KEY = Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
           ls.set("realAlertKey", KEY);
         }
+        let myEndpoint = "";   // 이 브라우저의 푸시 endpoint(구독이 있으면) — 서버에 "이 기기" 를 알리는 용도
         const $ = (id) => document.getElementById(id);
         const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -34074,7 +34076,15 @@ const originalBase64 = event.target.result;
           renderStatus();
           decorate();
         }
-        async function fetchState() { applyState(await api("/push_targets?key=" + encodeURIComponent(KEY))); return state; }
+        async function refreshEndpoint() {
+          try { const s = await localSub(); myEndpoint = s ? s.endpoint : ""; } catch (e) { myEndpoint = ""; }
+          return myEndpoint;
+        }
+        async function fetchState() {
+          await refreshEndpoint();
+          applyState(await api("/push_targets?key=" + encodeURIComponent(KEY) + (myEndpoint ? "&endpoint=" + encodeURIComponent(myEndpoint) : "")));
+          return state;
+        }
 
         function aptById(id) {
           try { return (apartmentData || []).find((a) => String(a.id) === String(id)) || null; } catch (e) { return null; }
@@ -34095,9 +34105,11 @@ const originalBase64 = event.target.result;
           const st = $("raStatus"); if (!st) return;
           const n = (state.targets || []).length;
           const sub = !supported ? "이 브라우저는 웹푸시 미지원"
-            : state.disabled ? "구독 끊어짐 — 알림 켜기 다시"
-            : state.subscribed ? "푸시 구독 있음" : "푸시 구독 없음 — 알림 켜기";
-          st.textContent = `단지 ${n}개 · ${sub}`;
+            : state.disabled ? "이 기기 구독 끊어짐 — 알림 켜기 다시"
+            : state.subscribed ? "이 기기 알림 켜짐" : "이 기기 알림 꺼짐 — 알림 켜기";
+          const dc = state.device_count || 0;
+          const at = (state.settings && state.settings.alert_time) || "08:10";
+          st.textContent = `단지 ${n}개 · ${sub}${dc > 1 ? ` · 기기 ${dc}대` : ""} · 매일 ${at}`;
           const mb = $("raManageBtn"); if (mb) mb.textContent = `🔔 알림 단지 관리 (${n})`;
           const eb = $("raEnableBtn"); if (eb) eb.textContent = state.subscribed && !state.disabled ? "알림 테스트" : "알림 켜기";
         }
@@ -34164,12 +34176,16 @@ const originalBase64 = event.target.result;
           $("raBar").hidden = true;
           decorate();
         }
+        function targetItem(id, nm) {
+          const a = aptById(id) || {};
+          return { complex_id: id, complex_name: nm || a.name || "", sido: String(a.sido || "").trim(), sigungu: String(a.sigungu || "").trim() };
+        }
         async function finishSelect() {
-          const items = [...pending].map(([id, nm]) => ({ complex_id: id, complex_name: nm || (aptById(id) || {}).name || "" }));
+          const items = [...pending].map(([id, nm]) => targetItem(id, nm));
           const added = items.filter((t) => !regIds.has(t.complex_id)).length;
           const removed = [...regIds].filter((id) => !pending.has(id)).length;
           try {
-            applyState(await api("/push_targets", { key: KEY, set: items }));
+            applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint }));
             stopSelect();
             toast(`✓ 실거래 알림 단지 ${items.length}개 등록 (+${added} −${removed})`);
             if (items.length && (!state.subscribed || state.disabled)) await enablePush(true);
@@ -34234,6 +34250,7 @@ const originalBase64 = event.target.result;
             }
             if (!sub) { toast("푸시 구독 생성 중…"); sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) }); }
             toast("서버에 등록 중…");
+            myEndpoint = sub.endpoint;
             applyState(await api("/push_subscribe", { key: KEY, subscription: sub.toJSON(), ua: navigator.userAgent }));
             toast("✓ 브라우저 알림이 켜졌습니다. [알림 테스트]로 확인해 보세요.");
             return true;
@@ -34242,15 +34259,17 @@ const originalBase64 = event.target.result;
         async function disablePush() {
           try {
             const sub = await localSub();
+            const ep = sub ? sub.endpoint : myEndpoint;
             if (sub) await sub.unsubscribe();
-            await api("/push_unsubscribe", { key: KEY });
+            await api("/push_unsubscribe", { key: KEY, endpoint: ep });   // 이 기기만 — 다른 기기 구독은 그대로
             await fetchState();
-            toast("알림을 꺼서 서버 구독을 지웠습니다. 단지 목록은 남아 있습니다.");
+            toast("이 기기의 알림을 껐습니다. 단지 목록과 다른 기기는 그대로입니다.");
           } catch (e) { toast("실패: " + e.message, true); }
         }
         async function testPush() {
           try {
-            const d = await api("/push_test", { key: KEY, url: location.href.split("#")[0] });
+            await refreshEndpoint();
+            const d = await api("/push_test", { key: KEY, url: location.href.split("#")[0], endpoint: myEndpoint });
             toast(`테스트 발송 ${d.ok ? "성공" : "실패"} (푸시 서비스 응답 ${d.status}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
           } catch (e) {
             if (/구독이 없습니다/.test(e.message)) toast("이 브라우저는 아직 푸시 구독이 없습니다 — 먼저 [알림 켜기]를 눌러 권한을 허용해 주세요.", true);
@@ -34387,6 +34406,50 @@ const originalBase64 = event.target.result;
           document.body.appendChild(ov);
         }
 
+        // ── 구글드라이브로 키 공유 (2026-10-11 사용자: "PC 와 모바일이 같은 단지를 보게") ──
+        // 로그인된 드라이브 루트(HongbuMemo/)의 realAlert_key.json 에 키를 둔다. 다른 기기가 로그인하면 그 키를 받아
+        // ① 자기 옛 키의 단지를 새 키에 합치고 ② 자기 푸시 구독을 새 키로 옮긴다 → 단지 목록·알림 시각 공유, 알림은 모든 기기로.
+        const DRIVE_KEY_FILE = "realAlert_key.json";
+        let driveStatus = "";
+        let driveSyncing = false, driveSynced = false;
+        async function adoptKey(newKey) {
+          const oldKey = KEY;
+          let oldTargets = [];
+          try { oldTargets = (await api("/push_targets?key=" + encodeURIComponent(oldKey))).targets || []; } catch (e) {}
+          KEY = newKey; ls.set("realAlertKey", newKey);
+          if (oldTargets.length) {
+            try { await api("/push_targets", { key: KEY, add: oldTargets.map((t) => ({ complex_id: t.complex_id, complex_name: t.complex_name, sido: t.sido, sigungu: t.sigungu })) }); } catch (e) {}
+          }
+          try { const sub = await localSub(); if (sub) await api("/push_subscribe", { key: KEY, subscription: sub.toJSON(), ua: navigator.userAgent }); } catch (e) {}
+          try { await fetchState(); } catch (e) {}
+          toast(`구글드라이브의 알림 키로 연결했습니다 — 다른 기기와 같은 단지 목록(${(state.targets || []).length}개)을 씁니다.`, false, 8000);
+        }
+        async function driveKeySync() {
+          if (driveSynced || driveSyncing || !window.__gdriveReady || !window.__gdriveRootFolderId) return;
+          if (typeof __dqList !== "function" || typeof __lzReadMeta !== "function" || typeof __dqUploadIfMissing !== "function") return;
+          driveSyncing = true;
+          try {
+            const root = window.__gdriveRootFolderId;
+            const list = await __dqList(root, true);
+            const fid = list.get(DRIVE_KEY_FILE);
+            if (fid) {
+              const d = await __lzReadMeta(fid);
+              const k = d && String(d.key || "");
+              if (/^[A-Za-z0-9_-]{16,64}$/.test(k) && k !== KEY) { await adoptKey(k); driveStatus = "드라이브 키로 공유 중"; }
+              else driveStatus = "드라이브 키와 같음 — 기기 간 공유 중";
+            } else {
+              await __dqUploadIfMissing(root, DRIVE_KEY_FILE, JSON.stringify({ key: KEY, createdAt: Date.now(), ua: navigator.userAgent.slice(0, 80) }), "application/json");
+              driveStatus = "이 기기 키를 드라이브에 저장 — 다른 기기가 로그인하면 공유";
+            }
+            driveSynced = true;
+            console.log("[realAlert] drive key:", driveStatus);
+          } catch (e) {
+            driveStatus = "드라이브 키 동기화 실패: " + (e && e.message || e);
+            console.warn("[realAlert] drive key sync 실패", e);
+          } finally { driveSyncing = false; }
+        }
+        setInterval(() => { driveKeySync().catch(() => {}); }, 3000);
+
         // ── 관리 패널 (모달 — 팝업은 맨 위 규칙: 단지 상세 1000002 보다 위) ──
         function openManage() {
           const old = $("raManage"); if (old) { old.remove(); return; }
@@ -34396,16 +34459,22 @@ const originalBase64 = event.target.result;
           box.style.cssText = "background:#fff;color:#23272e;border-radius:10px;padding:16px 18px;width:560px;max-width:94vw;max-height:84vh;overflow:auto;" +
             "font-size:14px;box-shadow:0 6px 30px rgba(0,0,0,.3);";
           const sb = "padding:5px 10px;border-radius:6px;border:1px solid #dde2e8;background:#fff;cursor:pointer;font-size:12.5px;margin:0;";
+          const timeOpts = [];
+          for (let h = 0; h < 24; h++) for (let m = 0; m < 60; m += 10) { const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; timeOpts.push(`<option value="${v}">${v}</option>`); }
           box.innerHTML =
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;"><b>🔔 실거래 알림 단지 관리</b>' +
             '<span id="raMngCnt" style="color:#6b7684;font-size:12.5px;"></span><span style="flex:1"></span>' +
             `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}">테스트 알림</button><button id="raMngOn" style="${sb}">알림 켜기</button>` +
             `<button id="raMngOff" style="${sb};color:#d93025;border-color:#f0b4b0">알림 끄기</button><button id="raMngClose" style="${sb}">닫기</button></div>` +
-            '<div id="raMngSub" style="font-size:12.5px;margin-bottom:8px;"></div>' +
-            '<div style="display:grid;grid-template-columns:1fr 80px 120px 52px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
-            '<span>단지명</span><span>단지번호</span><span>등록일시</span><span></span></div><div id="raMngList"></div>' +
-            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 기기 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 매일 아침 전날까지 새로 신고된 <b>매매</b> 실거래를 브라우저 푸시로 보냅니다(계약→신고 최대 30일). ` +
-            `휴대폰은 <a href="${PAGE_URL}?key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>를 열어 같은 키로 알림을 켤 수 있습니다.</div>`;
+            '<div id="raMngSub" style="font-size:12.5px;margin-bottom:6px;"></div>' +
+            // 알림 시각(10분 단위, 키 공통 = 모든 기기) + 기기 수 + 드라이브 공유 상태
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;padding:6px 8px;background:#f6f8fa;border-radius:8px;margin-bottom:8px;">' +
+            `<span>알림 시각</span><select id="raMngTime" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${timeOpts.join("")}</select>` +
+            `<button id="raMngTimeSave" style="${sb}">저장</button>` +
+            '<span id="raMngDev" style="color:#6b7684"></span><span style="flex:1"></span><span id="raMngDrive" style="color:#6b7684"></span></div>' +
+            '<div id="raMngList"></div>' +
+            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래를 이 키의 모든 기기로 보냅니다(계약→신고 최대 30일, 국토부 데이터는 07:30쯤 갱신). ` +
+            `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}?key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>.</div>`;
           ov.appendChild(box);
           ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
           box.querySelector("#raMngClose").addEventListener("click", () => ov.remove());
@@ -34413,23 +34482,59 @@ const originalBase64 = event.target.result;
           box.querySelector("#raMngHist").addEventListener("click", () => openHistory(ov));
           box.querySelector("#raMngOn").addEventListener("click", async () => { await enablePush(false); render(); });
           box.querySelector("#raMngOff").addEventListener("click", async () => { await disablePush(); render(); });
+          box.querySelector("#raMngTimeSave").addEventListener("click", async (e) => {
+            e.target.disabled = true;
+            try {
+              applyState(await api("/push_prefs", { key: KEY, alert_time: box.querySelector("#raMngTime").value, endpoint: myEndpoint }));
+              toast(`알림 시각을 매일 ${state.settings.alert_time} 로 저장했습니다(모든 기기 공통).`);
+            } catch (err) { toast("저장 실패: " + err.message, true); }
+            finally { e.target.disabled = false; }
+          });
           async function render() {
             const list = box.querySelector("#raMngList");
             try { await fetchState(); } catch (e) { list.innerHTML = `<div style="color:#d93025;padding:8px 2px;">서버 연결 실패: ${e.message}</div>`; return; }
             box.querySelector("#raMngSub").innerHTML = state.subscribed
-              ? (state.disabled ? '<span style="color:#d93025">푸시 구독이 끊어졌습니다 — [알림 켜기]를 다시 눌러 주세요</span>'
-                : `<span style="color:#00897b">이 브라우저 푸시 구독 있음</span> <span style="color:#6b7684">(${state.endpoint_host || ""}${state.last_sent_at ? " · 마지막 발송 " + state.last_sent_at.slice(5, 16) : ""})</span>`)
-              : '<span style="color:#d93025">푸시 구독 없음 — [알림 켜기]</span>';
+              ? (state.disabled ? '<span style="color:#d93025">이 기기의 푸시 구독이 끊어졌습니다 — [알림 켜기]를 다시 눌러 주세요</span>'
+                : `<span style="color:#00897b">이 기기 알림 켜짐</span> <span style="color:#6b7684">(${state.endpoint_host || ""}${state.last_sent_at ? " · 마지막 발송 " + state.last_sent_at.slice(5, 16) : ""})</span>`)
+              : '<span style="color:#d93025">이 기기 알림 꺼짐 — [알림 켜기]</span>';
+            const sel = box.querySelector("#raMngTime");
+            sel.value = (state.settings && state.settings.alert_time) || "08:10";
+            const devs = state.devices || [];
+            box.querySelector("#raMngDev").textContent = devs.length
+              ? `기기 ${devs.filter((d) => !d.disabled).length}대` + (devs.length > 1 ? ` (${devs.map((d) => (d.this_device ? "이 기기" : (/Android|iPhone|iPad|Mobile/i.test(d.ua) ? "휴대폰" : "PC")) + (d.disabled ? "·끊김" : "")).join(", ")})` : "")
+              : "등록 기기 없음";
+            box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 중…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
             const rows = state.targets || [];
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
             list.innerHTML = rows.length ? "" : '<div style="color:#6b7684;padding:8px 2px;">등록된 단지가 없습니다. [🔔 알림 단지 선택]으로 지도에서 고르세요.</div>';
+            // 시도 › 시군구 묶음(2026-10-11 사용자 요청). 지역은 서버 저장값, 없으면 이 페이지의 단지 데이터로 보충
+            const groups = new Map();
             for (const t of rows) {
-              const div = document.createElement("div");
-              div.style.cssText = "display:grid;grid-template-columns:1fr 80px 120px 52px;gap:6px;align-items:center;padding:6px 4px;border-bottom:1px solid #eef1f4;font-size:13px;";
-              div.innerHTML = `<a href="#" class="ra-go-apt" data-id="${t.complex_id}" style="color:#1a63c9;text-decoration:none">${t.complex_name || "(이름 없음)"}</a>` +
-                `<span style="color:#6b7684;font-size:12px">${t.complex_id}</span><span style="color:#6b7684;font-size:12px;">${(t.added_at || "").slice(0, 16)}</span>` +
-                `<button class="ra-del" data-id="${t.complex_id}" style="${sb};color:#d93025;border-color:#f0b4b0;padding:3px 8px">삭제</button>`;
-              list.appendChild(div);
+              const a = aptById(t.complex_id) || {};
+              const sido = String(t.sido || a.sido || "").trim() || "(지역 미상)";
+              const sgg = String(t.sigungu || a.sigungu || "").trim() || "";
+              if (!groups.has(sido)) groups.set(sido, new Map());
+              const g = groups.get(sido);
+              if (!g.has(sgg)) g.set(sgg, []);
+              g.get(sgg).push(t);
+            }
+            for (const [sido, sggMap] of [...groups].sort((x, y) => x[0].localeCompare(y[0], "ko"))) {
+              const n = [...sggMap.values()].reduce((s, v) => s + v.length, 0);
+              const det = document.createElement("details"); det.open = true;
+              det.style.cssText = "margin:6px 0;border:1px solid #e3e7ec;border-radius:8px;padding:4px 8px;";
+              det.innerHTML = `<summary style="cursor:pointer;font-weight:700;padding:4px 0;">${sido} <span style="color:#6b7684;font-weight:400;font-size:12px">${n}개</span></summary>`;
+              for (const [sgg, items] of [...sggMap].sort((x, y) => x[0].localeCompare(y[0], "ko"))) {
+                if (sgg) { const h = document.createElement("div"); h.style.cssText = "margin:6px 0 2px;color:#00897b;font-weight:600;font-size:12.5px;"; h.textContent = `${sgg} · ${items.length}개`; det.appendChild(h); }
+                for (const t of items.sort((x, y) => String(x.complex_name).localeCompare(String(y.complex_name), "ko"))) {
+                  const div = document.createElement("div");
+                  div.style.cssText = "display:grid;grid-template-columns:1fr 72px 92px 48px;gap:6px;align-items:center;padding:5px 4px 5px 10px;border-bottom:1px solid #eef1f4;font-size:13px;";
+                  div.innerHTML = `<a href="#" class="ra-go-apt" data-id="${t.complex_id}" style="color:#1a63c9;text-decoration:none">${t.complex_name || "(이름 없음)"}</a>` +
+                    `<span style="color:#6b7684;font-size:12px">${t.complex_id}</span><span style="color:#6b7684;font-size:12px;">${(t.added_at || "").slice(5, 16)}</span>` +
+                    `<button class="ra-del" data-id="${t.complex_id}" style="${sb};color:#d93025;border-color:#f0b4b0;padding:3px 8px">삭제</button>`;
+                  det.appendChild(div);
+                }
+              }
+              list.appendChild(det);
             }
           }
           box.addEventListener("click", async (e) => {
