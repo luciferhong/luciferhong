@@ -34257,6 +34257,109 @@ const originalBase64 = event.target.result;
           }
         }
 
+        // ── 받은 알림 보기 (2026-10-11 사용자: "알림을 눌러도 내용을 볼 수 없다") ──
+        // 워커가 `#raPush=<JSON>` 해시로 열거나(새 탭) postMessage 로 넘긴다(열린 탭). 최근 20건은 localStorage 에 두고 관리창에서 다시 본다.
+        const HIST_KEY = "realAlertHistory";
+        function loadHist() { try { return JSON.parse(ls.get(HIST_KEY) || "[]"); } catch (e) { return []; } }
+        function pushHist(p) {
+          try {
+            const h = loadHist().filter((x) => !(x.tag && p.tag && x.tag === p.tag && x.title === p.title));
+            h.unshift({ at: Date.now(), title: p.title, body: p.body, tag: p.tag, trades: p.trades || [], url: p.url || "" });
+            ls.set(HIST_KEY, JSON.stringify(h.slice(0, 20)));
+          } catch (e) {}
+        }
+        function goApt(cid) {
+          const a = aptById(cid);
+          if (!a || !window.map) { toast("이 단지는 지도 데이터에 없습니다 (" + cid + ")", true); return; }
+          try { window.map.setCenter(new naver.maps.LatLng(a.lat, a.lng)); if (window.map.getZoom() < 15) window.map.setZoom(16); } catch (e) {}
+          try { setTimeout(() => showApartmentInfo(a.id), 400); } catch (e) {}
+        }
+        function showPushPanel(p, at) {
+          const old = $("raPushPanel"); if (old) old.remove();
+          const el = document.createElement("div"); el.id = "raPushPanel";
+          el.style.cssText = "position:fixed;top:72px;right:16px;z-index:1000004;width:380px;max-width:calc(100vw - 24px);max-height:72vh;overflow:auto;" +
+            "background:#fff;color:#23272e;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.35);padding:12px 14px;font-size:13.5px;line-height:1.5;";
+          const when = at ? new Date(at) : new Date();
+          const head = document.createElement("div");
+          head.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;";
+          head.innerHTML = `<b style="flex:1">${(p.title || "실거래 알림").replace(/</g, "&lt;")}</b>` +
+            `<span style="color:#6b7684;font-size:12px">${when.getMonth() + 1}/${when.getDate()} ${String(when.getHours()).padStart(2, "0")}:${String(when.getMinutes()).padStart(2, "0")}</span>` +
+            '<button id="raPushClose" style="margin:0;padding:2px 8px;border-radius:6px;border:1px solid #dde2e8;background:#fff;cursor:pointer;font-size:12px">닫기</button>';
+          el.appendChild(head);
+          const trades = Array.isArray(p.trades) ? p.trades : [];
+          if (trades.length) {
+            let lastCid = null;
+            for (const t of trades) {
+              if (t.cid !== lastCid) {
+                lastCid = t.cid;
+                const h = document.createElement("div");
+                h.style.cssText = "margin-top:8px;font-weight:700;color:#00897b;cursor:pointer;";
+                h.textContent = "🏢 " + (t.name || t.cid);
+                h.title = "지도에서 보기";
+                h.addEventListener("click", () => { el.remove(); goApt(t.cid); });
+                el.appendChild(h);
+              }
+              const row = document.createElement("div");
+              row.style.cssText = "padding:3px 0 3px 10px;border-left:2px solid #e3e7ec;cursor:pointer;";
+              row.innerHTML = `${t.high ? "🔥" : ""}${t.area}㎡ ${t.floor}층 <b>${t.price_txt}</b> <span style="color:#6b7684">(${t.date})</span>` +
+                (t.diff_txt ? ` <span style="color:${/🔽/.test(t.diff_txt) ? "#1a63c9" : "#d93025"}">${t.diff_txt}</span>` : "");
+              row.addEventListener("click", () => { el.remove(); goApt(t.cid); });
+              el.appendChild(row);
+            }
+          } else {
+            const b = document.createElement("div"); b.style.whiteSpace = "pre-wrap"; b.textContent = p.body || "(내용 없음)"; el.appendChild(b);
+          }
+          const foot = document.createElement("div");
+          foot.style.cssText = "margin-top:10px;color:#6b7684;font-size:11.5px;";
+          foot.textContent = trades.length ? "단지명·거래 줄을 누르면 지도에서 그 단지를 엽니다. 최근 알림은 [🔔 알림 단지 관리] → [최근 알림]." : "최근 알림은 [🔔 알림 단지 관리] → [최근 알림].";
+          el.appendChild(foot);
+          head.querySelector("#raPushClose").addEventListener("click", () => el.remove());
+          document.body.appendChild(el);
+        }
+        function receivePush(p, live) {
+          if (!p || typeof p !== "object") return;
+          pushHist(p);
+          showPushPanel(p, p.receivedAt || Date.now());
+          if (live) toast("🔔 " + (p.title || "실거래 알림"), false, 6000);
+        }
+        // 새 탭으로 열린 경우: 해시에서 꺼내고 주소를 정리한다
+        (function readHash() {
+          const m = (location.hash || "").match(/^#raPush=(.+)$/);
+          if (!m) return;
+          let p = null;
+          try { p = JSON.parse(decodeURIComponent(m[1])); } catch (e) {}
+          try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
+          if (p) { const go = () => (window.map && (apartmentData || []).length ? receivePush(p, false) : setTimeout(go, 500)); go(); }
+        })();
+        // 열린 탭으로 워커가 넘기는 경우
+        try {
+          if (supported) navigator.serviceWorker.addEventListener("message", (e) => {
+            if (e.data && e.data.type === "raPush") receivePush(e.data.payload, !!e.data.live);
+          });
+        } catch (e) {}
+        function openHistory(parentOv) {
+          const h = loadHist();
+          if (!h.length) { toast("받은 알림이 아직 없습니다."); return; }
+          const ov = document.createElement("div");
+          ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000004;display:flex;align-items:center;justify-content:center;";
+          const box = document.createElement("div");
+          box.style.cssText = "background:#fff;color:#23272e;border-radius:10px;padding:14px 16px;width:460px;max-width:94vw;max-height:80vh;overflow:auto;font-size:14px;box-shadow:0 6px 30px rgba(0,0,0,.3);";
+          box.innerHTML = '<div style="display:flex;align-items:center;margin-bottom:6px"><b style="flex:1">🔔 최근 받은 알림</b><button id="raHistClose" style="margin:0;padding:3px 10px;border-radius:6px;border:1px solid #dde2e8;background:#fff;cursor:pointer;font-size:12px">닫기</button></div>';
+          for (const it of h) {
+            const d = new Date(it.at);
+            const row = document.createElement("div");
+            row.style.cssText = "padding:8px 4px;border-top:1px solid #eef1f4;cursor:pointer;";
+            row.innerHTML = `<div><b>${(it.title || "").replace(/</g, "&lt;")}</b> <span style="color:#6b7684;font-size:12px">${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}</span></div>` +
+              `<div style="color:#475569;font-size:12.5px;white-space:pre-wrap">${(it.body || "").split("\n").slice(0, 3).join("\n").replace(/</g, "&lt;")}</div>`;
+            row.addEventListener("click", () => { ov.remove(); if (parentOv) parentOv.remove(); showPushPanel(it, it.at); });
+            box.appendChild(row);
+          }
+          ov.appendChild(box);
+          ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
+          box.querySelector("#raHistClose").addEventListener("click", () => ov.remove());
+          document.body.appendChild(ov);
+        }
+
         // ── 관리 패널 (모달 — 팝업은 맨 위 규칙: 단지 상세 1000002 보다 위) ──
         function openManage() {
           const old = $("raManage"); if (old) { old.remove(); return; }
@@ -34269,7 +34372,7 @@ const originalBase64 = event.target.result;
           box.innerHTML =
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;"><b>🔔 실거래 알림 단지 관리</b>' +
             '<span id="raMngCnt" style="color:#6b7684;font-size:12.5px;"></span><span style="flex:1"></span>' +
-            `<button id="raMngTest" style="${sb}">테스트 알림</button><button id="raMngOn" style="${sb}">알림 켜기</button>` +
+            `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}">테스트 알림</button><button id="raMngOn" style="${sb}">알림 켜기</button>` +
             `<button id="raMngOff" style="${sb};color:#d93025;border-color:#f0b4b0">알림 끄기</button><button id="raMngClose" style="${sb}">닫기</button></div>` +
             '<div id="raMngSub" style="font-size:12.5px;margin-bottom:8px;"></div>' +
             '<div style="display:grid;grid-template-columns:1fr 80px 120px 52px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
@@ -34280,6 +34383,7 @@ const originalBase64 = event.target.result;
           ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
           box.querySelector("#raMngClose").addEventListener("click", () => ov.remove());
           box.querySelector("#raMngTest").addEventListener("click", testPush);
+          box.querySelector("#raMngHist").addEventListener("click", () => openHistory(ov));
           box.querySelector("#raMngOn").addEventListener("click", async () => { await enablePush(false); render(); });
           box.querySelector("#raMngOff").addEventListener("click", async () => { await disablePush(); render(); });
           async function render() {
@@ -34333,7 +34437,7 @@ const originalBase64 = event.target.result;
           fetchState().catch(() => { const st = $("raStatus"); if (st) st.textContent = "알림 서버 연결 실패"; });
         }
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
-        window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, state: () => state, key: () => KEY };
+        window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, state: () => state, key: () => KEY };
       })();
     </script>
   </body>
