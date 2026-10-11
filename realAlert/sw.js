@@ -8,6 +8,15 @@
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 
+// 페이지로 넘기는 통로 2개 — client.postMessage 는 페이지가 startMessages() 를 안 불렀으면 큐에 머문다(2026-10-11 실보고:
+// 열린 홍부 탭으로 포커스만 되고 내용이 안 보임). BroadcastChannel 은 제어 여부·큐와 무관하게 같은 오리진 탭 전부에 닿는다.
+const bc = (typeof BroadcastChannel === 'function') ? new BroadcastChannel('realAlert') : null;
+function tellPages(payload, live, clientsList) {
+  const msg = { type: 'raPush', payload, live: !!live };
+  try { bc && bc.postMessage(msg); } catch (err) {}
+  (clientsList || []).forEach(c => { try { c.postMessage(msg); } catch (err) {} });
+}
+
 self.addEventListener('push', e => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; }
@@ -26,7 +35,7 @@ self.addEventListener('push', e => {
     // 페이지가 이미 열려 있으면 바로 넘겨 준다(알림을 안 눌러도 패널이 뜬다)
     try {
       const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      list.forEach(c => c.postMessage({ type: 'raPush', payload: d, live: true }));
+      tellPages(d, true, list);
     } catch (err) {}
   })());
 });
@@ -45,7 +54,7 @@ self.addEventListener('notificationclick', e => {
       try { cu = new URL(c.url); cu.hash = ''; } catch (err) { continue; }
       if (cu.href === base.href && 'focus' in c) {
         await c.focus();
-        c.postMessage({ type: 'raPush', payload, live: false });
+        tellPages(payload, false, [c]);
         return;
       }
     }

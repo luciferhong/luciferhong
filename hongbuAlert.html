@@ -34316,8 +34316,13 @@ const originalBase64 = event.target.result;
           head.querySelector("#raPushClose").addEventListener("click", () => el.remove());
           document.body.appendChild(el);
         }
+        let lastReceivedKey = "";
         function receivePush(p, live) {
           if (!p || typeof p !== "object") return;
+          // 같은 알림이 두 통로(postMessage·BroadcastChannel)로 겹쳐 와도 한 번만
+          const k = String(p.receivedAt || "") + "|" + String(p.title || "") + "|" + String(p.tag || "");
+          if (k === lastReceivedKey) return;
+          lastReceivedKey = k;
           pushHist(p);
           showPushPanel(p, p.receivedAt || Date.now());
           if (live) toast("🔔 " + (p.title || "실거래 알림"), false, 6000);
@@ -34331,11 +34336,21 @@ const originalBase64 = event.target.result;
           try { history.replaceState(null, "", location.pathname + location.search); } catch (e) {}
           if (p) { const go = () => (window.map && (apartmentData || []).length ? receivePush(p, false) : setTimeout(go, 500)); go(); }
         })();
-        // 열린 탭으로 워커가 넘기는 경우
+        // 열린 탭으로 워커가 넘기는 경우 — ⚠ addEventListener 만으로는 큐에 머문다 → startMessages() 필수. BroadcastChannel 도 함께.
         try {
-          if (supported) navigator.serviceWorker.addEventListener("message", (e) => {
-            if (e.data && e.data.type === "raPush") receivePush(e.data.payload, !!e.data.live);
-          });
+          if (supported) {
+            navigator.serviceWorker.addEventListener("message", (e) => {
+              if (e.data && e.data.type === "raPush") receivePush(e.data.payload, !!e.data.live);
+            });
+            if (typeof navigator.serviceWorker.startMessages === "function") navigator.serviceWorker.startMessages();
+            // 페이지를 열 때마다 워커 갱신 확인(워커는 페이지와 따로 갱신되므로 — 새 sw.js 를 바로 쓰게)
+            navigator.serviceWorker.getRegistration(SW_SCOPE).then((r) => { if (r) r.update().catch(() => {}); }).catch(() => {});
+          }
+          if (typeof BroadcastChannel === "function") {
+            new BroadcastChannel("realAlert").addEventListener("message", (e) => {
+              if (e.data && e.data.type === "raPush") receivePush(e.data.payload, !!e.data.live);
+            });
+          }
         } catch (e) {}
         function openHistory(parentOv) {
           const h = loadHist();
