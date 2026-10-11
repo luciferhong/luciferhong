@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>실거래 알림</title>
+<!-- 실거래 웹푸시 알림 페이지 (2026-10-11) — 브라우저 푸시 구독을 만들어 기기 키(key)와 함께 시세 서버에 올린다.
+     단지 선택은 크롬 확장(신네부 지도 '🔔 실거래알림 단지선택')이 같은 키로 올린다. 발송은 VM cron push_alert.py.
+     로컬 시험: http://localhost:8000/realAlert/?server=http://127.0.0.1:7123  (기본 서버는 sise-cloud VM)
+     상세: claude_docs/push_alert.md -->
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.png">
+<link rel="apple-touch-icon" href="./icon.png">
+<meta name="theme-color" content="#00897b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+  :root { --bg:#f6f8fa; --card:#fff; --fg:#1f2328; --mute:#6b7684; --line:#e3e7ec; --brand:#00897b; --danger:#d93025; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111417; --card:#1b1f24; --fg:#e6e8eb; --mute:#9aa3ad; --line:#2b323a; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 'Malgun Gothic','Apple SD Gothic Neo',sans-serif; }
+  .wrap { max-width:640px; margin:0 auto; padding:20px 16px 48px; }
+  h1 { font-size:20px; margin:4px 0 14px; display:flex; align-items:center; gap:8px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:12px; }
+  .row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .k { color:var(--mute); font-size:13px; min-width:72px; }
+  .v { font-weight:600; }
+  .ok { color:var(--brand); } .bad { color:var(--danger); } .mute { color:var(--mute); }
+  button { font:inherit; font-size:14px; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600; }
+  button.danger { color:var(--danger); border-color:#f0b4b0; }
+  button:disabled { opacity:.5; cursor:default; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  #msg { min-height:22px; font-size:13.5px; margin-top:8px; white-space:pre-wrap; }
+  ul.tg { list-style:none; margin:8px 0 0; padding:0; }
+  ul.tg li { display:flex; align-items:center; gap:8px; padding:8px 2px; border-top:1px solid var(--line); }
+  ul.tg li:first-child { border-top:0; }
+  ul.tg a { color:inherit; text-decoration:none; flex:1; }
+  ul.tg .id { color:var(--mute); font-size:12px; }
+  ul.tg button { padding:4px 10px; font-size:12.5px; }
+  .hint { font-size:13px; color:var(--mute); margin-top:8px; }
+  code { font-size:12.5px; background:rgba(127,127,127,.12); padding:1px 5px; border-radius:4px; }
+  .ios { display:none; background:#fff4e5; color:#7a4b00; border-color:#f3d9a5; }
+  @media (prefers-color-scheme: dark) { .ios { background:#3a2b10; color:#ffd791; border-color:#5a4418; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔔 실거래 알림</h1>
+
+  <div class="card ios" id="iosHint">
+    iPhone·iPad 는 Safari 공유 메뉴에서 <b>홈 화면에 추가</b>한 뒤, 그 아이콘으로 열어야 알림을 켤 수 있습니다.
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="k">브라우저</span><span class="v" id="stPerm">-</span></div>
+    <div class="row"><span class="k">서버 구독</span><span class="v" id="stSub">-</span></div>
+    <div class="row"><span class="k">기기 키</span><span class="v mute" id="stKey">-</span><button id="btnCopyKey" style="padding:2px 8px;font-size:12px">복사</button></div>
+    <div class="btns">
+      <button class="primary" id="btnOn">🔔 알림 켜기</button>
+      <button id="btnTest">📨 테스트 알림</button>
+      <button class="danger" id="btnOff">🔕 알림 끄기</button>
+      <button id="btnRefresh">🔄 새로고침</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><b>알림 받을 단지</b><span class="mute" id="tgCnt"></span></div>
+    <ul class="tg" id="tgList"></ul>
+    <div class="hint">단지 추가는 네이버부동산(신) 지도에서 확장의 <b>🔔 실거래알림 단지선택</b> → 마커 체크 → <b>선택완료</b>. 같은 기기 키로 이 페이지에 연결됩니다.</div>
+  </div>
+
+  <div class="hint">매일 아침(국토부 실거래 공개 반영 뒤) 전날까지 새로 신고된 <b>매매</b> 실거래를 단지별로 알립니다. 계약 후 신고까지 최대 30일 걸리므로 알림 시점과 계약일은 다를 수 있습니다. 서버: <code id="stServer"></code></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const qs = new URLSearchParams(location.search);
+  const DEFAULT_SERVER = 'https://sise-cloud.luciferhong.com';
+  const ls = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+  if (qs.get('server')) ls.set('realAlertServer', qs.get('server'));
+  const SERVER = (ls.get('realAlertServer') || DEFAULT_SERVER).replace(/\/$/, '');
+  if (qs.get('key') && /^[A-Za-z0-9_-]{16,64}$/.test(qs.get('key'))) ls.set('realAlertKey', qs.get('key'));
+  let KEY = ls.get('realAlertKey');
+  if (!KEY) {   // 확장 없이 들어온 경우 — 키를 만들어 두면 나중에 확장에 같은 키를 넣어 연결할 수 있다
+    const a = new Uint8Array(16); crypto.getRandomValues(a);
+    KEY = Array.from(a, b => b.toString(16).padStart(2, '0')).join('');
+    ls.set('realAlertKey', KEY);
+  }
+  if (qs.has('key') || qs.has('server')) history.replaceState(null, '', location.pathname);
+
+  const $ = id => document.getElementById(id);
+  $('stServer').textContent = SERVER;
+  $('stKey').textContent = KEY.slice(0, 8) + '…' + KEY.slice(-4);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (isIOS && !navigator.standalone) $('iosHint').style.display = 'block';
+
+  function msg(t, bad) { const el = $('msg'); el.textContent = t || ''; el.className = bad ? 'bad' : ''; }
+
+  async function api(path, body) {
+    const opt = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
+    const r = await fetch(SERVER + path, opt);
+    let d = {};
+    try { d = await r.json(); } catch (e) {}
+    if (!r.ok) throw new Error(d.error || d.detail || ('HTTP ' + r.status));
+    return d;
+  }
+
+  function b64ToU8(s) {
+    s = (s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(s); const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  function u8ToB64(buf) {
+    return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+  async function localSub() {
+    if (!supported) return null;
+    const reg = await navigator.serviceWorker.getRegistration('./');
+    return reg ? reg.pushManager.getSubscription() : null;
+  }
+
+  async function refresh() {
+    // 브라우저 상태
+    if (!supported) {
+      $('stPerm').innerHTML = '<span class="bad">이 브라우저는 웹푸시를 지원하지 않습니다</span>';
+    } else {
+      const p = Notification.permission;
+      const sub = await localSub().catch(() => null);
+      $('stPerm').innerHTML = p === 'granted'
+        ? (sub ? '<span class="ok">알림 허용 · 푸시 구독 있음</span>' : '<span class="ok">알림 허용</span> <span class="mute">· 푸시 구독 없음</span>')
+        : p === 'denied' ? '<span class="bad">알림 차단됨 — 주소창 왼쪽 사이트 설정에서 허용으로 바꿔 주세요</span>'
+        : '<span class="mute">아직 허용하지 않음</span>';
+    }
+    // 서버 상태 + 단지 목록
+    try {
+      const d = await api('/push_targets?key=' + encodeURIComponent(KEY));
+      $('stSub').innerHTML = d.subscribed
+        ? (d.disabled ? '<span class="bad">구독이 끊어졌습니다 — 알림 켜기를 다시 눌러 주세요</span>'
+                      : `<span class="ok">등록됨</span> <span class="mute">(${d.endpoint_host || ''}${d.last_sent_at ? ' · 마지막 발송 ' + d.last_sent_at.slice(5, 16) : ''})</span>`)
+        : '<span class="mute">없음 — 아래 알림 켜기</span>';
+      renderTargets(d.targets || []);
+    } catch (e) {
+      $('stSub').innerHTML = '<span class="bad">서버 연결 실패: ' + e.message + '</span>';
+    }
+  }
+
+  function renderTargets(list) {
+    $('tgCnt').textContent = list.length ? `${list.length}개` : '없음';
+    const ul = $('tgList'); ul.innerHTML = '';
+    for (const t of list) {
+      const li = document.createElement('li');
+      const a = document.createElement('a');
+      a.href = 'https://fin.land.naver.com/complexes/' + t.complex_id; a.target = '_blank'; a.rel = 'noopener';
+      a.innerHTML = `${t.complex_name || '(이름 없음)'} <span class="id">${t.complex_id}</span>`;
+      const del = document.createElement('button');
+      del.textContent = '삭제';
+      del.addEventListener('click', async () => {
+        del.disabled = true;
+        try { renderTargets((await api('/push_targets', { key: KEY, remove: [t.complex_id] })).targets || []); msg(`${t.complex_name || t.complex_id} 삭제`); }
+        catch (e) { msg('삭제 실패: ' + e.message, true); del.disabled = false; }
+      });
+      li.appendChild(a); li.appendChild(del); ul.appendChild(li);
+    }
+  }
+
+  async function enable() {
+    if (!supported) { msg('이 브라우저는 웹푸시를 지원하지 않습니다.', true); return; }
+    if (isIOS && !navigator.standalone) { msg('iPhone 은 홈 화면에 추가한 아이콘으로 열어야 알림을 켤 수 있습니다.', true); return; }
+    $('btnOn').disabled = true;
+    try {
+      msg('알림 권한 요청 중…');
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { msg('알림이 허용되지 않았습니다.', true); return; }
+      msg('서비스워커 등록 중…');
+      const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      await navigator.serviceWorker.ready;
+      const { publicKey } = await api('/push_vapid_public');
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) {   // 서버 키가 바뀌었으면 옛 구독은 못 쓴다 → 새로 만든다
+        const cur = sub.options && sub.options.applicationServerKey ? u8ToB64(sub.options.applicationServerKey) : '';
+        if (cur && cur !== publicKey) { await sub.unsubscribe(); sub = null; }
+      }
+      if (!sub) {
+        msg('푸시 구독 생성 중…');
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) });
+      }
+      msg('서버에 등록 중…');
+      await api('/push_subscribe', { key: KEY, subscription: sub.toJSON(), ua: navigator.userAgent });
+      msg('✓ 알림이 켜졌습니다. 테스트 알림으로 확인해 보세요.');
+    } catch (e) {
+      msg('실패: ' + e.message, true);
+    } finally {
+      $('btnOn').disabled = false;
+      refresh();
+    }
+  }
+
+  async function disable() {
+    $('btnOff').disabled = true;
+    try {
+      const sub = await localSub();
+      if (sub) await sub.unsubscribe();
+      await api('/push_unsubscribe', { key: KEY });
+      msg('알림을 꺼서 서버 구독을 지웠습니다. 단지 목록은 남아 있습니다.');
+    } catch (e) { msg('실패: ' + e.message, true); }
+    finally { $('btnOff').disabled = false; refresh(); }
+  }
+
+  async function test() {
+    $('btnTest').disabled = true;
+    try {
+      const d = await api('/push_test', { key: KEY, url: location.href });
+      msg(`테스트 발송 ${d.ok ? '성공' : '실패'} (푸시 서비스 응답 ${d.status}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
+    } catch (e) { msg('테스트 실패: ' + e.message, true); }
+    finally { $('btnTest').disabled = false; }
+  }
+
+  $('btnOn').addEventListener('click', enable);
+  $('btnOff').addEventListener('click', disable);
+  $('btnTest').addEventListener('click', test);
+  $('btnRefresh').addEventListener('click', () => { msg(''); refresh(); });
+  $('btnCopyKey').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(KEY); msg('기기 키를 복사했습니다.'); } catch (e) { prompt('기기 키', KEY); }
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>
