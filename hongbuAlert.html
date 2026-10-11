@@ -34461,6 +34461,7 @@ const originalBase64 = event.target.result;
         setInterval(() => { driveKeySync().catch(() => {}); }, 3000);
 
         // ── 관리 패널 (모달 — 팝업은 맨 위 규칙: 단지 상세 1000002 보다 위) ──
+        let fltSido = "", fltSgg = "";   // 관리창 시도·시군구 필터(세션 유지)
         function openManage() {
           const old = $("raManage"); if (old) { old.remove(); return; }
           const ov = document.createElement("div"); ov.id = "raManage";
@@ -34482,6 +34483,13 @@ const originalBase64 = event.target.result;
             `<span>알림 시각</span><select id="raMngTime" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${timeOpts.join("")}</select>` +
             `<button id="raMngTimeSave" style="${sb}">저장</button>` +
             '<span id="raMngDev" style="color:#6b7684"></span><span style="flex:1"></span><span id="raMngDrive" style="color:#6b7684"></span></div>' +
+            // 시도·시군구 필터(2026-10-11 사용자: 묶음 대신 필터)
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;">' +
+            '<span>시도</span><select id="raFltSido" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;min-width:90px"><option value="">전체</option></select>' +
+            '<span>시군구</span><select id="raFltSgg" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;min-width:90px"><option value="">전체</option></select>' +
+            '<span id="raFltCnt" style="color:#6b7684"></span></div>' +
+            '<div style="display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
+            '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
             `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래를 이 키의 모든 기기로 보냅니다(계약→신고 최대 30일, 국토부 데이터는 07:30쯤 갱신). ` +
             `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}?key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>.</div>`;
@@ -34516,39 +34524,37 @@ const originalBase64 = event.target.result;
             box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 대기…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
             const rows = state.targets || [];
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
-            list.innerHTML = rows.length ? "" : '<div style="color:#6b7684;padding:8px 2px;">등록된 단지가 없습니다. [🔔 알림 단지 선택]으로 지도에서 고르세요.</div>';
-            // 시도 › 시군구 묶음(2026-10-11 사용자 요청). 지역은 서버 저장값, 없으면 이 페이지의 단지 데이터로 보충
-            const groups = new Map();
-            for (const t of rows) {
+            // 지역 이름: 서버 저장값(코드로 저장된 옛 등록분은 제외) → 이 페이지의 단지 데이터(sidoNm/sigunguNm) 보충
+            const nm = (v) => { v = String(v || "").trim(); return /^\d+$/.test(v) ? "" : v; };
+            const withRegion = rows.map((t) => {
               const a = aptById(t.complex_id) || {};
-              // 서버 값이 코드(숫자)로 저장된 옛 등록분은 이 페이지의 이름(sidoNm/sigunguNm)으로 대체
-              const nm = (v) => { v = String(v || "").trim(); return /^\d+$/.test(v) ? "" : v; };
-              const sido = nm(t.sido) || String(a.sidoNm || "").trim() || "(지역 미상)";
-              const sgg = nm(t.sigungu) || String(a.sigunguNm || "").trim() || "";
-              if (!groups.has(sido)) groups.set(sido, new Map());
-              const g = groups.get(sido);
-              if (!g.has(sgg)) g.set(sgg, []);
-              g.get(sgg).push(t);
-            }
-            for (const [sido, sggMap] of [...groups].sort((x, y) => x[0].localeCompare(y[0], "ko"))) {
-              const n = [...sggMap.values()].reduce((s, v) => s + v.length, 0);
-              const det = document.createElement("details"); det.open = true;
-              det.style.cssText = "margin:6px 0;border:1px solid #e3e7ec;border-radius:8px;padding:4px 8px;";
-              det.innerHTML = `<summary style="cursor:pointer;font-weight:700;padding:4px 0;">${sido} <span style="color:#6b7684;font-weight:400;font-size:12px">${n}개</span></summary>`;
-              for (const [sgg, items] of [...sggMap].sort((x, y) => x[0].localeCompare(y[0], "ko"))) {
-                if (sgg) { const h = document.createElement("div"); h.style.cssText = "margin:6px 0 2px;color:#00897b;font-weight:600;font-size:12.5px;"; h.textContent = `${sgg} · ${items.length}개`; det.appendChild(h); }
-                for (const t of items.sort((x, y) => String(x.complex_name).localeCompare(String(y.complex_name), "ko"))) {
-                  const div = document.createElement("div");
-                  div.style.cssText = "display:grid;grid-template-columns:1fr 72px 92px 48px;gap:6px;align-items:center;padding:5px 4px 5px 10px;border-bottom:1px solid #eef1f4;font-size:13px;";
-                  div.innerHTML = `<a href="#" class="ra-go-apt" data-id="${t.complex_id}" style="color:#1a63c9;text-decoration:none">${t.complex_name || "(이름 없음)"}</a>` +
-                    `<span style="color:#6b7684;font-size:12px">${t.complex_id}</span><span style="color:#6b7684;font-size:12px;">${(t.added_at || "").slice(5, 16)}</span>` +
-                    `<button class="ra-del" data-id="${t.complex_id}" style="${sb};color:#d93025;border-color:#f0b4b0;padding:3px 8px">삭제</button>`;
-                  det.appendChild(div);
-                }
-              }
-              list.appendChild(det);
+              return { t, sido: nm(t.sido) || String(a.sidoNm || "").trim() || "(지역 미상)", sgg: nm(t.sigungu) || String(a.sigunguNm || "").trim() || "" };
+            });
+            // 시도·시군구 필터(2026-10-11 사용자: 묶음 대신 필터). 선택은 창을 다시 열어도 유지(fltSido/fltSgg)
+            const selSido = box.querySelector("#raFltSido"), selSgg = box.querySelector("#raFltSgg");
+            const sidos = [...new Set(withRegion.map((r) => r.sido))].sort((x, y) => x.localeCompare(y, "ko"));
+            if (!sidos.includes(fltSido)) fltSido = "";
+            selSido.innerHTML = '<option value="">전체</option>' + sidos.map((s) => `<option value="${s}"${s === fltSido ? " selected" : ""}>${s} (${withRegion.filter((r) => r.sido === s).length})</option>`).join("");
+            const sggs = [...new Set(withRegion.filter((r) => !fltSido || r.sido === fltSido).map((r) => r.sgg).filter(Boolean))].sort((x, y) => x.localeCompare(y, "ko"));
+            if (!sggs.includes(fltSgg)) fltSgg = "";
+            selSgg.innerHTML = '<option value="">전체</option>' + sggs.map((s) => `<option value="${s}"${s === fltSgg ? " selected" : ""}>${s} (${withRegion.filter((r) => (!fltSido || r.sido === fltSido) && r.sgg === s).length})</option>`).join("");
+            const shown = withRegion.filter((r) => (!fltSido || r.sido === fltSido) && (!fltSgg || r.sgg === fltSgg))
+              .sort((x, y) => (x.sido + x.sgg).localeCompare(y.sido + y.sgg, "ko") || String(x.t.complex_name).localeCompare(String(y.t.complex_name), "ko"));
+            box.querySelector("#raFltCnt").textContent = (fltSido || fltSgg) ? `${shown.length}개 표시` : "";
+            list.innerHTML = rows.length ? "" : '<div style="color:#6b7684;padding:8px 2px;">등록된 단지가 없습니다. [🔔 알림 단지 선택]으로 지도에서 고르세요.</div>';
+            for (const r of shown) {
+              const t = r.t;
+              const div = document.createElement("div");
+              div.style.cssText = "display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;align-items:center;padding:5px 4px;border-bottom:1px solid #eef1f4;font-size:13px;";
+              div.innerHTML = `<span style="color:#00897b;font-size:12px" title="${r.sido}">${r.sgg || r.sido}</span>` +
+                `<a href="#" class="ra-go-apt" data-id="${t.complex_id}" style="color:#1a63c9;text-decoration:none">${t.complex_name || "(이름 없음)"}</a>` +
+                `<span style="color:#6b7684;font-size:12px">${t.complex_id}</span><span style="color:#6b7684;font-size:12px;">${(t.added_at || "").slice(5, 16)}</span>` +
+                `<button class="ra-del" data-id="${t.complex_id}" style="${sb};color:#d93025;border-color:#f0b4b0;padding:3px 8px">삭제</button>`;
+              list.appendChild(div);
             }
           }
+          box.querySelector("#raFltSido").addEventListener("change", (e) => { fltSido = e.target.value; fltSgg = ""; render(); });
+          box.querySelector("#raFltSgg").addEventListener("change", (e) => { fltSgg = e.target.value; render(); });
           box.addEventListener("click", async (e) => {
             const del = e.target.closest(".ra-del");
             if (del) {
