@@ -34178,7 +34178,8 @@ const originalBase64 = event.target.result;
         }
         function targetItem(id, nm) {
           const a = aptById(id) || {};
-          return { complex_id: id, complex_name: nm || a.name || "", sido: String(a.sido || "").trim(), sigungu: String(a.sigungu || "").trim() };
+          // ⚠ apt.json 의 sido/sigungu 는 **코드**(1100000000), 이름은 sidoNm/sigunguNm (2026-10-11 사용자 지적: 관리창에 코드가 보임)
+          return { complex_id: id, complex_name: nm || a.name || "", sido: String(a.sidoNm || "").trim(), sigungu: String(a.sigunguNm || "").trim() };
         }
         async function finishSelect() {
           const items = [...pending].map(([id, nm]) => targetItem(id, nm));
@@ -34424,10 +34425,19 @@ const originalBase64 = event.target.result;
           try { await fetchState(); } catch (e) {}
           toast(`구글드라이브의 알림 키로 연결했습니다 — 다른 기기와 같은 단지 목록(${(state.targets || []).length}개)을 씁니다.`, false, 8000);
         }
+        function setDriveStatus(s) {
+          driveStatus = s;
+          const el = $("raMngDrive"); if (el) el.textContent = s;   // 관리창이 열려 있으면 바로 갱신
+        }
         async function driveKeySync() {
-          if (driveSynced || driveSyncing || !window.__gdriveReady || !window.__gdriveRootFolderId) return;
-          if (typeof __dqList !== "function" || typeof __lzReadMeta !== "function" || typeof __dqUploadIfMissing !== "function") return;
+          if (driveSynced || driveSyncing) return;
+          if (!window.__gdriveReady) return;   // 미로그인 — 관리창이 "드라이브 미로그인" 으로 표시
+          if (!window.__gdriveRootFolderId) { setDriveStatus("드라이브 폴더 준비 중…"); return; }
+          if (typeof __dqList !== "function" || typeof __lzReadMeta !== "function" || typeof __dqUploadIfMissing !== "function") {
+            setDriveStatus("드라이브 함수를 찾지 못함(페이지 판 확인)"); driveSynced = true; return;
+          }
           driveSyncing = true;
+          setDriveStatus("드라이브 키 확인 중…");
           try {
             const root = window.__gdriveRootFolderId;
             const list = await __dqList(root, true);
@@ -34435,16 +34445,16 @@ const originalBase64 = event.target.result;
             if (fid) {
               const d = await __lzReadMeta(fid);
               const k = d && String(d.key || "");
-              if (/^[A-Za-z0-9_-]{16,64}$/.test(k) && k !== KEY) { await adoptKey(k); driveStatus = "드라이브 키로 공유 중"; }
-              else driveStatus = "드라이브 키와 같음 — 기기 간 공유 중";
+              if (/^[A-Za-z0-9_-]{16,64}$/.test(k) && k !== KEY) { await adoptKey(k); setDriveStatus("드라이브 키로 공유 중 (" + KEY.slice(0, 8) + "…)"); }
+              else setDriveStatus("드라이브 키와 같음 — 기기 간 공유 중");
             } else {
               await __dqUploadIfMissing(root, DRIVE_KEY_FILE, JSON.stringify({ key: KEY, createdAt: Date.now(), ua: navigator.userAgent.slice(0, 80) }), "application/json");
-              driveStatus = "이 기기 키를 드라이브에 저장 — 다른 기기가 로그인하면 공유";
+              setDriveStatus("이 기기 키를 드라이브에 저장 — 다른 기기가 로그인하면 공유");
             }
             driveSynced = true;
             console.log("[realAlert] drive key:", driveStatus);
           } catch (e) {
-            driveStatus = "드라이브 키 동기화 실패: " + (e && e.message || e);
+            setDriveStatus("드라이브 키 동기화 실패: " + (e && e.message || e));
             console.warn("[realAlert] drive key sync 실패", e);
           } finally { driveSyncing = false; }
         }
@@ -34503,7 +34513,7 @@ const originalBase64 = event.target.result;
             box.querySelector("#raMngDev").textContent = devs.length
               ? `기기 ${devs.filter((d) => !d.disabled).length}대` + (devs.length > 1 ? ` (${devs.map((d) => (d.this_device ? "이 기기" : (/Android|iPhone|iPad|Mobile/i.test(d.ua) ? "휴대폰" : "PC")) + (d.disabled ? "·끊김" : "")).join(", ")})` : "")
               : "등록 기기 없음";
-            box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 중…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
+            box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 대기…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
             const rows = state.targets || [];
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
             list.innerHTML = rows.length ? "" : '<div style="color:#6b7684;padding:8px 2px;">등록된 단지가 없습니다. [🔔 알림 단지 선택]으로 지도에서 고르세요.</div>';
@@ -34511,8 +34521,10 @@ const originalBase64 = event.target.result;
             const groups = new Map();
             for (const t of rows) {
               const a = aptById(t.complex_id) || {};
-              const sido = String(t.sido || a.sido || "").trim() || "(지역 미상)";
-              const sgg = String(t.sigungu || a.sigungu || "").trim() || "";
+              // 서버 값이 코드(숫자)로 저장된 옛 등록분은 이 페이지의 이름(sidoNm/sigunguNm)으로 대체
+              const nm = (v) => { v = String(v || "").trim(); return /^\d+$/.test(v) ? "" : v; };
+              const sido = nm(t.sido) || String(a.sidoNm || "").trim() || "(지역 미상)";
+              const sgg = nm(t.sigungu) || String(a.sigunguNm || "").trim() || "";
               if (!groups.has(sido)) groups.set(sido, new Map());
               const g = groups.get(sido);
               if (!g.has(sgg)) g.set(sgg, []);
