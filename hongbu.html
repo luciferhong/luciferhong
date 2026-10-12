@@ -1225,6 +1225,7 @@
       /* ══ 강남거리 모드 (2026-10-03) — 측정 카드 [강남]. #gnPanel 은 #map 안, 검색 결과·지점 메뉴는 body 직속 ══ */
       /* 켜져 있는 동안 지도 마커를 전부 숨긴다(사용자 지정). 우리 것(.gn-ov)과 측정(.ms-ov)만 남긴다. */
       .gn-hide > *:not(:has(.gn-ov, .ms-ov)) { display: none !important; }
+      .gn-vhide > svg:not(.vec-keep):not(.wr-keep) { display: none !important; } /* 강남 모드 중 폴리곤 숨김 — 우리 선만 남김 */
       #gnPanel {
         position: absolute;
         top: 8px;
@@ -24347,6 +24348,17 @@ const originalBase64 = event.target.result;
         sync();
       })();
 
+      // 벡터 오버레이(Polyline·Circle)의 svg 에 .vec-keep 을 단다 — 강남 모드가 폴리곤을 숨길 때 남길 우리 선 표시 (2026-10-12).
+      // 네이버는 오버레이마다 overlayLayer 에 <svg> 하나씩 만든다. 요소가 아직 없으면 다음 프레임에 한 번 더.
+      window.__vecKeep = function (...os) {
+        const tag = (o, retry) => {
+          const svg = o?.getElement?.()?.closest?.("svg");
+          if (svg) svg.classList.add("vec-keep");
+          else if (retry) requestAnimationFrame(() => tag(o, false));
+        };
+        os.forEach((o) => { try { tag(o, true); } catch (_) {} });
+      };
+
       /* ══ 측정 — 거리·반경 (2026-10-03, distance_gangnam.html 의 setupRuler·setupRadius 이식) ══
          지도 **왼쪽 중간**의 세로 카드 `#msCard`(카카오맵 모양 — 사용자 지정)에서 고른다.
          [도구] 패널에 있던 '측정' 구획은 카드로 옮기며 뺐다(2026-10-03 사용자 지정).
@@ -24527,6 +24539,7 @@ const originalBase64 = event.target.result;
             S.pvLine = ruler
               ? new naver.maps.Polyline({ map: window.map, path: [S.a, pos], strokeColor: col, strokeWeight: 4, strokeOpacity: 0.85, strokeLineCap: "round", clickable: false })
               : new naver.maps.Circle({ map: window.map, center: S.a, radius: km * 1000, strokeColor: col, strokeWeight: 2, strokeOpacity: 0.6, strokeStyle: "shortdash", fillColor: col, fillOpacity: 0.06, clickable: false });
+            window.__vecKeep(S.pvCase, S.pvLine);
             const pv = document.createElement("div");
             pv.className = "ms-ov";
             pv.style.cssText = "transform:translate(10px,-24px);background:" + (ruler ? "rgba(240,192,0,.92);color:#000" : "rgba(33,150,243,.9);color:#fff") +
@@ -24570,6 +24583,7 @@ const originalBase64 = event.target.result;
           const km = kmOf(a, b);
           const casing = new naver.maps.Polyline({ map: window.map, path: [a, b], strokeColor: "#ffffff", strokeWeight: 6, strokeOpacity: 0.85, clickable: false });
           const line = new naver.maps.Polyline({ map: window.map, path: [a, b], strokeColor: RULER, strokeWeight: 3, strokeOpacity: 1, clickable: false });
+          window.__vecKeep(casing, line);
           const bPin = mk(b, pinEl(RULER), 1250, false);
           const it = { kind: "ruler", km, overlays: [] };
           const mid = new naver.maps.LatLng((a.lat() + b.lat()) / 2, (a.lng() + b.lng()) / 2);
@@ -24585,6 +24599,7 @@ const originalBase64 = event.target.result;
             map: window.map, center: c, radius: km * 1000, strokeColor: col, strokeWeight: 2, strokeOpacity: 0.85,
             fillColor: col, fillOpacity: 0.12, clickable: false,
           });
+          window.__vecKeep(circle);
           const it = { kind: "radius", km, color: col, circle, overlays: [] };
           const le = labelEl("반경 " + fmt(km), col, "#fff", () => removeItem(it), (e, w) => openPop(it, w));
           it.labelEl = le;
@@ -24922,6 +24937,7 @@ const originalBase64 = event.target.result;
           const col = COLORS[i];
           const from = new naver.maps.LatLng(s.lat, s.lng), to = new naver.maps.LatLng(GN.lat, GN.lng);
           const line = new naver.maps.Polyline({ map: window.map, path: [from, to], strokeColor: col, strokeWeight: 3, strokeOpacity: 0.9, strokeStyle: "shortdash", clickable: false, zIndex: 60 });
+          window.__vecKeep(line);
           // 지점 표시 — 이름표 + 꼬리, 꼬리 끝이 좌표
           const pin = document.createElement("div");
           pin.className = "gn-ov gn-pin";
@@ -24959,12 +24975,17 @@ const originalBase64 = event.target.result;
         }
 
         // 마커 숨기기 — 마커 층에 클래스만 건다(뒤에 생기는 마커도 숨는다)
+        // (2026-10-12 사용자 지시) 폴리곤 메모 라벨(floatPane)·면적그리기·경계 폴리곤(overlayLayer 의 svg)도 숨긴다.
+        // 벡터 층은 우리 선(.vec-keep — 강남 점선·거리/반경 측정, .wr-keep — 경로)만 남긴다. setMap 은 안 건드려 끄면 그대로 복원.
         function hideMarkers(on) {
           document.querySelectorAll(".gn-hide").forEach((p) => p.classList.remove("gn-hide"));
+          document.querySelectorAll(".gn-vhide").forEach((p) => p.classList.remove("gn-vhide"));
           if (!on) return;
           try {
-            const pane = window.map?.getPanes?.().overlayImage;
-            if (pane) pane.classList.add("gn-hide");
+            const P = window.map?.getPanes?.();
+            if (P?.overlayImage) P.overlayImage.classList.add("gn-hide");
+            if (P?.floatPane) P.floatPane.classList.add("gn-hide");
+            if (P?.overlayLayer) P.overlayLayer.classList.add("gn-vhide");
           } catch (_) {}
         }
 
