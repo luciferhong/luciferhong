@@ -27618,6 +27618,7 @@ const originalBase64 = event.target.result;
 .wr-markers-hidden > *:has(.wr-pin),.wr-markers-hidden > *:has(.wr-goal),
 .wr-markers-hidden > *:has(.wr-node),.wr-markers-hidden > *:has(.wr-badge),
 .wr-markers-hidden > *:has(.gn-ov){display:block !important} /* 강남거리 모드의 지점·라벨·강남역은 남긴다 */
+.wr-vec-hidden > svg:not(.wr-keep){display:none !important} /* 경로 중 폴리곤(면적그리기 등) 숨김 — 우리 선만 남김 */
 .wr-pin{transform:translate(-50%,-50%);white-space:nowrap;font-size:12px;font-weight:700;line-height:1}
 .wr-pin .wr-dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.3)}
 .wr-goal{transform:translate(-50%,-100%);white-space:nowrap;background:#0969da;color:#fff;border:2px solid #fff;
@@ -27728,8 +27729,29 @@ const originalBase64 = event.target.result;
           const pane = __wrMarkerPane();
           if (!pane) return;
           pane.classList.add("wr-markers-hidden");
+          // 폴리곤 메모 라벨('1967개' 등 OverlayView)은 floatPane 에 따로 있어 위 층만으로는 남는다 (2026-10-12 사용자 지적)
+          try {
+            const fp = window.map?.getPanes?.().floatPane;
+            if (fp && fp !== pane && !fp.querySelector("svg")) fp.classList.add("wr-markers-hidden");
+          } catch (_) {}
+          // 면적그리기·단지 경계 등 폴리곤도 감춘다 (2026-10-12 사용자 지시). 폴리곤과 경로선은 같은 벡터 층에
+          // 오버레이마다 <svg> 하나씩 들어 있으므로, 우리 선(+강남거리 모드 선)의 svg 에만 .wr-keep 을 달고 나머지를 숨긴다.
+          // 클래스만 걸고 setMap 은 건드리지 않으므로 닫으면 직전 화면이 그대로 돌아온다.
+          try {
+            const vl = window.map?.getPanes?.().overlayLayer;
+            if (vl) {
+              const keep = [...__WR.overlays, ...((window.__GNS?.ov || []).flat())];
+              for (const o of keep) {
+                if (!(o instanceof naver.maps.Polyline)) continue;
+                const svg = o.getElement?.()?.closest?.("svg");
+                if (svg) svg.classList.add("wr-keep");
+              }
+              vl.classList.add("wr-vec-hidden");
+            }
+          } catch (_) {}
           __WR.paneHidden = true;
         } else {
+          document.querySelectorAll(".wr-vec-hidden").forEach((el) => el.classList.remove("wr-vec-hidden"));
           document.querySelectorAll(".wr-markers-hidden").forEach((el) => el.classList.remove("wr-markers-hidden"));
           __WR.paneHidden = false;
         }
