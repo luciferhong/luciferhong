@@ -3785,7 +3785,7 @@
           <button id="raSelectBtn" type="button" class="tb-item tb-go" title="지도 단지 마커 왼쪽에 체크박스를 띄워 실거래 알림 받을 단지를 고른다">🔔 알림 단지 선택</button>
           <div class="tb-row">
             <button id="raManageBtn" type="button" class="tb-item">🔔 알림 단지 관리</button>
-            <button id="raEnableBtn" type="button" class="tb-item" title="등록 단지의 최근 실거래로 텔레그램 테스트 알림을 보낸다">알림 테스트</button>
+            <button id="raEnableBtn" type="button" class="tb-item" title="오늘 새로 들어온 관심 단지 매매 전체를 지금 텔레그램으로 받는다(1시간에 한 번)">📨 지금 받기</button>
           </div>
           <button id="raTgBtn" type="button" class="tb-item" title="텔레그램 봇으로 같은 알림을 받는다 — 텔레그램이 열리면 [시작]만 누르면 된다">✈️ 텔레그램으로 받기</button>
           <span id="raStatus" style="font-size:11px; color:#475569;"></span>
@@ -34622,11 +34622,13 @@ const originalBase64 = event.target.result;
         async function testPush() {
           try {
             await refreshEndpoint();
+            // '지금 받기'(2026-10-14 — 알림 테스트 대신): 오늘 새 매매 전체를 지금 텔레그램으로. 서버가 1시간에 한 번으로 막는다(429)
+            toast("텔레그램으로 보내는 중…", false, 3000);
             const d = await api("/push_test", { key: KEY, url: location.href.split("#")[0], endpoint: myEndpoint });
             const res = d.telegram || [];
-            toast(d.ok ? `✓ 텔레그램으로 테스트 알림을 보냈습니다(${res.length}개 계정).` : `텔레그램 테스트 실패 (${res.join(",")})`, !d.ok);
-            checkHeadBell();   // 서버가 테스트 알림을 🔔 자리에도 저장했다 — 10분 기다리지 않고 바로 숫자 표시
-          } catch (e) { toast("테스트 실패: " + e.message, true); }
+            toast(d.ok ? (d.n ? `✓ 오늘 새 매매 ${d.n}건을 텔레그램으로 보냈습니다.` : "✓ 오늘은 아직 새 매매가 없다고 텔레그램으로 알렸습니다.")
+              : `텔레그램 보내기 실패 (${res.join(",")})`, !d.ok, 6000);
+          } catch (e) { toast(e.message, true, 8000); }   // 1시간 제한이면 서버가 "n분 뒤에 다시" 를 돌려준다
         }
 
         // ── 받은 알림 보기 (2026-10-11 사용자: "알림을 눌러도 내용을 볼 수 없다") ──
@@ -34674,7 +34676,14 @@ const originalBase64 = event.target.result;
             cid: String(t.cid ?? t.c ?? ""), name: t.name ?? t.n ?? "", region: t.r ?? "", area: t.area ?? t.a ?? "", floor: t.floor ?? t.f ?? "",
             price_txt: t.price_txt ?? t.p ?? "", date: t.date ?? t.d ?? "", diff_txt: t.diff_txt ?? t.x ?? "", high: !!(t.high ?? t.h),
             hoga: t.q ?? null,   // 2026-10-13 호가(시세 최신 회차 같은 평형 최저가) — 옛 알림엔 없음(null → 표시 안 함)
+            // 2026-10-14 텔레그램과 같은 정보(사용자): m 입주·세대수 · l 직전가 · v 직전 대비(만원) · lo 저층 · j 직거래 — 옛 알림엔 없음
+            meta: t.m || "", last: t.l || "", dv: (t.v === undefined || t.v === null) ? null : Number(t.v), low: !!t.lo, direct: !!t.j,
           }));
+          // 만원 → '13.5억' / '9,800만' (서버 push_alert.eok 와 같은 표기)
+          const eok = (v) => (v >= 10000 ? (v / 10000).toFixed(2).replace(/\.?0+$/, "") + "억" : Number(v).toLocaleString("ko-KR") + "만");
+          const diffHtml = (v) => (v === 0 ? '<span style="color:#6b7684">변동 없음</span>'
+            : `<span style="color:${v > 0 ? "#d93025" : "#1a63c9"}">${v > 0 ? "🔺" : "🔽"}${eok(Math.abs(v))}</span>`);
+          const escH = (s) => String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
           if (trades.length) {
             let lastCid = null, lastRegion = null;
             for (const t of trades) {
@@ -34689,17 +34698,25 @@ const originalBase64 = event.target.result;
               if (t.cid !== lastCid) {
                 lastCid = t.cid;
                 const h = document.createElement("div");
-                h.style.cssText = "margin-top:6px;font-weight:700;color:#00897b;cursor:pointer;";
-                h.textContent = "🏢 " + (t.name || t.cid);
+                h.style.cssText = "margin-top:6px;font-weight:700;color:#00897b;cursor:pointer;display:flex;align-items:baseline;gap:6px;";
+                // 텔레그램처럼: 단지명(같은 시군구 헷갈리는 이름이면 서버가 동명을 붙여 보낸다) + 입주·세대수 + 네이버 단지 링크
+                h.innerHTML = `<span>🏢 ${escH(t.name || t.cid)}</span>` +
+                  (t.meta ? `<span style="color:#6b7684;font-weight:400;font-size:12.5px">${escH(t.meta.trim())}</span>` : "") +
+                  `<a href="https://fin.land.naver.com/complexes/${encodeURIComponent(t.cid)}" target="_blank" rel="noopener" class="ra-fin" ` +
+                  'style="margin-left:auto;color:#1a63c9;font-weight:400;font-size:12px;text-decoration:none" title="네이버부동산 단지 페이지">네이버↗</a>';
                 h.title = "지도에서 보기";
-                h.addEventListener("click", () => { el.remove(); goApt(t.cid); });
+                h.addEventListener("click", (e) => { if (e.target.closest(".ra-fin")) return; el.remove(); goApt(t.cid); });
                 el.appendChild(h);
               }
               const row = document.createElement("div");
               row.style.cssText = "padding:3px 0 3px 10px;border-left:2px solid #e3e7ec;cursor:pointer;";
-              row.innerHTML = `${t.high ? "🔥" : ""}${t.area}㎡ ${t.floor}층 <b>${t.price_txt}</b> <span style="color:#6b7684">(${t.date})</span>` +
-                (t.diff_txt ? ` <span style="color:${/🔽/.test(t.diff_txt) ? "#1a63c9" : "#d93025"}">${t.diff_txt}</span>` : "") +
-                (t.hoga !== null ? ` <span style="color:#6b7684">| 호가 ${t.hoga || "없음"}</span>` : "");
+              // 텔레그램과 같은 줄: 🔥84㎡ 12층 13.5억 (10.03일 직거래) 직전(저층) 13억 🔺5,000만 | 호가 14억
+              const prev = t.last
+                ? ` <span style="color:#6b7684">직전${t.low ? "(저층)" : ""} ${escH(t.last)}</span> ${t.dv === null ? "" : diffHtml(t.dv)}`
+                : (t.diff_txt ? ` <span style="color:${/🔽/.test(t.diff_txt) ? "#1a63c9" : "#d93025"}">${escH(t.diff_txt)}</span>` : "");   // 옛 알림
+              row.innerHTML = `${t.high ? "🔥" : ""}${t.area}㎡ ${t.floor}층 <b>${escH(t.price_txt)}</b> ` +
+                `<span style="color:#6b7684">(${escH(t.date)}일${t.direct ? " 직거래" : ""})</span>` + prev +
+                (t.hoga !== null ? ` <span style="color:#6b7684">| 호가 ${escH(t.hoga || "없음")}</span>` : "");
               row.addEventListener("click", () => { el.remove(); goApt(t.cid); });
               el.appendChild(row);
             }
@@ -34709,7 +34726,12 @@ const originalBase64 = event.target.result;
           }
           const foot = document.createElement("div");
           foot.style.cssText = "margin-top:10px;color:#6b7684;font-size:11.5px;";
-          foot.textContent = trades.length ? "단지명·거래 줄을 누르면 지도에서 그 단지를 엽니다. 최근 알림은 [🔔 알림 단지 관리] → [최근 알림]." : "최근 알림은 [🔔 알림 단지 관리] → [최근 알림].";
+          // 텔레그램 끝의 ※ 설명 줄과 같은 내용(2026-10-14)
+          foot.textContent = (trades.length
+            ? "※ 전용 55~85㎡ · 26.7y = 입주 2026년 7월 · 300^ = 300세대 · 호가 = 시세 최저가 · 직전 = 같은 평형·같은 층대(저층 1~3층 / 그 위) 바로 앞 실거래 · " +
+              "🔥 = 같은 평형 수집 기간(2023-11~) 최고가 경신 · 🔺🔽 = 오른·내린 금액 · 날짜는 계약일\n단지명·거래 줄을 누르면 지도에서 그 단지를 엽니다. "
+            : "") + "최근 알림은 [🔔 알림 단지 관리] → [최근 알림].";
+          foot.style.whiteSpace = "pre-wrap";
           el.appendChild(foot);
           head.querySelector("#raPushClose").addEventListener("click", () => el.remove());
           document.body.appendChild(el);
@@ -35086,6 +35108,39 @@ const originalBase64 = event.target.result;
           } catch (e) { toast("복원 실패: " + (e && e.message || e), true); }
         }
 
+        // ── 관리 목록 이름에 동명 (2026-10-14 사용자: "동대문구 두산처럼 아파트가 2개이면 앞에 동") ──
+        // 서버(push_alert.complex_meta — 알림·텔레그램)와 같은 규칙: 같은 시군구에 같은 이름이 둘 이상이거나, 이 이름을 품은 다른
+        // 단지 이름이 있으면(두산 ↔ 두산위브) 앞에 읍면동. 동 이름은 Pages aptEmd.json(단지 → 읍면동, 432KB)을 관리창을 처음 열 때 한 번 받는다.
+        // 비교는 내 단지가 있는 시군구만(휴대폰 부담 없게).
+        let emdMap = null, emdP = null;
+        function loadEmd() {
+          if (!emdP) emdP = fetch(new URL("aptEmd.json", location.href).href).then((r) => (r.ok ? r.json() : {}))
+            .then((d) => { emdMap = d || {}; }).catch(() => { emdMap = {}; });
+          return emdP;
+        }
+        function dupNamesFor(sggCodes) {
+          const by = new Map();   // 시군구 코드 → Map(이름 → 수)
+          (apartmentData || []).forEach((a) => {
+            const s = String(a.sigungu || "");
+            if (!sggCodes.has(s) || !a.name) return;
+            if (!by.has(s)) by.set(s, new Map());
+            const m = by.get(s); m.set(a.name, (m.get(a.name) || 0) + 1);
+          });
+          const dup = new Set();
+          by.forEach((m, s) => {
+            const names = [...m.keys()];
+            names.forEach((n) => { if (m.get(n) > 1 || names.some((o) => o !== n && o.includes(n))) dup.add(s + "|" + n); });
+          });
+          return dup;
+        }
+        function nameWithDong(t, dup) {
+          const a = aptById(t.complex_id) || {};
+          const nm = t.complex_name || a.name || "";
+          const emd = emdMap && emdMap[String(t.complex_id)];
+          if (!nm || !emd || nm.startsWith(emd + " ")) return nm;   // 이미 동명이 붙은 이름이면 그대로
+          return dup.has(String(a.sigungu || "") + "|" + (a.name || nm)) ? `${emd} ${nm}` : nm;
+        }
+
         // ── 관리 패널 (모달 — 팝업은 맨 위 규칙: 단지 상세 1000002 보다 위) ──
         let fltSido = "", fltSgg = "";   // 관리창 시도·시군구 필터(세션 유지)
         function openManage() {
@@ -35101,7 +35156,7 @@ const originalBase64 = event.target.result;
           box.innerHTML =
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;"><b>🔔 실거래 알림 단지 관리</b>' +
             '<span id="raMngCnt" style="color:#6b7684;font-size:12.5px;"></span><span style="flex:1"></span>' +
-            `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}">테스트 알림</button>` +
+            `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}" title="오늘 새 매매 전체를 지금 텔레그램으로(1시간에 한 번)">📨 지금 받기</button>` +
             `<button id="raMngClose" style="${sb}">닫기</button></div>` +
             // 텔레그램 연결(2026-10-13) — 알림은 텔레그램으로만(브라우저 푸시 켜기·끄기 단추는 뺐다)
             '<div id="raMngTg" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;"></div>' +
@@ -35175,6 +35230,8 @@ const originalBase64 = event.target.result;
               (!window.__gdriveReady ? "단지 백업: 드라이브 미로그인" : ls.get(SIG_KEY) === targetsSig() ? `단지 백업: 드라이브와 같음 (${curTargets().length}개)` : "단지 백업: 곧 저장…");
             const rows = curTargets();
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
+            await loadEmd();   // 동명용(처음 한 번)
+            const dupSet = dupNamesFor(new Set(rows.map((t) => String((aptById(t.complex_id) || {}).sigungu || ""))));
             // 지역 이름: 서버 저장값(코드로 저장된 옛 등록분은 제외) → 이 페이지의 단지 데이터(sidoNm/sigunguNm) 보충
             const nm = (v) => { v = String(v || "").trim(); return /^\d+$/.test(v) ? "" : v; };
             const withRegion = rows.map((t) => {
@@ -35198,7 +35255,7 @@ const originalBase64 = event.target.result;
               const div = document.createElement("div");
               div.style.cssText = "display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;align-items:center;padding:5px 4px;border-bottom:1px solid #eef1f4;font-size:13px;";
               div.innerHTML = `<span style="color:#00897b;font-size:12px" title="${r.sido}">${r.sgg || r.sido}</span>` +
-                `<a href="#" class="ra-go-apt" data-id="${t.complex_id}" style="color:#1a63c9;text-decoration:none">${t.complex_name || "(이름 없음)"}</a>` +
+                `<a href="#" class="ra-go-apt" data-id="${t.complex_id}" style="color:#1a63c9;text-decoration:none">${nameWithDong(t, dupSet) || "(이름 없음)"}</a>` +
                 `<span style="color:#6b7684;font-size:12px">${t.complex_id}</span><span style="color:#6b7684;font-size:12px;">${(t.added_at || "").slice(5, 16)}</span>` +
                 `<button class="ra-del" data-id="${t.complex_id}" style="${sb};color:#d93025;border-color:#f0b4b0;padding:3px 8px">삭제</button>`;
               list.appendChild(div);
