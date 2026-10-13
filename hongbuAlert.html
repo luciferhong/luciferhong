@@ -9975,9 +9975,11 @@
       //   그 역직렬화가 **줌 16 진입·첫 단지 모달 때 메인 스레드를 ~360ms 멈춰** 첫 확대가 끊겼고
       //   (사용자 보고 "줌을 확대하니 끊기면서 확대된다", CDP 프로파일 실측), 폰은 29MB 다운로드도 부담이었다.
       //   → 서버 `/apt_boundaries?ids=1,2,3` 에 **화면 안 단지만** 묻는다(응답 {id:{poly,h}}, 없는 단지는 빠짐).
-      //   받은 것은 세션 메모리에만 기억한다(없는 단지는 null 로 기억해 다시 묻지 않는다).
+      //   받은 것은 세션 메모리에 기억하고(없는 단지는 null 로 기억해 다시 묻지 않는다), 2026-10-13 부터는 기기(IndexedDB)에도
+      //   단지별로 저장해 새로고침 뒤에도 다시 묻지 않는다(아래 '경계 단지별 기기 저장').
       //   🏠 이야기 단추의 h(호갱 단지 번호)도 같은 응답에 들어 있어 번호 표를 따로 받지 않는다.
-      //   ⚠ 운영 hongbu.html 은 아직 옛 통째 방식(`/apt_boundaries.json`) — 서버는 두 방식을 다 준다.
+      //   운영 hongbu.html 도 운영 푸시(hongbutest 통째 복사)로 같은 방식이다(2026-10-13 확인 — 예전 "운영은 아직 옛 통째 방식" 주석은 낡았다).
+      //   서버는 옛 통째(`/apt_boundaries.json`)도 계속 준다.
       const __bndRecs = new Map(); // id → {poly,h} | null(경계 없음)
       const __bndPending = new Map(); // id → 진행 중 요청 Promise (같은 단지 중복 요청 방지)
       const __BND_CHUNK = 150; // 한 요청 단지 수(주소 길이 여유)
@@ -9995,6 +9997,89 @@
           try { if (__parcelMode() === "all") __parcelAutoRefresh(); } catch (_) {}
         }, s * 1000 + 300);
       }
+      // ===== 경계 단지별 기기 저장 (2026-10-13 사용자: "아파트 경계를 매번 서버에 요청" → 개선) =====
+      // 받은 경계를 **단지마다 한 칸씩** IndexedDB(별도 DB `hongbuBoundary`)에 둔다 → 새로고침 뒤에도 가 본 지역은 서버에 안 묻는다.
+      // ⚠ 예전 29MB 통째 저장(값 하나 — 꺼낼 때 전부 역직렬화해 ~360ms 멈춤)과 달리 **화면 단지만** 꺼내 읽어 메모리에 전체가 안 올라온다.
+      // 경계 파일이 바뀌면(서버 `/apt_boundaries?meta=1` 의 etag, 분당 제한 밖) 저장분을 통째로 비운다.
+      // 상한 5,000단지(단지당 ~1.4KB → 약 7MB) — 넘으면 오래 저장된 것부터 지운다. 경계 없는 단지도 r:null 로 기억(다시 안 묻게).
+      // ⚠ 기존 hongbu·hongbuMemo DB 와 별개라 그쪽 버전 상수와 무관(claude_docs/indexeddb.md 체크리스트 대상 아님). 운영 hongbu.html 은 이 DB 를 안 연다.
+      const __BND_DB = "hongbuBoundary", __BND_DB_VER = 1, __BND_MAX = 5000;
+      let __bndDbP = null, __bndVerP = null;
+      function __bndDb() {
+        if (!__bndDbP) __bndDbP = new Promise((resolve) => {
+          let req;
+          try { req = indexedDB.open(__BND_DB, __BND_DB_VER); } catch (_) { resolve(null); return; }
+          const t = setTimeout(() => resolve(null), 5000);   // 열리지 않으면 저장 없이(서버 조회만) 간다
+          req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains("bnd")) db.createObjectStore("bnd").createIndex("t", "t");
+            if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta");
+          };
+          req.onsuccess = () => { clearTimeout(t); resolve(req.result); };
+          req.onerror = () => { clearTimeout(t); resolve(null); };
+          req.onblocked = () => { clearTimeout(t); resolve(null); };
+        });
+        return __bndDbP;
+      }
+      function __bndTx(db, stores, mode, fn) {
+        return new Promise((resolve) => {
+          try {
+            const tx = db.transaction(stores, mode);
+            const out = fn(tx);
+            tx.oncomplete = () => resolve(out);
+            tx.onerror = tx.onabort = () => resolve(out);
+          } catch (_) { resolve(undefined); }
+        });
+      }
+      // 버전 확인(세션에 한 번) → 바뀌었으면 비우고, 상한을 넘었으면 오래된 것부터 지운다. 저장소를 쓸 수 없으면 null.
+      function __bndStore() {
+        if (!__bndVerP) __bndVerP = (async () => {
+          const db = await __bndDb();
+          if (!db) return null;
+          let etag = null;
+          try {
+            const r = await __fetchTimeout(`${__parcelApiBase()}/apt_boundaries?meta=1`, 4000);
+            if (r.ok) etag = (await r.json()).etag || null;
+          } catch (_) {}
+          const holder = {};
+          await __bndTx(db, "meta", "readonly", (tx) => { const q = tx.objectStore("meta").get("ver"); q.onsuccess = () => { holder.ver = q.result; }; });
+          if (etag && holder.ver !== etag) {
+            await __bndTx(db, ["bnd", "meta"], "readwrite", (tx) => { tx.objectStore("bnd").clear(); tx.objectStore("meta").put(etag, "ver"); });
+            if (holder.ver) console.log("[경계] 경계 파일이 바뀌어 기기 저장분을 비웠습니다");
+          }
+          // 상한 정리 — 오래 저장된(t 가 작은) 것부터 90% 까지
+          const cnt = {};
+          await __bndTx(db, "bnd", "readonly", (tx) => { const q = tx.objectStore("bnd").count(); q.onsuccess = () => { cnt.n = q.result; }; });
+          if ((cnt.n || 0) > __BND_MAX) {
+            let drop = cnt.n - Math.floor(__BND_MAX * 0.9);
+            await __bndTx(db, "bnd", "readwrite", (tx) => {
+              const cur = tx.objectStore("bnd").index("t").openCursor();
+              cur.onsuccess = () => { const c = cur.result; if (c && drop-- > 0) { c.delete(); c.continue(); } };
+            });
+          }
+          return db;
+        })();
+        return __bndVerP;
+      }
+      __bndStore();   // 페이지를 열 때 바로 시작(첫 경계 그리기 전에 끝나도록)
+      async function __bndIdbGet(ids) {
+        const db = await __bndStore();
+        const out = new Map();
+        if (!db || !ids.length) return out;
+        await __bndTx(db, "bnd", "readonly", (tx) => {
+          const s = tx.objectStore("bnd");
+          ids.forEach((id) => { const q = s.get(id); q.onsuccess = () => { if (q.result !== undefined) out.set(id, q.result.r || null); }; });
+        });
+        return out;
+      }
+      function __bndIdbPut(entries) {
+        __bndStore().then((db) => {
+          if (!db || !entries.length) return;
+          const now = Date.now();
+          __bndTx(db, "bnd", "readwrite", (tx) => { const s = tx.objectStore("bnd"); entries.forEach(([id, r]) => s.put({ r, t: now }, id)); });
+        }).catch(() => {});
+      }
+
       function __bndFetchChunk(ids) {
         const p = __fetchTimeout(`${__parcelApiBase()}/apt_boundaries?ids=${ids.join(",")}`, 15000)
           .then(async (r) => {
@@ -10007,6 +10092,7 @@
             if (!r.ok) throw new Error("HTTP " + r.status);
             const data = await r.json();
             ids.forEach((id) => __bndRecs.set(id, (data && data[id]) || null));
+            __bndIdbPut(ids.map((id) => [id, (data && data[id]) || null]));   // 기기에도 저장(다음 새로고침 땐 안 묻는다)
           })
           .catch((e) => {
             console.warn("[경계] 조회 실패:", e); // 실패한 단지는 기억하지 않는다 — 다음 이동 때 다시 묻는다
@@ -10018,7 +10104,15 @@
       // 단지 id 배열 → {id: 경계 레코드} (경계 없는 단지는 빠진다)
       async function __bndGet(ids) {
         const list = [...new Set((ids || []).map(String))];
-        // 쉬는 중이면 새로 묻지 않고 이미 아는 것만 돌려준다
+        // 1) 메모리에 없는 단지는 먼저 기기 저장분(IndexedDB, 한 트랜잭션)에서 — 있으면 서버에 안 묻는다
+        const unknown = list.filter((id) => !__bndRecs.has(id) && !__bndPending.has(id));
+        if (unknown.length) {
+          try {
+            const got = await __bndIdbGet(unknown);
+            got.forEach((r, id) => { if (!__bndRecs.has(id)) __bndRecs.set(id, r); });
+          } catch (_) {}
+        }
+        // 2) 그래도 모르는 것만 서버에. 쉬는 중이면 새로 묻지 않고 이미 아는 것만 돌려준다
         const need = Date.now() < __bndBackoffUntil ? [] : list.filter((id) => !__bndRecs.has(id) && !__bndPending.has(id));
         for (let i = 0; i < need.length; i += __BND_CHUNK) __bndFetchChunk(need.slice(i, i + __BND_CHUNK));
         const waits = [...new Set(list.map((id) => __bndPending.get(id)).filter(Boolean))];
@@ -34232,6 +34326,8 @@ const originalBase64 = event.target.result;
           const tc = tgCount();
           st.textContent = `단지 ${n}개 · ` + (tc ? `텔레그램 ${tc} · 매일 ${at}` : "텔레그램 미연결 — 목록은 이 브라우저·내 드라이브에만");
           const mb = $("raManageBtn"); if (mb) mb.textContent = `🔔 알림 단지 관리 (${n})`;
+          // [알림 테스트]는 텔레그램으로 보내는 시험이라 연결돼 있을 때만(2026-10-13 사용자)
+          const eb = $("raEnableBtn"); if (eb) eb.style.display = tc ? "" : "none";   // .tb-item 의 display 가 hidden 속성을 이길 수 있어 style 로
           const tb = $("raTgBtn");
           if (tb) {
             tb.textContent = tc ? `✈️ 텔레그램 연결됨 (${tc})` : "✈️ 텔레그램으로 받기";
@@ -34682,6 +34778,16 @@ const originalBase64 = event.target.result;
           else await __dqUploadIfMissing(root, name, JSON.stringify(data), "application/json");
         }
         function driveOk() { return !!(window.__gdriveReady && window.__gdriveRootFolderId && typeof __dqList === "function"); }
+        // 드라이브에 로그인해 둔 사람(저장된 refresh 토큰이 있음) — 드라이브 준비(폴더 찾기 등 수 초)를 기다리지 않고 🔔 를 바로 띄우고 조회한다(2026-10-13 속도)
+        function driveLikely() {
+          if (driveOk()) return true;
+          try { return typeof __gdriveGetRefreshToken === "function" && !!__gdriveGetRefreshToken(); } catch (e) { return false; }
+        }
+        // 드라이브 읽음 파일만 다시 본다(숫자를 먼저 띄우고 뒤에서) — 다른 기기에서 읽었으면 숫자를 지운다
+        async function refreshReadFromDrive() {
+          if (!latestAlert || latestAlert.read || serverMode() || !driveOk()) return;
+          try { const rd = await driveFileJson(DRIVE_READ_FILE); if (rd && rd.tag === latestAlert.tag) { latestAlert.read = true; renderHeadBell(); } } catch (e) {}
+        }
         // 마지막으로 받은 알림(거래가 있던 것) — 오늘 새 알림이 없거나 이미 읽었어도 🔔 를 누르면 이걸 보여 준다(2026-10-13 사용자)
         const LAST_KEY = "realAlertLast";
         function saveLast(d) { try { ls.set(LAST_KEY, JSON.stringify(d)); } catch (e) {} }
@@ -34733,21 +34839,20 @@ const originalBase64 = event.target.result;
             if (!list.length) { latestAlert = null; renderHeadBell(); return; }
             // 로그인한 사람에 한해. ⚠ 미로그인으로 보여도 받아 둔 알림은 지우지 않는다 — 드라이브 토큰을 새로 받는 몇 초 동안
             //   __gdriveReady 가 잠깐 꺼져, 그때 돈 확인이 오늘 알림을 비웠다(10/13 사용자: "오늘 120건인데 새 실거래가 없다고 함")
-            if (!driveOk()) { renderHeadBell(); return; }
+            if (!driveLikely()) { renderHeadBell(); return; }
             try { d = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)) }); } catch (e) { return; }
-            if (d && d.tag && (d.trades || []).length) {
-              try { const rd = await driveFileJson(DRIVE_READ_FILE); d.read = !!(rd && rd.tag === d.tag); } catch (e) {}
-            }
+            // 읽음 파일은 숫자를 띄운 뒤 뒤에서 확인(아래 refreshReadFromDrive) — 드라이브 조회를 기다리느라 🔔 가 늦지 않게
           }
           if (!d || d.error) { renderHeadBell(); return; }   // 실패 응답이면 받아 둔 알림 그대로
           latestAlert = d.tag && (d.trades || []).length ? d : null;
           if (latestAlert) saveLast(latestAlert);
           renderHeadBell();
+          refreshReadFromDrive();   // 미연결: 드라이브가 준비돼 있으면 읽음 확인(아니면 드라이브 동기화 끝에서)
         }
         function renderHeadBell() {
           const bell = $("raHeadBell"), cnt = $("raHeadBellCnt"); if (!bell || !cnt) return;
           // 구글드라이브에 로그인하지 않았으면 🔔 자체를 숨긴다(2026-10-13 사용자: "로그인 안 하면 헤더 🔔 숨기기")
-          bell.hidden = !driveOk();
+          bell.hidden = !driveLikely();
           if (bell.hidden) { const p = $("raPushPanel"); if (p && !latestAlert) p.remove(); return; }
           // 읽음 = 서버(키 공통 — 다른 기기에서 읽음) 또는 이 기기 localStorage(서버 반영 전 즉시)
           // tag = realAlert-YYYYMMDD(정기) 또는 realAlert-YYYYMMDD-tHHMMSS(알림 테스트 — 매번 새 알림)
@@ -34821,6 +34926,7 @@ const originalBase64 = event.target.result;
           }
           driveSyncing = true;
           setDriveStatus("드라이브 키 확인 중…");
+          let keyChanged = false;   // 키가 바뀌었거나 드라이브에서 더 새 단지 목록을 받았으면 🔔 를 다시 조회
           try {
             const root = window.__gdriveRootFolderId;
             const list = await __dqList(root, true);
@@ -34828,7 +34934,7 @@ const originalBase64 = event.target.result;
             if (fid) {
               const d = await __lzReadMeta(fid);
               const k = d && String(d.key || "");
-              if (/^[A-Za-z0-9_-]{16,64}$/.test(k) && k !== KEY) { await adoptKey(k); setDriveStatus("드라이브 키로 공유 중 (" + KEY.slice(0, 8) + "…)"); }
+              if (/^[A-Za-z0-9_-]{16,64}$/.test(k) && k !== KEY) { await adoptKey(k); keyChanged = true; setDriveStatus("드라이브 키로 공유 중 (" + KEY.slice(0, 8) + "…)"); }
               else setDriveStatus("드라이브 키와 같음 — 기기 간 공유 중");
             } else {
               await __dqUploadIfMissing(root, DRIVE_KEY_FILE, JSON.stringify({ key: KEY, createdAt: Date.now(), ua: navigator.userAgent.slice(0, 80) }), "application/json");
@@ -34836,15 +34942,16 @@ const originalBase64 = event.target.result;
             }
             driveSynced = true;
             console.log("[realAlert] drive key:", driveStatus);
-            await driveLoadTargets();   // 미연결이면 드라이브의 단지 목록이 더 새것일 때 받아 온다(다른 기기에서 바꾼 것)
+            if (await driveLoadTargets()) keyChanged = true;   // 미연결이면 드라이브의 단지 목록이 더 새것일 때 받아 온다(다른 기기에서 바꾼 것)
             scheduleBackup();   // 키가 정해진 뒤에야 단지 목록을 백업한다(옛 키 목록을 올리지 않게)
-            checkHeadBell();    // 드라이브 로그인이 확인됐으니 🔔(미연결이면 /push_feed) 다시
+            // 🔔: 이미 받아 뒀으면 읽음만 확인, 아직이면(키가 바뀌었거나 미로그인 판정이었으면) 그때 조회
+            if (latestAlert && !keyChanged) refreshReadFromDrive(); else checkHeadBell();
           } catch (e) {
             setDriveStatus("드라이브 키 동기화 실패: " + (e && e.message || e));
             console.warn("[realAlert] drive key sync 실패", e);
           } finally { driveSyncing = false; }
         }
-        setInterval(() => { driveKeySync().catch(() => {}); }, 3000);
+        setInterval(() => { driveKeySync().catch(() => {}); }, 1000);   // 3초 → 1초(2026-10-13 속도) — 준비 전엔 바로 돌아오는 가벼운 검사
 
         // ── 알림 단지 목록 드라이브 백업 (2026-10-13 사용자: "서버에 문제가 생겼을 때를 대비해 드라이브에도, 홍부에서 변경할 때마다 갱신") ──
         // 원본은 VM 푸시_단지. 서버 상태가 바뀔 때마다(applyState) 2초 뒤 `HongbuMemo/realAlert_targets.json` 을 덮어쓴다.
@@ -34868,8 +34975,10 @@ const originalBase64 = event.target.result;
               ls.set(SIG_KEY, KEY + ":" + idsSig(d.targets));   // 방금 받은 것 — 다시 올리지 않게
               applyState(state);
               console.log("[realAlert] 드라이브 단지 목록 받음", d.targets.length);
+              return true;
             }
           } catch (e) { console.warn("[realAlert] 드라이브 단지 목록 읽기 실패", e); }
+          return false;
         }
         async function driveBackupTargets() {
           if (!driveSynced || !window.__gdriveReady || !window.__gdriveRootFolderId) return;   // 로그인·키 동기화 뒤 driveKeySync 가 다시 부른다
@@ -35020,6 +35129,7 @@ const originalBase64 = event.target.result;
             }
             // 알림 시각은 텔레그램 발송용 — 미연결이면 숨긴다(서버가 409)
             box.querySelector("#raMngTimeRow").style.display = serverMode() ? "flex" : "none";
+            box.querySelector("#raMngTest").style.display = serverMode() ? "" : "none";   // 테스트는 텔레그램 연결 때만
             const tgBox = box.querySelector("#raMngTg");
             const chats = ((state.telegram && state.telegram.chats) || []).filter((c) => !c.disabled);
             const esc = (s) => String(s || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
