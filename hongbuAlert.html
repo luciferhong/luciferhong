@@ -1248,6 +1248,7 @@
       /* ══ 강남거리 모드 (2026-10-03) — 측정 카드 [강남]. #gnPanel 은 #map 안, 검색 결과·지점 메뉴는 body 직속 ══ */
       /* 켜져 있는 동안 지도 마커를 전부 숨긴다(사용자 지정). 우리 것(.gn-ov)과 측정(.ms-ov)만 남긴다. */
       .gn-hide > *:not(:has(.gn-ov, .ms-ov)) { display: none !important; }
+      .gn-vhide > svg:not(.vec-keep):not(.wr-keep) { display: none !important; } /* 강남 모드 중 폴리곤 숨김 — 우리 선만 남김 */
       #gnPanel {
         position: absolute;
         top: 8px;
@@ -2566,6 +2567,40 @@
         border-radius: 18px;
       }
 
+      /* 🔔 헤더 실거래 알림(2026-10-13, hongbuAlert 전용) — 단풍 왼쪽. 늘 보이고, 오늘 새 알림을 아직 안 읽었으면 빨간 숫자+흔들림(읽음은 localStorage) */
+      #raHeadBell {
+        position: relative;
+        display: inline-block;
+        cursor: pointer;
+        margin-right: 4px;
+        transform-origin: 50% 8%;
+      }
+      #raHeadBell.ra-new { animation: raBellSwing 1.6s ease-in-out 3; }
+      #raHeadBellCnt[hidden] { display: none; }
+      #raHeadBellCnt {
+        position: absolute;
+        top: -4px;
+        right: -8px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        border-radius: 9px;
+        background: #e53935;
+        color: #fff;
+        font-size: 11px;
+        line-height: 18px;
+        text-align: center;
+        font-weight: 700;
+        box-shadow: 0 0 0 2px #fff;
+      }
+      @keyframes raBellSwing {
+        0%, 60%, 100% { transform: rotate(0); }
+        10% { transform: rotate(14deg); }
+        20% { transform: rotate(-12deg); }
+        30% { transform: rotate(8deg); }
+        40% { transform: rotate(-5deg); }
+      }
+
       /* 🍁 헤더 단풍 — 노란 단풍으로 색 보정, 누르면 잎이 흩날린다 */
       #mapleDeco {
         display: inline-block;
@@ -3421,7 +3456,7 @@
         </span>
       </div>
 
-      <span style="margin-left: auto; font-size: 30px; line-height: 1; padding-right: 4px;"><span id="mapleDeco" title="클릭해보세요!">🍁</span><span id="icecreamBtn" style="cursor:pointer;" title="클릭해보세요!">🍦</span><span id="retrieverBtn" style="cursor:pointer;" title="클릭해보세요!">🐕</span></span>
+      <span style="margin-left: auto; font-size: 30px; line-height: 1; padding-right: 4px;"><span id="raHeadBell" title="실거래 알림 — 눌러서 보기"><span>🔔</span><b id="raHeadBellCnt" hidden></b></span><span id="mapleDeco" title="클릭해보세요!">🍁</span><span id="icecreamBtn" style="cursor:pointer;" title="클릭해보세요!">🍦</span><span id="retrieverBtn" style="cursor:pointer;" title="클릭해보세요!">🐕</span></span>
 
     </h1>
 
@@ -3744,7 +3779,7 @@
           <button id="raSelectBtn" type="button" class="tb-item tb-go" title="지도 단지 마커 왼쪽에 체크박스를 띄워 실거래 알림 받을 단지를 고른다">🔔 알림 단지 선택</button>
           <div class="tb-row">
             <button id="raManageBtn" type="button" class="tb-item">🔔 알림 단지 관리</button>
-            <button id="raEnableBtn" type="button" class="tb-item" title="이 브라우저에서 푸시 알림을 받도록 구독한다">알림 켜기</button>
+            <button id="raEnableBtn" type="button" class="tb-item" title="등록 단지의 최근 실거래로 텔레그램 테스트 알림을 보낸다">알림 테스트</button>
           </div>
           <button id="raTgBtn" type="button" class="tb-item" title="텔레그램 봇으로 같은 알림을 받는다 — 텔레그램이 열리면 [시작]만 누르면 된다">✈️ 텔레그램으로 받기</button>
           <span id="raStatus" style="font-size:11px; color:#475569;"></span>
@@ -9893,7 +9928,11 @@
           __parcelBBoxes.delete(String(__parcelAptId));
           __parcelRings.delete(String(__parcelAptId));
         }
+        // 선택 경계로만 그려져 있던 단지(자동표시 목록에서 빠져 있음)는 지우면 화면에서 사라진다.
+        // 지도가 안 움직이면 idle 갱신이 없어 새로고침 전까지 안 보였다(2026-10-12 신림동 초원) → 자동표시 중이면 바로 다시 채운다.
+        const __hadSel = __parcelAptId && !__parcelAutoPolys.has(String(__parcelAptId));
         __parcelAptId = null;
+        if (__hadSel && __parcelAutoChecked()) setTimeout(__parcelAutoRefresh, 0);
       }
 
       // ---- 아파트 단지 경계 (전체 파일 1회 로드 + IndexedDB 캐시) ----
@@ -24387,6 +24426,17 @@ const originalBase64 = event.target.result;
         sync();
       })();
 
+      // 벡터 오버레이(Polyline·Circle)의 svg 에 .vec-keep 을 단다 — 강남 모드가 폴리곤을 숨길 때 남길 우리 선 표시 (2026-10-12).
+      // 네이버는 오버레이마다 overlayLayer 에 <svg> 하나씩 만든다. 요소가 아직 없으면 다음 프레임에 한 번 더.
+      window.__vecKeep = function (...os) {
+        const tag = (o, retry) => {
+          const svg = o?.getElement?.()?.closest?.("svg");
+          if (svg) svg.classList.add("vec-keep");
+          else if (retry) requestAnimationFrame(() => tag(o, false));
+        };
+        os.forEach((o) => { try { tag(o, true); } catch (_) {} });
+      };
+
       /* ══ 측정 — 거리·반경 (2026-10-03, distance_gangnam.html 의 setupRuler·setupRadius 이식) ══
          지도 **왼쪽 중간**의 세로 카드 `#msCard`(카카오맵 모양 — 사용자 지정)에서 고른다.
          [도구] 패널에 있던 '측정' 구획은 카드로 옮기며 뺐다(2026-10-03 사용자 지정).
@@ -24567,6 +24617,7 @@ const originalBase64 = event.target.result;
             S.pvLine = ruler
               ? new naver.maps.Polyline({ map: window.map, path: [S.a, pos], strokeColor: col, strokeWeight: 4, strokeOpacity: 0.85, strokeLineCap: "round", clickable: false })
               : new naver.maps.Circle({ map: window.map, center: S.a, radius: km * 1000, strokeColor: col, strokeWeight: 2, strokeOpacity: 0.6, strokeStyle: "shortdash", fillColor: col, fillOpacity: 0.06, clickable: false });
+            window.__vecKeep(S.pvCase, S.pvLine);
             const pv = document.createElement("div");
             pv.className = "ms-ov";
             pv.style.cssText = "transform:translate(10px,-24px);background:" + (ruler ? "rgba(240,192,0,.92);color:#000" : "rgba(33,150,243,.9);color:#fff") +
@@ -24610,6 +24661,7 @@ const originalBase64 = event.target.result;
           const km = kmOf(a, b);
           const casing = new naver.maps.Polyline({ map: window.map, path: [a, b], strokeColor: "#ffffff", strokeWeight: 6, strokeOpacity: 0.85, clickable: false });
           const line = new naver.maps.Polyline({ map: window.map, path: [a, b], strokeColor: RULER, strokeWeight: 3, strokeOpacity: 1, clickable: false });
+          window.__vecKeep(casing, line);
           const bPin = mk(b, pinEl(RULER), 1250, false);
           const it = { kind: "ruler", km, overlays: [] };
           const mid = new naver.maps.LatLng((a.lat() + b.lat()) / 2, (a.lng() + b.lng()) / 2);
@@ -24625,6 +24677,7 @@ const originalBase64 = event.target.result;
             map: window.map, center: c, radius: km * 1000, strokeColor: col, strokeWeight: 2, strokeOpacity: 0.85,
             fillColor: col, fillOpacity: 0.12, clickable: false,
           });
+          window.__vecKeep(circle);
           const it = { kind: "radius", km, color: col, circle, overlays: [] };
           const le = labelEl("반경 " + fmt(km), col, "#fff", () => removeItem(it), (e, w) => openPop(it, w));
           it.labelEl = le;
@@ -24962,6 +25015,7 @@ const originalBase64 = event.target.result;
           const col = COLORS[i];
           const from = new naver.maps.LatLng(s.lat, s.lng), to = new naver.maps.LatLng(GN.lat, GN.lng);
           const line = new naver.maps.Polyline({ map: window.map, path: [from, to], strokeColor: col, strokeWeight: 3, strokeOpacity: 0.9, strokeStyle: "shortdash", clickable: false, zIndex: 60 });
+          window.__vecKeep(line);
           // 지점 표시 — 이름표 + 꼬리, 꼬리 끝이 좌표
           const pin = document.createElement("div");
           pin.className = "gn-ov gn-pin";
@@ -24999,12 +25053,17 @@ const originalBase64 = event.target.result;
         }
 
         // 마커 숨기기 — 마커 층에 클래스만 건다(뒤에 생기는 마커도 숨는다)
+        // (2026-10-12 사용자 지시) 폴리곤 메모 라벨(floatPane)·면적그리기·경계 폴리곤(overlayLayer 의 svg)도 숨긴다.
+        // 벡터 층은 우리 선(.vec-keep — 강남 점선·거리/반경 측정, .wr-keep — 경로)만 남긴다. setMap 은 안 건드려 끄면 그대로 복원.
         function hideMarkers(on) {
           document.querySelectorAll(".gn-hide").forEach((p) => p.classList.remove("gn-hide"));
+          document.querySelectorAll(".gn-vhide").forEach((p) => p.classList.remove("gn-vhide"));
           if (!on) return;
           try {
-            const pane = window.map?.getPanes?.().overlayImage;
-            if (pane) pane.classList.add("gn-hide");
+            const P = window.map?.getPanes?.();
+            if (P?.overlayImage) P.overlayImage.classList.add("gn-hide");
+            if (P?.floatPane) P.floatPane.classList.add("gn-hide");
+            if (P?.overlayLayer) P.overlayLayer.classList.add("gn-vhide");
           } catch (_) {}
         }
 
@@ -27658,6 +27717,7 @@ const originalBase64 = event.target.result;
 .wr-markers-hidden > *:has(.wr-pin),.wr-markers-hidden > *:has(.wr-goal),
 .wr-markers-hidden > *:has(.wr-node),.wr-markers-hidden > *:has(.wr-badge),
 .wr-markers-hidden > *:has(.gn-ov){display:block !important} /* 강남거리 모드의 지점·라벨·강남역은 남긴다 */
+.wr-vec-hidden > svg:not(.wr-keep){display:none !important} /* 경로 중 폴리곤(면적그리기 등) 숨김 — 우리 선만 남김 */
 .wr-pin{transform:translate(-50%,-50%);white-space:nowrap;font-size:12px;font-weight:700;line-height:1}
 .wr-pin .wr-dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.3)}
 .wr-goal{transform:translate(-50%,-100%);white-space:nowrap;background:#0969da;color:#fff;border:2px solid #fff;
@@ -27768,8 +27828,29 @@ const originalBase64 = event.target.result;
           const pane = __wrMarkerPane();
           if (!pane) return;
           pane.classList.add("wr-markers-hidden");
+          // 폴리곤 메모 라벨('1967개' 등 OverlayView)은 floatPane 에 따로 있어 위 층만으로는 남는다 (2026-10-12 사용자 지적)
+          try {
+            const fp = window.map?.getPanes?.().floatPane;
+            if (fp && fp !== pane && !fp.querySelector("svg")) fp.classList.add("wr-markers-hidden");
+          } catch (_) {}
+          // 면적그리기·단지 경계 등 폴리곤도 감춘다 (2026-10-12 사용자 지시). 폴리곤과 경로선은 같은 벡터 층에
+          // 오버레이마다 <svg> 하나씩 들어 있으므로, 우리 선(+강남거리 모드 선)의 svg 에만 .wr-keep 을 달고 나머지를 숨긴다.
+          // 클래스만 걸고 setMap 은 건드리지 않으므로 닫으면 직전 화면이 그대로 돌아온다.
+          try {
+            const vl = window.map?.getPanes?.().overlayLayer;
+            if (vl) {
+              const keep = [...__WR.overlays, ...((window.__GNS?.ov || []).flat())];
+              for (const o of keep) {
+                if (!(o instanceof naver.maps.Polyline)) continue;
+                const svg = o.getElement?.()?.closest?.("svg");
+                if (svg) svg.classList.add("wr-keep");
+              }
+              vl.classList.add("wr-vec-hidden");
+            }
+          } catch (_) {}
           __WR.paneHidden = true;
         } else {
+          document.querySelectorAll(".wr-vec-hidden").forEach((el) => el.classList.remove("wr-vec-hidden"));
           document.querySelectorAll(".wr-markers-hidden").forEach((el) => el.classList.remove("wr-markers-hidden"));
           __WR.paneHidden = false;
         }
@@ -34076,6 +34157,7 @@ const originalBase64 = event.target.result;
           regIds = new Set((state.targets || []).map((t) => String(t.complex_id)));
           renderStatus();
           decorate();
+          scheduleBackup();   // 단지 목록이 바뀌었으면 드라이브 백업 갱신(같으면 건너뜀)
         }
         async function refreshEndpoint() {
           try { const s = await localSub(); myEndpoint = s ? s.endpoint : ""; } catch (e) { myEndpoint = ""; }
@@ -34104,16 +34186,12 @@ const originalBase64 = event.target.result;
         }
         function renderStatus() {
           const st = $("raStatus"); if (!st) return;
+          // 2026-10-13 사용자: 푸시는 텔레그램으로 일원 — 브라우저 푸시 상태는 더 보이지 않는다
           const n = (state.targets || []).length;
-          const sub = !supported ? "이 브라우저는 웹푸시 미지원"
-            : state.disabled ? "이 기기 구독 끊어짐 — 알림 켜기 다시"
-            : state.subscribed ? "이 기기 알림 켜짐" : "이 기기 알림 꺼짐 — 알림 켜기";
-          const dc = state.device_count || 0;
           const at = (state.settings && state.settings.alert_time) || "08:10";
           const tc = tgCount();
-          st.textContent = `단지 ${n}개 · ${sub}${dc > 1 ? ` · 기기 ${dc}대` : ""}${tc ? ` · 텔레그램 ${tc}` : ""} · 매일 ${at}`;
+          st.textContent = `단지 ${n}개 · ${tc ? `텔레그램 ${tc}` : "텔레그램 미연결"} · 매일 ${at}`;
           const mb = $("raManageBtn"); if (mb) mb.textContent = `🔔 알림 단지 관리 (${n})`;
-          const eb = $("raEnableBtn"); if (eb) eb.textContent = state.subscribed && !state.disabled ? "알림 테스트" : "알림 켜기";
           const tb = $("raTgBtn"); if (tb) tb.textContent = tc ? `✈️ 텔레그램 연결됨 (${tc})` : "✈️ 텔레그램으로 받기";
         }
 
@@ -34222,8 +34300,9 @@ const originalBase64 = event.target.result;
           try {
             applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint }));
             stopSelect();
-            toast(`✓ 실거래 알림 단지 ${items.length}개 등록 (+${added} −${removed})`);
-            if (items.length && !tgCount() && (!state.subscribed || state.disabled)) await enablePush(true);   // 텔레그램이 있으면 묻지 않는다
+            // 알림은 텔레그램으로만(2026-10-13) — 연결이 없으면 안내만(비동기 뒤라 텔레그램 창을 대신 열면 팝업 차단된다)
+            toast(`✓ 실거래 알림 단지 ${items.length}개 등록 (+${added} −${removed})` +
+              (items.length && !tgCount() ? " — 알림을 받으려면 [✈️ 텔레그램으로 받기]를 눌러 연결해 주세요." : ""), false, tgCount() ? 5000 : 10000);
           } catch (e) { toast("등록 실패: " + e.message, true); }
         }
 
@@ -34305,12 +34384,10 @@ const originalBase64 = event.target.result;
           try {
             await refreshEndpoint();
             const d = await api("/push_test", { key: KEY, url: location.href.split("#")[0], endpoint: myEndpoint });
-            const tg = (d.telegram || []).length ? ` · 텔레그램 ${d.telegram.every((s) => s === 200) ? "성공" : "실패(" + d.telegram.join(",") + ")"}` : "";
-            toast(`테스트 발송 ${d.ok ? "성공" : "실패"} (${d.devices ? "브라우저 푸시 응답 " + d.status : "브라우저 구독 없음"}${tg}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
-          } catch (e) {
-            if (/구독이 없습니다/.test(e.message)) toast("이 브라우저는 아직 푸시 구독이 없습니다 — 먼저 [알림 켜기]를 눌러 권한을 허용해 주세요.", true);
-            else toast("테스트 실패: " + e.message, true);
-          }
+            const res = d.telegram || [];
+            toast(d.ok ? `✓ 텔레그램으로 테스트 알림을 보냈습니다(${res.length}개 계정).` : `텔레그램 테스트 실패 (${res.join(",")})`, !d.ok);
+            checkHeadBell();   // 서버가 테스트 알림을 🔔 자리에도 저장했다 — 10분 기다리지 않고 바로 숫자 표시
+          } catch (e) { toast("테스트 실패: " + e.message, true); }
         }
 
         // ── 받은 알림 보기 (2026-10-11 사용자: "알림을 눌러도 내용을 볼 수 없다") ──
@@ -34338,8 +34415,11 @@ const originalBase64 = event.target.result;
         function showPushPanel(p, at) {
           const old = $("raPushPanel"); if (old) old.remove();
           const el = document.createElement("div"); el.id = "raPushPanel";
-          el.style.cssText = "position:fixed;top:72px;right:16px;z-index:1000004;width:380px;max-width:calc(100vw - 24px);max-height:72vh;overflow:auto;" +
-            "background:#fff;color:#23272e;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.35);padding:12px 14px;font-size:13.5px;line-height:1.5;";
+          // 높이: PC(폭 900px 이상)는 화면 아래 16px 까지(2026-10-13 사용자: "pc 에서 더 아래까지 내려와도 된다"), 휴대폰은 72vh
+          const maxH = window.innerWidth >= 900 ? "calc(100vh - 88px)" : "72vh";
+          // 오른쪽 끝에 딱 붙인다(2026-10-13 사용자: 오른쪽에 지도가 비쳐 보임) — 그래서 왼쪽 모서리만 둥글게
+          el.style.cssText = `position:fixed;top:72px;right:0;z-index:1000004;width:380px;max-width:calc(100vw - 24px);max-height:${maxH};overflow:auto;` +
+            "background:#fff;color:#23272e;border-radius:12px 0 0 12px;box-shadow:0 8px 30px rgba(0,0,0,.35);padding:12px 14px;font-size:13.5px;line-height:1.5;";
           const when = at ? new Date(at) : new Date();
           const head = document.createElement("div");
           head.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;";
@@ -34381,7 +34461,7 @@ const originalBase64 = event.target.result;
               row.addEventListener("click", () => { el.remove(); goApt(t.cid); });
               el.appendChild(row);
             }
-            if (p.more) { const m = document.createElement("div"); m.style.cssText = "margin-top:6px;color:#6b7684;"; m.textContent = `… 외 ${p.more}건 (알림 용량 한도)`; el.appendChild(m); }
+            if (p.more) { const m = document.createElement("div"); m.style.cssText = "margin-top:6px;color:#6b7684;"; m.textContent = `… 외 ${p.more}건`; el.appendChild(m); }
           } else {
             const b = document.createElement("div"); b.style.whiteSpace = "pre-wrap"; b.textContent = p.body || "(내용 없음)"; el.appendChild(b);
           }
@@ -34452,6 +34532,48 @@ const originalBase64 = event.target.result;
           document.body.appendChild(ov);
         }
 
+        // ── 헤더 🔔 (2026-10-13 사용자: "푸시는 텔레그램으로 일원, 홍부는 접속 때 단풍잎 왼쪽 아이콘으로") ──
+        // GET /push_latest = 이 키의 가장 최근 정기 알림(server/push_alert.py store_latest, tag realAlert-YYYYMMDD).
+        // 🔔 는 늘 보인다(2026-10-13 사용자: "읽었어도 아이콘은 보여주고 신규 알림이 있을 때는 숫자"). 그 날짜가 오늘이고 아직 안 읽었으면
+        // 빨간 건수+흔들림. 누르면 가장 최근 알림을 열고 localStorage.realAlertReadTag 에 tag 를 기억 → 그날은 숫자가 다시 안 붙는다.
+        // 읽음은 localStorage + 서버(POST /push_read, 키 공통 — 2026-10-13 사용자: "PC 에서 확인했으면 모바일에서는 안 뜨게").
+        // 10분마다·탭으로 돌아올 때 다시 확인.
+        const READ_KEY = "realAlertReadTag";
+        let latestAlert = null;
+        function todayTag() {
+          const d = new Date();
+          return "realAlert-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
+        }
+        async function checkHeadBell() {
+          const bell = $("raHeadBell"); if (!bell) return;
+          let d = null;
+          try { d = await api("/push_latest?key=" + encodeURIComponent(KEY)); } catch (e) { return; }
+          latestAlert = d && d.tag && (d.trades || []).length ? d : null;
+          renderHeadBell();
+        }
+        function renderHeadBell() {
+          const bell = $("raHeadBell"), cnt = $("raHeadBellCnt"); if (!bell || !cnt) return;
+          // 읽음 = 서버(키 공통 — 다른 기기에서 읽음) 또는 이 기기 localStorage(서버 반영 전 즉시)
+          // tag = realAlert-YYYYMMDD(정기) 또는 realAlert-YYYYMMDD-tHHMMSS(알림 테스트 — 매번 새 알림)
+          const fresh = !!latestAlert && latestAlert.tag.startsWith(todayTag()) && !latestAlert.read && ls.get(READ_KEY) !== latestAlert.tag;
+          cnt.hidden = !fresh;
+          bell.classList.toggle("ra-new", fresh);
+          if (fresh) { const n = latestAlert.n || latestAlert.trades.length; cnt.textContent = n > 99 ? "99+" : String(n); }
+          bell.title = latestAlert ? `${latestAlert.title || "실거래 알림"} — 눌러서 보기` : "실거래 알림 — 아직 받은 알림이 없습니다";
+        }
+        function openHeadBell() {
+          if (!latestAlert) { toast("아직 받은 실거래 알림이 없습니다. [도구] → 실거래 알림에서 단지를 고르면 매일 알림 시각에 여기와 텔레그램으로 옵니다."); return; }
+          ls.set(READ_KEY, latestAlert.tag);
+          if (!latestAlert.read) {   // 서버에도 읽음 — PC 에서 읽으면 휴대폰엔 숫자가 안 붙는다(2026-10-13 사용자)
+            latestAlert.read = true;
+            api("/push_read", { key: KEY, tag: latestAlert.tag }).catch(() => {});
+          }
+          renderHeadBell();
+          pushHist(latestAlert);
+          const at = Date.parse(String(latestAlert.sent_at || "").replace(" ", "T") + "+09:00");   // 서버는 KST 로 저장
+          showPushPanel(latestAlert, isNaN(at) ? Date.now() : at);
+        }
+
         // ── 구글드라이브로 키 공유 (2026-10-11 사용자: "PC 와 모바일이 같은 단지를 보게") ──
         // 로그인된 드라이브 루트(HongbuMemo/)의 realAlert_key.json 에 키를 둔다. 다른 기기가 로그인하면 그 키를 받아
         // ① 자기 옛 키의 단지를 새 키에 합치고 ② 자기 푸시 구독을 새 키로 옮긴다 → 단지 목록·알림 시각 공유, 알림은 모든 기기로.
@@ -34469,6 +34591,7 @@ const originalBase64 = event.target.result;
           try { const sub = await localSub(); if (sub) await api("/push_subscribe", { key: KEY, subscription: sub.toJSON(), ua: navigator.userAgent }); } catch (e) {}
           try { await api("/push_tg_move", { key: KEY, from: oldKey }); } catch (e) {}   // 옛 키에 붙은 텔레그램도 새 키로
           try { await fetchState(); } catch (e) {}
+          checkHeadBell();   // 키가 바뀌었으니 오늘 알림도 새 키로 다시
           toast(`구글드라이브의 알림 키로 연결했습니다 — 다른 기기와 같은 단지 목록(${(state.targets || []).length}개)을 씁니다.`, false, 8000);
         }
         function setDriveStatus(s) {
@@ -34499,12 +34622,69 @@ const originalBase64 = event.target.result;
             }
             driveSynced = true;
             console.log("[realAlert] drive key:", driveStatus);
+            scheduleBackup();   // 키가 정해진 뒤에야 단지 목록을 백업한다(옛 키 목록을 올리지 않게)
           } catch (e) {
             setDriveStatus("드라이브 키 동기화 실패: " + (e && e.message || e));
             console.warn("[realAlert] drive key sync 실패", e);
           } finally { driveSyncing = false; }
         }
         setInterval(() => { driveKeySync().catch(() => {}); }, 3000);
+
+        // ── 알림 단지 목록 드라이브 백업 (2026-10-13 사용자: "서버에 문제가 생겼을 때를 대비해 드라이브에도, 홍부에서 변경할 때마다 갱신") ──
+        // 원본은 VM 푸시_단지. 서버 상태가 바뀔 때마다(applyState) 2초 뒤 `HongbuMemo/realAlert_targets.json` 을 덮어쓴다.
+        //   같은 내용(키+단지 id 서명이 localStorage 와 같음)이면 건너뜀. ⚠ 서버 목록이 **비어 있으면 덮어쓰지 않는다** — 서버가 날아가
+        //   빈 목록을 돌려줄 때 백업까지 지워지면 안 되므로. 복원은 관리창 [드라이브에서 복원](서버에 add 로 합침).
+        const DRIVE_TARGETS_FILE = "realAlert_targets.json";
+        const SIG_KEY = "realAlertTargetsSig";
+        let backupInfo = "", backupTimer = 0, backupBusy = false;
+        function setBackupInfo(s) { backupInfo = s; const el = $("raMngBackup"); if (el) el.textContent = s; }
+        function targetsSig() { return KEY + ":" + (state.targets || []).map((t) => String(t.complex_id)).sort().join(","); }
+        function scheduleBackup() { clearTimeout(backupTimer); backupTimer = setTimeout(() => { driveBackupTargets().catch(() => {}); }, 2000); }
+        async function driveBackupTargets() {
+          if (!driveSynced || !window.__gdriveReady || !window.__gdriveRootFolderId) return;   // 로그인·키 동기화 뒤 driveKeySync 가 다시 부른다
+          const targets = state.targets || [];
+          if (!targets.length) return;
+          const sig = targetsSig();
+          if (ls.get(SIG_KEY) === sig) return;
+          if (backupBusy) { scheduleBackup(); return; }
+          backupBusy = true;
+          try {
+            const now = new Date();
+            const data = {
+              key: KEY, savedAt: now.getTime(), savedAtText: now.toLocaleString("ko-KR"),
+              alert_time: (state.settings && state.settings.alert_time) || "08:10", count: targets.length,
+              targets: targets.map((t) => ({ complex_id: t.complex_id, complex_name: t.complex_name, sido: t.sido, sigungu: t.sigungu, added_at: t.added_at })),
+            };
+            const root = window.__gdriveRootFolderId;
+            const list = await __dqList(root, true);
+            const fid = list.get(DRIVE_TARGETS_FILE);
+            if (fid) await __driveWriteSggFile(fid, data);   // 같은 파일 덮어쓰기(PATCH uploadType=media)
+            else await __dqUploadIfMissing(root, DRIVE_TARGETS_FILE, JSON.stringify(data), "application/json");
+            ls.set(SIG_KEY, sig);
+            setBackupInfo(`드라이브 백업 ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")} · ${targets.length}개`);
+            console.log("[realAlert] 단지 목록 드라이브 백업", targets.length);
+          } catch (e) {
+            setBackupInfo("드라이브 백업 실패: " + (e && e.message || e));
+            console.warn("[realAlert] 단지 백업 실패", e);
+          } finally { backupBusy = false; }
+        }
+        async function driveRestoreTargets() {
+          if (!window.__gdriveReady || !window.__gdriveRootFolderId) { toast("구글드라이브에 로그인해야 복원할 수 있습니다.", true); return; }
+          try {
+            const list = await __dqList(window.__gdriveRootFolderId, true);
+            const fid = list.get(DRIVE_TARGETS_FILE);
+            if (!fid) { toast("드라이브에 단지 백업이 없습니다.", true); return; }
+            // 캐시 끄고 읽는다(같은 주소의 옛 내용이 나오지 않게)
+            const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`, { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` }, cache: "no-store" });
+            if (!r.ok) throw new Error("읽기 " + r.status);
+            const d = await r.json();
+            const items = Array.isArray(d.targets) ? d.targets.filter((t) => t && /^\d+$/.test(String(t.complex_id))) : [];
+            if (!items.length) { toast("드라이브 백업이 비어 있습니다.", true); return; }
+            const before = (state.targets || []).length;
+            applyState(await api("/push_targets", { key: KEY, add: items, endpoint: myEndpoint }));
+            toast(`드라이브 백업(${d.savedAtText || ""}, ${items.length}개)에서 복원 — 서버 단지 ${before} → ${(state.targets || []).length}개`, false, 8000);
+          } catch (e) { toast("복원 실패: " + (e && e.message || e), true); }
+        }
 
         // ── 관리 패널 (모달 — 팝업은 맨 위 규칙: 단지 상세 1000002 보다 위) ──
         let fltSido = "", fltSgg = "";   // 관리창 시도·시군구 필터(세션 유지)
@@ -34521,16 +34701,19 @@ const originalBase64 = event.target.result;
           box.innerHTML =
             '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;"><b>🔔 실거래 알림 단지 관리</b>' +
             '<span id="raMngCnt" style="color:#6b7684;font-size:12.5px;"></span><span style="flex:1"></span>' +
-            `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}">테스트 알림</button><button id="raMngOn" style="${sb}">알림 켜기</button>` +
-            `<button id="raMngOff" style="${sb};color:#d93025;border-color:#f0b4b0">알림 끄기</button><button id="raMngClose" style="${sb}">닫기</button></div>` +
-            '<div id="raMngSub" style="font-size:12.5px;margin-bottom:6px;"></div>' +
-            // 텔레그램 연결(2026-10-13)
+            `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}">테스트 알림</button>` +
+            `<button id="raMngClose" style="${sb}">닫기</button></div>` +
+            // 텔레그램 연결(2026-10-13) — 알림은 텔레그램으로만(브라우저 푸시 켜기·끄기 단추는 뺐다)
             '<div id="raMngTg" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;"></div>' +
             // 알림 시각(10분 단위, 키 공통 = 모든 기기) + 기기 수 + 드라이브 공유 상태
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;padding:6px 8px;background:#f6f8fa;border-radius:8px;margin-bottom:8px;">' +
             `<span>알림 시각</span><select id="raMngTime" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${timeOpts.join("")}</select>` +
             `<button id="raMngTimeSave" style="${sb}">저장</button>` +
-            '<span id="raMngDev" style="color:#6b7684"></span><span style="flex:1"></span><span id="raMngDrive" style="color:#6b7684"></span></div>' +
+            '<span style="flex:1"></span><span id="raMngDrive" style="color:#6b7684"></span></div>' +
+            // 단지 목록 드라이브 백업(2026-10-13) — 서버 장애 대비
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin:-4px 0 8px;padding:0 8px;">' +
+            '<span id="raMngBackup" style="color:#6b7684"></span><span style="flex:1"></span>' +
+            `<button id="raMngRestore" style="${sb}" title="드라이브 HongbuMemo/realAlert_targets.json 의 단지를 서버 목록에 합친다">드라이브에서 복원</button></div>` +
             // 시도·시군구 필터(2026-10-11 사용자: 묶음 대신 필터)
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;">' +
             '<span>시도</span><select id="raFltSido" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;min-width:90px"><option value="">전체</option></select>' +
@@ -34539,15 +34722,14 @@ const originalBase64 = event.target.result;
             '<div style="display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
             '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
-            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 이 키의 모든 기기로 보냅니다(계약→신고 최대 30일, 국토부 데이터는 07:30쯤 갱신). ` +
+            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 연결된 텔레그램으로 보내고, 홍부에서는 그날 헤더의 🔔(단풍 왼쪽)로 보여 줍니다(계약→신고 최대 30일, 국토부 데이터는 07:00쯤 갱신). ` +
             `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}?key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>.</div>`;
           ov.appendChild(box);
           ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
           box.querySelector("#raMngClose").addEventListener("click", () => ov.remove());
           box.querySelector("#raMngTest").addEventListener("click", testPush);
           box.querySelector("#raMngHist").addEventListener("click", () => openHistory(ov));
-          box.querySelector("#raMngOn").addEventListener("click", async () => { await enablePush(false); render(); });
-          box.querySelector("#raMngOff").addEventListener("click", async () => { await disablePush(); render(); });
+          box.querySelector("#raMngRestore").addEventListener("click", async (e) => { e.target.disabled = true; await driveRestoreTargets(); e.target.disabled = false; render(); });
           box.querySelector("#raMngTimeSave").addEventListener("click", async (e) => {
             e.target.disabled = true;
             try {
@@ -34559,10 +34741,6 @@ const originalBase64 = event.target.result;
           async function render() {
             const list = box.querySelector("#raMngList");
             try { await fetchState(); } catch (e) { list.innerHTML = `<div style="color:#d93025;padding:8px 2px;">서버 연결 실패: ${e.message}</div>`; return; }
-            box.querySelector("#raMngSub").innerHTML = state.subscribed
-              ? (state.disabled ? '<span style="color:#d93025">이 기기의 푸시 구독이 끊어졌습니다 — [알림 켜기]를 다시 눌러 주세요</span>'
-                : `<span style="color:#00897b">이 기기 알림 켜짐</span> <span style="color:#6b7684">(${state.endpoint_host || ""}${state.last_sent_at ? " · 마지막 발송 " + state.last_sent_at.slice(5, 16) : ""})</span>`)
-              : '<span style="color:#d93025">이 기기 알림 꺼짐 — [알림 켜기]</span>';
             const tgBox = box.querySelector("#raMngTg");
             const chats = ((state.telegram && state.telegram.chats) || []).filter((c) => !c.disabled);
             const esc = (s) => String(s || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
@@ -34572,14 +34750,12 @@ const originalBase64 = event.target.result;
                   ` <button class="ra-tg-unlink" data-chat="${esc(c.chat_id)}" style="${sb};padding:2px 7px;color:#d93025;border-color:#f0b4b0">끊기</button></span>`).join("") +
                 `<button class="ra-tg-link" style="${sb}">다른 계정 추가</button>`
               : `<button class="ra-tg-link" style="${sb};background:#229ed9;border-color:#229ed9;color:#fff;font-weight:700">✈️ 텔레그램으로 받기</button>` +
-                '<span style="color:#6b7684">텔레그램이 열리면 [시작]만 누르면 됩니다 — 브라우저가 꺼져 있어도 확실히 옵니다</span>';
+                '<span style="color:#d93025">알림은 텔레그램으로만 갑니다 — 텔레그램이 열리면 [시작]만 누르면 됩니다</span>';
             const sel = box.querySelector("#raMngTime");
             sel.value = (state.settings && state.settings.alert_time) || "08:10";
-            const devs = state.devices || [];
-            box.querySelector("#raMngDev").textContent = devs.length
-              ? `기기 ${devs.filter((d) => !d.disabled).length}대` + (devs.length > 1 ? ` (${devs.map((d) => (d.this_device ? "이 기기" : (/Android|iPhone|iPad|Mobile/i.test(d.ua) ? "휴대폰" : "PC")) + (d.disabled ? "·끊김" : "")).join(", ")})` : "")
-              : "등록 기기 없음";
             box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 대기…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
+            box.querySelector("#raMngBackup").textContent = backupInfo ||
+              (!window.__gdriveReady ? "단지 백업: 드라이브 미로그인" : ls.get(SIG_KEY) === targetsSig() ? `단지 백업: 드라이브와 같음 (${(state.targets || []).length}개)` : "단지 백업: 곧 저장…");
             const rows = state.targets || [];
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
             // 지역 이름: 서버 저장값(코드로 저장된 옛 등록분은 제외) → 이 페이지의 단지 데이터(sidoNm/sigunguNm) 보충
@@ -34641,15 +34817,20 @@ const originalBase64 = event.target.result;
         function wire() {
           $("raSelectBtn")?.addEventListener("click", startSelect);
           $("raManageBtn")?.addEventListener("click", openManage);
-          $("raEnableBtn")?.addEventListener("click", () => { if (state.subscribed && !state.disabled) testPush(); else enablePush(false); });
+          $("raEnableBtn")?.addEventListener("click", testPush);
           $("raTgBtn")?.addEventListener("click", () => { if (tgCount()) openManage(); else linkTelegram(); });
+          $("raHeadBell")?.addEventListener("click", openHeadBell);
+          checkHeadBell();
+          setInterval(checkHeadBell, 10 * 60 * 1000);
+          // 휴대폰에서 탭으로 다시 돌아올 때도 확인(다른 기기에서 읽었으면 숫자를 지운다)
+          document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkHeadBell(); });
           $("raBarDone")?.addEventListener("click", finishSelect);
           $("raBarCancel")?.addEventListener("click", stopSelect);
           document.addEventListener("keydown", (e) => { if (e.key === "Escape" && on) stopSelect(); });
           fetchState().catch(() => { const st = $("raStatus"); if (st) st.textContent = "알림 서버 연결 실패"; });
         }
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
-        window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, linkTelegram, unlinkTelegram, state: () => state, key: () => KEY };
+        window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, linkTelegram, unlinkTelegram, checkHeadBell, openHeadBell, state: () => state, key: () => KEY };
       })();
     </script>
   </body>
