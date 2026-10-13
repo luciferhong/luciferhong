@@ -77,6 +77,13 @@
     <div class="hint">텔레그램이 열리면 아래 <b>[시작]</b>만 누르면 됩니다. 브라우저 설정·홈 화면 추가 없이 아이폰에서도 확실히 옵니다.</div>
   </div>
 
+  <!-- 개인정보(2026-10-13) — 처리방침·삭제권 -->
+  <div class="card">
+    <div class="row"><b>🔒 개인정보</b><span class="mute" id="stConsent"></span></div>
+    <div class="hint">저장: 관심 단지·알림 시각·텔레그램 대화방 번호(사용자명·이름 저장 안 함). 서버는 일본 도쿄(Oracle Cloud). <a href="./privacy.html" target="_blank" rel="noopener" style="color:var(--brand)">처리방침 전문</a></div>
+    <div class="btns"><button class="danger" id="btnDeleteAll">🗑 내 알림 데이터 모두 삭제</button></div>
+  </div>
+
   <div class="card">
     <div class="row"><b>알림 받을 단지</b><span class="mute" id="tgCnt"></span></div>
     <ul class="tg" id="tgList"></ul>
@@ -97,7 +104,11 @@
   };
   if (qs.get('server')) ls.set('realAlertServer', qs.get('server'));
   const SERVER = (ls.get('realAlertServer') || DEFAULT_SERVER).replace(/\/$/, '');
+  // 키는 #key= 로 받는다(2026-10-13 개인정보 — 해시는 서버·접속 기록에 안 남는다). 옛 ?key= 링크도 받되 바로 주소에서 지운다
+  const hashKey = (location.hash.match(/(?:^#|&)key=([A-Za-z0-9_-]{16,64})/) || [])[1];
+  if (hashKey) ls.set('realAlertKey', hashKey);
   if (qs.get('key') && /^[A-Za-z0-9_-]{16,64}$/.test(qs.get('key'))) ls.set('realAlertKey', qs.get('key'));
+  if (hashKey) history.replaceState(null, '', location.pathname);
   let KEY = ls.get('realAlertKey');
   if (!KEY) {   // 확장 없이 들어온 경우 — 키를 만들어 두면 나중에 확장에 같은 키를 넣어 연결할 수 있다
     const a = new Uint8Array(16); crypto.getRandomValues(a);
@@ -165,6 +176,8 @@
         : '<span class="mute">이 기기 없음 — 아래 알림 켜기</span>') + ` <span class="mute">· 기기 ${dc}대 · 매일 ${at}</span>`;
       renderTargets(d.targets || []);
       renderTg(d.telegram || {});
+      serverConsent = (d.settings && d.settings.consent_ver) || null;
+      $('stConsent').textContent = hasConsent() ? '동의함' : '동의 전';
     } catch (e) {
       $('stSub').innerHTML = '<span class="bad">서버 연결 실패: ' + e.message + '</span>';
     }
@@ -189,6 +202,34 @@
     }
   }
 
+  // ── 개인정보 동의(2026-10-13) — 판은 server/tg_alert.py·privacy.html·hongbuAlert.html 과 같아야 한다 ──
+  const CONSENT_VER = '2026-10-13';
+  let serverConsent = null;
+  function hasConsent() { return (serverConsent || ls.get('realAlertConsent')) === CONSENT_VER; }
+  function askConsent(onAgree) {
+    // 텔레그램 창 열기가 팝업 차단되지 않게 confirm 직후 같은 클릭 흐름에서 onAgree 를 부른다
+    const ok = confirm('🔒 실거래 알림 — 개인정보 수집·이용 동의\n\n' +
+      '· 저장: 관심 단지(단지번호·이름·지역), 알림 시각, 텔레그램 대화방 번호(사용자명·이름·전화번호는 저장 안 함), 발송 기록\n' +
+      '· 목적: 실거래 알림 발송과 홍부 화면 표시뿐(광고·판매·제3자 제공 없음)\n' +
+      '· 보관: 삭제 요청 시 즉시, 발송 기록 90일, 1년 미사용 시 자동 삭제\n' +
+      '· 국외 보관·전송: 서버 Oracle Cloud(일본 도쿄), 전송 Cloudflare(미국), 메시지 Telegram\n' +
+      '· 삭제: 이 페이지의 [내 알림 데이터 모두 삭제] 또는 봇에 /delete\n\n' +
+      '동의하지 않으면 실거래 알림만 쓸 수 없습니다. 처리방침 전문은 이 페이지의 링크에서 볼 수 있습니다.\n\n동의하십니까?');
+    if (!ok) { msg('동의하지 않으면 실거래 알림을 쓸 수 없습니다.', true); return; }
+    ls.set('realAlertConsent', CONSENT_VER);
+    onAgree();
+  }
+  async function deleteAll() {
+    if (!confirm('이 알림 키의 데이터를 서버에서 모두 지웁니다 — 관심 단지·알림 시각·텔레그램 연결·발송 기록.\n같은 키를 쓰는 다른 기기의 목록도 함께 사라집니다. 계속할까요?')) return;
+    $('btnDeleteAll').disabled = true;
+    try {
+      const d = await api('/push_delete_all', { key: KEY });
+      try { localStorage.removeItem('realAlertConsent'); } catch (e) {}
+      msg(`서버에서 알림 데이터를 모두 지웠습니다(단지 ${(d.deleted && d.deleted['푸시_단지']) || 0}개). 구글드라이브 백업 파일은 홍부 관리창에서 지울 수 있습니다.`);
+    } catch (e) { msg('삭제 실패: ' + e.message, true); }
+    finally { $('btnDeleteAll').disabled = false; refresh(); }
+  }
+
   // ── 텔레그램 ──
   let tg = { bot: 'hongbu_realAertbot', count: 0, chats: [] };
   function renderTg(t) {
@@ -205,7 +246,7 @@
       const b = document.createElement('button'); b.textContent = '끊기'; b.className = 'danger';
       b.addEventListener('click', async () => {
         b.disabled = true;
-        try { const d = await api('/push_tg_unlink', { key: KEY, chat_id: c.chat_id }); renderTg(d.telegram || {}); msg('텔레그램 연결을 끊었습니다.'); }
+        try { const d = await api('/push_tg_unlink', { key: KEY, ref: c.ref }); renderTg(d.telegram || {}); msg('텔레그램 연결을 끊었습니다.'); }
         catch (e) { msg('실패: ' + e.message, true); b.disabled = false; }
       });
       li.appendChild(s); li.appendChild(b); ul.appendChild(li);
@@ -213,6 +254,7 @@
   }
   let tgWatch = 0;
   function linkTg() {
+    if (!hasConsent()) { askConsent(linkTg); return; }
     // 클릭 처리 안에서 바로 연다(팝업 차단 회피). 휴대폰은 텔레그램 앱이 뜬다.
     window.open(`https://t.me/${tg.bot}?start=${encodeURIComponent(KEY)}`, '_blank', 'noopener');
     msg('텔레그램이 열리면 [시작]을 눌러 주세요. 연결되면 여기에 표시됩니다.');
@@ -309,6 +351,7 @@
   $('btnOff').addEventListener('click', disable);
   $('btnTest').addEventListener('click', test);
   $('btnTg').addEventListener('click', linkTg);
+  $('btnDeleteAll').addEventListener('click', deleteAll);
   $('btnRefresh').addEventListener('click', () => { msg(''); refresh(); });
   $('btnCopyKey').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(KEY); msg('기기 키를 복사했습니다.'); } catch (e) { prompt('기기 키', KEY); }

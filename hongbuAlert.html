@@ -34208,10 +34208,48 @@ const originalBase64 = event.target.result;
         // https://t.me/<봇>?start=<키> 를 열면 텔레그램 앱이 뜨고, 사용자가 [시작]을 누르면 VM 이 그 계정을 이 키에 묶는다(봇 수신이 롱폴링이라 몇 초 안).
         // 단지·알림 시각은 웹푸시와 공용. 연결 뒤엔 상태를 몇 초 간격으로 다시 읽어 '연결됨'으로 바꾼다.
         const TG_BOT_DEFAULT = "hongbu_realAertbot";
+
+        // ── 개인정보 수집·이용 동의 (2026-10-13 사용자: 개인정보 조치 3단계까지 적용) ──
+        // 서버에 단지를 처음 넣을 때(선택완료·복원)와 텔레그램을 연결할 때 묻는다. 판(CONSENT_VER)은 server/tg_alert.py·realAlert/privacy.html 과 같아야 한다.
+        // 동의는 서버(푸시_설정.consent_ver — set/add 요청에 consent 동봉)와 localStorage 에 남는다. 서버는 동의 없는 set/add 를 428 로 거절.
+        const CONSENT_VER = "2026-10-13";
+        const PRIVACY_URL = new URL("realAlert/privacy.html", location.href).href;
+        function hasConsent() { return ((state.settings && state.settings.consent_ver) || ls.get("realAlertConsent")) === CONSENT_VER; }
+        function consentBody() { return hasConsent() ? { consent: CONSENT_VER } : {}; }
+        function showConsent(onAgree, onCancel) {
+          const old = $("raConsent"); if (old) old.remove();
+          const ov = document.createElement("div"); ov.id = "raConsent";
+          ov.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000006;display:flex;align-items:center;justify-content:center;";
+          const box = document.createElement("div");
+          box.style.cssText = "background:#fff;color:#23272e;border-radius:12px;padding:16px 18px;width:440px;max-width:92vw;max-height:84vh;overflow:auto;font-size:13.5px;line-height:1.6;box-shadow:0 8px 30px rgba(0,0,0,.35);";
+          box.innerHTML =
+            '<b style="font-size:15px">🔒 실거래 알림 — 개인정보 수집·이용 동의</b>' +
+            '<div style="margin-top:8px">알림을 보내려면 아래 정보를 서버에 저장합니다.</div>' +
+            '<ul style="margin:6px 0;padding-left:18px">' +
+            "<li><b>저장</b>: 관심 단지(단지번호·이름·지역), 알림 시각, 텔레그램 대화방 번호(사용자명·이름·전화번호는 저장 안 함), 발송 기록</li>" +
+            "<li><b>목적</b>: 실거래 알림 발송과 홍부 화면 표시뿐 — 광고·판매·제3자 제공 없음</li>" +
+            "<li><b>보관</b>: 삭제 요청 시 즉시, 발송 기록 90일, 1년 미사용 시 자동 삭제</li>" +
+            "<li><b>국외 보관·전송</b>: 서버 Oracle Cloud(일본 도쿄), 전송 Cloudflare(미국), 메시지 Telegram</li>" +
+            "<li><b>삭제</b>: [🔔 알림 단지 관리] → [내 알림 데이터 모두 삭제] 또는 봇에 /delete</li>" +
+            "</ul>" +
+            '<div style="color:#6b7684">동의하지 않아도 홍부 지도는 그대로 쓸 수 있고, 실거래 알림만 쓸 수 없습니다. ' +
+            `<a href="${PRIVACY_URL}" target="_blank" rel="noopener" style="color:#00897b">개인정보 처리방침 전문</a></div>` +
+            '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
+            '<button id="raConsentNo" style="margin:0;padding:7px 14px;border-radius:8px;border:1px solid #dde2e8;background:#fff;cursor:pointer">동의 안 함</button>' +
+            '<button id="raConsentYes" style="margin:0;padding:7px 14px;border-radius:8px;border:1px solid #00897b;background:#00897b;color:#fff;font-weight:700;cursor:pointer">동의하고 계속</button></div>';
+          ov.appendChild(box);
+          // ⚠ onAgree 는 이 클릭 처리 안에서 **동기로** 부른다 — 텔레그램 창 열기(window.open)가 팝업 차단되지 않게
+          box.querySelector("#raConsentYes").addEventListener("click", () => { ls.set("realAlertConsent", CONSENT_VER); ov.remove(); onAgree && onAgree(); });
+          box.querySelector("#raConsentNo").addEventListener("click", () => { ov.remove(); toast("동의하지 않으면 실거래 알림을 쓸 수 없습니다(홍부 지도는 그대로)."); onCancel && onCancel(); });
+          document.body.appendChild(ov);
+        }
+        function askConsent() { return new Promise((resolve) => showConsent(() => resolve(true), () => resolve(false))); }
+
         function tgCount() { return (state.telegram && state.telegram.count) || 0; }
         function tgLink() { return `https://t.me/${(state.telegram && state.telegram.bot) || TG_BOT_DEFAULT}?start=${encodeURIComponent(KEY)}`; }
         let tgWatch = 0;
         function linkTelegram(onLinked) {
+          if (!hasConsent()) { showConsent(() => linkTelegram(onLinked)); return; }   // 동의 단추 클릭 안에서 다시 불러 바로 연다
           // ⚠ 클릭 처리 안에서 **바로** 연다(비동기 뒤에 열면 팝업 차단)
           window.open(tgLink(), "_blank", "noopener");
           toast("텔레그램이 열리면 아래 [시작] 단추를 눌러 주세요. 연결되면 여기에 표시됩니다.", false, 15000);
@@ -34228,9 +34266,10 @@ const originalBase64 = event.target.result;
             }
           }, 4000);
         }
-        async function unlinkTelegram(chatId) {
+        async function unlinkTelegram(ref) {
           try {
-            applyState(await api("/push_tg_unlink", { key: KEY, chat_id: chatId || "", endpoint: myEndpoint }));
+            // 서버는 대화방 번호를 내보내지 않는다 — 불투명 참조(ref)로 끊는다(2026-10-13 개인정보)
+            applyState(await api("/push_tg_unlink", { key: KEY, ref: ref || "", endpoint: myEndpoint }));
             toast("텔레그램 연결을 끊었습니다.");
           } catch (e) { toast("실패: " + e.message, true); }
         }
@@ -34308,8 +34347,10 @@ const originalBase64 = event.target.result;
           const items = [...pending].map(([id, nm]) => targetItem(id, nm));
           const added = items.filter((t) => !regIds.has(t.complex_id)).length;
           const removed = [...regIds].filter((id) => !pending.has(id)).length;
+          // 단지를 서버에 넣기 전 개인정보 동의(2026-10-13) — 거절하면 선택 상태는 그대로 두고 멈춘다
+          if (items.length && !hasConsent() && !(await askConsent())) return;
           try {
-            applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint }));
+            applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint, ...consentBody() }));
             stopSelect();
             // 알림은 텔레그램으로만(2026-10-13) — 연결이 없으면 안내만(비동기 뒤라 텔레그램 창을 대신 열면 팝업 차단된다)
             toast(`✓ 실거래 알림 단지 ${items.length}개 등록 (+${added} −${removed})` +
@@ -34603,7 +34644,7 @@ const originalBase64 = event.target.result;
           try { oldTargets = (await api("/push_targets?key=" + encodeURIComponent(oldKey))).targets || []; } catch (e) {}
           KEY = newKey; ls.set("realAlertKey", newKey);
           if (oldTargets.length) {
-            try { await api("/push_targets", { key: KEY, add: oldTargets.map((t) => ({ complex_id: t.complex_id, complex_name: t.complex_name, sido: t.sido, sigungu: t.sigungu })) }); } catch (e) {}
+            try { await api("/push_targets", { key: KEY, add: oldTargets.map((t) => ({ complex_id: t.complex_id, complex_name: t.complex_name, sido: t.sido, sigungu: t.sigungu })), ...consentBody() }); } catch (e) {}
           }
           try { const sub = await localSub(); if (sub) await api("/push_subscribe", { key: KEY, subscription: sub.toJSON(), ua: navigator.userAgent }); } catch (e) {}
           try { await api("/push_tg_move", { key: KEY, from: oldKey }); } catch (e) {}   // 옛 키에 붙은 텔레그램도 새 키로
@@ -34685,6 +34726,28 @@ const originalBase64 = event.target.result;
             console.warn("[realAlert] 단지 백업 실패", e);
           } finally { backupBusy = false; }
         }
+        // 삭제권(2026-10-13) — 서버의 이 키 데이터 전부 + (고르면) 드라이브 백업 파일 + 이 브라우저의 알림 기억
+        async function deleteAllData() {
+          if (!confirm("이 알림 키의 데이터를 서버에서 모두 지웁니다 — 관심 단지·알림 시각·텔레그램 연결·알림 내용·발송 기록.\n" +
+            "같은 키를 쓰는 다른 기기(PC·휴대폰)의 목록도 함께 사라집니다. 계속할까요?")) return false;
+          const delDrive = !!(window.__gdriveReady && window.__gdriveRootFolderId) &&
+            confirm("구글드라이브의 단지 백업 파일(HongbuMemo/" + DRIVE_TARGETS_FILE + ")도 지울까요?");
+          try {
+            const d = await api("/push_delete_all", { key: KEY });
+            if (delDrive) {
+              try {
+                const list = await __dqList(window.__gdriveRootFolderId, true);
+                const fid = list.get(DRIVE_TARGETS_FILE);
+                if (fid) { await __driveDeleteFile(fid); list.delete(DRIVE_TARGETS_FILE); }
+              } catch (e) { toast("드라이브 백업 삭제 실패: " + (e && e.message || e), true); }
+            }
+            ["realAlertConsent", SIG_KEY, READ_KEY, HIST_KEY].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
+            latestAlert = null; renderHeadBell();
+            await fetchState();
+            toast(`서버에서 알림 데이터를 모두 지웠습니다(단지 ${(d.deleted && d.deleted["푸시_단지"]) || 0}개)${delDrive ? " · 드라이브 백업도 삭제" : ""}.`, false, 8000);
+            return true;
+          } catch (e) { toast("삭제 실패: " + e.message, true); return false; }
+        }
         async function driveRestoreTargets() {
           if (!window.__gdriveReady || !window.__gdriveRootFolderId) { toast("구글드라이브에 로그인해야 복원할 수 있습니다.", true); return; }
           try {
@@ -34698,7 +34761,8 @@ const originalBase64 = event.target.result;
             const items = Array.isArray(d.targets) ? d.targets.filter((t) => t && /^\d+$/.test(String(t.complex_id))) : [];
             if (!items.length) { toast("드라이브 백업이 비어 있습니다.", true); return; }
             const before = (state.targets || []).length;
-            applyState(await api("/push_targets", { key: KEY, add: items, endpoint: myEndpoint }));
+            if (!hasConsent() && !(await askConsent())) return;
+            applyState(await api("/push_targets", { key: KEY, add: items, endpoint: myEndpoint, ...consentBody() }));
             toast(`드라이브 백업(${d.savedAtText || ""}, ${items.length}개)에서 복원 — 서버 단지 ${before} → ${(state.targets || []).length}개`, false, 8000);
           } catch (e) { toast("복원 실패: " + (e && e.message || e), true); }
         }
@@ -34740,13 +34804,20 @@ const originalBase64 = event.target.result;
             '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
             `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 연결된 텔레그램으로 보내고, 홍부에서는 그날 헤더의 🔔(단풍 왼쪽)로 보여 줍니다(계약→신고 최대 30일, 국토부 데이터는 07:00쯤 갱신). ` +
-            `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}?key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>.</div>`;
+            // 휴대폰 페이지 링크는 #key= (해시는 서버·접속 기록에 안 남는다 — 2026-10-13 개인정보. 링크를 남에게 보내면 키가 넘어가니 주의)
+            `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}#key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>(링크에 내 키가 들어 있으니 남에게 보내지 마세요).</div>` +
+            // 개인정보(2026-10-13): 처리방침·삭제권
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;">' +
+            `<a href="${PRIVACY_URL}" target="_blank" rel="noopener" style="color:#00897b">🔒 개인정보 처리방침</a>` +
+            `<span style="color:#6b7684">${hasConsent() ? "동의함" : "동의 전"}</span><span style="flex:1"></span>` +
+            `<button id="raMngDeleteAll" style="${sb};color:#d93025;border-color:#f0b4b0">🗑 내 알림 데이터 모두 삭제</button></div>`;
           ov.appendChild(box);
           ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
           box.querySelector("#raMngClose").addEventListener("click", () => ov.remove());
           box.querySelector("#raMngTest").addEventListener("click", testPush);
           box.querySelector("#raMngHist").addEventListener("click", () => openHistory(ov));
           box.querySelector("#raMngRestore").addEventListener("click", async (e) => { e.target.disabled = true; await driveRestoreTargets(); e.target.disabled = false; render(); });
+          box.querySelector("#raMngDeleteAll").addEventListener("click", async (e) => { e.target.disabled = true; await deleteAllData(); e.target.disabled = false; render(); });
           box.querySelector("#raMngTimeSave").addEventListener("click", async (e) => {
             e.target.disabled = true;
             try {
@@ -34764,7 +34835,7 @@ const originalBase64 = event.target.result;
             tgBox.innerHTML = chats.length
               ? `<span style="color:#229ed9;font-weight:700">✈️ 텔레그램 연결됨</span>` +
                 chats.map((c) => `<span style="color:#475569">${esc(c.name) || "계정"}${c.last_sent_at ? ` <span style="color:#6b7684">(마지막 ${c.last_sent_at.slice(5, 16)})</span>` : ""}` +
-                  ` <button class="ra-tg-unlink" data-chat="${esc(c.chat_id)}" style="${sb};padding:2px 7px;color:#d93025;border-color:#f0b4b0">끊기</button></span>`).join("") +
+                  ` <button class="ra-tg-unlink" data-ref="${esc(c.ref)}" style="${sb};padding:2px 7px;color:#d93025;border-color:#f0b4b0">끊기</button></span>`).join("") +
                 `<button class="ra-tg-link" style="${sb}">다른 계정 추가</button>`
               : `<button class="ra-tg-link" style="${sb};background:#229ed9;border-color:#229ed9;color:#fff;font-weight:700">✈️ 텔레그램으로 받기</button>` +
                 '<span style="color:#d93025">알림은 텔레그램으로만 갑니다 — 텔레그램이 열리면 [시작]만 누르면 됩니다</span>';
@@ -34809,7 +34880,7 @@ const originalBase64 = event.target.result;
           box.addEventListener("click", async (e) => {
             if (e.target.closest(".ra-tg-link")) { linkTelegram(render); return; }
             const ul = e.target.closest(".ra-tg-unlink");
-            if (ul) { ul.disabled = true; await unlinkTelegram(ul.dataset.chat); await render(); return; }
+            if (ul) { ul.disabled = true; await unlinkTelegram(ul.dataset.ref); await render(); return; }
             const del = e.target.closest(".ra-del");
             if (del) {
               del.disabled = true;
