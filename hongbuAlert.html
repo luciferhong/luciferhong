@@ -3746,6 +3746,7 @@
             <button id="raManageBtn" type="button" class="tb-item">🔔 알림 단지 관리</button>
             <button id="raEnableBtn" type="button" class="tb-item" title="이 브라우저에서 푸시 알림을 받도록 구독한다">알림 켜기</button>
           </div>
+          <button id="raTgBtn" type="button" class="tb-item" title="텔레그램 봇으로 같은 알림을 받는다 — 텔레그램이 열리면 [시작]만 누르면 된다">✈️ 텔레그램으로 받기</button>
           <span id="raStatus" style="font-size:11px; color:#475569;"></span>
         </div>
 
@@ -34109,9 +34110,42 @@ const originalBase64 = event.target.result;
             : state.subscribed ? "이 기기 알림 켜짐" : "이 기기 알림 꺼짐 — 알림 켜기";
           const dc = state.device_count || 0;
           const at = (state.settings && state.settings.alert_time) || "08:10";
-          st.textContent = `단지 ${n}개 · ${sub}${dc > 1 ? ` · 기기 ${dc}대` : ""} · 매일 ${at}`;
+          const tc = tgCount();
+          st.textContent = `단지 ${n}개 · ${sub}${dc > 1 ? ` · 기기 ${dc}대` : ""}${tc ? ` · 텔레그램 ${tc}` : ""} · 매일 ${at}`;
           const mb = $("raManageBtn"); if (mb) mb.textContent = `🔔 알림 단지 관리 (${n})`;
           const eb = $("raEnableBtn"); if (eb) eb.textContent = state.subscribed && !state.disabled ? "알림 테스트" : "알림 켜기";
+          const tb = $("raTgBtn"); if (tb) tb.textContent = tc ? `✈️ 텔레그램 연결됨 (${tc})` : "✈️ 텔레그램으로 받기";
+        }
+
+        // ── 텔레그램으로 받기 (2026-10-13 — server/tg_alert.py, 봇 @hongbu_realAertbot) ──
+        // https://t.me/<봇>?start=<키> 를 열면 텔레그램 앱이 뜨고, 사용자가 [시작]을 누르면 VM 이 그 계정을 이 키에 묶는다(봇 수신이 롱폴링이라 몇 초 안).
+        // 단지·알림 시각은 웹푸시와 공용. 연결 뒤엔 상태를 몇 초 간격으로 다시 읽어 '연결됨'으로 바꾼다.
+        const TG_BOT_DEFAULT = "hongbu_realAertbot";
+        function tgCount() { return (state.telegram && state.telegram.count) || 0; }
+        function tgLink() { return `https://t.me/${(state.telegram && state.telegram.bot) || TG_BOT_DEFAULT}?start=${encodeURIComponent(KEY)}`; }
+        let tgWatch = 0;
+        function linkTelegram(onLinked) {
+          // ⚠ 클릭 처리 안에서 **바로** 연다(비동기 뒤에 열면 팝업 차단)
+          window.open(tgLink(), "_blank", "noopener");
+          toast("텔레그램이 열리면 아래 [시작] 단추를 눌러 주세요. 연결되면 여기에 표시됩니다.", false, 15000);
+          const before = tgCount();
+          clearInterval(tgWatch);
+          let n = 0;
+          tgWatch = setInterval(async () => {
+            if (++n > 60) { clearInterval(tgWatch); return; }   // 4초 × 60 = 4분
+            try { await fetchState(); } catch (e) { return; }
+            if (tgCount() > before) {
+              clearInterval(tgWatch);
+              toast("✓ 텔레그램 연결 완료 — 매일 " + ((state.settings && state.settings.alert_time) || "08:10") + "에 텔레그램으로도 보냅니다.", false, 8000);
+              if (onLinked) onLinked();
+            }
+          }, 4000);
+        }
+        async function unlinkTelegram(chatId) {
+          try {
+            applyState(await api("/push_tg_unlink", { key: KEY, chat_id: chatId || "", endpoint: myEndpoint }));
+            toast("텔레그램 연결을 끊었습니다.");
+          } catch (e) { toast("실패: " + e.message, true); }
         }
 
         // ── 마커 장식: 선택 모드면 체크박스, 등록 단지면 🔔 배지 ──
@@ -34189,7 +34223,7 @@ const originalBase64 = event.target.result;
             applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint }));
             stopSelect();
             toast(`✓ 실거래 알림 단지 ${items.length}개 등록 (+${added} −${removed})`);
-            if (items.length && (!state.subscribed || state.disabled)) await enablePush(true);
+            if (items.length && !tgCount() && (!state.subscribed || state.disabled)) await enablePush(true);   // 텔레그램이 있으면 묻지 않는다
           } catch (e) { toast("등록 실패: " + e.message, true); }
         }
 
@@ -34271,7 +34305,8 @@ const originalBase64 = event.target.result;
           try {
             await refreshEndpoint();
             const d = await api("/push_test", { key: KEY, url: location.href.split("#")[0], endpoint: myEndpoint });
-            toast(`테스트 발송 ${d.ok ? "성공" : "실패"} (푸시 서비스 응답 ${d.status}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
+            const tg = (d.telegram || []).length ? ` · 텔레그램 ${d.telegram.every((s) => s === 200) ? "성공" : "실패(" + d.telegram.join(",") + ")"}` : "";
+            toast(`테스트 발송 ${d.ok ? "성공" : "실패"} (${d.devices ? "브라우저 푸시 응답 " + d.status : "브라우저 구독 없음"}${tg}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
           } catch (e) {
             if (/구독이 없습니다/.test(e.message)) toast("이 브라우저는 아직 푸시 구독이 없습니다 — 먼저 [알림 켜기]를 눌러 권한을 허용해 주세요.", true);
             else toast("테스트 실패: " + e.message, true);
@@ -34316,6 +34351,7 @@ const originalBase64 = event.target.result;
           const trades = (Array.isArray(p.trades) ? p.trades : []).map((t) => ({
             cid: String(t.cid ?? t.c ?? ""), name: t.name ?? t.n ?? "", region: t.r ?? "", area: t.area ?? t.a ?? "", floor: t.floor ?? t.f ?? "",
             price_txt: t.price_txt ?? t.p ?? "", date: t.date ?? t.d ?? "", diff_txt: t.diff_txt ?? t.x ?? "", high: !!(t.high ?? t.h),
+            hoga: t.q ?? null,   // 2026-10-13 호가(시세 최신 회차 같은 평형 최저가) — 옛 알림엔 없음(null → 표시 안 함)
           }));
           if (trades.length) {
             let lastCid = null, lastRegion = null;
@@ -34340,7 +34376,8 @@ const originalBase64 = event.target.result;
               const row = document.createElement("div");
               row.style.cssText = "padding:3px 0 3px 10px;border-left:2px solid #e3e7ec;cursor:pointer;";
               row.innerHTML = `${t.high ? "🔥" : ""}${t.area}㎡ ${t.floor}층 <b>${t.price_txt}</b> <span style="color:#6b7684">(${t.date})</span>` +
-                (t.diff_txt ? ` <span style="color:${/🔽/.test(t.diff_txt) ? "#1a63c9" : "#d93025"}">${t.diff_txt}</span>` : "");
+                (t.diff_txt ? ` <span style="color:${/🔽/.test(t.diff_txt) ? "#1a63c9" : "#d93025"}">${t.diff_txt}</span>` : "") +
+                (t.hoga !== null ? ` <span style="color:#6b7684">| 호가 ${t.hoga || "없음"}</span>` : "");
               row.addEventListener("click", () => { el.remove(); goApt(t.cid); });
               el.appendChild(row);
             }
@@ -34430,6 +34467,7 @@ const originalBase64 = event.target.result;
             try { await api("/push_targets", { key: KEY, add: oldTargets.map((t) => ({ complex_id: t.complex_id, complex_name: t.complex_name, sido: t.sido, sigungu: t.sigungu })) }); } catch (e) {}
           }
           try { const sub = await localSub(); if (sub) await api("/push_subscribe", { key: KEY, subscription: sub.toJSON(), ua: navigator.userAgent }); } catch (e) {}
+          try { await api("/push_tg_move", { key: KEY, from: oldKey }); } catch (e) {}   // 옛 키에 붙은 텔레그램도 새 키로
           try { await fetchState(); } catch (e) {}
           toast(`구글드라이브의 알림 키로 연결했습니다 — 다른 기기와 같은 단지 목록(${(state.targets || []).length}개)을 씁니다.`, false, 8000);
         }
@@ -34486,6 +34524,8 @@ const originalBase64 = event.target.result;
             `<button id="raMngHist" style="${sb}">최근 알림</button><button id="raMngTest" style="${sb}">테스트 알림</button><button id="raMngOn" style="${sb}">알림 켜기</button>` +
             `<button id="raMngOff" style="${sb};color:#d93025;border-color:#f0b4b0">알림 끄기</button><button id="raMngClose" style="${sb}">닫기</button></div>` +
             '<div id="raMngSub" style="font-size:12.5px;margin-bottom:6px;"></div>' +
+            // 텔레그램 연결(2026-10-13)
+            '<div id="raMngTg" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;"></div>' +
             // 알림 시각(10분 단위, 키 공통 = 모든 기기) + 기기 수 + 드라이브 공유 상태
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;padding:6px 8px;background:#f6f8fa;border-radius:8px;margin-bottom:8px;">' +
             `<span>알림 시각</span><select id="raMngTime" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${timeOpts.join("")}</select>` +
@@ -34499,7 +34539,7 @@ const originalBase64 = event.target.result;
             '<div style="display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
             '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
-            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래를 이 키의 모든 기기로 보냅니다(계약→신고 최대 30일, 국토부 데이터는 07:30쯤 갱신). ` +
+            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 이 키의 모든 기기로 보냅니다(계약→신고 최대 30일, 국토부 데이터는 07:30쯤 갱신). ` +
             `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}?key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>.</div>`;
           ov.appendChild(box);
           ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
@@ -34523,6 +34563,16 @@ const originalBase64 = event.target.result;
               ? (state.disabled ? '<span style="color:#d93025">이 기기의 푸시 구독이 끊어졌습니다 — [알림 켜기]를 다시 눌러 주세요</span>'
                 : `<span style="color:#00897b">이 기기 알림 켜짐</span> <span style="color:#6b7684">(${state.endpoint_host || ""}${state.last_sent_at ? " · 마지막 발송 " + state.last_sent_at.slice(5, 16) : ""})</span>`)
               : '<span style="color:#d93025">이 기기 알림 꺼짐 — [알림 켜기]</span>';
+            const tgBox = box.querySelector("#raMngTg");
+            const chats = ((state.telegram && state.telegram.chats) || []).filter((c) => !c.disabled);
+            const esc = (s) => String(s || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+            tgBox.innerHTML = chats.length
+              ? `<span style="color:#229ed9;font-weight:700">✈️ 텔레그램 연결됨</span>` +
+                chats.map((c) => `<span style="color:#475569">${esc(c.name) || "계정"}${c.last_sent_at ? ` <span style="color:#6b7684">(마지막 ${c.last_sent_at.slice(5, 16)})</span>` : ""}` +
+                  ` <button class="ra-tg-unlink" data-chat="${esc(c.chat_id)}" style="${sb};padding:2px 7px;color:#d93025;border-color:#f0b4b0">끊기</button></span>`).join("") +
+                `<button class="ra-tg-link" style="${sb}">다른 계정 추가</button>`
+              : `<button class="ra-tg-link" style="${sb};background:#229ed9;border-color:#229ed9;color:#fff;font-weight:700">✈️ 텔레그램으로 받기</button>` +
+                '<span style="color:#6b7684">텔레그램이 열리면 [시작]만 누르면 됩니다 — 브라우저가 꺼져 있어도 확실히 옵니다</span>';
             const sel = box.querySelector("#raMngTime");
             sel.value = (state.settings && state.settings.alert_time) || "08:10";
             const devs = state.devices || [];
@@ -34564,6 +34614,9 @@ const originalBase64 = event.target.result;
           box.querySelector("#raFltSido").addEventListener("change", (e) => { fltSido = e.target.value; fltSgg = ""; render(); });
           box.querySelector("#raFltSgg").addEventListener("change", (e) => { fltSgg = e.target.value; render(); });
           box.addEventListener("click", async (e) => {
+            if (e.target.closest(".ra-tg-link")) { linkTelegram(render); return; }
+            const ul = e.target.closest(".ra-tg-unlink");
+            if (ul) { ul.disabled = true; await unlinkTelegram(ul.dataset.chat); await render(); return; }
             const del = e.target.closest(".ra-del");
             if (del) {
               del.disabled = true;
@@ -34589,13 +34642,14 @@ const originalBase64 = event.target.result;
           $("raSelectBtn")?.addEventListener("click", startSelect);
           $("raManageBtn")?.addEventListener("click", openManage);
           $("raEnableBtn")?.addEventListener("click", () => { if (state.subscribed && !state.disabled) testPush(); else enablePush(false); });
+          $("raTgBtn")?.addEventListener("click", () => { if (tgCount()) openManage(); else linkTelegram(); });
           $("raBarDone")?.addEventListener("click", finishSelect);
           $("raBarCancel")?.addEventListener("click", stopSelect);
           document.addEventListener("keydown", (e) => { if (e.key === "Escape" && on) stopSelect(); });
           fetchState().catch(() => { const st = $("raStatus"); if (st) st.textContent = "알림 서버 연결 실패"; });
         }
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
-        window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, state: () => state, key: () => KEY };
+        window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, linkTelegram, unlinkTelegram, state: () => state, key: () => KEY };
       })();
     </script>
   </body>

@@ -66,6 +66,16 @@
     <div id="msg"></div>
   </div>
 
+  <!-- 텔레그램으로 받기 (2026-10-13 — server/tg_alert.py, 봇 @hongbu_realAertbot). 같은 키·단지·시각 -->
+  <div class="card">
+    <div class="row"><b>✈️ 텔레그램</b><span id="stTg" class="mute">-</span></div>
+    <div class="btns">
+      <button class="primary" id="btnTg" style="background:#229ed9;border-color:#229ed9">✈️ 텔레그램으로 받기</button>
+    </div>
+    <ul class="tg" id="tgChats"></ul>
+    <div class="hint">텔레그램이 열리면 아래 <b>[시작]</b>만 누르면 됩니다. 브라우저 설정·홈 화면 추가 없이 아이폰에서도 확실히 옵니다.</div>
+  </div>
+
   <div class="card">
     <div class="row"><b>알림 받을 단지</b><span class="mute" id="tgCnt"></span></div>
     <ul class="tg" id="tgList"></ul>
@@ -153,6 +163,7 @@
                       : `<span class="ok">이 기기 등록됨</span> <span class="mute">(${d.endpoint_host || ''}${d.last_sent_at ? ' · 마지막 발송 ' + d.last_sent_at.slice(5, 16) : ''})</span>`)
         : '<span class="mute">이 기기 없음 — 아래 알림 켜기</span>') + ` <span class="mute">· 기기 ${dc}대 · 매일 ${at}</span>`;
       renderTargets(d.targets || []);
+      renderTg(d.telegram || {});
     } catch (e) {
       $('stSub').innerHTML = '<span class="bad">서버 연결 실패: ' + e.message + '</span>';
     }
@@ -175,6 +186,46 @@
       });
       li.appendChild(a); li.appendChild(del); ul.appendChild(li);
     }
+  }
+
+  // ── 텔레그램 ──
+  let tg = { bot: 'hongbu_realAertbot', count: 0, chats: [] };
+  function renderTg(t) {
+    tg = Object.assign({ bot: 'hongbu_realAertbot' }, t);
+    if (!tg.bot) tg.bot = 'hongbu_realAertbot';
+    const chats = (tg.chats || []).filter(c => !c.disabled);
+    $('stTg').innerHTML = chats.length ? `<span class="ok">연결됨 ${chats.length}</span>` : '<span class="mute">연결 안 됨</span>';
+    $('btnTg').textContent = chats.length ? '✈️ 다른 계정 추가' : '✈️ 텔레그램으로 받기';
+    const ul = $('tgChats'); ul.innerHTML = '';
+    for (const c of chats) {
+      const li = document.createElement('li');
+      const s = document.createElement('span'); s.style.flex = '1';
+      s.textContent = (c.name || '계정') + (c.last_sent_at ? ' · 마지막 ' + c.last_sent_at.slice(5, 16) : '');
+      const b = document.createElement('button'); b.textContent = '끊기'; b.className = 'danger';
+      b.addEventListener('click', async () => {
+        b.disabled = true;
+        try { const d = await api('/push_tg_unlink', { key: KEY, chat_id: c.chat_id }); renderTg(d.telegram || {}); msg('텔레그램 연결을 끊었습니다.'); }
+        catch (e) { msg('실패: ' + e.message, true); b.disabled = false; }
+      });
+      li.appendChild(s); li.appendChild(b); ul.appendChild(li);
+    }
+  }
+  let tgWatch = 0;
+  function linkTg() {
+    // 클릭 처리 안에서 바로 연다(팝업 차단 회피). 휴대폰은 텔레그램 앱이 뜬다.
+    window.open(`https://t.me/${tg.bot}?start=${encodeURIComponent(KEY)}`, '_blank', 'noopener');
+    msg('텔레그램이 열리면 [시작]을 눌러 주세요. 연결되면 여기에 표시됩니다.');
+    const before = (tg.chats || []).filter(c => !c.disabled).length;
+    clearInterval(tgWatch);
+    let n = 0;
+    tgWatch = setInterval(async () => {
+      if (++n > 60) { clearInterval(tgWatch); return; }
+      try {
+        const d = await api('/push_targets?key=' + encodeURIComponent(KEY));
+        renderTg(d.telegram || {});
+        if ((d.telegram && d.telegram.count || 0) > before) { clearInterval(tgWatch); msg('✓ 텔레그램 연결 완료'); }
+      } catch (e) {}
+    }, 4000);
   }
 
   async function enable() {
@@ -226,7 +277,8 @@
     try {
       const mySub = await localSub().catch(() => null);
       const d = await api('/push_test', { key: KEY, url: location.href, endpoint: mySub ? mySub.endpoint : '' });
-      msg(`테스트 발송 ${d.ok ? '성공' : '실패'} (푸시 서비스 응답 ${d.status}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
+      const t = (d.telegram || []).length ? ` · 텔레그램 ${d.telegram.every(s => s === 200) ? '성공' : '실패'}` : '';
+      msg(`테스트 발송 ${d.ok ? '성공' : '실패'} (${d.devices ? '브라우저 푸시 응답 ' + d.status : '브라우저 구독 없음'}${t}). 잠시 뒤 알림이 떠야 합니다.`, !d.ok);
     } catch (e) { msg('테스트 실패: ' + e.message, true); }
     finally { $('btnTest').disabled = false; }
   }
@@ -255,6 +307,7 @@
   $('btnOn').addEventListener('click', enable);
   $('btnOff').addEventListener('click', disable);
   $('btnTest').addEventListener('click', test);
+  $('btnTg').addEventListener('click', linkTg);
   $('btnRefresh').addEventListener('click', () => { msg(''); refresh(); });
   $('btnCopyKey').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(KEY); msg('기기 키를 복사했습니다.'); } catch (e) { prompt('기기 키', KEY); }
