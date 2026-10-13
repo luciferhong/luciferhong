@@ -3664,6 +3664,11 @@
             <label><input type="checkbox" id="toggleRouteMemo" checked />경로</label>
             <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기</label>
           </div>
+          <!-- 실거래 알림 단지 (2026-10-13, hongbuAlert 전용) — 켤 때만 등록 단지 마커에 🔔 배지. 기본 꺼짐.
+               저장·복원은 uiState(collectUIState 가 input[id] 를 다 모은다)·'레이어 전부 끄기'·배지 수가 저절로 따라온다. 동작은 __realAlertInit -->
+          <div class="tb-row">
+            <label><input type="checkbox" id="toggleRaBell" />실거래알림단지</label>
+          </div>
         </div>
         <!-- ── 기타 (2026-10-01 사용자 요청) — 지도에 그려진 라벨을 손보는 것.
              ⚠ 단추를 새로 만들지 않고 [도구] 에 있던 그 요소를 옮겼다(핸들러가 id 로 걸려 있다).
@@ -34192,7 +34197,11 @@ const originalBase64 = event.target.result;
           const tc = tgCount();
           st.textContent = `단지 ${n}개 · ${tc ? `텔레그램 ${tc}` : "텔레그램 미연결"} · 매일 ${at}`;
           const mb = $("raManageBtn"); if (mb) mb.textContent = `🔔 알림 단지 관리 (${n})`;
-          const tb = $("raTgBtn"); if (tb) tb.textContent = tc ? `✈️ 텔레그램 연결됨 (${tc})` : "✈️ 텔레그램으로 받기";
+          const tb = $("raTgBtn");
+          if (tb) {
+            tb.textContent = tc ? `✈️ 텔레그램 연결됨 (${tc})` : "✈️ 텔레그램으로 받기";
+            tb.title = tc ? "텔레그램 봇 대화방 열기 — 계정 끊기·추가는 [🔔 알림 단지 관리]" : "텔레그램 봇으로 같은 알림을 받는다 — 텔레그램이 열리면 [시작]만 누르면 된다";
+          }
         }
 
         // ── 텔레그램으로 받기 (2026-10-13 — server/tg_alert.py, 봇 @hongbu_realAertbot) ──
@@ -34234,7 +34243,8 @@ const originalBase64 = event.target.result;
           const id = String(m.apartmentId || "");
           if (!id) return;
           let bell = el.querySelector(".ra-bell");
-          if (regIds.has(id) && !on) {
+          // 🔔 배지는 [레이어] → 내 기록 → '실거래알림단지' 를 켰을 때만(2026-10-13 사용자: "체크시만 알림단지를 마커에 표기")
+          if (regIds.has(id) && !on && bellLayerOn()) {
             if (!bell) { bell = document.createElement("span"); bell.className = "ra-bell"; bell.textContent = "🔔"; bell.title = "실거래 알림 단지"; el.appendChild(bell); }
           } else if (bell) bell.remove();
           let cb = el.querySelector(".ra-chk");
@@ -34253,6 +34263,7 @@ const originalBase64 = event.target.result;
             if (cb.checked !== want) cb.checked = want;
           } else if (cb) cb.remove();
         }
+        function bellLayerOn() { const cb = $("toggleRaBell"); return !!(cb && cb.checked); }
         function decorate() {
           try { Object.values(apartmentMarkers || {}).forEach(decorateOne); } catch (e) {}
           try { if (typeof __aptMarkerPool !== "undefined") __aptMarkerPool.forEach(decorateOne); } catch (e) {}
@@ -34562,6 +34573,9 @@ const originalBase64 = event.target.result;
           bell.title = latestAlert ? `${latestAlert.title || "실거래 알림"} — 눌러서 보기` : "실거래 알림 — 아직 받은 알림이 없습니다";
         }
         function openHeadBell() {
+          // 알림창이 열려 있으면 다시 누를 때 닫는다 — [닫기] 단추와 같음(2026-10-13 사용자)
+          const openPanel = $("raPushPanel");
+          if (openPanel) { openPanel.remove(); return; }
           if (!latestAlert) { toast("아직 받은 실거래 알림이 없습니다. [도구] → 실거래 알림에서 단지를 고르면 매일 알림 시각에 여기와 텔레그램으로 옵니다."); return; }
           ls.set(READ_KEY, latestAlert.tag);
           if (!latestAlert.read) {   // 서버에도 읽음 — PC 에서 읽으면 휴대폰엔 숫자가 안 붙는다(2026-10-13 사용자)
@@ -34818,8 +34832,14 @@ const originalBase64 = event.target.result;
           $("raSelectBtn")?.addEventListener("click", startSelect);
           $("raManageBtn")?.addEventListener("click", openManage);
           $("raEnableBtn")?.addEventListener("click", testPush);
-          $("raTgBtn")?.addEventListener("click", () => { if (tgCount()) openManage(); else linkTelegram(); });
+          // 연결 전: 연결 흐름 / 연결 뒤: 봇 대화방 열기(2026-10-13 사용자: '연결됨'을 누르면 관리창이 떠 어색함 — 끊기·추가는 관리창에)
+          $("raTgBtn")?.addEventListener("click", () => {
+            if (!tgCount()) { linkTelegram(); return; }
+            window.open(`https://t.me/${(state.telegram && state.telegram.bot) || TG_BOT_DEFAULT}`, "_blank", "noopener");
+          });
           $("raHeadBell")?.addEventListener("click", openHeadBell);
+          // 레이어 '실거래알림단지' — 켜고 끌 때 마커 🔔 다시 입히기(저장된 값 복원은 uiState 가, 다음 updateMarkers 때도 decorate 가 다시 읽는다)
+          $("toggleRaBell")?.addEventListener("change", () => decorate());
           checkHeadBell();
           setInterval(checkHeadBell, 10 * 60 * 1000);
           // 휴대폰에서 탭으로 다시 돌아올 때도 확인(다른 기기에서 읽었으면 숫자를 지운다)
