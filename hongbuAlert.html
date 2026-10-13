@@ -34195,6 +34195,7 @@ const originalBase64 = event.target.result;
           renderStatus();
           decorate();
           scheduleBackup();   // 단지 목록이 바뀌었으면 드라이브 백업 갱신(같으면 건너뜀)
+          scheduleDailyCheck();   // 연결 여부·알림 시각이 바뀌었을 수 있다 — 하루 한 번 확인 시각을 다시 잡는다(타이머만, 요청 없음)
         }
         async function refreshEndpoint() {
           try { const s = await localSub(); myEndpoint = s ? s.endpoint : ""; } catch (e) { myEndpoint = ""; }
@@ -34681,20 +34682,66 @@ const originalBase64 = event.target.result;
           else await __dqUploadIfMissing(root, name, JSON.stringify(data), "application/json");
         }
         function driveOk() { return !!(window.__gdriveReady && window.__gdriveRootFolderId && typeof __dqList === "function"); }
-        async function checkHeadBell() {
+        // 마지막으로 받은 알림(거래가 있던 것) — 오늘 새 알림이 없거나 이미 읽었어도 🔔 를 누르면 이걸 보여 준다(2026-10-13 사용자)
+        const LAST_KEY = "realAlertLast";
+        function saveLast(d) { try { ls.set(LAST_KEY, JSON.stringify(d)); } catch (e) {} }
+        function loadLast() {
+          try { const d = JSON.parse(ls.get(LAST_KEY) || "null"); if (d && (d.trades || []).length) return d; } catch (e) {}
+          try { const h = loadHist()[0]; if (h && (h.trades || []).length) return h; } catch (e) {}
+          return null;
+        }
+        let bellCheck = null;   // 진행 중인 확인 — 그 사이 누르면 끝날 때까지 기다린다(미연결 첫 조회는 서버 캐시가 비면 ~15초)
+        let fetchedDay = "";    // 마지막으로 내용을 받은 날(todayTag) — 탭 복귀 때 날짜가 바뀌었으면 내용을 새로 받는다
+        function checkHeadBell() {
+          bellCheck = checkHeadBellNow().then(() => { fetchedDay = todayTag(); }).finally(() => { bellCheck = null; });
+          return bellCheck;
+        }
+        // 켜 둔 채면 새 자료가 들어오는 시각에 한 번(2026-10-13 사용자: "실거래는 오전에 한 번 동기화인데 왜 10분마다?")
+        //   텔레그램 연결: 설정한 알림 시각 + 1분 / 미연결: 07:40(국토부 07시 수집·반영 뒤). 다음 날을 위해 다시 잡는다.
+        let dailyTimer = 0;
+        function scheduleDailyCheck() {
+          clearTimeout(dailyTimer);
+          const hm = serverMode() ? String((state.settings && state.settings.alert_time) || "08:10") : "07:40";
+          const [h, m] = hm.split(":").map(Number);
+          const now = new Date();   // 홍부 사용자는 한국 시간대라고 본다
+          const at = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m + (serverMode() ? 1 : 0), 0);
+          if (at <= now) at.setDate(at.getDate() + 1);
+          dailyTimer = setTimeout(() => { checkHeadBell(); scheduleDailyCheck(); }, at - now);
+        }
+        // 탭으로 돌아올 때 — 날짜가 바뀌었으면 내용까지, 아니면 읽음만(연결: /push_latest?meta=1, 미연결: 내 드라이브 읽음 파일 — 서버 요청 없음)
+        async function checkReadOnly() {
+          if (fetchedDay !== todayTag()) { checkHeadBell(); scheduleDailyCheck(); return; }   // 잠자기 등으로 타이머를 놓쳤을 때도
+          if (!latestAlert || latestAlert.read) return;
+          try {
+            if (serverMode()) {
+              const d = await api("/push_latest?meta=1&key=" + encodeURIComponent(KEY));
+              if (d && d.tag === latestAlert.tag && d.read) latestAlert.read = true;
+            } else if (driveOk()) {
+              const rd = await driveFileJson(DRIVE_READ_FILE);
+              if (rd && rd.tag === latestAlert.tag) latestAlert.read = true;
+            }
+          } catch (e) {}
+          renderHeadBell();
+        }
+        async function checkHeadBellNow() {
           const bell = $("raHeadBell"); if (!bell) return;
           let d = null;
           if (serverMode()) {
             try { d = await api("/push_latest?key=" + encodeURIComponent(KEY)); } catch (e) { return; }
           } else {
             const list = loadLocal().targets;
-            if (!driveOk() || !list.length) { latestAlert = null; renderHeadBell(); return; }   // 로그인한 사람에 한해
+            if (!list.length) { latestAlert = null; renderHeadBell(); return; }
+            // 로그인한 사람에 한해. ⚠ 미로그인으로 보여도 받아 둔 알림은 지우지 않는다 — 드라이브 토큰을 새로 받는 몇 초 동안
+            //   __gdriveReady 가 잠깐 꺼져, 그때 돈 확인이 오늘 알림을 비웠다(10/13 사용자: "오늘 120건인데 새 실거래가 없다고 함")
+            if (!driveOk()) { renderHeadBell(); return; }
             try { d = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)) }); } catch (e) { return; }
             if (d && d.tag && (d.trades || []).length) {
               try { const rd = await driveFileJson(DRIVE_READ_FILE); d.read = !!(rd && rd.tag === d.tag); } catch (e) {}
             }
           }
-          latestAlert = d && d.tag && (d.trades || []).length ? d : null;
+          if (!d || d.error) { renderHeadBell(); return; }   // 실패 응답이면 받아 둔 알림 그대로
+          latestAlert = d.tag && (d.trades || []).length ? d : null;
+          if (latestAlert) saveLast(latestAlert);
           renderHeadBell();
         }
         function renderHeadBell() {
@@ -34710,14 +34757,23 @@ const originalBase64 = event.target.result;
           if (fresh) { const n = latestAlert.n || latestAlert.trades.length; cnt.textContent = n > 99 ? "99+" : String(n); }
           bell.title = latestAlert ? `${latestAlert.title || "실거래 알림"} — 눌러서 보기` : "실거래 알림 — 아직 받은 알림이 없습니다";
         }
-        function openHeadBell() {
+        async function openHeadBell() {
           // 알림창이 열려 있으면 다시 누를 때 닫는다 — [닫기] 단추와 같음(2026-10-13 사용자)
           const openPanel = $("raPushPanel");
           if (openPanel) { openPanel.remove(); return; }
+          if (!latestAlert && bellCheck) { toast("알림을 불러오는 중…", false, 3000); try { await bellCheck; } catch (e) {} }
+          // 저장해 둔 마지막 알림이 오늘 것이면 오늘 알림으로 연다(읽음 처리도 정상으로)
+          if (!latestAlert) { const l0 = loadLast(); if (l0 && String(l0.tag || "").startsWith(todayTag())) latestAlert = l0; }
           if (!latestAlert) {
-            toast(serverMode() || driveOk()
-              ? "오늘 새로 들어온 실거래가 없습니다. [도구] → 실거래 알림에서 고른 단지에 새 거래가 생기면 여기에 숫자가 붙습니다."
-              : "텔레그램을 연결하지 않았다면 구글드라이브에 로그인해야 여기서 알림을 볼 수 있습니다.", false, 8000);
+            // 오늘 새 알림이 없으면 마지막으로 받았던 알림을 보여 준다(읽음 표시는 건드리지 않음)
+            const last = loadLast();
+            if (last) {
+              const at0 = Date.parse(String(last.sent_at || "").replace(" ", "T") + "+09:00");
+              showPushPanel(last, last.at || (isNaN(at0) ? Date.now() : at0));
+              toast("오늘은 새로 들어온 실거래가 없어 마지막으로 받은 알림을 보여 드려요.", false, 5000);
+              return;
+            }
+            toast("아직 받은 실거래 알림이 없습니다. [도구] → 실거래 알림에서 고른 단지에 새 거래가 생기면 여기에 숫자가 붙습니다.", false, 8000);
             return;
           }
           ls.set(READ_KEY, latestAlert.tag);
@@ -34859,7 +34915,7 @@ const originalBase64 = event.target.result;
                 if (fid) { await __driveDeleteFile(fid); list.delete(DRIVE_TARGETS_FILE); }
               } catch (e) { toast("드라이브 백업 삭제 실패: " + (e && e.message || e), true); }
             }
-            ["realAlertConsent", SIG_KEY, READ_KEY, HIST_KEY, LOCAL_TARGETS, PUSH_PENDING].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
+            ["realAlertConsent", SIG_KEY, READ_KEY, HIST_KEY, LOCAL_TARGETS, PUSH_PENDING, LAST_KEY].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
             latestAlert = null; renderHeadBell();
             await fetchState();
             toast(`서버에서 알림 데이터를 모두 지웠습니다(단지 ${(d.deleted && d.deleted["푸시_단지"]) || 0}개)${delDrive ? " · 드라이브 백업도 삭제" : ""}.`, false, 8000);
@@ -35057,9 +35113,10 @@ const originalBase64 = event.target.result;
           $("toggleRaBell")?.addEventListener("change", () => decorate());
           applyState(state);   // 서버 응답 전에도 브라우저 목록으로 마커·상태를 먼저 그린다(미연결 사용자)
           // 🔔 는 서버 상태(연결 여부)를 받은 뒤에 — 연결이면 /push_latest, 아니면 드라이브 로그인 때 /push_feed(driveKeySync 끝에서도 다시)
-          setInterval(checkHeadBell, 10 * 60 * 1000);
-          // 휴대폰에서 탭으로 다시 돌아올 때도 확인(다른 기기에서 읽었으면 숫자를 지운다)
-          document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkHeadBell(); });
+          // 실거래는 하루 한 번(07시쯤) 들어온다 — 10분마다 확인하던 것을 없애고(2026-10-13 사용자), 켜 둔 채면 새 자료 시각에 한 번만.
+          // 탭으로 돌아올 때는 읽음만 가볍게(다른 기기에서 읽었으면 숫자 지우기), 날짜가 바뀌었을 때만 내용을 새로 받는다.
+          scheduleDailyCheck();
+          document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkReadOnly(); });
           $("raBarDone")?.addEventListener("click", finishSelect);
           $("raBarCancel")?.addEventListener("click", stopSelect);
           document.addEventListener("keydown", (e) => { if (e.key === "Escape" && on) stopSelect(); });
