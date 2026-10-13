@@ -9951,8 +9951,11 @@
           } catch (_) { resolve(undefined); }
         });
       }
-      // 버전 확인(세션에 한 번) → 바뀌었으면 비우고, 상한을 넘었으면 오래된 것부터 지운다. 저장소를 쓸 수 없으면 null.
-      function __bndStore() {
+      // ⚠ 2026-10-13 사용자 "경계가 더 느려진 것 같다" — 처음엔 읽기 전에 버전 확인(서버 왕복)·개수 세기를 **기다렸다**.
+      //   → 읽기·쓰기는 저장소가 열리면 바로(__bndDb), 버전 확인·상한 정리는 뒤에서 따로(__bndMaintain). 기기 읽기는 0.3초 넘으면 안 기다린다.
+      function __bndStore() { return __bndDb(); }
+      // 버전 확인(세션에 한 번, 뒤에서) → 바뀌었으면 비우고, 상한을 넘었으면 오래된 것부터 지운다.
+      function __bndMaintain() {
         if (!__bndVerP) __bndVerP = (async () => {
           const db = await __bndDb();
           if (!db) return null;
@@ -9981,23 +9984,39 @@
         })();
         return __bndVerP;
       }
-      __bndStore();   // 페이지를 열 때 바로 시작(첫 경계 그리기 전에 끝나도록)
+      __bndDb();   // 페이지를 열 때 바로 열어 둔다
+      setTimeout(() => { __bndMaintain(); }, 3000);   // 버전 확인·정리는 첫 그리기와 겹치지 않게 뒤로
       async function __bndIdbGet(ids) {
-        const db = await __bndStore();
         const out = new Map();
-        if (!db || !ids.length) return out;
-        await __bndTx(db, "bnd", "readonly", (tx) => {
-          const s = tx.objectStore("bnd");
-          ids.forEach((id) => { const q = s.get(id); q.onsuccess = () => { if (q.result !== undefined) out.set(id, q.result.r || null); }; });
-        });
+        if (!ids.length) return out;
+        const read = (async () => {
+          const db = await __bndDb();
+          if (!db) return;
+          await __bndTx(db, "bnd", "readonly", (tx) => {
+            const s = tx.objectStore("bnd");
+            ids.forEach((id) => { const q = s.get(id); q.onsuccess = () => { if (q.result !== undefined) out.set(id, q.result.r || null); }; });
+          });
+        })();
+        // 0.3초 안에 못 읽으면 기다리지 않는다(그 사이 읽힌 것만 쓰고 나머지는 서버에) — 기기 저장이 오히려 느려지는 일 방지
+        await Promise.race([read, new Promise((r) => setTimeout(r, 300))]);
         return out;
       }
+      // 쓰기는 모아서 한가할 때 한 번에 — 읽기 트랜잭션을 막지 않게(IndexedDB 는 쓰는 동안 같은 저장소 읽기를 기다리게 한다)
+      const __bndPutQ = [];
+      let __bndPutT = 0;
       function __bndIdbPut(entries) {
-        __bndStore().then((db) => {
-          if (!db || !entries.length) return;
-          const now = Date.now();
-          __bndTx(db, "bnd", "readwrite", (tx) => { const s = tx.objectStore("bnd"); entries.forEach(([id, r]) => s.put({ r, t: now }, id)); });
-        }).catch(() => {});
+        if (!entries.length) return;
+        __bndPutQ.push(...entries);
+        clearTimeout(__bndPutT);
+        __bndPutT = setTimeout(() => {
+          const batch = __bndPutQ.splice(0);
+          const run = () => __bndDb().then((db) => {
+            if (!db || !batch.length) return;
+            const now = Date.now();
+            __bndTx(db, "bnd", "readwrite", (tx) => { const s = tx.objectStore("bnd"); batch.forEach(([id, r]) => s.put({ r, t: now }, id)); });
+          }).catch(() => {});
+          if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 5000 }); else run();
+        }, 1500);
       }
 
       function __bndFetchChunk(ids) {
