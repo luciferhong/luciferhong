@@ -2576,6 +2576,7 @@
         transform-origin: 50% 8%;
       }
       #raHeadBell.ra-new { animation: raBellSwing 1.6s ease-in-out 3; }
+      #raHeadBell[hidden] { display: none; } /* 구글드라이브 미로그인이면 숨김(2026-10-13 사용자) — inline-block 이 hidden 을 이기지 않게 */
       #raHeadBellCnt[hidden] { display: none; }
       #raHeadBellCnt {
         position: absolute;
@@ -3456,7 +3457,7 @@
         </span>
       </div>
 
-      <span style="margin-left: auto; font-size: 30px; line-height: 1; padding-right: 4px;"><span id="raHeadBell" title="실거래 알림 — 눌러서 보기"><span>🔔</span><b id="raHeadBellCnt" hidden></b></span><span id="mapleDeco" title="클릭해보세요!">🍁</span><span id="icecreamBtn" style="cursor:pointer;" title="클릭해보세요!">🍦</span><span id="retrieverBtn" style="cursor:pointer;" title="클릭해보세요!">🐕</span></span>
+      <span style="margin-left: auto; font-size: 30px; line-height: 1; padding-right: 4px;"><span id="raHeadBell" hidden title="실거래 알림 — 눌러서 보기"><span>🔔</span><b id="raHeadBellCnt" hidden></b></span><span id="mapleDeco" title="클릭해보세요!">🍁</span><span id="icecreamBtn" style="cursor:pointer;" title="클릭해보세요!">🍦</span><span id="retrieverBtn" style="cursor:pointer;" title="클릭해보세요!">🐕</span></span>
 
     </h1>
 
@@ -34157,9 +34158,40 @@ const originalBase64 = event.target.result;
           if (!r.ok) throw new Error(d.error || d.detail || "HTTP " + r.status);
           return d;
         }
+        // ── 단지 목록의 자리 (2026-10-13 사용자: "텔레그램 쓰는 사람만 서버에 저장") ──
+        // · 텔레그램 연결됨 → 서버(푸시_단지)가 원본, 이 브라우저에 사본(localStorage.realAlertTargets)
+        // · 미연결 → 브라우저(localStorage) + 본인 드라이브(HongbuMemo/realAlert_targets.json)가 원본. 서버는 이 키의 단지를 모른다
+        //   (서버가 set/add 를 409 로 거절). 🔔 는 드라이브 로그인 때만 /push_feed 로 그 단지의 오늘 새 거래를 받아 온다(서버 저장 없음).
+        // · 연결하면 브라우저 목록을 서버로 올리고(pushLocalToServer), 마지막 연결을 끊으면 서버가 지운다(브라우저 사본은 남음).
+        const LOCAL_TARGETS = "realAlertTargets";
+        const PUSH_PENDING = "realAlertPushPending";   // 연결을 시작했다 — 연결이 확인되면 브라우저 목록을 서버로
+        function loadLocal() {
+          try { const d = JSON.parse(ls.get(LOCAL_TARGETS) || "null"); if (d && Array.isArray(d.targets)) return d; } catch (e) {}
+          return { savedAt: 0, targets: [] };
+        }
+        function slimTargets(list) {
+          return (list || []).map((t) => ({ complex_id: String(t.complex_id), complex_name: t.complex_name || "", sido: t.sido || "", sigungu: t.sigungu || "", added_at: t.added_at || "" }));
+        }
+        function saveLocal(list, savedAt) { ls.set(LOCAL_TARGETS, JSON.stringify({ savedAt: savedAt || Date.now(), targets: slimTargets(list) })); }
+        function idsSig(list) { return (list || []).map((t) => String(t.complex_id)).sort().join(","); }
+        function serverMode() { return tgCount() > 0; }
+        function curTargets() { return serverMode() ? (state.targets || []) : loadLocal().targets; }
+        async function pushLocalToServer() {
+          const list = loadLocal().targets;
+          if (!list.length || !serverMode()) return;
+          try {
+            applyState(await api("/push_targets", { key: KEY, set: list, endpoint: myEndpoint, ...consentBody() }));
+            ls.set(PUSH_PENDING, "");
+          } catch (e) { toast("단지 목록을 서버로 올리지 못했습니다: " + e.message, true); }
+        }
         function applyState(d) {
           state = d || state;
-          regIds = new Set((state.targets || []).map((t) => String(t.complex_id)));
+          // 서버가 원본일 때는 이 브라우저에 사본을 둔다(연결을 끊으면 이 사본으로 이어 간다). 빈 목록은 덮지 않는다 — 막 연결해 아직 안 올린 순간일 수 있다
+          if (serverMode() && (state.targets || []).length && idsSig(state.targets) !== idsSig(loadLocal().targets)) saveLocal(state.targets);
+          // 옛 방식(텔레그램 없이도 서버에 두던 때)의 목록 옮기기 — 미연결인데 브라우저엔 없고 서버에만 있으면 브라우저로 가져온다.
+          // 서버의 그 목록은 tg_alert.purge_old 가 하루 뒤 지운다(2026-10-13 전환)
+          if (!serverMode() && !loadLocal().targets.length && (state.targets || []).length) saveLocal(state.targets);
+          regIds = new Set(curTargets().map((t) => String(t.complex_id)));
           renderStatus();
           decorate();
           scheduleBackup();   // 단지 목록이 바뀌었으면 드라이브 백업 갱신(같으면 건너뜀)
@@ -34171,6 +34203,8 @@ const originalBase64 = event.target.result;
         async function fetchState() {
           await refreshEndpoint();
           applyState(await api("/push_targets?key=" + encodeURIComponent(KEY) + (myEndpoint ? "&endpoint=" + encodeURIComponent(myEndpoint) : "")));
+          // 연결을 시작한 뒤 연결이 확인됐는데 서버 목록이 비어 있으면 → 브라우저 목록을 올린다(다른 탭·다시 열기에서도 이어서)
+          if (serverMode() && !(state.targets || []).length && ls.get(PUSH_PENDING) === "1") await pushLocalToServer();
           return state;
         }
 
@@ -34192,10 +34226,10 @@ const originalBase64 = event.target.result;
         function renderStatus() {
           const st = $("raStatus"); if (!st) return;
           // 2026-10-13 사용자: 푸시는 텔레그램으로 일원 — 브라우저 푸시 상태는 더 보이지 않는다
-          const n = (state.targets || []).length;
+          const n = curTargets().length;
           const at = (state.settings && state.settings.alert_time) || "08:10";
           const tc = tgCount();
-          st.textContent = `단지 ${n}개 · ${tc ? `텔레그램 ${tc}` : "텔레그램 미연결"} · 매일 ${at}`;
+          st.textContent = `단지 ${n}개 · ` + (tc ? `텔레그램 ${tc} · 매일 ${at}` : "텔레그램 미연결 — 목록은 이 브라우저·내 드라이브에만");
           const mb = $("raManageBtn"); if (mb) mb.textContent = `🔔 알림 단지 관리 (${n})`;
           const tb = $("raTgBtn");
           if (tb) {
@@ -34214,7 +34248,17 @@ const originalBase64 = event.target.result;
         // 동의는 서버(푸시_설정.consent_ver — set/add 요청에 consent 동봉)와 localStorage 에 남는다. 서버는 동의 없는 set/add 를 428 로 거절.
         const CONSENT_VER = "2026-10-13";
         const PRIVACY_URL = new URL("realAlert/privacy.html", location.href).href;
-        function hasConsent() { return ((state.settings && state.settings.consent_ver) || ls.get("realAlertConsent")) === CONSENT_VER; }
+        // ⚠ 서버 기록이 기준(2026-10-13 사용자 실보고: 끊고 다시 연결할 때 동의 창이 안 뜸 — 예전 동의가 이 브라우저 localStorage 에만
+        //   남아 있고 서버엔 없었다). 서버 상태를 아직 못 받았을 때만 localStorage 를 본다.
+        function hasConsent() {
+          if (state.settings) return state.settings.consent_ver === CONSENT_VER;
+          return ls.get("realAlertConsent") === CONSENT_VER;
+        }
+        function recordConsent() {
+          ls.set("realAlertConsent", CONSENT_VER);
+          state.settings = Object.assign({}, state.settings || {}, { consent_ver: CONSENT_VER });   // 바로 반영(서버 응답 전)
+          api("/push_consent", { key: KEY, consent: CONSENT_VER }).catch((e) => console.warn("[realAlert] 동의 기록 실패", e));
+        }
         function consentBody() { return hasConsent() ? { consent: CONSENT_VER } : {}; }
         function showConsent(onAgree, onCancel) {
           const old = $("raConsent"); if (old) old.remove();
@@ -34223,24 +34267,27 @@ const originalBase64 = event.target.result;
           const box = document.createElement("div");
           box.style.cssText = "background:#fff;color:#23272e;border-radius:12px;padding:16px 18px;width:440px;max-width:92vw;max-height:84vh;overflow:auto;font-size:13.5px;line-height:1.6;box-shadow:0 8px 30px rgba(0,0,0,.35);";
           box.innerHTML =
-            '<b style="font-size:15px">🔒 실거래 알림 — 개인정보 수집·이용 동의</b>' +
-            '<div style="margin-top:8px">알림을 보내려면 아래 정보를 서버에 저장합니다.</div>' +
+            // 텔레그램으로 받기 위한 동의다(2026-10-13 사용자: "텔레그램에 관련된 내용으로, 동의하지 않아도 실거래 알림은 받을 수 있다 — 텔레그램으로만 못 받을 뿐")
+            '<b style="font-size:15px">✈️ 텔레그램으로 알림 받기 — 개인정보 동의</b>' +
+            '<div style="margin-top:8px">텔레그램으로 알림을 보내려면 아래 정보를 서버에 저장해요.</div>' +
             '<ul style="margin:6px 0;padding-left:18px">' +
-            "<li><b>저장</b>: 관심 단지(단지번호·이름·지역), 알림 시각, 텔레그램 대화방 번호(사용자명·이름·전화번호는 저장 안 함), 발송 기록</li>" +
-            "<li><b>목적</b>: 실거래 알림 발송과 홍부 화면 표시뿐 — 광고·판매·제3자 제공 없음</li>" +
-            "<li><b>보관</b>: 삭제 요청 시 즉시, 발송 기록 90일, 1년 미사용 시 자동 삭제</li>" +
-            "<li><b>국외 보관·전송</b>: 서버 Oracle Cloud(일본 도쿄), 전송 Cloudflare(미국), 메시지 Telegram</li>" +
-            "<li><b>삭제</b>: [🔔 알림 단지 관리] → [내 알림 데이터 모두 삭제] 또는 봇에 /delete</li>" +
+            "<li><b>저장하는 것</b>: 텔레그램 대화방 번호, 고른 관심 단지, 알림 받을 시간<br>" +
+            '<span style="color:#6b7684">텔레그램 이름·아이디·전화번호는 저장하지 않아요.</span></li>' +
+            "<li><b>쓰는 곳</b>: 텔레그램으로 실거래 알림 보내기에만 — 광고·판매·다른 곳에 넘기기 없음</li>" +
+            "<li><b>보관</b>: 텔레그램 연결을 끊으면 바로 지워요. 보낸 기록은 90일 뒤 지워요.</li>" +
+            "<li><b>서버 위치</b>: 일본 도쿄(오라클 클라우드). 중간에 클라우드플레어(미국)를 거치고, 메시지는 텔레그램이 전해요.</li>" +
+            "<li><b>지우기</b>: 봇에게 /delete 또는 [🔔 알림 단지 관리] → [내 알림 데이터 모두 삭제]</li>" +
             "</ul>" +
-            '<div style="color:#6b7684">동의하지 않아도 홍부 지도는 그대로 쓸 수 있고, 실거래 알림만 쓸 수 없습니다. ' +
-            `<a href="${PRIVACY_URL}" target="_blank" rel="noopener" style="color:#00897b">개인정보 처리방침 전문</a></div>` +
+            '<div style="background:#e6f4f1;color:#00695c;border-radius:8px;padding:8px 10px">동의하지 않아도 실거래 알림은 <b>홍부 화면의 🔔</b>에서 그대로 볼 수 있어요. ' +
+            "텔레그램으로만 못 받아요.</div>" +
+            `<div style="margin-top:6px"><a href="${PRIVACY_URL}" target="_blank" rel="noopener" style="color:#00897b">개인정보 안내 자세히 보기</a></div>` +
             '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
             '<button id="raConsentNo" style="margin:0;padding:7px 14px;border-radius:8px;border:1px solid #dde2e8;background:#fff;cursor:pointer">동의 안 함</button>' +
-            '<button id="raConsentYes" style="margin:0;padding:7px 14px;border-radius:8px;border:1px solid #00897b;background:#00897b;color:#fff;font-weight:700;cursor:pointer">동의하고 계속</button></div>';
+            '<button id="raConsentYes" style="margin:0;padding:7px 14px;border-radius:8px;border:1px solid #229ed9;background:#229ed9;color:#fff;font-weight:700;cursor:pointer">동의하고 텔레그램 연결</button></div>';
           ov.appendChild(box);
           // ⚠ onAgree 는 이 클릭 처리 안에서 **동기로** 부른다 — 텔레그램 창 열기(window.open)가 팝업 차단되지 않게
-          box.querySelector("#raConsentYes").addEventListener("click", () => { ls.set("realAlertConsent", CONSENT_VER); ov.remove(); onAgree && onAgree(); });
-          box.querySelector("#raConsentNo").addEventListener("click", () => { ov.remove(); toast("동의하지 않으면 실거래 알림을 쓸 수 없습니다(홍부 지도는 그대로)."); onCancel && onCancel(); });
+          box.querySelector("#raConsentYes").addEventListener("click", () => { recordConsent(); ov.remove(); onAgree && onAgree(); });
+          box.querySelector("#raConsentNo").addEventListener("click", () => { ov.remove(); toast("텔레그램 연결을 취소했어요. 실거래 알림은 홍부 화면의 🔔에서 그대로 볼 수 있어요.", false, 7000); onCancel && onCancel(); });
           document.body.appendChild(ov);
         }
         function askConsent() { return new Promise((resolve) => showConsent(() => resolve(true), () => resolve(false))); }
@@ -34254,14 +34301,16 @@ const originalBase64 = event.target.result;
           window.open(tgLink(), "_blank", "noopener");
           toast("텔레그램이 열리면 아래 [시작] 단추를 눌러 주세요. 연결되면 여기에 표시됩니다.", false, 15000);
           const before = tgCount();
+          if (!before) ls.set(PUSH_PENDING, "1");   // 처음 연결 — 확인되면 이 브라우저의 단지 목록을 서버로 올린다
           clearInterval(tgWatch);
           let n = 0;
           tgWatch = setInterval(async () => {
             if (++n > 60) { clearInterval(tgWatch); return; }   // 4초 × 60 = 4분
-            try { await fetchState(); } catch (e) { return; }
+            try { await fetchState(); } catch (e) { return; }   // fetchState 가 PUSH_PENDING 을 보고 목록을 올린다
             if (tgCount() > before) {
               clearInterval(tgWatch);
-              toast("✓ 텔레그램 연결 완료 — 매일 " + ((state.settings && state.settings.alert_time) || "08:10") + "에 텔레그램으로도 보냅니다.", false, 8000);
+              toast(`✓ 텔레그램 연결 완료 — 단지 ${curTargets().length}개, 매일 ` + ((state.settings && state.settings.alert_time) || "08:10") + "에 텔레그램으로 보냅니다.", false, 8000);
+              checkHeadBell();
               if (onLinked) onLinked();
             }
           }, 4000);
@@ -34269,8 +34318,11 @@ const originalBase64 = event.target.result;
         async function unlinkTelegram(ref) {
           try {
             // 서버는 대화방 번호를 내보내지 않는다 — 불투명 참조(ref)로 끊는다(2026-10-13 개인정보)
+            const wasLast = tgCount() <= 1;
+            if (wasLast && (state.targets || []).length) saveLocal(state.targets);   // 서버가 지우기 전에 브라우저 사본을 최신으로
             applyState(await api("/push_tg_unlink", { key: KEY, ref: ref || "", endpoint: myEndpoint }));
-            toast("텔레그램 연결을 끊었습니다.");
+            toast(wasLast ? "텔레그램 연결을 끊었습니다. 서버의 단지 목록은 지웠고, 이 브라우저·내 드라이브의 목록은 그대로입니다." : "텔레그램 연결을 끊었습니다.", false, 8000);
+            checkHeadBell();
           } catch (e) { toast("실패: " + e.message, true); }
         }
 
@@ -34324,9 +34376,12 @@ const originalBase64 = event.target.result;
         }
         async function startSelect() {
           if (on) return;
-          try { await fetchState(); } catch (e) { toast("서버에서 등록 단지를 못 읽었습니다: " + e.message, true); return; }
+          try { await fetchState(); } catch (e) {
+            // 미연결(브라우저 목록)이면 서버 없이도 고를 수 있다. 연결된 상태인데 못 읽으면 멈춘다(서버 목록이 원본이라)
+            if (serverMode()) { toast("서버에서 등록 단지를 못 읽었습니다: " + e.message, true); return; }
+          }
           pending.clear();
-          (state.targets || []).forEach((t) => pending.set(String(t.complex_id), t.complex_name || ""));
+          curTargets().forEach((t) => pending.set(String(t.complex_id), t.complex_name || ""));
           on = true;
           try { $("tbToolsPanel").hidden = true; } catch (e) {}
           $("raBar").hidden = false;
@@ -34347,15 +34402,23 @@ const originalBase64 = event.target.result;
           const items = [...pending].map(([id, nm]) => targetItem(id, nm));
           const added = items.filter((t) => !regIds.has(t.complex_id)).length;
           const removed = [...regIds].filter((id) => !pending.has(id)).length;
-          // 단지를 서버에 넣기 전 개인정보 동의(2026-10-13) — 거절하면 선택 상태는 그대로 두고 멈춘다
-          if (items.length && !hasConsent() && !(await askConsent())) return;
+          const prevById = new Map(curTargets().map((t) => [String(t.complex_id), t]));
+          items.forEach((t) => { t.added_at = (prevById.get(t.complex_id) || {}).added_at || new Date().toISOString().slice(0, 19).replace("T", " "); });
           try {
-            applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint, ...consentBody() }));
+            if (serverMode()) {
+              // 텔레그램 연결자 — 서버가 원본. 단지를 서버에 넣기 전 개인정보 동의(2026-10-13), 거절하면 선택 상태 그대로 멈춘다
+              if (items.length && !hasConsent() && !(await askConsent())) return;
+              saveLocal(items);
+              applyState(await api("/push_targets", { key: KEY, set: items, endpoint: myEndpoint, ...consentBody() }));
+            } else {
+              // 미연결 — 서버에 보내지 않는다. 이 브라우저 + 내 드라이브(백업이 2초 뒤 갱신)에만
+              saveLocal(items);
+              applyState(state);
+            }
             stopSelect();
-            // 알림은 텔레그램으로만(2026-10-13) — 연결이 없으면 안내만(비동기 뒤라 텔레그램 창을 대신 열면 팝업 차단된다)
-            toast(`✓ 실거래 알림 단지 ${items.length}개 등록 (+${added} −${removed})` +
-              (items.length && !tgCount() ? " — 알림을 받으려면 [✈️ 텔레그램으로 받기]를 눌러 연결해 주세요." : ""), false, tgCount() ? 5000 : 10000);
-          } catch (e) { toast("등록 실패: " + e.message, true); }
+            toast(`✓ 실거래 알림 단지 ${items.length}개 저장 (+${added} −${removed})` +
+              (items.length && !tgCount() ? " — 이 브라우저·내 드라이브에만 저장했어요. 텔레그램으로 받으려면 [✈️ 텔레그램으로 받기]." : ""), false, tgCount() ? 5000 : 10000);
+          } catch (e) { toast("저장 실패: " + e.message, true); }
         }
 
         // ── 푸시 구독 (realAlert/index.html 과 같은 흐름, SW 는 realAlert/sw.js 범위 realAlert/) ──
@@ -34599,15 +34662,46 @@ const originalBase64 = event.target.result;
           const d = new Date();
           return "realAlert-" + d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") + String(d.getDate()).padStart(2, "0");
         }
+        // 텔레그램 미연결이면(2026-10-13 사용자: "텔레그램 쓰는 사람만 서버에 저장, 로그인한 사람에 한해 관심단지인 것만 받게")
+        //   · **구글드라이브 로그인 때만** 내 단지 번호를 POST /push_feed 로 보내 그 단지의 오늘 새 거래만 받는다(서버는 저장하지 않음)
+        //   · 읽음은 서버 대신 내 드라이브 HongbuMemo/realAlert_read.json {tag} 로 기기끼리 맞춘다
+        const DRIVE_READ_FILE = "realAlert_read.json";
+        async function driveFileJson(name) {
+          const list = await __dqList(window.__gdriveRootFolderId, true);
+          const fid = list.get(name);
+          if (!fid) return null;
+          const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fid}?alt=media`, { headers: { Authorization: `Bearer ${window.__gdriveAccessToken}` }, cache: "no-store" });
+          return r.ok ? await r.json() : null;
+        }
+        async function driveWriteJson(name, data) {
+          const root = window.__gdriveRootFolderId;
+          const list = await __dqList(root, true);
+          const fid = list.get(name);
+          if (fid) await __driveWriteSggFile(fid, data);
+          else await __dqUploadIfMissing(root, name, JSON.stringify(data), "application/json");
+        }
+        function driveOk() { return !!(window.__gdriveReady && window.__gdriveRootFolderId && typeof __dqList === "function"); }
         async function checkHeadBell() {
           const bell = $("raHeadBell"); if (!bell) return;
           let d = null;
-          try { d = await api("/push_latest?key=" + encodeURIComponent(KEY)); } catch (e) { return; }
+          if (serverMode()) {
+            try { d = await api("/push_latest?key=" + encodeURIComponent(KEY)); } catch (e) { return; }
+          } else {
+            const list = loadLocal().targets;
+            if (!driveOk() || !list.length) { latestAlert = null; renderHeadBell(); return; }   // 로그인한 사람에 한해
+            try { d = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)) }); } catch (e) { return; }
+            if (d && d.tag && (d.trades || []).length) {
+              try { const rd = await driveFileJson(DRIVE_READ_FILE); d.read = !!(rd && rd.tag === d.tag); } catch (e) {}
+            }
+          }
           latestAlert = d && d.tag && (d.trades || []).length ? d : null;
           renderHeadBell();
         }
         function renderHeadBell() {
           const bell = $("raHeadBell"), cnt = $("raHeadBellCnt"); if (!bell || !cnt) return;
+          // 구글드라이브에 로그인하지 않았으면 🔔 자체를 숨긴다(2026-10-13 사용자: "로그인 안 하면 헤더 🔔 숨기기")
+          bell.hidden = !driveOk();
+          if (bell.hidden) { const p = $("raPushPanel"); if (p && !latestAlert) p.remove(); return; }
           // 읽음 = 서버(키 공통 — 다른 기기에서 읽음) 또는 이 기기 localStorage(서버 반영 전 즉시)
           // tag = realAlert-YYYYMMDD(정기) 또는 realAlert-YYYYMMDD-tHHMMSS(알림 테스트 — 매번 새 알림)
           const fresh = !!latestAlert && latestAlert.tag.startsWith(todayTag()) && !latestAlert.read && ls.get(READ_KEY) !== latestAlert.tag;
@@ -34620,11 +34714,17 @@ const originalBase64 = event.target.result;
           // 알림창이 열려 있으면 다시 누를 때 닫는다 — [닫기] 단추와 같음(2026-10-13 사용자)
           const openPanel = $("raPushPanel");
           if (openPanel) { openPanel.remove(); return; }
-          if (!latestAlert) { toast("아직 받은 실거래 알림이 없습니다. [도구] → 실거래 알림에서 단지를 고르면 매일 알림 시각에 여기와 텔레그램으로 옵니다."); return; }
+          if (!latestAlert) {
+            toast(serverMode() || driveOk()
+              ? "오늘 새로 들어온 실거래가 없습니다. [도구] → 실거래 알림에서 고른 단지에 새 거래가 생기면 여기에 숫자가 붙습니다."
+              : "텔레그램을 연결하지 않았다면 구글드라이브에 로그인해야 여기서 알림을 볼 수 있습니다.", false, 8000);
+            return;
+          }
           ls.set(READ_KEY, latestAlert.tag);
-          if (!latestAlert.read) {   // 서버에도 읽음 — PC 에서 읽으면 휴대폰엔 숫자가 안 붙는다(2026-10-13 사용자)
+          if (!latestAlert.read) {   // 다른 기기에도 읽음 — PC 에서 읽으면 휴대폰엔 숫자가 안 붙는다(2026-10-13 사용자)
             latestAlert.read = true;
-            api("/push_read", { key: KEY, tag: latestAlert.tag }).catch(() => {});
+            if (serverMode()) api("/push_read", { key: KEY, tag: latestAlert.tag }).catch(() => {});
+            else if (driveOk()) driveWriteJson(DRIVE_READ_FILE, { tag: latestAlert.tag, at: Date.now() }).catch(() => {});
           }
           renderHeadBell();
           pushHist(latestAlert);
@@ -34650,7 +34750,7 @@ const originalBase64 = event.target.result;
           try { await api("/push_tg_move", { key: KEY, from: oldKey }); } catch (e) {}   // 옛 키에 붙은 텔레그램도 새 키로
           try { await fetchState(); } catch (e) {}
           checkHeadBell();   // 키가 바뀌었으니 오늘 알림도 새 키로 다시
-          toast(`구글드라이브의 알림 키로 연결했습니다 — 다른 기기와 같은 단지 목록(${(state.targets || []).length}개)을 씁니다.`, false, 8000);
+          toast(`구글드라이브의 알림 키로 연결했습니다 — 다른 기기와 같은 단지 목록(${curTargets().length}개)을 씁니다.`, false, 8000);
         }
         function setDriveStatus(s) {
           driveStatus = s;
@@ -34680,7 +34780,9 @@ const originalBase64 = event.target.result;
             }
             driveSynced = true;
             console.log("[realAlert] drive key:", driveStatus);
+            await driveLoadTargets();   // 미연결이면 드라이브의 단지 목록이 더 새것일 때 받아 온다(다른 기기에서 바꾼 것)
             scheduleBackup();   // 키가 정해진 뒤에야 단지 목록을 백업한다(옛 키 목록을 올리지 않게)
+            checkHeadBell();    // 드라이브 로그인이 확인됐으니 🔔(미연결이면 /push_feed) 다시
           } catch (e) {
             setDriveStatus("드라이브 키 동기화 실패: " + (e && e.message || e));
             console.warn("[realAlert] drive key sync 실패", e);
@@ -34696,11 +34798,26 @@ const originalBase64 = event.target.result;
         const SIG_KEY = "realAlertTargetsSig";
         let backupInfo = "", backupTimer = 0, backupBusy = false;
         function setBackupInfo(s) { backupInfo = s; const el = $("raMngBackup"); if (el) el.textContent = s; }
-        function targetsSig() { return KEY + ":" + (state.targets || []).map((t) => String(t.complex_id)).sort().join(","); }
+        function targetsSig() { return KEY + ":" + idsSig(curTargets()); }
         function scheduleBackup() { clearTimeout(backupTimer); backupTimer = setTimeout(() => { driveBackupTargets().catch(() => {}); }, 2000); }
+        // 미연결(브라우저 목록이 원본)일 때 — 드라이브 파일이 이 브라우저 사본보다 새것이면 받아 온다(PC 에서 고른 걸 휴대폰이 받게)
+        async function driveLoadTargets() {
+          if (serverMode() || !driveOk()) return;
+          try {
+            const d = await driveFileJson(DRIVE_TARGETS_FILE);
+            if (!d || !Array.isArray(d.targets) || !d.targets.length) return;
+            const loc = loadLocal();
+            if ((Number(d.savedAt) || 0) > (Number(loc.savedAt) || 0) && idsSig(d.targets) !== idsSig(loc.targets)) {
+              saveLocal(d.targets, Number(d.savedAt));
+              ls.set(SIG_KEY, KEY + ":" + idsSig(d.targets));   // 방금 받은 것 — 다시 올리지 않게
+              applyState(state);
+              console.log("[realAlert] 드라이브 단지 목록 받음", d.targets.length);
+            }
+          } catch (e) { console.warn("[realAlert] 드라이브 단지 목록 읽기 실패", e); }
+        }
         async function driveBackupTargets() {
           if (!driveSynced || !window.__gdriveReady || !window.__gdriveRootFolderId) return;   // 로그인·키 동기화 뒤 driveKeySync 가 다시 부른다
-          const targets = state.targets || [];
+          const targets = curTargets();
           if (!targets.length) return;
           const sig = targetsSig();
           if (ls.get(SIG_KEY) === sig) return;
@@ -34708,8 +34825,9 @@ const originalBase64 = event.target.result;
           backupBusy = true;
           try {
             const now = new Date();
+            const savedAt = serverMode() ? now.getTime() : (Number(loadLocal().savedAt) || now.getTime());   // 미연결이면 브라우저 사본의 저장 시각 그대로(기기 간 '어느 쪽이 새것' 비교용)
             const data = {
-              key: KEY, savedAt: now.getTime(), savedAtText: now.toLocaleString("ko-KR"),
+              key: KEY, savedAt, savedAtText: new Date(savedAt).toLocaleString("ko-KR"),
               alert_time: (state.settings && state.settings.alert_time) || "08:10", count: targets.length,
               targets: targets.map((t) => ({ complex_id: t.complex_id, complex_name: t.complex_name, sido: t.sido, sigungu: t.sigungu, added_at: t.added_at })),
             };
@@ -34728,8 +34846,8 @@ const originalBase64 = event.target.result;
         }
         // 삭제권(2026-10-13) — 서버의 이 키 데이터 전부 + (고르면) 드라이브 백업 파일 + 이 브라우저의 알림 기억
         async function deleteAllData() {
-          if (!confirm("이 알림 키의 데이터를 서버에서 모두 지웁니다 — 관심 단지·알림 시각·텔레그램 연결·알림 내용·발송 기록.\n" +
-            "같은 키를 쓰는 다른 기기(PC·휴대폰)의 목록도 함께 사라집니다. 계속할까요?")) return false;
+          if (!confirm("실거래 알림 데이터를 모두 지웁니다 — 서버의 관심 단지·알림 시각·텔레그램 연결·알림 내용·발송 기록, 그리고 이 브라우저의 단지 목록.\n" +
+            "같은 키를 쓰는 다른 기기(PC·휴대폰)의 서버 목록도 함께 사라집니다. 계속할까요?")) return false;
           const delDrive = !!(window.__gdriveReady && window.__gdriveRootFolderId) &&
             confirm("구글드라이브의 단지 백업 파일(HongbuMemo/" + DRIVE_TARGETS_FILE + ")도 지울까요?");
           try {
@@ -34741,7 +34859,7 @@ const originalBase64 = event.target.result;
                 if (fid) { await __driveDeleteFile(fid); list.delete(DRIVE_TARGETS_FILE); }
               } catch (e) { toast("드라이브 백업 삭제 실패: " + (e && e.message || e), true); }
             }
-            ["realAlertConsent", SIG_KEY, READ_KEY, HIST_KEY].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
+            ["realAlertConsent", SIG_KEY, READ_KEY, HIST_KEY, LOCAL_TARGETS, PUSH_PENDING].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
             latestAlert = null; renderHeadBell();
             await fetchState();
             toast(`서버에서 알림 데이터를 모두 지웠습니다(단지 ${(d.deleted && d.deleted["푸시_단지"]) || 0}개)${delDrive ? " · 드라이브 백업도 삭제" : ""}.`, false, 8000);
@@ -34760,10 +34878,19 @@ const originalBase64 = event.target.result;
             const d = await r.json();
             const items = Array.isArray(d.targets) ? d.targets.filter((t) => t && /^\d+$/.test(String(t.complex_id))) : [];
             if (!items.length) { toast("드라이브 백업이 비어 있습니다.", true); return; }
-            const before = (state.targets || []).length;
-            if (!hasConsent() && !(await askConsent())) return;
-            applyState(await api("/push_targets", { key: KEY, add: items, endpoint: myEndpoint, ...consentBody() }));
-            toast(`드라이브 백업(${d.savedAtText || ""}, ${items.length}개)에서 복원 — 서버 단지 ${before} → ${(state.targets || []).length}개`, false, 8000);
+            const before = curTargets().length;
+            // 브라우저 목록에 합친다. 텔레그램 연결자면 서버에도 합친다(동의 필요)
+            const merged = new Map(curTargets().map((t) => [String(t.complex_id), t]));
+            items.forEach((t) => { if (!merged.has(String(t.complex_id))) merged.set(String(t.complex_id), t); });
+            if (serverMode()) {
+              if (!hasConsent() && !(await askConsent())) return;
+              saveLocal([...merged.values()]);
+              applyState(await api("/push_targets", { key: KEY, add: items, endpoint: myEndpoint, ...consentBody() }));
+            } else {
+              saveLocal([...merged.values()]);
+              applyState(state);
+            }
+            toast(`드라이브 백업(${d.savedAtText || ""}, ${items.length}개)에서 복원 — 단지 ${before} → ${curTargets().length}개`, false, 8000);
           } catch (e) { toast("복원 실패: " + (e && e.message || e), true); }
         }
 
@@ -34788,13 +34915,20 @@ const originalBase64 = event.target.result;
             '<div id="raMngTg" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;"></div>' +
             // 알림 시각(10분 단위, 키 공통 = 모든 기기) + 기기 수 + 드라이브 공유 상태
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;padding:6px 8px;background:#f6f8fa;border-radius:8px;margin-bottom:8px;">' +
+            // 알림 시각 묶음은 텔레그램 연결 때만 보인다(render 가 raMngTimeRow 를 켜고 끈다 — 드라이브 상태는 늘 보임)
+            '<span id="raMngTimeRow" style="display:flex;align-items:center;gap:8px;">' +
             `<span>알림 시각</span><select id="raMngTime" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${timeOpts.join("")}</select>` +
-            `<button id="raMngTimeSave" style="${sb}">저장</button>` +
+            `<button id="raMngTimeSave" style="${sb}">저장</button></span>` +
             '<span style="flex:1"></span><span id="raMngDrive" style="color:#6b7684"></span></div>' +
             // 단지 목록 드라이브 백업(2026-10-13) — 서버 장애 대비
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin:-4px 0 8px;padding:0 8px;">' +
             '<span id="raMngBackup" style="color:#6b7684"></span><span style="flex:1"></span>' +
             `<button id="raMngRestore" style="${sb}" title="드라이브 HongbuMemo/realAlert_targets.json 의 단지를 서버 목록에 합친다">드라이브에서 복원</button></div>` +
+            // 개인정보(2026-10-13): 처리방침·삭제권 — 단지 목록 **위**에 둔다(맨 아래에 두었더니 531개 목록 밑이라 안 보였다, 사용자 지적)
+            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px;padding:0 8px;font-size:12.5px;">' +
+            `<a href="${PRIVACY_URL}" target="_blank" rel="noopener" style="color:#00897b">🔒 개인정보 안내</a>` +
+            '<span id="raMngConsent" style="color:#6b7684"></span><span style="flex:1"></span>' +
+            `<button id="raMngDeleteAll" style="${sb};color:#d93025;border-color:#f0b4b0">🗑 내 알림 데이터 모두 삭제</button></div>` +
             // 시도·시군구 필터(2026-10-11 사용자: 묶음 대신 필터)
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;">' +
             '<span>시도</span><select id="raFltSido" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;min-width:90px"><option value="">전체</option></select>' +
@@ -34803,14 +34937,10 @@ const originalBase64 = event.target.result;
             '<div style="display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
             '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
-            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 설정한 시각에 그 사이 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 연결된 텔레그램으로 보내고, 홍부에서는 그날 헤더의 🔔(단풍 왼쪽)로 보여 줍니다(계약→신고 최대 30일, 국토부 데이터는 07:00쯤 갱신). ` +
+            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 텔레그램을 연결했으면 설정한 시각에 텔레그램으로 보내고, 홍부에서는 헤더 🔔(단풍 왼쪽, 구글드라이브 로그인 때만)로 보여 줍니다(계약→신고 최대 30일, 국토부 데이터는 07:00쯤 갱신). ` +
+            `<b>단지 목록은 텔레그램을 연결했을 때만 서버에 저장</b>하고, 그 전에는 이 브라우저와 내 구글드라이브에만 둡니다. ` +
             // 휴대폰 페이지 링크는 #key= (해시는 서버·접속 기록에 안 남는다 — 2026-10-13 개인정보. 링크를 남에게 보내면 키가 넘어가니 주의)
-            `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}#key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>(링크에 내 키가 들어 있으니 남에게 보내지 마세요).</div>` +
-            // 개인정보(2026-10-13): 처리방침·삭제권
-            '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:12px;">' +
-            `<a href="${PRIVACY_URL}" target="_blank" rel="noopener" style="color:#00897b">🔒 개인정보 처리방침</a>` +
-            `<span style="color:#6b7684">${hasConsent() ? "동의함" : "동의 전"}</span><span style="flex:1"></span>` +
-            `<button id="raMngDeleteAll" style="${sb};color:#d93025;border-color:#f0b4b0">🗑 내 알림 데이터 모두 삭제</button></div>`;
+            `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}#key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>(링크에 내 키가 들어 있으니 남에게 보내지 마세요).</div>`;
           ov.appendChild(box);
           ov.addEventListener("click", (e) => { if (e.target === ov) ov.remove(); });
           box.querySelector("#raMngClose").addEventListener("click", () => ov.remove());
@@ -34828,7 +34958,12 @@ const originalBase64 = event.target.result;
           });
           async function render() {
             const list = box.querySelector("#raMngList");
-            try { await fetchState(); } catch (e) { list.innerHTML = `<div style="color:#d93025;padding:8px 2px;">서버 연결 실패: ${e.message}</div>`; return; }
+            try { await fetchState(); } catch (e) {
+              // 미연결이면 서버 없이도 브라우저 목록을 보여 준다
+              if (serverMode()) { list.innerHTML = `<div style="color:#d93025;padding:8px 2px;">서버 연결 실패: ${e.message}</div>`; return; }
+            }
+            // 알림 시각은 텔레그램 발송용 — 미연결이면 숨긴다(서버가 409)
+            box.querySelector("#raMngTimeRow").style.display = serverMode() ? "flex" : "none";
             const tgBox = box.querySelector("#raMngTg");
             const chats = ((state.telegram && state.telegram.chats) || []).filter((c) => !c.disabled);
             const esc = (s) => String(s || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
@@ -34838,13 +34973,14 @@ const originalBase64 = event.target.result;
                   ` <button class="ra-tg-unlink" data-ref="${esc(c.ref)}" style="${sb};padding:2px 7px;color:#d93025;border-color:#f0b4b0">끊기</button></span>`).join("") +
                 `<button class="ra-tg-link" style="${sb}">다른 계정 추가</button>`
               : `<button class="ra-tg-link" style="${sb};background:#229ed9;border-color:#229ed9;color:#fff;font-weight:700">✈️ 텔레그램으로 받기</button>` +
-                '<span style="color:#d93025">알림은 텔레그램으로만 갑니다 — 텔레그램이 열리면 [시작]만 누르면 됩니다</span>';
+                '<span style="color:#6b7684">지금은 이 브라우저·내 드라이브에만 저장돼 서버는 모릅니다. 텔레그램으로 받으려면 연결하세요(그때 서버에 저장).</span>';
             const sel = box.querySelector("#raMngTime");
             sel.value = (state.settings && state.settings.alert_time) || "08:10";
             box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 대기…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
+            box.querySelector("#raMngConsent").textContent = hasConsent() ? "· 동의함" : "· 동의 전";
             box.querySelector("#raMngBackup").textContent = backupInfo ||
-              (!window.__gdriveReady ? "단지 백업: 드라이브 미로그인" : ls.get(SIG_KEY) === targetsSig() ? `단지 백업: 드라이브와 같음 (${(state.targets || []).length}개)` : "단지 백업: 곧 저장…");
-            const rows = state.targets || [];
+              (!window.__gdriveReady ? "단지 백업: 드라이브 미로그인" : ls.get(SIG_KEY) === targetsSig() ? `단지 백업: 드라이브와 같음 (${curTargets().length}개)` : "단지 백업: 곧 저장…");
+            const rows = curTargets();
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
             // 지역 이름: 서버 저장값(코드로 저장된 옛 등록분은 제외) → 이 페이지의 단지 데이터(sidoNm/sigunguNm) 보충
             const nm = (v) => { v = String(v || "").trim(); return /^\d+$/.test(v) ? "" : v; };
@@ -34884,7 +35020,12 @@ const originalBase64 = event.target.result;
             const del = e.target.closest(".ra-del");
             if (del) {
               del.disabled = true;
-              try { applyState(await api("/push_targets", { key: KEY, remove: [del.dataset.id] })); await render(); }
+              try {
+                saveLocal(curTargets().filter((t) => String(t.complex_id) !== del.dataset.id));   // 브라우저 목록에서 먼저
+                if (serverMode()) applyState(await api("/push_targets", { key: KEY, remove: [del.dataset.id] }));
+                else applyState(state);
+                await render();
+              }
               catch (err) { toast("삭제 실패: " + err.message, true); del.disabled = false; }
               return;
             }
@@ -34914,14 +35055,15 @@ const originalBase64 = event.target.result;
           $("raHeadBell")?.addEventListener("click", openHeadBell);
           // 레이어 '실거래알림단지' — 켜고 끌 때 마커 🔔 다시 입히기(저장된 값 복원은 uiState 가, 다음 updateMarkers 때도 decorate 가 다시 읽는다)
           $("toggleRaBell")?.addEventListener("change", () => decorate());
-          checkHeadBell();
+          applyState(state);   // 서버 응답 전에도 브라우저 목록으로 마커·상태를 먼저 그린다(미연결 사용자)
+          // 🔔 는 서버 상태(연결 여부)를 받은 뒤에 — 연결이면 /push_latest, 아니면 드라이브 로그인 때 /push_feed(driveKeySync 끝에서도 다시)
           setInterval(checkHeadBell, 10 * 60 * 1000);
           // 휴대폰에서 탭으로 다시 돌아올 때도 확인(다른 기기에서 읽었으면 숫자를 지운다)
           document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkHeadBell(); });
           $("raBarDone")?.addEventListener("click", finishSelect);
           $("raBarCancel")?.addEventListener("click", stopSelect);
           document.addEventListener("keydown", (e) => { if (e.key === "Escape" && on) stopSelect(); });
-          fetchState().catch(() => { const st = $("raStatus"); if (st) st.textContent = "알림 서버 연결 실패"; });
+          fetchState().then(() => checkHeadBell()).catch(() => { const st = $("raStatus"); if (st) st.textContent = "알림 서버 연결 실패"; checkHeadBell(); });
         }
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wire); else wire();
         window.__realAlert = { startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, linkTelegram, unlinkTelegram, checkHeadBell, openHeadBell, state: () => state, key: () => KEY };

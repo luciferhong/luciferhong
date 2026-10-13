@@ -80,7 +80,7 @@
   <!-- 개인정보(2026-10-13) — 처리방침·삭제권 -->
   <div class="card">
     <div class="row"><b>🔒 개인정보</b><span class="mute" id="stConsent"></span></div>
-    <div class="hint">저장: 관심 단지·알림 시각·텔레그램 대화방 번호(사용자명·이름 저장 안 함). 서버는 일본 도쿄(Oracle Cloud). <a href="./privacy.html" target="_blank" rel="noopener" style="color:var(--brand)">처리방침 전문</a></div>
+    <div class="hint">텔레그램을 연결했을 때만 서버에 관심 단지·알림 시각·대화방 번호를 저장합니다(사용자명·이름 저장 안 함, 서버는 일본 도쿄). 연결 전에는 이 브라우저에만 있어요. <a href="./privacy.html" target="_blank" rel="noopener" style="color:var(--brand)">처리방침 전문</a></div>
     <div class="btns"><button class="danger" id="btnDeleteAll">🗑 내 알림 데이터 모두 삭제</button></div>
   </div>
 
@@ -174,15 +174,25 @@
         ? (d.disabled ? '<span class="bad">이 기기 구독이 끊어졌습니다 — 알림 켜기를 다시 눌러 주세요</span>'
                       : `<span class="ok">이 기기 등록됨</span> <span class="mute">(${d.endpoint_host || ''}${d.last_sent_at ? ' · 마지막 발송 ' + d.last_sent_at.slice(5, 16) : ''})</span>`)
         : '<span class="mute">이 기기 없음 — 아래 알림 켜기</span>') + ` <span class="mute">· 기기 ${dc}대 · 매일 ${at}</span>`;
-      renderTargets(d.targets || []);
+      // 텔레그램 연결자만 서버에 단지가 있다(2026-10-13) — 미연결이면 이 브라우저 목록(홍부와 같은 localStorage)을 보여 준다
+      linked = ((d.telegram && d.telegram.count) || 0) > 0;
+      renderTargets(linked ? (d.targets || []) : loadLocal().targets);
       renderTg(d.telegram || {});
       serverConsent = (d.settings && d.settings.consent_ver) || null;
+      serverLoaded = true;
       $('stConsent').textContent = hasConsent() ? '동의함' : '동의 전';
     } catch (e) {
       $('stSub').innerHTML = '<span class="bad">서버 연결 실패: ' + e.message + '</span>';
     }
   }
 
+  // 브라우저 단지 목록 — hongbuAlert.html 과 같은 키(localStorage.realAlertTargets {savedAt, targets})
+  let linked = false;
+  function loadLocal() {
+    try { const d = JSON.parse(ls.get('realAlertTargets') || 'null'); if (d && Array.isArray(d.targets)) return d; } catch (e) {}
+    return { savedAt: 0, targets: [] };
+  }
+  function saveLocal(list) { ls.set('realAlertTargets', JSON.stringify({ savedAt: Date.now(), targets: list })); }
   function renderTargets(list) {
     $('tgCnt').textContent = list.length ? `${list.length}개` : '없음';
     const ul = $('tgList'); ul.innerHTML = '';
@@ -195,7 +205,12 @@
       del.textContent = '삭제';
       del.addEventListener('click', async () => {
         del.disabled = true;
-        try { renderTargets((await api('/push_targets', { key: KEY, remove: [t.complex_id] })).targets || []); msg(`${t.complex_name || t.complex_id} 삭제`); }
+        try {
+          const rest = loadLocal().targets.filter((x) => String(x.complex_id) !== String(t.complex_id));
+          saveLocal(rest);
+          renderTargets(linked ? ((await api('/push_targets', { key: KEY, remove: [t.complex_id] })).targets || []) : rest);
+          msg(`${t.complex_name || t.complex_id} 삭제`);
+        }
         catch (e) { msg('삭제 실패: ' + e.message, true); del.disabled = false; }
       });
       li.appendChild(a); li.appendChild(del); ul.appendChild(li);
@@ -204,19 +219,24 @@
 
   // ── 개인정보 동의(2026-10-13) — 판은 server/tg_alert.py·privacy.html·hongbuAlert.html 과 같아야 한다 ──
   const CONSENT_VER = '2026-10-13';
-  let serverConsent = null;
-  function hasConsent() { return (serverConsent || ls.get('realAlertConsent')) === CONSENT_VER; }
+  // 서버 기록이 기준 — 서버 상태를 받은 뒤엔 localStorage 를 보지 않는다(2026-10-13: 서버엔 동의가 없는데 창을 건너뛰던 문제)
+  let serverConsent = null, serverLoaded = false;
+  function hasConsent() { return serverLoaded ? serverConsent === CONSENT_VER : ls.get('realAlertConsent') === CONSENT_VER; }
   function askConsent(onAgree) {
     // 텔레그램 창 열기가 팝업 차단되지 않게 confirm 직후 같은 클릭 흐름에서 onAgree 를 부른다
-    const ok = confirm('🔒 실거래 알림 — 개인정보 수집·이용 동의\n\n' +
-      '· 저장: 관심 단지(단지번호·이름·지역), 알림 시각, 텔레그램 대화방 번호(사용자명·이름·전화번호는 저장 안 함), 발송 기록\n' +
-      '· 목적: 실거래 알림 발송과 홍부 화면 표시뿐(광고·판매·제3자 제공 없음)\n' +
-      '· 보관: 삭제 요청 시 즉시, 발송 기록 90일, 1년 미사용 시 자동 삭제\n' +
-      '· 국외 보관·전송: 서버 Oracle Cloud(일본 도쿄), 전송 Cloudflare(미국), 메시지 Telegram\n' +
-      '· 삭제: 이 페이지의 [내 알림 데이터 모두 삭제] 또는 봇에 /delete\n\n' +
-      '동의하지 않으면 실거래 알림만 쓸 수 없습니다. 처리방침 전문은 이 페이지의 링크에서 볼 수 있습니다.\n\n동의하십니까?');
-    if (!ok) { msg('동의하지 않으면 실거래 알림을 쓸 수 없습니다.', true); return; }
+    // 텔레그램으로 받기 위한 동의(2026-10-13 사용자: 동의 안 해도 실거래 알림은 홍부 🔔 로 받을 수 있다 — 텔레그램으로만 못 받을 뿐)
+    const ok = confirm('✈️ 텔레그램으로 알림 받기 — 개인정보 동의\n\n' +
+      '텔레그램으로 알림을 보내려면 아래 정보를 서버에 저장해요.\n\n' +
+      '· 저장하는 것: 텔레그램 대화방 번호, 고른 관심 단지, 알림 받을 시간 (텔레그램 이름·아이디·전화번호는 저장 안 해요)\n' +
+      '· 쓰는 곳: 텔레그램으로 실거래 알림 보내기에만 (광고·판매·다른 곳에 넘기기 없음)\n' +
+      '· 보관: 텔레그램 연결을 끊으면 바로 지워요. 보낸 기록은 90일 뒤 지워요.\n' +
+      '· 서버 위치: 일본 도쿄(오라클 클라우드), 중간에 클라우드플레어(미국), 메시지는 텔레그램이 전해요.\n' +
+      '· 지우기: 봇에게 /delete 또는 이 페이지의 [내 알림 데이터 모두 삭제]\n\n' +
+      '동의하지 않아도 실거래 알림은 홍부 화면의 🔔에서 볼 수 있어요. 텔레그램으로만 못 받아요.\n\n동의하고 텔레그램을 연결할까요?');
+    if (!ok) { msg('텔레그램 연결을 취소했어요. 실거래 알림은 홍부 화면의 🔔에서 그대로 볼 수 있어요.'); return; }
     ls.set('realAlertConsent', CONSENT_VER);
+    serverConsent = CONSENT_VER;   // 바로 반영하고 서버에도 기록
+    api('/push_consent', { key: KEY, consent: CONSENT_VER }).catch(() => {});
     onAgree();
   }
   async function deleteAll() {
@@ -224,7 +244,7 @@
     $('btnDeleteAll').disabled = true;
     try {
       const d = await api('/push_delete_all', { key: KEY });
-      try { localStorage.removeItem('realAlertConsent'); } catch (e) {}
+      try { localStorage.removeItem('realAlertConsent'); localStorage.removeItem('realAlertTargets'); } catch (e) {}
       msg(`서버에서 알림 데이터를 모두 지웠습니다(단지 ${(d.deleted && d.deleted['푸시_단지']) || 0}개). 구글드라이브 백업 파일은 홍부 관리창에서 지울 수 있습니다.`);
     } catch (e) { msg('삭제 실패: ' + e.message, true); }
     finally { $('btnDeleteAll').disabled = false; refresh(); }
@@ -266,7 +286,16 @@
       try {
         const d = await api('/push_targets?key=' + encodeURIComponent(KEY));
         renderTg(d.telegram || {});
-        if ((d.telegram && d.telegram.count || 0) > before) { clearInterval(tgWatch); msg('✓ 텔레그램 연결 완료'); }
+        if ((d.telegram && d.telegram.count || 0) > before) {
+          clearInterval(tgWatch);
+          // 처음 연결이면 이 브라우저의 단지 목록을 서버로 올린다(텔레그램 연결자만 서버에 저장 — 2026-10-13)
+          const list = loadLocal().targets;
+          if (!before && list.length && !(d.targets || []).length) {
+            try { await api('/push_targets', { key: KEY, set: list, consent: CONSENT_VER }); } catch (e) { msg('단지 목록 올리기 실패: ' + e.message, true); }
+          }
+          msg('✓ 텔레그램 연결 완료' + (list.length ? ` — 단지 ${list.length}개` : ' — 단지는 홍부 지도에서 고르세요'));
+          refresh();
+        }
       } catch (e) {}
     }, 4000);
   }
