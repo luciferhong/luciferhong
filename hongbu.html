@@ -2454,7 +2454,8 @@
       #hongbuDebugOverlay .lvl-ERR {
         color: #fecaca;
       }
-      #hongbuDebugOverlay .lvl-WARN {
+      #hongbuDebugOverlay .lvl-WARN,
+      #hongbuDebugOverlay .lvl-NET {
         color: #fde68a;
       }
       #hongbuDebugOverlay .lvl-INFO {
@@ -3177,10 +3178,13 @@
           const msgStr = safeStr(msg).toLowerCase();
           if (msgStr.includes("gps") || msgStr.includes("위치") || msgStr.includes("tracking")) return;
 
+          // 타임아웃·네트워크 끊김은 임장 중(지하주차장·건물 안) 흔한 일 — 기록만 'NET' 으로 남기고 창은 자동으로 열지 않는다
+          //   (2026-10-15 사용자: "에러가 발생하니 큰일처럼 인식할 수 있다"). 업로드는 대기열이 알아서 다시 시도한다.
+          if (level === "ERR" && /타임아웃|timeout|AbortError|Failed to fetch|NetworkError|네트워크|ERR_INTERNET|ERR_NETWORK|Load failed|오프라인|offline/i.test(safeStr(msg) + " " + (extra ? safeStr(extra) : ""))) level = "NET";
           const line = { level, time: ts(), msg: safeStr(msg), extra: extra ? safeStr(extra) : "" };
           store.push(line);
           while (store.length > MAX_LINES) store.shift();
-          setDot(level);
+          setDot(level === "NET" ? "WARN" : level);
           render();
           ensureVisibleOnError(level);
         }
@@ -19779,7 +19783,8 @@ const originalBase64 = event.target.result;
                 const wait = Math.min(8, 2 ** (__dq.failures - 1)) * 60 * 1000;
                 console.warn('[dq] 실패 상세:', e);
                 console.warn(`[dq] ${key} 업로드 실패(${__dq.failures}회) — ${Math.round(wait / 60000)}분 후 재시도:`, __dq.lastError);
-                try { window.hongbuDebugLog?.('ERR', '[dq] 업로드 실패', `${key} ${__dq.lastError}`); } catch (_) {}
+                // 타임아웃·연결 끊김은 디버그 창에 '오류'로 올리지 않는다(위 진단·자동 재시도가 맡음) — 그 밖의 실패만 오류 기록
+                if (!__dqIsTimeoutish(e)) { try { window.hongbuDebugLog?.('ERR', '[dq] 업로드 실패', `${key} ${__dq.lastError}`); } catch (_) {} }
                 // 실패 항목은 뒤로 보내 다른 항목을 먼저 시도
                 __dq.items.delete(key); __dq.items.set(key, item);
                 clearTimeout(__dq.retryTimer);
