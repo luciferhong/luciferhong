@@ -34709,7 +34709,12 @@ const originalBase64 = event.target.result;
             hoga: t.q ?? null,   // 2026-10-13 호가(시세 최신 회차 같은 평형 최저가) — 옛 알림엔 없음(null → 표시 안 함)
             // 2026-10-14 텔레그램과 같은 정보(사용자): m 입주·세대수 · l 직전가 · v 직전 대비(만원) · lo 저층 · j 직거래 — 옛 알림엔 없음
             meta: t.m || "", last: t.l || "", dv: (t.v === undefined || t.v === null) ? null : Number(t.v), low: !!t.lo, direct: !!t.j,
+            // 2026-10-15 특수거래 의심(가족 간 저가 등) — 시세(앞 90일 4층↑ 중개 중앙값) 대비 % (-24 등). 의심 거래는 서버가 직전에서도 뺀다
+            sus: (t.s === undefined || t.s === null) ? null : Number(t.s),
+            lastDate: t.ld || "",   // 직전이 90일보다 오래됐으면 그 계약일 YY.MM.DD(2026-10-15) — 그땐 층 상관없이 가장 최근 거래
           }));
+          // 직전 꼬리표: '(25.06.12·저층)' — 날짜는 90일보다 오래된 직전일 때만
+          const prevTag = (t) => { const a = [t.lastDate, t.low ? "저층" : ""].filter(Boolean).join("·"); return a ? `(${a})` : ""; };
           // 만원 → '13.5억' / '9,800만' (서버 push_alert.eok 와 같은 표기)
           const eok = (v) => (v >= 10000 ? (v / 10000).toFixed(2).replace(/\.?0+$/, "") + "억" : Number(v).toLocaleString("ko-KR") + "만");
           const diffHtml = (v) => (v === 0 ? '<span style="color:#6b7684">변동 없음</span>'
@@ -34743,10 +34748,11 @@ const originalBase64 = event.target.result;
               row.style.cssText = "padding:3px 0 3px 10px;border-left:2px solid #e3e7ec;cursor:pointer;";
               // 텔레그램과 같은 줄: 🔥84㎡ 12층 13.5억 (10.03일 직거래) 직전(저층) 13억 🔺5,000만 | 호가 14억
               const prev = t.last
-                ? ` <span style="color:#6b7684">직전${t.low ? "(저층)" : ""} ${escH(t.last)}</span> ${t.dv === null ? "" : diffHtml(t.dv)}`
+                ? ` <span style="color:#6b7684">직전${escH(prevTag(t))} ${escH(t.last)}</span> ${t.dv === null ? "" : diffHtml(t.dv)}`
                 : (t.diff_txt ? ` <span style="color:${/🔽/.test(t.diff_txt) ? "#1a63c9" : "#d93025"}">${escH(t.diff_txt)}</span>` : "");   // 옛 알림
               row.innerHTML = `${t.high ? "🔥" : ""}${t.area}㎡ ${t.floor}층 <b>${escH(t.price_txt)}</b> ` +
-                `<span style="color:#6b7684">(${escH(t.date)}일${t.direct ? " 직거래" : ""})</span>` + prev +
+                `<span style="color:#6b7684">(${escH(t.date)}일${t.direct ? " 직거래" : ""})</span>` +
+                (t.sus !== null ? ` <span style="color:#b45309" title="같은 단지·평형 앞 90일 4층 이상 중개거래 중앙값보다 크게 낮음 — 가족 간 거래 등 특수거래 의심(직전 실거래 계산에서 제외)">⚠특수거래 의심(시세 대비 ${t.sus}%)</span>` : "") + prev +
                 (t.hoga !== null ? ` <span style="color:#6b7684">| 호가 ${escH(t.hoga || "없음")}</span>` : "");
               row.addEventListener("click", () => { el.remove(); goApt(t.cid); });
               el.appendChild(row);
