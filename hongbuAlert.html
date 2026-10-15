@@ -8652,6 +8652,25 @@
         return String(v);
       }
 
+      // 학교 마커 이름에서 앞의 시도 이름을 뗀다(2026-10-15 사용자: "지도는 보는 동네만 보이니 서울한서초의 '서울'은 군더더기").
+      //   원본 데이터는 그대로 — 마커 글자에만 쓴다(상세창은 정식 이름). 떼고 '초'·'중'만 남거나 '여자중'이면 식별자가 없어 붙여 둔다,
+      //   부산진(부산진구)은 동네 이름이라 그대로, ○○대학교사범대학부설 → ○○대사범대학부설(어느 대학인지 남김).
+      //   kind = '초' | '중'. 대상 목록 검토: _tools/_school_prefix_review.py (siseVer2.html 에도 같은 함수)
+      const __SCHOOL_SIDO = ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"];
+      function shortSchoolName(name, kind) {
+        const n = String(name || "").trim();   // 원본에 끝 공백이 붙은 이름이 있다('세종중 ')
+        const p = __SCHOOL_SIDO.find((s) => n.startsWith(s) && n.length > s.length);
+        if (!p || n.startsWith("부산진")) return n;
+        if (n.includes("대학교사범대학")) return n.replace("대학교사범대학", "대사범대학");
+        const rest = n.slice(p.length);
+        let core;   // 종류 글자 앞까지가 식별자(서초초 → '서초', 분교장 꼬리는 처음 나오는 종류 글자까지)
+        if (rest.endsWith(kind)) core = rest.slice(0, -1);
+        else { const i = rest.indexOf(kind, 1); core = i > 0 ? rest.slice(0, i) : rest; }
+        if (core === "" || core === "여자" || core === "여") return n;
+        return rest;
+      }
+      window.shortSchoolName = shortSchoolName;
+
       function renderSchoolDetailContent(school) {
         const schoolName = school?.schoolName || school?.name || "-";
         const establishmentYmd = _fmtEstablishmentYmd(school?.establishmentYmd);
@@ -8883,7 +8902,7 @@
         const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
         const total = school.totalStudentCount ?? "";
         const suffix = perClass !== "" || total !== "" ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})` : "";
-        infoBox.textContent = `${(school.schoolName || "").replace(/등학교/g, "")}${suffix}`;
+        infoBox.textContent = `${shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초")}${suffix}`;
         const infoWrap = document.createElement("div");
         infoWrap.style = "position: relative; display: inline-block;";
         const detailBtn = document.createElement("button");
@@ -11593,7 +11612,7 @@ const originalBase64 = event.target.result;
         const _ach = String(school["학업성취도"] ?? "").replaceAll("%", "").trim();
         const _spc = String(school["특목고"] ?? "").replaceAll("%", "").trim();
         const _suffix = _ach || _spc ? ` (${_ach} / ${_spc})` : "";
-        infoBox.textContent = `${estPrefix}${school["학교명"]}${_suffix}`;
+        infoBox.textContent = `${estPrefix}${shortSchoolName(school["학교명"], "중")}${_suffix}`;
         markerElement.appendChild(markerIcon);
         markerElement.appendChild(infoBox);
         const marker = new naver.maps.Marker({
