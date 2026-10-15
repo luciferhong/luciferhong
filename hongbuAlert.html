@@ -2881,6 +2881,12 @@
           <p id="gdriveAuthHint" style="margin:0 0 12px; color:#1e293b; font-size:14px; line-height:1.6; text-align:left;">
             로그인을 하면 작성한 메모가 구글드라이브에 <b>실시간 동기화</b>되며, <b>매물임장</b> 기능을 사용하실 수 있습니다.
           </p>
+          <!-- 2026-10-15 사용자: "메모가 날아가서 안 쓴다" 는 이야기 → 로그인으로 데이터를 지키라는 안내(#gdriveAuthHint 는 재로그인 기기에서 바뀌므로 별도 상자) -->
+          <p id="gdriveAuthSafe" style="margin:0 0 12px; padding:10px 12px; background:#eff6ff; border:1px solid #93c5fd; border-radius:10px; color:#1e3a8a; font-size:13px; line-height:1.6; text-align:left;">
+            🔒 <b>로그인하지 않으면 메모는 지금 이 브라우저에만 저장</b>됩니다. 브라우저 기록 삭제, 휴대폰 교체, 카카오톡·네이버 앱 안에서 연 경우,
+            아이폰 사파리를 한동안 안 쓴 경우 등에는 <b>메모가 사라질 수 있습니다</b>.<br>
+            로그인하면 구글드라이브에 안전하게 보관되어 <b>다른 기기·브라우저에서도 그대로 이어서</b> 쓸 수 있습니다.
+          </p>
           <p style="margin:0 0 18px; padding:10px 12px; background:#fffbeb; border:1px solid #fcd34d; border-radius:10px; color:#78350f; font-size:13px; line-height:1.6; text-align:left;">
             다만 이 과정에서 데이터 사용량이 <b>수백 MB</b>가 발생할 수 있어, 알뜰폰 요금제처럼 데이터 용량이 적은 사용자는 <b>Wi-Fi가 연결되었을 때 로그인</b>을 하시고 <b>평소에는 로그아웃</b>을 권장드립니다.
           </p>
@@ -3788,6 +3794,8 @@
             <button id="raEnableBtn" type="button" class="tb-item" title="오늘 새로 들어온 관심 단지 매매 전체를 지금 텔레그램으로 받는다(10분에 한 번)">📨 텔레그램 지금받기</button>
           </div>
           <button id="raTgBtn" type="button" class="tb-item" title="텔레그램 봇으로 같은 알림을 받는다 — 텔레그램이 열리면 [시작]만 누르면 된다">✈️ 텔레그램으로 받기</button>
+          <!-- 미로그인일 때만 보임(authGate, 2026-10-15 — 실거래 알림은 구글 로그인 사용자만) -->
+          <button id="raLoginBtn" type="button" class="tb-item" style="display:none" title="실거래 알림은 구글 드라이브에 로그인한 사용자만 쓸 수 있습니다">🔑 구글 로그인하고 알림 쓰기</button>
           <span id="raStatus" style="font-size:11px; color:#475569;"></span>
         </div>
 
@@ -34376,8 +34384,25 @@ const originalBase64 = event.target.result;
           el.textContent = msg;
           clearTimeout(el.__t); el.__t = setTimeout(() => el.remove(), ms || (bad ? 12000 : 5000));
         }
+        // 실거래 알림은 구글 드라이브 로그인 사용자만(2026-10-15 사용자: "로그아웃해도 알림 아이콘이 남는다. 알림 기능은 로그인 사용자만").
+        //   미로그인이면 [도구] 구획의 단추를 숨기고 '로그인 후 사용' 안내만, 🔔·마커 🔔·열린 창·선택 모드도 닫는다.
+        function authGate() {
+          const ok = driveLikely();
+          ["raSelectBtn", "raTgBtn"].forEach((id) => { const b = $(id); if (b) b.style.display = ok ? "" : "none"; });
+          const row = $("raManageBtn") && $("raManageBtn").parentElement; if (row) row.style.display = ok ? "" : "none";
+          const lg = $("raLoginBtn"); if (lg) lg.style.display = ok ? "none" : "";
+          if (!ok) {
+            if (on) stopSelect();
+            ["raPushPanel", "raManage"].forEach((id) => { const el = $(id); if (el) el.remove(); });
+            const st = $("raStatus"); if (st) st.textContent = "구글 로그인 후 사용할 수 있습니다";
+          }
+          renderHeadBell();
+          decorate();
+          return ok;
+        }
         function renderStatus() {
           const st = $("raStatus"); if (!st) return;
+          if (!authGate()) return;
           // 2026-10-13 사용자: 푸시는 텔레그램으로 일원 — 브라우저 푸시 상태는 더 보이지 않는다
           const n = curTargets().length;
           const at = (state.settings && state.settings.alert_time) || "08:10";
@@ -34490,7 +34515,7 @@ const originalBase64 = event.target.result;
           if (!id) return;
           let bell = el.querySelector(".ra-bell");
           // 🔔 배지는 [레이어] → 내 기록 → '실거래알림단지' 를 켰을 때만(2026-10-13 사용자: "체크시만 알림단지를 마커에 표기")
-          if (regIds.has(id) && !on && bellLayerOn()) {
+          if (regIds.has(id) && !on && bellLayerOn() && driveLikely()) {
             if (!bell) { bell = document.createElement("span"); bell.className = "ra-bell"; bell.textContent = "🔔"; bell.title = "실거래 알림 단지"; el.appendChild(bell); }
           } else if (bell) bell.remove();
           let cb = el.querySelector(".ra-chk");
@@ -35378,6 +35403,18 @@ const originalBase64 = event.target.result;
         function wire() {
           $("raSelectBtn")?.addEventListener("click", startSelect);
           $("raManageBtn")?.addEventListener("click", openManage);
+          $("raLoginBtn")?.addEventListener("click", () => { try { __gdriveShowAuthOverlay(); } catch (e) {} });
+          // 로그인·로그아웃마다 알림 기능을 켜고 끈다 — 공용 코드(hongbutest)의 __gdriveUpdateAuthBtn 을 감싼다(updateMarkers 와 같은 방식).
+          //   ⚠ 로그아웃은 refresh 토큰을 지우고 이 함수를 부른다 → driveLikely() 가 false 가 되어 🔔·단추가 숨는다.
+          try {
+            const origAuth = window.__gdriveUpdateAuthBtn;
+            if (typeof origAuth === "function" && !origAuth.__raWrapped) {
+              // 로그인 직후엔 refresh 토큰 저장·드라이브 준비가 조금 늦게 끝날 수 있어 몇 초 뒤 한 번 더
+              const w = function () { const r = origAuth.apply(this, arguments); try { renderStatus(); setTimeout(renderStatus, 3000); } catch (e) {} return r; };
+              w.__raWrapped = true; window.__gdriveUpdateAuthBtn = w;
+            }
+          } catch (e) {}
+          renderStatus();
           $("raEnableBtn")?.addEventListener("click", testPush);
           // 연결 전: 연결 흐름 / 연결 뒤: 봇 대화방 열기(2026-10-13 사용자: '연결됨'을 누르면 관리창이 떠 어색함 — 끊기·추가는 관리창에)
           $("raTgBtn")?.addEventListener("click", () => {
