@@ -35200,6 +35200,7 @@ const originalBase64 = event.target.result;
 
         // ── 관리 패널 (모달 — 팝업은 맨 위 규칙: 단지 상세 1000002 보다 위) ──
         let fltSido = "", fltSgg = "";   // 관리창 시도·시군구 필터(세션 유지)
+        let fltShownIds = [];   // 시군구를 골랐을 때 보이는 단지 번호 — [이 시군구 일괄 삭제]가 지운다
         function openManage() {
           const old = $("raManage"); if (old) { old.remove(); return; }
           const ov = document.createElement("div"); ov.id = "raManage";
@@ -35238,7 +35239,9 @@ const originalBase64 = event.target.result;
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;margin-bottom:6px;">' +
             '<span>시도</span><select id="raFltSido" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;min-width:90px"><option value="">전체</option></select>' +
             '<span>시군구</span><select id="raFltSgg" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;min-width:90px"><option value="">전체</option></select>' +
-            '<span id="raFltCnt" style="color:#6b7684"></span></div>' +
+            '<span id="raFltCnt" style="color:#6b7684"></span>' +
+            // 시군구를 고르면 그 시군구 단지를 한 번에 지우는 단추(2026-10-15 사용자)
+            `<button id="raFltDel" hidden style="${sb};color:#d93025;border-color:#f0b4b0;padding:3px 8px">🗑 이 시군구 일괄 삭제</button></div>` +
             '<div style="display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
             '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
@@ -35310,6 +35313,11 @@ const originalBase64 = event.target.result;
             const shown = withRegion.filter((r) => (!fltSido || r.sido === fltSido) && (!fltSgg || r.sgg === fltSgg))
               .sort((x, y) => (x.sido + x.sgg).localeCompare(y.sido + y.sgg, "ko") || String(x.t.complex_name).localeCompare(String(y.t.complex_name), "ko"));
             box.querySelector("#raFltCnt").textContent = (fltSido || fltSgg) ? `${shown.length}개 표시` : "";
+            const fd = box.querySelector("#raFltDel");
+            fltShownIds = fltSgg ? shown.map((r) => String(r.t.complex_id)) : [];
+            fd.hidden = !fltShownIds.length;
+            fd.disabled = false;
+            fd.textContent = `🗑 ${fltSgg} ${fltShownIds.length}개 일괄 삭제`;
             list.innerHTML = rows.length ? "" : '<div style="color:#6b7684;padding:8px 2px;">등록된 단지가 없습니다. [🔔 알림 단지 선택]으로 지도에서 고르세요.</div>';
             for (const r of shown) {
               const t = r.t;
@@ -35324,6 +35332,20 @@ const originalBase64 = event.target.result;
           }
           box.querySelector("#raFltSido").addEventListener("change", (e) => { fltSido = e.target.value; fltSgg = ""; render(); });
           box.querySelector("#raFltSgg").addEventListener("change", (e) => { fltSgg = e.target.value; render(); });
+          box.querySelector("#raFltDel").addEventListener("click", async (e) => {
+            const ids = fltShownIds.slice(), sgg = fltSgg;
+            if (!ids.length || !confirm(`${sgg} 단지 ${ids.length}개를 알림 목록에서 모두 지울까요?`)) return;
+            const btn = e.currentTarget; btn.disabled = true;
+            try {
+              const drop = new Set(ids);
+              saveLocal(curTargets().filter((t) => !drop.has(String(t.complex_id))));   // 브라우저 목록에서 먼저(개별 삭제와 같은 순서)
+              if (serverMode()) applyState(await api("/push_targets", { key: KEY, remove: ids }));
+              else applyState(state);
+              fltSgg = "";
+              await render();
+              toast(`${sgg} 단지 ${ids.length}개를 지웠습니다.`);
+            } catch (err) { toast("일괄 삭제 실패: " + err.message, true); btn.disabled = false; }
+          });
           box.addEventListener("click", async (e) => {
             if (e.target.closest(".ra-tg-link")) { linkTelegram(render); return; }
             const ul = e.target.closest(".ra-tg-unlink");
