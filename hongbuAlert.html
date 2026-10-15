@@ -34293,7 +34293,18 @@ const originalBase64 = event.target.result;
         function slimTargets(list) {
           return (list || []).map((t) => ({ complex_id: String(t.complex_id), complex_name: t.complex_name || "", sido: t.sido || "", sigungu: t.sigungu || "", added_at: t.added_at || "" }));
         }
-        function saveLocal(list, savedAt) { ls.set(LOCAL_TARGETS, JSON.stringify({ savedAt: savedAt || Date.now(), targets: slimTargets(list) })); }
+        // 관심 단지가 바뀌면 🔔 를 다시 계산한다(2026-10-15 사용자: "관심 단지가 바뀌면 알림을 새로고침") — 미연결 🔔 는
+        //   브라우저 목록으로 /push_feed 를 그때그때 계산하므로 목록이 바뀌면 숫자도 바뀐다. 연결자 🔔 는 보낸 알림(/push_latest)이라 목록과 무관.
+        //   선택완료·삭제·드라이브 복원이 잇달아 저장할 수 있어 1초 모아서 한 번.
+        let bellRefreshTimer = 0;
+        function saveLocal(list, savedAt) {
+          const before = idsSig(loadLocal().targets);
+          ls.set(LOCAL_TARGETS, JSON.stringify({ savedAt: savedAt || Date.now(), targets: slimTargets(list) }));
+          if (before !== idsSig(list) && !serverMode()) {
+            clearTimeout(bellRefreshTimer);
+            bellRefreshTimer = setTimeout(() => { checkHeadBell(); }, 1000);
+          }
+        }
         function idsSig(list) { return (list || []).map((t) => String(t.complex_id)).sort().join(","); }
         function serverMode() { return tgCount() > 0; }
         function curTargets() { return serverMode() ? (state.targets || []) : loadLocal().targets; }
@@ -35017,7 +35028,7 @@ const originalBase64 = event.target.result;
           if (serverMode() || !driveOk()) return;
           try {
             const d = await driveFileJson(DRIVE_TARGETS_FILE);
-            if (!d || !Array.isArray(d.targets) || !d.targets.length) return;
+            if (!d || !Array.isArray(d.targets)) return;   // 빈 목록도 받는다(다른 기기에서 비운 것 — 2026-10-15)
             const loc = loadLocal();
             if ((Number(d.savedAt) || 0) > (Number(loc.savedAt) || 0) && idsSig(d.targets) !== idsSig(loc.targets)) {
               saveLocal(d.targets, Number(d.savedAt));
@@ -35032,7 +35043,13 @@ const originalBase64 = event.target.result;
         async function driveBackupTargets() {
           if (!driveSynced || !window.__gdriveReady || !window.__gdriveRootFolderId) return;   // 로그인·키 동기화 뒤 driveKeySync 가 다시 부른다
           const targets = curTargets();
-          if (!targets.length) return;
+          // 빈 목록: 텔레그램 연결자(서버가 원본)는 덮어쓰지 않는다(위 주석 — 서버가 날아가 빈 목록이 와도 백업은 지키게).
+          //   미연결(브라우저가 원본)은 사용자가 비운 것이므로 빈 목록도 기록한다(2026-10-15 사용자: "전부 지우고 새로고침하면 드라이브에서 다시 채워진다").
+          //   단 브라우저에 저장 기록이 없는(savedAt 0, 처음 쓰는) 상태는 쓰지 않는다.
+          if (!targets.length && (serverMode() || !(Number(loadLocal().savedAt) > 0))) {
+            setBackupInfo("단지 백업: 저장할 단지 없음 (드라이브의 예전 백업은 그대로)");
+            return;
+          }
           const sig = targetsSig();
           if (ls.get(SIG_KEY) === sig) return;
           if (backupBusy) { scheduleBackup(); return; }
@@ -35074,6 +35091,10 @@ const originalBase64 = event.target.result;
               } catch (e) { toast("드라이브 백업 삭제 실패: " + (e && e.message || e), true); }
             }
             ["realAlertConsent", SIG_KEY, READ_KEY, HIST_KEY, LOCAL_TARGETS, PUSH_PENDING, LAST_KEY].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
+            // 브라우저 목록을 '지금 비웠음'으로 남긴다 — 목록 기록을 아예 지우면 새로고침 때 드라이브의 옛 백업이 더 새것으로 보여 되살아났다(2026-10-15).
+            // 드라이브 백업을 남기기로 했으면 빈 목록으로 덮어쓰지 않게 서명을 맞춘다(복원은 관리창 [드라이브에서 복원]).
+            saveLocal([]);
+            if (!delDrive) ls.set(SIG_KEY, KEY + ":");
             latestAlert = null; renderHeadBell();
             await fetchState();
             toast(`서버에서 알림 데이터를 모두 지웠습니다(단지 ${(d.deleted && d.deleted["푸시_단지"]) || 0}개)${delDrive ? " · 드라이브 백업도 삭제" : ""}.`, false, 8000);
@@ -35227,7 +35248,10 @@ const originalBase64 = event.target.result;
             box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 대기…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
             box.querySelector("#raMngConsent").textContent = hasConsent() ? "· 동의함" : "· 동의 전";
             box.querySelector("#raMngBackup").textContent = backupInfo ||
-              (!window.__gdriveReady ? "단지 백업: 드라이브 미로그인" : ls.get(SIG_KEY) === targetsSig() ? `단지 백업: 드라이브와 같음 (${curTargets().length}개)` : "단지 백업: 곧 저장…");
+              (!window.__gdriveReady ? "단지 백업: 드라이브 미로그인" :
+                ls.get(SIG_KEY) === targetsSig() ? `단지 백업: 드라이브와 같음 (${curTargets().length}개)` :
+                !curTargets().length && (serverMode() || !(Number(loadLocal().savedAt) > 0)) ? "단지 백업: 저장할 단지 없음 (드라이브의 예전 백업은 그대로)" :
+                !driveSynced ? "단지 백업: 드라이브 키 확인 뒤 저장" : "단지 백업: 곧 저장…");
             const rows = curTargets();
             box.querySelector("#raMngCnt").textContent = `${rows.length}개`;
             await loadEmd();   // 동명용(처음 한 번)
