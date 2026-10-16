@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>출근 목적지</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #fff; font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; color: #111; }
+  .slide { width: 1200px; height: 675px; padding: 18px 26px 0; position: relative; background: #fff; overflow: hidden; }
+  .title { font-size: 30px; font-weight: 900; letter-spacing: -0.5px; border-left: 5px solid #111; padding-left: 10px; line-height: 1.15; }
+  .band { margin-top: 12px; background: #111; color: #fff; text-align: center; font-size: 27px; font-weight: 700; padding: 9px 0; }
+  .band b { color: #ffc72c; }
+  .body { display: flex; gap: 20px; margin-top: 10px; }
+  .left { width: 615px; }
+  .sub { font-size: 13.5px; color: #444; margin-bottom: 8px; }
+  .row { display: flex; align-items: center; height: 51px; }
+  .lab { width: 220px; text-align: right; padding-right: 12px; font-size: 17px; font-weight: 700; line-height: 1.2; }
+  .lab small { display: block; font-size: 12px; font-weight: 500; color: #555; }
+  .bar { height: 34px; }
+  .val { font-size: 16px; font-weight: 700; padding-left: 9px; white-space: nowrap; }
+  .val.hot { color: #c00000; font-size: 18px; }
+  .right { flex: 1; display: flex; flex-direction: column; gap: 9px; }
+  .rh { background: #1f3864; color: #fff; text-align: center; font-size: 21px; font-weight: 700; padding: 6px 0; }
+  .box { border: 1.5px solid #1f3864; padding: 8px 14px; }
+  .box h3 { font-size: 20px; font-weight: 900; color: #1f3864; margin-bottom: 3px; }
+  .box p { font-size: 14.5px; font-weight: 500; line-height: 1.5; }
+  .box .arrow { color: #c55a11; font-size: 13.5px; }
+  .conc { background: #3a5a1c; color: #fff; text-align: center; padding: 10px 0; font-size: 18px; font-weight: 700; line-height: 1.5; }
+  .conc b { color: #ffd966; }
+  .foot { position: absolute; left: 26px; bottom: 10px; font-size: 12px; line-height: 1.45; color: #555; }
+</style>
+<script src="commute_data.js"></script>
+</head>
+<body>
+<div class="slide" id="slide"></div>
+<script>
+(function () {
+  var D = window.OD;
+  var code = (location.search.match(/[?&]c=(\d{5})/) || [])[1] || '11620';
+  var od = D.od[code];
+  var tg = D.targets[code];
+
+  // 시군구 표시 이름: '수원시 장안구' → 출발지는 그대로, 경기 도착지는 시 단위
+  function sggName(c) { var s = D.sgg[c]; return s ? s[1] : c; }
+  function siName(c) {
+    if (/^4159/.test(c)) return '화성시';
+    var n = sggName(c); var m = n.match(/^(\S+?시)\s*\S+구$/); return m ? m[1] : n;  // '성남시수정구'·'성남시 수정구' → 성남시
+  }
+  var originName = tg[1];
+  var originShort = originName.replace(/^(\S+?시)\s+/, function (a, b) { return b.replace(/시$/, '') + ' '; }); // 성남시 분당구 → 성남 분당구
+
+  // 업무지구 묶음 (출발지 자신은 이름에서 뺀다)
+  var GROUPS = [
+    { key: 'cbd', name: '도심', mem: [['11110', '종로'], ['11140', '중구']], color: '#ed7d31' },
+    { key: 'gn', name: '강남권', mem: [['11680', '강남'], ['11650', '서초'], ['11710', '송파']], color: '#ff5a5f' },
+    { key: 'ydp', name: '영등포', mem: [['11560', '여의도 등']], color: '#ffc000', fixed: '영등포구 (여의도 등)' },
+    { key: 'gv', name: 'G밸리', mem: [['11530', '구로'], ['11545', '금천']], color: '#4472c4' },
+    { key: 'pg', name: '성남 분당', mem: [['41135', '판교']], color: '#70ad47', fixed: '성남 분당 (판교)' }
+  ];
+  var g2 = {};
+  GROUPS.forEach(function (g) { g.mem.forEach(function (m) { g2[m[0]] = g; }); });
+
+  // 출발지가 업무지구 묶음에 속하면(강남→강남권 등) 관내 출근을 빼지 않고 그 묶음 막대에 합산한다(사용자 지시 2026-10-16)
+  // ?in=1 관내 포함(업무지구 밖이면 '○○구 (관내)' 막대) / ?in=0 관내 불포함(업무지구 출발지도 제외) / 없으면 위 자동 규칙
+  var inP = (location.search.match(/[?&]in=([01])/) || [])[1];
+  var keepIn = inP ? inP === '1' : !!g2[code], own = 0;
+  var units = {}, total = 0, inner = 0, sido = { '11': 0, '41': 0, '28': 0, etc: 0 }, dongs = [];
+  Object.keys(od.dest).forEach(function (d8) {
+    var v = od.dest[d8], s5 = d8.slice(0, 5);
+    if (s5 === code) { own += v; if (!keepIn) { inner += v; return; } }
+    total += v;
+    var p = d8.slice(0, 2);
+    sido[sido.hasOwnProperty(p) ? p : 'etc'] += v;
+    if (p === '11' && D.dong[d8]) dongs.push([d8, v]);
+    var key, label, color = '#bfbfbf';
+    if (s5 === code && !g2[s5]) { key = 'own'; label = originShort + ' (관내)'; color = '#7030a0'; }
+    else if (g2[s5]) { key = g2[s5].key; }
+    else if (p === '11') { key = s5; label = sggName(s5); }
+    else if (p === '41') { key = 'si:' + siName(s5); label = siName(s5); if (label === siName(code) ) label += ' (다른 구)'; }
+    else if (p === '28') { key = 'ic'; label = '인천'; }
+    else { key = 'etc'; label = '기타'; }
+    if (!units[key]) units[key] = { key: key, label: label, color: color, v: 0 };
+    units[key].v += v;
+  });
+  GROUPS.forEach(function (g) {
+    if (!units[g.key]) return;
+    var names = g.mem.filter(function (m) { return keepIn || m[0] !== code; }).map(function (m) { return m[1]; });
+    units[g.key].label = g.fixed || (g.name + ' (' + names.join('·') + ')');
+    units[g.key].color = g.color;
+    units[g.key].group = true;
+  });
+  var list = Object.keys(units).filter(function (k) { return k !== 'etc'; }).map(function (k) { return units[k]; })
+    .sort(function (a, b) { return b.v - a.v; });
+  var TOP = 8, shown = list.slice(0, TOP), rest = list.slice(TOP).reduce(function (s, u) { return s + u.v; }, 0) + (units.etc ? units.etc.v : 0);
+  function pct(v) { return v / total * 100; }
+  var rows = shown.map(function (u) { return { label: u.label, p: pct(u.v), color: u.color, key: u.key }; });
+  rows.push({ label: '기타', p: pct(rest), color: '#d9d9d9', etc: true });
+  // 반올림 합 100 맞추기는 하지 않는다 — 소수 1자리 표시
+
+  function base(s) { return s.replace(/\s*\(.*$/, ''); }
+  function batchim(s) { var c = base(s).slice(-1).charCodeAt(0); return c >= 0xac00 && c <= 0xd7a3 && (c - 0xac00) % 28 !== 0; }
+  function ro(s) { var c = s.slice(-1).charCodeAt(0), j = (c - 0xac00) % 28; return s + (batchim(s) && j !== 8 ? '으로' : '로'); }
+  function josa(s, a, b) { return s + (batchim(s) ? a : b); }
+  var t1 = rows[0], t2 = rows[1], head;
+  if (t1.p - t2.p < 2) head = josa(base(t1.label), '과', '와') + ' ' + josa(base(t2.label), '이', '가') + ' 비슷 (각 약 ' + Math.round((t1.p + t2.p) / 2) + '%)';
+  else if (t1.p >= 2 * t2.p) head = josa(base(t1.label), '이', '가') + ' 압도적 (' + t1.p.toFixed(1) + '%)';
+  else head = base(t1.label) + ' 1위 (' + t1.p.toFixed(1) + '%) · ' + base(t2.label) + ' 2위 (' + t2.p.toFixed(1) + '%)';
+
+  dongs.sort(function (a, b) { return b[1] - a[1]; });
+  var topDong = dongs[0];
+  var all = total + inner;
+  var hour = od.hour, slots = Object.keys(hour).filter(function (k) { return k.length === 4; });
+  var peak = slots.sort(function (a, b) { return hour[b] - hour[a]; })[0];
+  var hsum = 0, h79 = 0;
+  Object.keys(hour).forEach(function (k) { hsum += hour[k]; if (k.length === 4 && k < '1000') h79 += hour[k]; });
+  function hm(k, add) { var m = +k.slice(0, 2) * 60 + +k.slice(2) + (add || 0); return ('0' + Math.floor(m / 60)).slice(-2) + ':' + ('0' + m % 60).slice(-2); }
+  var top3 = rows.slice(0, 3).reduce(function (s, r) { return s + r.p; }, 0);
+  var oneIn = Math.max(2, Math.round(100 / t1.p));
+
+  var MAXW = 270, MAX = rows.reduce(function (m, r) { return Math.max(m, r.p); }, 0), bars = '';
+  rows.forEach(function (r, i) {
+    bars += '<div class="row"><div class="lab">' + r.label + '</div>' +
+      '<div class="bar" style="width:' + (r.p / MAX * MAXW).toFixed(1) + 'px;background:' + r.color + '"></div>' +
+      '<div class="val' + (i === 0 ? ' hot' : '') + '">' + r.p.toFixed(1) + '%</div></div>';
+  });
+  var days = D.days.map(function (d) { return +d.slice(4, 6) + '.' + +d.slice(6, 8); });
+  var inName = g2[code] ? base(g2[code].fixed || g2[code].name) : originShort + ' (관내)';
+  var selfGroup = t1.key === 'own' || (g2[code] && g2[code].key === t1.key);   // 출발지가 1위 업무지구에 속함(강남→강남권 등)
+  var conc = selfGroup
+    ? t1.key === 'own' ? originShort + ' = <b>직주근접형</b><br>→ 출근의 ' + t1.p.toFixed(0) + '%가 관내, 관외 1위는 ' + base(t2.label) + ' ' + t2.p.toFixed(0) + '%'
+    : originShort + ' = <b>직주근접형</b><br>→ 출근의 ' + t1.p.toFixed(0) + '%가 ' + base(t1.label) + ' 안 (관내 ' + (own / all * 100).toFixed(0) + '% 포함)'
+    : t1.p >= 25
+    ? originShort + ' = <b>' + base(t1.label) + ' 출근 배후지</b><br>→ ' + base(t1.label) + ' 접근성이 입지 핵심'
+    : originShort + ' = <b>출근지 분산형</b><br>→ 상위 3곳(' + rows.slice(0, 3).map(function (r) { return base(r.label); }).join('·') + ') 합계 ' + top3.toFixed(0) + '%';
+
+  document.title = originShort + ' 출근 목적지';
+  document.getElementById('slide').innerHTML =
+    '<div class="title">입지분석_교통 : ' + originShort + ' 직장인은 어디로 출근할까?</div>' +
+    '<div class="band">' + originShort + ' 출근 목적지 : <b>' + head + '</b></div>' +
+    '<div class="body"><div class="left"><div class="sub">' + originShort + ' 출발 출근 이동의 도착지 비율 (' + (keepIn ? '관내 출근 포함 — ' + inName + ' 막대' : originShort + ' 안 출근 제외') + ')</div>' + bars + '</div>' +
+    '<div class="right"><div class="rh">해석</div>' +
+      '<div class="box"><h3>① ' + base(t1.label) + ' · ' + base(t2.label) + '</h3>' +
+        '<p>출근자 <b>' + oneIn + '명 중 1명</b>꼴로 ' + ro(base(t1.label)) + '</p>' +
+        '<p class="arrow">→ 상위 3곳 합계 ' + top3.toFixed(1) + '%' +
+        (topDong ? '<br>→ 서울 행정동 1위 : ' + sggName(topDong[0].slice(0, 5)) + ' ' + D.dong[topDong[0]] + ' ' + pct(topDong[1]).toFixed(1) + '%' : '') + '</p></div>' +
+      '<div class="box"><h3>② 일터는 어느 시도?</h3>' +
+        '<p>서울 <b>' + pct(sido['11']).toFixed(1) + '%</b> · 경기 <b>' + pct(sido['41']).toFixed(1) + '%</b> · 인천 ' + pct(sido['28']).toFixed(1) + '% · 그 밖 ' + pct(sido.etc).toFixed(1) + '%</p>' +
+        '<p class="arrow">→ 관내(' + originShort + ' 안) 출근 ' + (own / all * 100).toFixed(1) + (keepIn ? '%는 ' + inName + ' 막대에 포함' : '%는 차트에서 제외') + '</p></div>' +
+      '<div class="box"><h3>③ 출근 시간</h3>' +
+        '<p>출발 피크 <b>' + hm(peak) + '~' + hm(peak, 20) + '</b></p>' +
+        '<p class="arrow">→ 07~10시 출발이 출근의 ' + (h79 / hsum * 100).toFixed(0) + '%</p></div>' +
+      '<div class="conc">' + conc + '</div>' +
+    '</div></div>' +
+    '<div class="foot">※ 출처 : 서울특별시 · KT「수도권 생활이동 (출발-도착지 기준)」, 서울 열린데이터광장 · 공공누리 제1유형 · https://data.seoul.go.kr/dataList/OA-22300/F/1/datasetView.do<br>' +
+      '※ 기준 : 2026년 ' + days.join('·') + ' 평일 ' + days.length + '일 평균, 이동목적 = 출근, ' + originShort +
+      ' 출발 · 하루 약 ' + (all / 10000).toFixed(1) + '만 건' + (keepIn ? ', 관내 ' + (own / all * 100).toFixed(1) + '% 포함' : ' 중 관내 ' + (inner / all * 100).toFixed(1) + '% 제외') + '</div>';
+})();
+</script>
+</body>
+</html>
