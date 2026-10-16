@@ -12933,6 +12933,20 @@ const originalBase64 = event.target.result;
         // 줌 17 미만은 뗀다 — minZoom 을 줘도 16 이하의 빈 타일을 받아 간다(실측 66장)
         if (window.map.getZoom() < __BUS_TILE_ZOOM) { if (__BUS.layer) __BUS.layer.setMap(null); return; }
         if (!__BUS.layer) {
+          // ⚠ 정류장 타일 그림은 손가락을 받지 않게 한다(2026-10-17 "두 손가락 확대가 가끔 안 먹힌다").
+          //   이 타일이 바탕 타일 위에 있어 줌 17+ 에서는 지도 어디를 짚어도 터치 대상이 정류장 타일이 된다.
+          //   두 번째 손가락이 닿을 때 __busHide 가 레이어를 떼면 그 그림이 문서에서 빠지고, 이후 touchmove 가
+          //   지도에 닿지 않아 핀치가 통째로 무시됐다(Edge 터치 흉내 실측: 17→17, 미리 떼면 17→19).
+          //   pointer-events:none 이면 터치는 아래 바탕 타일에 닿고, 바탕 타일은 줌 중에 빠지지 않는다.
+          if (!document.getElementById("__busTileCss")) {
+            const st = document.createElement("style");
+            st.id = "__busTileCss";
+            // 그림만 막으면 그림을 싼 칸(DIV)·레이어 상자(DIV z90)가 대신 터치 대상이 된다(실측) — 상자째 막는다.
+            //   구조: 레이어 상자 > 칸 DIV > IMG(mt=bs). 바탕 타일 상자에는 정류장 그림이 없어 걸리지 않는다.
+            st.textContent = '#map img[src*="mt=bs"], #map div:has(> img[src*="mt=bs"]), '
+              + '#map div:has(> div > img[src*="mt=bs"]){pointer-events:none !important}';
+            document.head.appendChild(st);
+          }
           const ver = await __busTileVer();
           if (!ver) { console.warn("[버스정류장] 타일 판을 못 읽음"); return; }
           const hd = (window.devicePixelRatio || 1) > 1 ? "@2x" : "";
