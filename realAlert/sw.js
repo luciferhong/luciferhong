@@ -3,7 +3,7 @@
 // ⚠ 루트 sw.js(옛 memoBackup3 정리용, 범위 /luciferhong/)와 범위가 다르므로 공존한다. 이 파일을 루트로 옮기면 안 된다.
 // fetch 처리기 없음(캐시 안 함) — 푸시 수신·알림 클릭만.
 // 알림 내용(payload)은 알림 객체 data 에 통째로 담아 두고, 클릭하면 ① 같은 주소의 탭이 열려 있으면 그 탭에 postMessage
-// ② 없으면 `주소#raPush=<JSON>` 으로 새로 연다 → hongbuAlert.html 이 해시를 읽어 패널로 보여 준다(2026-10-11 사용자: "알림을 눌러도 내용을 볼 수 없다").
+// ② 없으면 `주소#raPush=<JSON>` 으로 새로 연다 → 홍부(2026-10-16 부터 hongbu.html)가 해시를 읽어 패널로 보여 준다(2026-10-11 사용자: "알림을 눌러도 내용을 볼 수 없다").
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
