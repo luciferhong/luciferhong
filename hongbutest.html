@@ -34411,7 +34411,7 @@ const originalBase64 = event.target.result;
         const OWNER_KEY = "realAlertKeyOwner";
         window.__realAlertResetDevice = function () {
           ["realAlertKey", "realAlertTargets", "realAlertTargetsSig", "realAlertLast", "realAlertHistory", "realAlertReadTag",
-            "realAlertPushPending", "realAlertConsent", OWNER_KEY].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
+            "realAlertPushPending", "realAlertConsent", "realAlertArea", OWNER_KEY].forEach((k) => { try { localStorage.removeItem(k); } catch (e) {} });
         };
         // 키 = 사용자(기기 간 공유). 구글드라이브 `HongbuMemo/realAlert_key.json` 에 저장해 PC·폰이 같은 키를 쓴다(아래 driveKeySync).
         let KEY = ls.get("realAlertKey");
@@ -34469,6 +34469,20 @@ const originalBase64 = event.target.result;
         function idsSig(list) { return (list || []).map((t) => String(t.complex_id)).sort().join(","); }
         function serverMode() { return tgCount() > 0; }
         function curTargets() { return serverMode() ? (state.targets || []) : loadLocal().targets; }
+        // 전용면적 범위(2026-10-16 사용자가 고름, 기본 55~85). 텔레그램 연결 = 서버(키 공통), 미연결 = 이 브라우저(localStorage).
+        const AREA_LS = "realAlertArea";
+        function curArea() {
+          if (serverMode() && state.settings && state.settings.area_min !== undefined) return [Number(state.settings.area_min), Number(state.settings.area_max)];
+          try { const a = JSON.parse(ls.get(AREA_LS) || "null"); if (Array.isArray(a) && a.length === 2) return [Number(a[0]), Number(a[1])]; } catch (e) {}
+          return [55, 85];
+        }
+        function areaLabel(a) {
+          const [lo, hi] = a;
+          if (lo <= 0 && hi >= 999) return "전체 면적";
+          if (lo <= 0) return `전용 ${hi}㎡ 이하`;
+          if (hi >= 999) return `전용 ${lo}㎡ 이상`;
+          return `전용 ${lo}~${hi}㎡`;
+        }
         async function pushLocalToServer() {
           const list = loadLocal().targets;
           if (!list.length || !serverMode()) return;
@@ -34937,7 +34951,7 @@ const originalBase64 = event.target.result;
           foot.style.cssText = "margin-top:10px;color:#6b7684;font-size:11.5px;";
           // 텔레그램 끝의 ※ 설명 줄과 같은 내용(2026-10-14)
           foot.textContent = (trades.length
-            ? "※ 전용 55~85㎡ · 26.7y = 입주 2026년 7월 · 300^ = 300세대 · 호가 = 시세 최저가 · 직전 = 같은 평형·같은 층대(저층 1~3층 / 그 위) 바로 앞 실거래 · " +
+            ? "※ " + areaLabel(curArea()) + " · 26.7y = 입주 2026년 7월 · 300^ = 300세대 · 호가 = 시세 최저가 · 직전 = 같은 평형·같은 층대(저층 1~3층 / 그 위) 바로 앞 실거래 · " +
               "🔥 = 같은 평형 역대(2006~) 최고가 경신 · 🔺🔽 = 오른·내린 금액 · 날짜는 계약일\n단지명·거래 줄을 누르면 지도에서 그 단지를 엽니다. "
             : "") + "최근 알림은 [🔔 알림 단지 관리] → [최근 알림].";
           foot.style.whiteSpace = "pre-wrap";
@@ -35098,7 +35112,7 @@ const originalBase64 = event.target.result;
             const list = curTargets();
             if (list.length) {
               try {
-                const f = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)) });
+                const f = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)), area_min: curArea()[0], area_max: curArea()[1] });
                 if (f && !f.error && f.tag) { f.read = !!(d && d.tag === f.tag && d.read); d = f; }
               } catch (e) {}   // 계산 실패면 정기 알림 사본 그대로
             }
@@ -35108,7 +35122,7 @@ const originalBase64 = event.target.result;
             // 로그인한 사람에 한해. ⚠ 미로그인으로 보여도 받아 둔 알림은 지우지 않는다 — 드라이브 토큰을 새로 받는 몇 초 동안
             //   __gdriveReady 가 잠깐 꺼져, 그때 돈 확인이 오늘 알림을 비웠다(10/13 사용자: "오늘 120건인데 새 실거래가 없다고 함")
             if (!driveLikely()) { renderHeadBell(); return; }
-            try { d = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)) }); } catch (e) { return; }
+            try { d = await api("/push_feed", { cids: list.map((t) => String(t.complex_id)), area_min: curArea()[0], area_max: curArea()[1] }); } catch (e) { return; }
             // 읽음 파일은 숫자를 띄운 뒤 뒤에서 확인(아래 refreshReadFromDrive) — 드라이브 조회를 기다리느라 🔔 가 늦지 않게
           }
           if (!d || d.error) { renderHeadBell(); return; }   // 실패 응답이면 받아 둔 알림 그대로
@@ -35137,7 +35151,7 @@ const originalBase64 = event.target.result;
             "border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.18);z-index:1000003;padding:16px 16px 14px;font-size:13.5px;line-height:1.65;color:#1e293b;";
           el.innerHTML =
             '<div style="font-weight:700;font-size:15px;margin-bottom:8px;">🔔 실거래 알림 시작하기</div>' +
-            '<div>관심 단지를 고르면, 그 단지에 <b>새로 신고된 아파트 매매 실거래</b>(전용 55~85㎡)를 매일 여기와 텔레그램으로 알려 드립니다.</div>' +
+            '<div>관심 단지를 고르면, 그 단지에 <b>새로 신고된 아파트 매매 실거래</b>(기본 전용 55~85㎡ — 관리창에서 바꿀 수 있어요)를 매일 여기와 텔레그램으로 알려 드립니다.</div>' +
             '<ol style="margin:8px 0 10px 18px;padding:0;">' +
             '<li>아래 <b>[알림 단지 고르기]</b>를 누르고 지도 마커 왼쪽 체크박스로 단지 선택</li>' +
             '<li><b>[✓ 선택완료]</b></li>' +
@@ -35415,6 +35429,11 @@ const originalBase64 = event.target.result;
           box.style.cssText = "background:#fff;color:#23272e;border-radius:10px;padding:16px 18px;width:560px;max-width:94vw;max-height:84vh;overflow:auto;" +
             "font-size:14px;box-shadow:0 6px 30px rgba(0,0,0,.3);";
           const sb = "padding:5px 10px;border-radius:6px;border:1px solid #dde2e8;background:#fff;cursor:pointer;font-size:12.5px;margin:0;";
+          // 전용면적 선택지(2026-10-16) — 0 = 아래 제한 없음, 999 = 위 제한 없음. 전용 정수 기준(84.97㎡ = 84)
+          const AREA_MIN_OPTS = [[0, "제한 없음"], [40, "40㎡"], [50, "50㎡"], [55, "55㎡"], [59, "59㎡"], [60, "60㎡"], [70, "70㎡"], [84, "84㎡"], [85, "85㎡"], [100, "100㎡"], [135, "135㎡"]]
+            .map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+          const AREA_MAX_OPTS = [[49, "49㎡"], [59, "59㎡"], [60, "60㎡"], [65, "65㎡"], [74, "74㎡"], [84, "84㎡"], [85, "85㎡"], [99, "99㎡"], [114, "114㎡"], [135, "135㎡"], [999, "제한 없음"]]
+            .map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
           const timeOpts = [];
           // 06:00~23:50 — 국토부 05시 수집 뒤(2026-10-15)
           for (let h = 6; h < 24; h++) for (let m = 0; m < 60; m += 10) { const v = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`; timeOpts.push(`<option value="${v}">${v}</option>`); }
@@ -35428,6 +35447,12 @@ const originalBase64 = event.target.result;
             // 알림 시각(10분 단위, 키 공통 = 모든 기기) + 기기 수 + 드라이브 공유 상태
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;padding:6px 8px;background:#f6f8fa;border-radius:8px;margin-bottom:8px;">' +
             // 알림 시각 묶음은 텔레그램 연결 때만 보인다(render 가 raMngTimeRow 를 켜고 끈다 — 드라이브 상태는 늘 보임)
+            // 전용면적 범위(2026-10-16) — 텔레그램 연결과 무관하게 늘 보임(🔔 에도 쓰임)
+            '<span style="display:flex;align-items:center;gap:6px;"><span>전용면적</span>' +
+            `<select id="raMngAreaMin" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${AREA_MIN_OPTS}</select>` +
+            '<span>~</span>' +
+            `<select id="raMngAreaMax" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${AREA_MAX_OPTS}</select>` +
+            `<button id="raMngAreaSave" style="${sb}">저장</button></span>` +
             '<span id="raMngTimeRow" style="display:flex;align-items:center;gap:8px;">' +
             `<span>알림 시각</span><select id="raMngTime" style="font-size:12.5px;padding:3px 6px;border-radius:6px;border:1px solid #dde2e8;">${timeOpts.join("")}</select>` +
             `<button id="raMngTimeSave" style="${sb}">저장</button></span>` +
@@ -35451,7 +35476,7 @@ const originalBase64 = event.target.result;
             '<div style="display:grid;grid-template-columns:minmax(64px,auto) 1fr 72px 92px 48px;gap:6px;padding:4px;color:#6b7684;font-size:12px;border-bottom:1px solid #dde2e8;">' +
             '<span>시군구</span><span>단지명</span><span>단지번호</span><span>등록</span><span></span></div>' +
             '<div id="raMngList"></div>' +
-            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 새로 신고된 <b>매매</b> 실거래(전용 55~85㎡)를 텔레그램을 연결했으면 설정한 시각에 텔레그램으로 보내고, 홍부에서는 헤더 🔔(단풍 왼쪽, 구글드라이브 로그인 때만)로 보여 줍니다(계약→신고 최대 30일, 국토부 데이터는 05:00쯤 갱신). ` +
+            `<div style="color:#6b7684;font-size:11.5px;margin-top:8px;">※ 키 ${KEY.slice(0, 8)}… · 서버 ${SERVER.replace(/^https?:\/\//, "")} · 새로 신고된 <b>매매</b> 실거래(${areaLabel(curArea())} — 위 전용면적에서 바꿈)를 텔레그램을 연결했으면 설정한 시각에 텔레그램으로 보내고, 홍부에서는 헤더 🔔(단풍 왼쪽, 구글드라이브 로그인 때만)로 보여 줍니다(계약→신고 최대 30일, 국토부 데이터는 05:00쯤 갱신). ` +
             `<b>단지 목록은 텔레그램을 연결했을 때만 서버에 저장</b>하고, 그 전에는 이 브라우저와 내 구글드라이브에만 둡니다. ` +
             // 휴대폰 페이지 링크는 #key= (해시는 서버·접속 기록에 안 남는다 — 2026-10-13 개인정보. 링크를 남에게 보내면 키가 넘어가니 주의)
             `구글드라이브에 로그인한 기기는 같은 키를 받아 단지 목록을 공유합니다. 휴대폰 전용 페이지: <a href="${PAGE_URL}#key=${encodeURIComponent(KEY)}" target="_blank" style="color:#1a63c9">알림 페이지</a>(링크에 내 키가 들어 있으니 남에게 보내지 마세요).</div>`;
@@ -35462,6 +35487,18 @@ const originalBase64 = event.target.result;
           box.querySelector("#raMngHist").addEventListener("click", () => openHistory(ov));
           box.querySelector("#raMngRestore").addEventListener("click", async (e) => { e.target.disabled = true; await driveRestoreTargets(); e.target.disabled = false; render(); });
           box.querySelector("#raMngDeleteAll").addEventListener("click", async (e) => { e.target.disabled = true; await deleteAllData(); e.target.disabled = false; render(); });
+          box.querySelector("#raMngAreaSave").addEventListener("click", async (e) => {
+            const lo = Number(box.querySelector("#raMngAreaMin").value), hi = Number(box.querySelector("#raMngAreaMax").value);
+            if (lo > hi) { toast("최소 면적이 최대 면적보다 큽니다.", true); return; }
+            e.target.disabled = true;
+            try {
+              ls.set(AREA_LS, JSON.stringify([lo, hi]));   // 이 브라우저(미연결용·연결이 끊겨도 유지)
+              if (serverMode()) applyState(await api("/push_prefs", { key: KEY, area_min: lo, area_max: hi, endpoint: myEndpoint }));
+              toast(`알림 면적을 ${areaLabel([lo, hi])}(으)로 저장했습니다.`);
+              checkHeadBell();   // 🔔 다시 계산
+            } catch (err) { toast("저장 실패: " + err.message, true); }
+            finally { e.target.disabled = false; }
+          });
           box.querySelector("#raMngTimeSave").addEventListener("click", async (e) => {
             e.target.disabled = true;
             try {
@@ -35490,6 +35527,7 @@ const originalBase64 = event.target.result;
                 '<span style="color:#6b7684">지금은 이 브라우저·내 드라이브에만 저장돼 서버는 모릅니다. 텔레그램으로 받으려면 연결하세요(그때 서버에 저장).</span>';
             const sel = box.querySelector("#raMngTime");
             sel.value = (state.settings && state.settings.alert_time) || "08:10";
+            { const a = curArea(); box.querySelector("#raMngAreaMin").value = String(a[0]); box.querySelector("#raMngAreaMax").value = String(a[1]); }
             box.querySelector("#raMngDrive").textContent = driveStatus || (window.__gdriveReady ? "드라이브 키 확인 대기…" : "드라이브 미로그인 — 로그인하면 기기 간 공유");
             box.querySelector("#raMngConsent").textContent = hasConsent() ? "· 동의함" : "· 동의 전";
             box.querySelector("#raMngBackup").textContent = backupInfo ||
