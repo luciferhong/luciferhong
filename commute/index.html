@@ -6,35 +6,53 @@
 <title>출근 목적지 보기</title>
 <style>
   * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
   body { margin: 0; background: #e9ecef; font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; }
-  .bar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+  .bar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
          padding: 10px 16px; background: #1f3864; color: #fff; font-size: 15px; }
-  .bar select { font-size: 15px; padding: 4px 6px; }
-  .bar label { cursor: pointer; }
+  .bar select { font-size: 15px; padding: 4px 6px; min-width: 0; }
+  .bar label { cursor: pointer; white-space: nowrap; }
   .bar button { font-size: 14px; padding: 4px 10px; cursor: pointer; }
-  .nav { display: flex; gap: 4px; }
+  .grp { display: flex; align-items: center; gap: 8px; }
+  .nav { display: flex; gap: 4px; min-width: 0; }
   .wrap { padding: 16px; }
-  .frame { width: 1200px; height: 675px; transform-origin: 0 0; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.15); }
-  .src { padding: 0 16px 20px; font-size: 13px; color: #444; }
-  .src a { color: #1f3864; }
+  /* PC: 1200x675 슬라이드를 화면 폭에 맞춰 축소 (축소된 크기만큼만 자리를 차지하게 바깥 상자 크기를 맞춘다) */
+  .box { overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,.15); background: #fff; }
+  .frame { width: 1200px; height: 675px; transform-origin: 0 0; }
   .frame iframe { width: 1200px; height: 675px; border: 0; display: block; }
+  /* 모바일: 슬라이드를 화면 폭 그대로(슬라이드가 좁은 화면용 배치로 바뀜), 높이는 슬라이드가 알려준 값 */
+  body.m .wrap { padding: 10px; }
+  body.m .frame { width: 100%; height: auto; transform: none !important; }
+  body.m .frame iframe { width: 100%; }
+  body.m .src { display: none; }   /* 모바일은 슬라이드 아래 출처와 겹쳐 숨김 */
+  .src { padding: 0 16px 20px; font-size: 13px; color: #444; word-break: break-all; }
+  .src a { color: #1f3864; }
+  @media (max-width: 599px) {
+    .bar { padding: 8px 10px; font-size: 14px; }
+    .bar .grp.region { width: 100%; }
+    .bar .grp.region .nav { flex: 1; }
+    .bar .grp.region select { flex: 1; width: 100%; }
+    #open { display: none; }
+    .src { padding: 0 10px 16px; font-size: 12px; }
+  }
 </style>
 <script src="commute_data.js"></script>
 </head>
 <body>
 <div class="bar">
-  <span>지역</span>
-  <span class="nav"><button id="prev" title="이전 지역">◀</button><select id="sel"></select><button id="next" title="다음 지역">▶</button></span>
-  <span>관내 출근</span>
-  <label><input type="radio" name="in" value="1"> 포함</label>
-  <label><input type="radio" name="in" value="0" checked> 불포함</label>
+  <span class="grp region"><span>지역</span>
+    <span class="nav"><button id="prev" title="이전 지역">◀</button><select id="sel"></select><button id="next" title="다음 지역">▶</button></span></span>
+  <span class="grp"><span>관내 출근</span>
+    <label><input type="radio" name="in" value="1"> 포함</label>
+    <label><input type="radio" name="in" value="0" checked> 불포함</label></span>
   <button id="open" title="슬라이드만 새 탭으로 (캡처용)">새 탭으로 열기</button>
 </div>
-<div class="wrap"><div class="frame" id="frame"><iframe id="ifr"></iframe></div></div>
+<div class="wrap"><div class="box" id="box"><div class="frame" id="frame"><iframe id="ifr" title="출근 목적지 차트"></iframe></div></div></div>
 <div class="src">출처 : 서울특별시 · KT「수도권 생활이동 (출발-도착지 기준)」, <a href="https://data.seoul.go.kr/dataList/OA-22300/F/1/datasetView.do" target="_blank" rel="noopener">https://data.seoul.go.kr/dataList/OA-22300/F/1/datasetView.do</a> (서울 열린데이터광장) · 공공누리 제1유형(출처표시) · 출근 목적 이동을 출발 시군구별로 집계·가공</div>
 <script>
 (function () {
   var D = window.OD, sel = document.getElementById('sel'), ifr = document.getElementById('ifr');
+  var box = document.getElementById('box'), frame = document.getElementById('frame');
   var codes = Object.keys(D.targets).sort();
   codes.forEach(function (c) {
     var t = D.targets[c], o = document.createElement('option');
@@ -46,6 +64,8 @@
   if (st.c && D.targets[st.c]) sel.value = st.c; else sel.value = '11620';
   if (st.in) document.querySelector('input[name=in][value="' + st.in + '"]').checked = true;
 
+  var MOBILE_BELOW = 932;   // 이보다 좁으면 iframe 폭 < 900 → slide.html 의 좁은 화면 배치
+  var mobile = null, lastH = 0;
   function inVal() { return document.querySelector('input[name=in]:checked').value; }
   function url() { return 'slide.html?c=' + sel.value + '&in=' + inVal(); }
   function draw() {
@@ -53,10 +73,26 @@
     try { localStorage.setItem('commute_od_viewer', JSON.stringify({ c: sel.value, in: inVal() })); } catch (e) {}
   }
   function fit() {
-    var w = Math.min(1, (window.innerWidth - 32) / 1200), f = document.getElementById('frame');
-    f.style.transform = 'scale(' + w + ')';
-    f.parentNode.style.height = (675 * w + 32) + 'px';
+    var m = window.innerWidth < MOBILE_BELOW;
+    document.body.classList.toggle('m', m);
+    if (m) {
+      box.style.width = ''; box.style.height = '';
+      ifr.style.height = (lastH || 600) + 'px';
+    } else {
+      var w = Math.min(1, (window.innerWidth - 32) / 1200);
+      frame.style.transform = 'scale(' + w + ')';
+      ifr.style.height = '675px';
+      box.style.width = (1200 * w) + 'px'; box.style.height = (675 * w) + 'px';
+    }
+    if (mobile !== null && mobile !== m) draw();   // 배치가 바뀌면(회전 등) 슬라이드를 다시 그림
+    mobile = m;
   }
+  window.addEventListener('message', function (e) {
+    if (e.source === ifr.contentWindow && e.data && e.data.commuteH) {
+      lastH = e.data.commuteH;
+      if (mobile) ifr.style.height = lastH + 'px';
+    }
+  });
   function step(d) { var i = codes.indexOf(sel.value); sel.value = codes[(i + d + codes.length) % codes.length]; draw(); }
   sel.onchange = draw;
   document.querySelectorAll('input[name=in]').forEach(function (r) { r.onchange = draw; });
