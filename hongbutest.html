@@ -34491,8 +34491,21 @@ const originalBase64 = event.target.result;
             ls.set(PUSH_PENDING, "");
           } catch (e) { toast("단지 목록을 서버로 올리지 못했습니다: " + e.message, true); }
         }
+        let areaPushing = false;
         function applyState(d) {
           state = d || state;
+          // 연결됐는데 서버에 면적 범위가 아직 없고 이 브라우저에 고른 범위가 있으면 서버로 올린다(2026-10-16 — 미연결 때 55~59 로 골랐는데
+          //   연결 뒤 서버 기본 55~85 로 지금받기에 84㎡ 가 왔다). 올린 뒤에는 서버 값이 원본.
+          try {
+            const st = state.settings || {};
+            const loc = JSON.parse(ls.get("realAlertArea") || "null");
+            if (serverMode() && st.area_set === false && Array.isArray(loc) && loc.length === 2 && !areaPushing &&
+                (Number(loc[0]) !== Number(st.area_min) || Number(loc[1]) !== Number(st.area_max))) {
+              areaPushing = true;
+              api("/push_prefs", { key: KEY, area_min: Number(loc[0]), area_max: Number(loc[1]), endpoint: myEndpoint })
+                .then((r) => { applyState(r); checkHeadBell(); }).catch(() => {}).finally(() => { areaPushing = false; });
+            }
+          } catch (e) {}
           // 서버가 원본일 때는 이 브라우저에 사본을 둔다(연결을 끊으면 이 사본으로 이어 간다). 빈 목록은 덮지 않는다 — 막 연결해 아직 안 올린 순간일 수 있다
           if (serverMode() && (state.targets || []).length && idsSig(state.targets) !== idsSig(loadLocal().targets)) saveLocal(state.targets);
           // 옛 방식(텔레그램 없이도 서버에 두던 때)의 목록 옮기기 — 미연결인데 브라우저엔 없고 서버에만 있으면 브라우저로 가져온다.
