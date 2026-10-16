@@ -3180,6 +3180,17 @@
 
         const MAX_LINES = 250;
         const store = [];
+        // 진행 기록 — 화면에 안 띄우는 console.log/info/warn·오류를 시각과 함께 최근 600줄(한 줄 300자) 보관, [복사]에 포함(2026-10-16)
+        const trail = [];
+        function trailPush(tag, args) {
+          const t = new Date();
+          const hh = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0") + ":" +
+            String(t.getSeconds()).padStart(2, "0") + "." + String(t.getMilliseconds()).padStart(3, "0");
+          const txt = Array.from(args || []).map((a) => (typeof a === "string" ? a : safeStr(a))).join(" ");
+          trail.push(hh + " " + tag + " " + txt.slice(0, 300));
+          if (trail.length > 600) trail.splice(0, trail.length - 600);
+        }
+        window.__hongbuTrail = trail;   // 콘솔에서 확인용
 
         function ts() {
           const d = new Date();
@@ -3254,8 +3265,12 @@
 
           // 타임아웃·네트워크 끊김은 임장 중(지하주차장·건물 안) 흔한 일 — 기록만 'NET' 으로 남기고 창은 자동으로 열지 않는다
           //   (2026-10-15 사용자: "에러가 발생하니 큰일처럼 인식할 수 있다"). 업로드는 대기열이 알아서 다시 시도한다.
-          if (level === "ERR" && /타임아웃|timeout|AbortError|Failed to fetch|NetworkError|네트워크|ERR_INTERNET|ERR_NETWORK|Load failed|오프라인|offline/i.test(safeStr(msg) + " " + (extra ? safeStr(extra) : ""))) level = "NET";
+          //   ⚠ 판별은 메시지·이유(reason)·message 만 본다 — extra 전체(속성 목록 props 의 NETWORK_ERR·TIMEOUT_ERR 상수 등)를 보면
+          //   DOMException 이 전부 'NET' 으로 잘못 낮춰진다(2026-10-16 시험에서 발견).
+          const __netProbe = safeStr(msg) + " " + (extra && typeof extra === "object" ? String(extra.reason || "") + " " + String(extra.message || "") : (extra ? safeStr(extra) : ""));
+          if (level === "ERR" && /타임아웃|timeout|AbortError|Failed to fetch|NetworkError|네트워크|ERR_INTERNET|ERR_NETWORK|Load failed|오프라인|offline/i.test(__netProbe)) level = "NET";
           const line = { level, time: ts(), msg: safeStr(msg), extra: extra ? safeStr(extra) : "" };
+          try { trailPush(level, [line.msg + (line.extra ? " " + line.extra : "")]); } catch (_) {}
           store.push(line);
           while (store.length > MAX_LINES) store.shift();
           setDot(level === "NET" ? "WARN" : level);
@@ -3293,7 +3308,23 @@
           render();
         });
         btnCopy?.addEventListener("click", async () => {
-          const text = store.map((l) => `[${l.level}] ${l.time} ${l.msg}${l.extra ? "\n" + l.extra : ""}`).join("\n");
+          // 2026-10-16 첫 로그인 오류 추적(사용자: "계정 추가가 힘드니 한 번에 원인을") — 오류 목록 + 직전 진행 기록(trail) + 환경
+          let env = "";
+          try {
+            const ls = (k) => { try { return localStorage.getItem(k); } catch (_) { return "?"; } };
+            env = [
+              "UA: " + navigator.userAgent,
+              "URL: " + location.href + " · " + new Date().toString(),
+              "online=" + navigator.onLine + " standalone=" + !!(navigator.standalone || (window.matchMedia && matchMedia("(display-mode: standalone)").matches)),
+              "drive: ready=" + !!window.__gdriveReady + " token=" + !!window.__gdriveAccessToken + " root=" + !!window.__gdriveRootFolderId +
+                " refresh=" + !!ls("__hongbuDriveRefresh") + " autoLogin=" + ls("__hongbuDriveAutoLogin") + " seeded=" + ls("__hongbuDqSeeded_v4") +
+                " changeToken=" + !!ls("__hongbuDriveChangeToken_v1"),
+              "dq: " + (() => { try { const s = window.__dq && window.__dq.status ? window.__dq.status() : null; return s ? JSON.stringify(s).slice(0, 300) : "-"; } catch (_) { return "?"; } })(),
+            ].join("\n");
+          } catch (_) {}
+          const text = "==== 오류 ====\n" + store.map((l) => `[${l.level}] ${l.time} ${l.msg}${l.extra ? "\n" + l.extra : ""}`).join("\n") +
+            "\n\n==== 환경 ====\n" + env +
+            "\n\n==== 최근 진행 기록 (" + trail.length + "줄) ====\n" + trail.join("\n");
           try {
             await navigator.clipboard.writeText(text);
             showToast("✅ 로그를 클립보드에 복사했어요.");
@@ -3318,6 +3349,9 @@
         window.addEventListener("unhandledrejection", (e) => {
           const r = e.reason;
           const extra = { reason: safeStr(r), stack: r && r.stack ? r.stack : "" };
+          // 이유 객체의 속성 이름 전부(열거 불가 포함) — '{}' 로만 보이는 객체의 정체를 가리기 위해(2026-10-16)
+          try { if (r && typeof r === "object") extra.props = Object.getOwnPropertyNames(r).concat(Object.getOwnPropertyNames(Object.getPrototypeOf(r) || {})).filter((k) => !/^[A-Z0-9_]+$/.test(k)).slice(0, 40).join(","); } catch (_) {}   // 상수(NOT_FOUND_ERR 등) 제외
+          try { trailPush("REJECT", [safeStr(r)]); } catch (_) {}
           log("ERR", "Unhandled Promise Rejection", extra);
           showToast("❌ 처리되지 않은 오류(비동기)");
         });
@@ -3332,9 +3366,14 @@
         };
         const _cw = console.warn.bind(console);
         console.warn = function (...args) {
-          // warn은 화면에 표시하지 않음 (콘솔에만 남김)
+          // warn은 화면에 표시하지 않음 (콘솔에만 남김) — 진행 기록(trail)에는 남겨 [복사]에 포함
+          try { trailPush("W", args); } catch (_) {}
           return _cw(...args);
         };
+        // console.log/info 도 진행 기록에(화면 표시 없음). 첫 로그인처럼 재현이 어려운 오류의 앞뒤 사정을 [복사]로 받기 위함(2026-10-16)
+        const _cl = console.log.bind(console), _ci = console.info.bind(console);
+        console.log = function (...args) { try { trailPush("L", args); } catch (_) {} return _cl(...args); };
+        console.info = function (...args) { try { trailPush("I", args); } catch (_) {} return _ci(...args); };
 
         // Storage quota monitor
         function showStorageWarning(pct) {
