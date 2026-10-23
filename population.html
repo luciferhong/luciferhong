@@ -2683,6 +2683,36 @@
       state.labels = [];
       state.hovered = null;
       state.selected = null;
+      clearTimeout(state.hoverLabelTimer);
+      state.hoverLabelRow = null;
+    }
+
+    // 호버 라벨: 한 번에 한 동만 표시.
+    // 여러 조각(멀티폴리곤)으로 된 동은 조각 사이를 옮길 때 새 조각 mouseover 가 옛 조각 mouseout 보다
+    // 먼저 오기도 해서, 숨김을 잠깐 미뤘다가 그 사이 같은 동에 다시 들어오면 취소한다.
+    function setHoverLabelVisible(row, on) {
+      const m = row?.__labelMarker;
+      if (!m) return;
+      m.__isHovered = on;
+      m.setVisible(on || state.alwaysShowLabels);
+    }
+
+    function showHoverLabel(row) {
+      clearTimeout(state.hoverLabelTimer);
+      if (state.alwaysShowLabels) return;
+      if (state.hoverLabelRow && state.hoverLabelRow !== row) setHoverLabelVisible(state.hoverLabelRow, false);
+      state.hoverLabelRow = row;
+      setHoverLabelVisible(row, true);
+    }
+
+    function scheduleHideHoverLabel(row) {
+      if (state.alwaysShowLabels) return;
+      clearTimeout(state.hoverLabelTimer);
+      state.hoverLabelTimer = setTimeout(() => {
+        if (state.hoverLabelRow !== row) return;
+        setHoverLabelVisible(row, false);
+        state.hoverLabelRow = null;
+      }, 40);
     }
 
     function toMapOffset(latlng) {
@@ -2783,7 +2813,7 @@
       const radius = Math.round(8 * finalScale);
 
       return ""
-        + `<div style="transform:translate(-50%,-50%); padding:${padY}px ${padX}px; border-radius:${radius}px; background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(245,248,255,0.94)); border:1px solid rgba(17,17,17,0.22); box-shadow:0 2px 5px rgba(0,0,0,0.2); text-align:center; line-height:1.22; white-space:nowrap;">`
+        + `<div style="pointer-events:none; transform:translate(-50%,-50%); padding:${padY}px ${padX}px; border-radius:${radius}px; background:linear-gradient(180deg, rgba(255,255,255,0.96), rgba(245,248,255,0.94)); border:1px solid rgba(17,17,17,0.22); box-shadow:0 2px 5px rgba(0,0,0,0.2); text-align:center; line-height:1.22; white-space:nowrap;">`
         + `  <div style="font-size:${titlePx}px; font-weight:700; color:#0f203e;">${escapeHtml(row.name || "-")}</div>`
         + (state.showPopulation ? `  <div style="font-size:${linePx}px; color:#173b72;">인구 ${formatNumber(row.totalPopulation)}</div>` : "")
         + (state.showPph ? `  <div style="font-size:${linePx}px; color:#355885;">세대당 ${pphText}</div>` : "")
@@ -2836,6 +2866,8 @@
         marker.setVisible(state.alwaysShowLabels);
         marker.__isHovered = false;  // 호버 상태 리셋
       }
+      clearTimeout(state.hoverLabelTimer);
+      state.hoverLabelRow = null;
     }
 
     function resetUserLabelScaleToAuto() {
@@ -3144,18 +3176,12 @@
             if (state.hovered && state.hovered !== poly && state.hovered !== state.selected) applyHoverStyle(state.hovered, false);
             state.hovered = poly;
             if (poly !== state.selected) applyHoverStyle(poly, true);
-            if (fakeRow.__labelMarker && !state.alwaysShowLabels && !fakeRow.__labelMarker.__isHovered) {
-              fakeRow.__labelMarker.__isHovered = true;
-              fakeRow.__labelMarker.setVisible(true);
-            }
+            showHoverLabel(fakeRow);
           });
           naver.maps.Event.addListener(poly, "mouseout", () => {
             if (poly !== state.selected) applyHoverStyle(poly, false);
             if (state.hovered === poly) state.hovered = null;
-            if (fakeRow.__labelMarker && !state.alwaysShowLabels && fakeRow.__labelMarker.__isHovered) {
-              fakeRow.__labelMarker.__isHovered = false;
-              fakeRow.__labelMarker.setVisible(false);
-            }
+            scheduleHideHoverLabel(fakeRow);
           });
           naver.maps.Event.addListener(poly, "click", () => {
             if (state.selected && state.selected !== poly) applySelectStyle(state.selected, false);
@@ -3308,20 +3334,14 @@
               state.hovered = poly;
               if (poly !== state.selected) applyHoverStyle(poly, true);
               // 라벨 마커 표시: alwaysShowLabels가 false이고 아직 hover 상태가 아닐 때만
-              if (row.__labelMarker && !state.alwaysShowLabels && !row.__labelMarker.__isHovered) {
-                row.__labelMarker.__isHovered = true;
-                row.__labelMarker.setVisible(true);
-              }
+              showHoverLabel(row);
             });
 
             naver.maps.Event.addListener(poly, "mouseout", () => {
               if (poly !== state.selected) applyHoverStyle(poly, false);
               if (state.hovered === poly) state.hovered = null;
               // 라벨 마커 숨기기: alwaysShowLabels가 false이고 현재 hover 상태일 때만
-              if (row.__labelMarker && !state.alwaysShowLabels && row.__labelMarker.__isHovered) {
-                row.__labelMarker.__isHovered = false;
-                row.__labelMarker.setVisible(false);
-              }
+              scheduleHideHoverLabel(row);
             });
 
             naver.maps.Event.addListener(poly, "click", () => {
