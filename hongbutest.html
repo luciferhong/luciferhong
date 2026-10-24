@@ -30070,12 +30070,12 @@ const originalBase64 = event.target.result;
       //   읽기 실패 사정은 __ljState.why 에 담아 화면에 그대로 적는다.
       // ctxIn 을 주면 그 단지 기준으로 읽는다(배지처럼 **지금 열려 있는 단지가 아닌** 곳에서 부를 때).
       // ⚠ 그때는 __ljState 를 건드리지 않는다 — 보고 있는 화면의 시트 id·사정을 덮어쓰면 안 된다.
-      async function __ljByApt(aptId, force, ctxIn) {
+      async function __ljByApt(aptId, force, ctxIn, swr) {
         const ctx = ctxIn || __ljState.ctx || {};
         const mine = !ctxIn;
         let r;
         try {
-          r = await __ljReadRegion(ctx, force);
+          r = await __ljReadRegion(ctx, force, swr);
         } catch (e) {
           console.warn("[lj] 시트 읽기 실패:", e?.result?.error?.message || e?.message || e);
           if (mine) {
@@ -30684,7 +30684,8 @@ const originalBase64 = event.target.result;
           .then(() => {
             __ljState.savedOnce = true;
             if (mine()) __ljState.sig = sig; // 방금 쓴 내용이 새 기준
-            __ljSheetCache.delete(String(snap.sgg5)); // 다음 목록은 시트에서 새로 읽는다
+            // 다음 목록은 시트에서 새로 읽는다 — 그때까지는 방금 쓴 모습으로 바로 보이게(swr, 2026-10-24)
+            __ljCacheTouch(String(snap.sgg5), mine() ? __ljState.rec : snap);
             // 쓰는 동안 자리가 바뀌었으면(정렬) 열려 있는 입력 화면도 새 자리를 따른다
             if (mine() && snap.ci != null) __ljState.rec.ci = snap.ci;
             if (__ljWritePending && __ljWritePending.snap.id === snap.id && snap.ci != null) __ljWritePending.snap.ci = snap.ci;
@@ -30761,7 +30762,7 @@ const originalBase64 = event.target.result;
                 range: where,
                 resource: {},
               });
-              __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
+              __ljCacheTouch(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec, true);
               console.log("[lj] 빈 새 기록 취소 — 시트에서 비움:", where);
             }
           } catch (e) {
@@ -30771,12 +30772,25 @@ const originalBase64 = event.target.result;
           __ljState.isNew = false;
           __ljState.seed = null;
           __ljState.savedOnce = false;
-          __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
+          __ljCacheTouch(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec, true); // 빈 기록은 목록에 없다
           return;
         }
         __ljFlush();
-        // 목록으로 돌아갈 때는 시트를 다시 보게 한다 — 그 사이 파트너가 고쳤을 수 있다
-        __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
+        // 목록으로 돌아갈 때는 시트를 다시 보게 한다 — 그 사이 파트너가 고쳤을 수 있다.
+        // ⚠ 예전엔 캐시를 **버려서** 목록이 시트를 다 읽을 때까지(폰 1초+) 비어 있었다 (2026-10-24 사용자 신고).
+        //   이제 방금 고친 매물을 캐시에 반영하고 "오래됨" 표시만 한다 → 목록은 바로 그리고 확인은 뒤에서(swr).
+        __ljCacheTouch(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec);
+      }
+      // 캐시 안의 그 매물을 지금 모습으로 바꾸고(없으면 더하고, remove 면 빼고) "오래됨" 으로 표시한다.
+      // 오래된 캐시는 목록·배지가 **바로** 쓰고, 다음 읽기에서 시트로 맞춰진다.
+      function __ljCacheTouch(sgg5, rec, remove) {
+        const c = __ljSheetCache.get(String(sgg5 || ""));
+        if (!c) return;
+        const recs = (c.recs || []).slice();
+        const at = recs.findIndex((x) => x.id === rec?.id);
+        if (remove) { if (at >= 0) recs.splice(at, 1); }
+        else if (rec?.id && rec.ci != null) { if (at >= 0) recs[at] = rec; else recs.push(rec); }
+        __ljSheetCache.set(String(sgg5), { ...c, recs, at: 0 });
       }
 
       // ── 탭 전환 ──
@@ -30962,6 +30976,37 @@ const originalBase64 = event.target.result;
         const btn = document.getElementById("ljTabBtn");
         if (btn) btn.textContent = n ? `🏠 매물임장 ${n}` : "🏠 매물임장";
       }
+      /* 단지별 매물 수를 **기기에 기억**한다 (2026-10-24 사용자: "가장 느린 건 상세 모달이 떴을 때 탭에 숫자가 뜨는 시간").
+         모달이 뜨면 드라이브 연결·시트 찾기·읽기(폰에서 2~4초)를 기다리지 않고 지난번 숫자를 바로 쓰고,
+         읽기가 끝나면 맞춘다. 시트를 읽을 때마다 그 시군구 몫을 통째로 갈아 끼운다(지워진 매물도 반영).
+         모양: { sgg5: { aptId: 건수 } } — 0건 단지는 적지 않는다. */
+      const __LJ_BADGE_KEY = "__ljBadge_v1";
+      function __ljBadgeMemoSet(sgg5, recs) {
+        try {
+          const all = JSON.parse(localStorage.getItem(__LJ_BADGE_KEY) || "{}") || {};
+          const m = {};
+          for (const r of recs || []) { const a = String(r?.aptId || ""); if (a) m[a] = (m[a] || 0) + 1; }
+          all[String(sgg5)] = m;
+          localStorage.setItem(__LJ_BADGE_KEY, JSON.stringify(all));
+        } catch (_) {}
+      }
+      function __ljBadgeMemoGet(sgg5, aptId) {
+        try {
+          const all = JSON.parse(localStorage.getItem(__LJ_BADGE_KEY) || "{}") || {};
+          const m = all[String(sgg5)];
+          return m ? Number(m[String(aptId)] || 0) : null; // null = 이 시군구는 아직 읽은 적이 없다
+        } catch (_) { return null; }
+      }
+      // 매물 목록이 바뀌었나 — 자리·내용까지 본다(뒤에서 다시 읽은 뒤 다시 그릴지 정할 때)
+      function __ljRecsSig(recs) {
+        try { return JSON.stringify((recs || []).map((r) => [r.id, r.ci, __ljColSig(r)])); } catch (_) { return String(Math.random()); }
+      }
+      // 뒤에서 다시 읽었더니 바뀌었다 — 보고 있는 목록과 탭 숫자를 다시 그린다(입력 화면은 건드리지 않는다)
+      function __ljAfterBgRead(sgg5) {
+        const open = window.__hongbuOpenAptId;
+        if (open && __ljAptCtx(open)?.sgg5 === sgg5) __ljUpdateTabBadge(open).catch(() => {});
+        if (__ljState.active && __ljState.view === "list" && __ljState.ctx?.sgg5 === sgg5) __ljRenderList().catch(() => {});
+      }
       // 시트를 읽는 동안 보여 주는 화면. 목록이 그려지면 덮인다.
       function __ljPaintLoading() {
         const panel = __ljPanelEl();
@@ -30992,7 +31037,8 @@ const originalBase64 = event.target.result;
         const panel = __ljPanelEl();
         if (!panel || !ctx) return; // 모달이 다시 그려져 패널이 사라진 뒤 늦게 도착한 호출
         const q = (sel) => panel.querySelector(sel);
-        const rows = await __ljByApt(ctx.aptId, force);
+        // force 가 아니면 들고 있는 값으로 **바로** 그린다 — 뒤에서 다시 읽어 바뀌었으면 다시 그린다(__ljAfterBgRead)
+        const rows = await __ljByApt(ctx.aptId, force, undefined, !force);
         const back = q("#ljBack");
         if (back) back.style.display = "none"; // 목록이 이 탭의 첫 화면 — 되돌아갈 곳이 없다
         const ttl = q("#ljTitle");
@@ -31664,7 +31710,7 @@ const originalBase64 = event.target.result;
             디바운스 없이 바로 쓴다 — 사진은 한 번에 여러 장이 끝난 뒤 한 번만 여기 온다. */
       function __ljShotCommit(rec, reveal) {
         rec.updatedAt = Date.now();
-        __ljSheetCache.delete(String(rec.sgg5 || "")); // 다음 목록에서 사진 수가 맞게
+        __ljCacheTouch(String(rec.sgg5 || ""), rec); // 다음 목록에서 사진 수가 맞게(바로 보이고 확인은 뒤에서)
         __ljSyncShotSheet(rec).catch(() => {}); // 옛 사진 탭이 남아 있으면 치운다(뒤에서)
         __ljFlush();                            // 매물 시트의 '사진' 줄 + '사진 보기' 링크
         if (__ljState.view !== "form") return;
@@ -32235,7 +32281,7 @@ const originalBase64 = event.target.result;
                 range: __ljStripA1(lay, rec.ci, 0, __LJ_SHEET_ROWS.length),
                 resource: {},
               });
-              __ljSheetCache.delete(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""));
+              __ljCacheTouch(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec, true); // 목록에서 바로 빠지게
             } catch (e) {
               console.error("[lj] 시트에서 지우기 실패:", e);
               say("⚠ 시트에서 지우지 못했습니다", "#b3261e");
@@ -32390,6 +32436,12 @@ const originalBase64 = event.target.result;
         if (!btn) return;
         const id = aptId || __ljState.aptId || document.getElementById("apartmentInfo")?.getAttribute("data-id");
         if (!id) return;
+        // 지난번 숫자를 **바로** 쓴다 — 드라이브 연결·시트 읽기를 기다리지 않는다 (2026-10-24). 아래에서 맞춘다.
+        try {
+          const s0 = __ljAptCtx(id)?.sgg5;
+          const memo = s0 ? __ljBadgeMemoGet(s0, id) : null;
+          if (memo != null && String(window.__hongbuOpenAptId || id) === String(id)) __ljSetBadge(memo);
+        } catch (_) {}
         try {
           // ⚠ 이 단지의 ctx 로 읽어야 한다. __ljState.ctx 는 아직 **직전에 보던 단지** 것이라,
           //   그대로 쓰면 엉뚱한 시군구 시트를 읽어 건수가 0 으로 나온다 (2026-09-28 실측).
@@ -32397,7 +32449,7 @@ const originalBase64 = event.target.result;
           if (!ctx.sgg5) return; // 시군구를 모르면 셀 수 없다 — 배지는 그냥 두고 조용히 넘어간다
           // ⚠ 이 읽기가 곧 **선로드**다. 단지를 누르는 순간 시트를 받아 두므로, 탭을 눌렀을 때
           //   대개 캐시로 바로 뜬다. 같은 시군구를 동시에 두 번 읽지 않게 __ljReadRegion 이 묶는다.
-          const n = (await __ljByApt(id, false, ctx)).length;
+          const n = (await __ljByApt(id, false, ctx, true)).length; // swr — 캐시가 있으면 바로, 확인은 뒤에서
           // 그새 다른 단지로 옮겼으면 그 단지의 배지를 덮어쓰면 안 된다.
           // ⚠ 기준은 **지금 모달에 떠 있는 단지**(window.__hongbuOpenAptId)다.
           //   __ljState.aptId 는 '매물임장 탭을 마지막으로 연 단지'라, 탭을 아직 안 눌렀으면
@@ -32722,14 +32774,23 @@ const originalBase64 = event.target.result;
         const c = __ljRegionCache.get(k);
         if (!force && c && Date.now() - c.at < __LJ_REGION_TTL) return c.p;
         const p = (async () => {
+          // ⚠ gapi 요청은 then 만 있는 객체라 .catch 가 없다 — 진짜 Promise 로 감싼다(2026-10-24 실측에서 터짐)
+          const listIn = (folderId) => Promise.resolve(gapi.client.drive.files.list({
+            q: `'${folderId}' in parents and trashed=false`,
+            fields: "files(id,name,mimeType)", spaces: "drive", pageSize: 200,
+          }));
+          // ⚠ 세션 첫 읽기는 maemool 폴더를 **실제로 확인**하느라 왕복 1~2번이 앞에 붙는다(__ljMaemoolFolder).
+          //   기억해 둔 id 로 목록을 **동시에** 받아 두고, 확인 결과가 같을 때만 쓴다 (2026-10-24).
+          //   다르면 버리고 확인된 id 로 다시 받는다 — "쓰는 쪽과 읽는 쪽이 갈라지던" 함정은 그대로 막힌다.
+          let stored = "";
+          if (!__ljMaeOk) { try { stored = localStorage.getItem(__LJ_MAE_KEY) || ""; } catch (_) {} }
+          const listP = stored ? listIn(stored).catch(() => null) : null;
           const mae = await __ljMaemoolFolder();
           if (!mae) return { sid: "", folder: "" };
           let files;
           try {
-            const r = await gapi.client.drive.files.list({
-              q: `'${mae}' in parents and trashed=false`,
-              fields: "files(id,name,mimeType)", spaces: "drive", pageSize: 200,
-            });
+            const pre = listP && mae === stored ? await listP : null;
+            const r = pre || (await listIn(mae));
             files = r.result.files || [];
           } catch (e) {
             __ljMaemoolForget(); // 기억해 둔 maemool 이 사라졌을 수 있다 — 다음엔 다시 찾는다
@@ -33278,21 +33339,63 @@ const originalBase64 = event.target.result;
       // ⚠ 되쓰기가 실패하면 다음에 또 새 매물로 잡힌다 → 되쓴 뒤에만 그 id 를 쓴다.
       // ⚠ 같은 시군구를 동시에 두 번 읽지 않는다. 단지 모달이 열릴 때 배지가 한 번 읽는데,
       //   그 사이 탭을 누르면 예전엔 **같은 시트를 또 읽어** 두 배로 기다렸다 (2026-09-28).
+      // 지난번 읽기에서 **이름 검색으로 확인된** 시트 id — 미리 읽어 보는 데만 쓴다(판정에는 안 쓴다)
+      const __LJ_SPEC_KEY = "__ljSpecSid_v1";
+      function __ljSpecSidGet(sgg5) {
+        try { return (JSON.parse(localStorage.getItem(__LJ_SPEC_KEY) || "{}") || {})[String(sgg5)] || ""; } catch (_) { return ""; }
+      }
+      function __ljSpecSidSet(sgg5, sid) {
+        try {
+          const m = JSON.parse(localStorage.getItem(__LJ_SPEC_KEY) || "{}") || {};
+          if (sid) m[String(sgg5)] = sid; else delete m[String(sgg5)];
+          localStorage.setItem(__LJ_SPEC_KEY, JSON.stringify(m));
+        } catch (_) {}
+      }
       const __ljReading = new Map(); // sgg5 → 진행 중인 읽기 Promise
       function __ljBusy(sgg5) { return __ljReading.has(String(sgg5 || "")); }
-      async function __ljReadRegion(ctx, force) {
+      /* swr = "들고 있는 값으로 먼저 답하고 뒤에서 확인" (2026-10-24 사용자: "목록 가기가 1초, 탭 숫자가 가장 느리다").
+         목록·배지는 캐시가 **오래됐어도** 바로 그 값으로 그리고, 뒤에서 시트를 다시 읽어
+         바뀐 게 있으면 그때 다시 그린다(__ljAfterBgRead). 입력 화면은 이 길을 쓰지 않는다
+         (__ljEdit 가 따로 다시 읽어 칸 단위로 맞춘다). */
+      async function __ljReadRegion(ctx, force, swr) {
         const sgg5 = String(ctx?.sgg5 || "");
         if (!/^\d{5}$/.test(sgg5)) return { sid: "", recs: [], why: "이 단지의 시군구를 알 수 없습니다" };
         const c = __ljSheetCache.get(sgg5);
         if (!force && c && Date.now() - c.at < __LJ_SHEET_TTL) return c;
+        if (!force && swr && c) {
+          if (!__ljReading.has(sgg5)) {
+            const before = __ljRecsSig(c.recs);
+            __ljReadRegion(ctx, true)
+              .then((r) => { if (__ljRecsSig(r?.recs) !== before) __ljAfterBgRead(sgg5); })
+              .catch((e) => console.warn("[lj] 뒤에서 다시 읽기 실패(무시 — 들고 있는 값 그대로):", e?.result?.error?.message || e?.message || e));
+          }
+          return c;
+        }
         if (__ljReading.has(sgg5)) return await __ljReading.get(sgg5); // 이미 읽고 있으면 그걸 기다린다
         const p = __ljAuthed(() => __ljReadRegionRaw(ctx, sgg5)).finally(() => __ljReading.delete(sgg5));
         __ljReading.set(sgg5, p);
         return await p;
       }
+      // 쓰는 중인 저장이 끝날 때까지 기다린다(최대 ms). 읽기가 저장보다 먼저 끝나면 **옛 값**을 읽어
+      // 방금 적은 메모가 목록에서 잠깐 되돌아간다(swr 로 뒤에서 읽게 된 뒤 생긴 틈, 2026-10-24).
+      async function __ljWritesIdle(ms) {
+        const t0 = Date.now();
+        // ⚠ saveTimer 는 보지 않는다 — clearTimeout 뒤에도 번호가 남아 있어 입력 화면에서는 늘 10초를 기다리게 된다
+        while ((__ljWriteBusy || __ljWritePending) && Date.now() - t0 < (ms || 0)) {
+          await new Promise((r) => setTimeout(r, 120));
+        }
+      }
       async function __ljReadRegionRaw(ctx, sgg5) {
+        await __ljWritesIdle(10000);
         if (!(await __ljDriveWait(20000))) return { sid: "", recs: [], why: "구글 드라이브에 연결되지 않았습니다" };
         if (!(await __ljEnsureSheetsApi())) return { sid: "", recs: [], why: "Sheets API 를 불러오지 못했습니다" };
+        /* ⚠ 시트 찾기와 시트 읽기를 **동시에** 보낸다 (2026-10-24 — 탭 숫자가 늦게 뜨던 것).
+           지난번에 확인된 시트 id(__ljSpecSidGet)로 미리 읽어 두고, 드라이브 목록이 **같은 id 를
+           돌려줄 때만** 그 결과를 쓴다. 다르면(지웠다 새로 만든 시트 등) 버리고 찾은 id 로 다시 읽는다.
+           그래서 "id 를 기억해 휴지통 시트를 읽던" 옛 함정(시트 id 를 기억하지 않는다 — 위 문서)은 생기지 않는다:
+           기억한 id 는 **먼저 읽어 보는 데만** 쓰고, 판정은 늘 이름 검색(trashed=false) 결과로 한다. */
+        const specSid = __ljSpecSidGet(sgg5);
+        const specP = specSid ? __ljReadSheetAll(specSid).catch(() => undefined) : null;
         // 시트와 사진 폴더를 **한 번의 조회**로 같이 구한다 (둘 다 maemool 바로 아래, 이름도 같다)
         let { sid, folder: photoDir } = await __ljRegionFiles(sgg5);
         // ⚠ 목록 조회가 못 찾아도 **이번 세션에 이름까지 확인했거나 방금 만든** 시트가 있으면 그것을 쓴다.
@@ -33300,12 +33403,17 @@ const originalBase64 = event.target.result;
         if (!sid) sid = __ljSheetIdCached(sgg5) || "";
         // ⚠ 아래 단추 글자와 **같은 말**을 써야 한다 — 시트가 없을 때 그 단추는 '구글시트 생성' 이다
         //   (2026-09-30 사용자 지적: "보기로 만드세요" 가 아니라 "생성으로 만드세요").
-        if (!sid) return { sid: "", recs: [], why: "이 시군구 시트가 아직 없습니다 — 📄 구글시트 생성으로 만드세요" };
+        if (!sid) {
+          __ljBadgeMemoSet(sgg5, []);
+          __ljSpecSidSet(sgg5, "");
+          return { sid: "", recs: [], why: "이 시군구 시트가 아직 없습니다 — 📄 구글시트 생성으로 만드세요" };
+        }
 
         // ⚠ 크기를 알려고 spreadsheets.get 을 먼저 부르지 않는다 — 왕복이 하나 늘 뿐이다.
         //   `'매물'!1:23` 처럼 **행만 지정하면 모든 열**이 오고, values.get 은 값이 있는 데까지만
         //   돌려주므로 열이 100개든 300개든 비용이 같다 (2026-09-28: 배지 한 번에 5초 걸리던 원인).
-        const got = await __ljReadSheetAll(sid);
+        let got = specP && sid === specSid ? await specP : undefined;
+        if (got === undefined) got = await __ljReadSheetAll(sid);
         if (got === null) return { sid, recs: [], why: "시트 배치를 알아볼 수 없습니다" };
         const read = got.all;
         const lay = got.layout || __LJ_LAY_V;
@@ -33445,6 +33553,8 @@ const originalBase64 = event.target.result;
         __ljEnsureRecordGroup(sid, lay).catch((e) => console.warn("[lj] 기록 묶음 손질 실패(무시):", e?.message || e));
         const out = { at: Date.now(), sid, recs, why: "", layout: lay, headAt };
         __ljSheetCache.set(sgg5, out);
+        __ljBadgeMemoSet(sgg5, recs); // 다음에 모달을 열면 이 숫자가 바로 뜬다
+        __ljSpecSidSet(sgg5, sid);    // 다음 읽기는 이 id 로 미리 읽어 둔다(확인된 뒤에만 쓴다)
         console.log(`[lj] 시트 읽음 (${sgg5}): 매물 ${recs.length}건` + (skipped.length ? ` · 단지코드를 못 구해 건너뜀 ${skipped.length}개 [${skipped.slice(0, 5).join(", ")}]` : ""));
         return out;
       }
