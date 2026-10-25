@@ -11142,6 +11142,13 @@
       <label>메모:</label>
       <button type="button" id="noteCopyBtn" title="메모를 클립보드에 복사">📋 복사</button>
       <textarea id="noteText" rows="4" style="width: 100%; box-sizing: border-box;"></textarea>
+      <!-- 단지메모 히스토리 (2026-10-25) — 단추를 누르면 기록을 모아 셀렉트박스를 채운다(__noteHistOpen) -->
+      <div id="noteHistRow" style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px;">
+        <button type="button" id="noteHistBtn" style="margin: 0; padding: 5px 8px; font-size: 12.5px; background: #fff; color: #333; border: 1px solid #ccd; border-radius: 4px; cursor: pointer;">🕘 이전 기록</button>
+        <select id="noteHistSel" style="display: none; flex: 1 1 160px; min-width: 0; max-width: 100%; padding: 4px; font-size: 12.5px;"></select>
+        <button type="button" id="noteHistRestore" disabled style="display: none; margin: 0; padding: 5px 10px; font-size: 12.5px; background: #1a73e8; color: #fff; border: 0; border-radius: 4px; cursor: pointer;">되돌리기</button>
+      </div>
+      <div id="noteHistPreview" style="display: none; margin-top: 6px; padding: 6px 8px; max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.5; color: #333; background: #f6f7f9; border: 1px solid #e2e5ea; border-radius: 4px;"></div>
       <div id="imagePreview" style="margin-top: 10px; display: none;"></div>
       <div style="display: flex; gap: 15px; align-items: center; margin-top: 10px;">
 
@@ -11216,6 +11223,17 @@
             const ok = await __ljCopy(t);
             noteCopyBtn.textContent = ok ? "✅ 복사됨" : "복사 실패";
             setTimeout(() => (noteCopyBtn.textContent = "📋 복사"), 1200);
+          };
+        }
+        // 🕘 이전 기록 — 누를 때만 모은다(패널을 열 때마다 드라이브를 부르지 않는다)
+        const noteHistBtn = document.getElementById("noteHistBtn");
+        if (noteHistBtn) {
+          noteHistBtn.onclick = (e) => {
+            e.stopPropagation();
+            __noteHistOpen(apartmentId).catch((err) => {
+              console.warn("[note] 이전 기록 열기 실패:", err);
+              alert("이전 기록을 불러오지 못했습니다.\n" + (err?.message || err));
+            });
           };
         }
         const noteTextEl = document.getElementById("noteText");
@@ -20174,15 +20192,31 @@ const originalBase64 = event.target.result;
       }
       // 같은 레코드(prefix)의 더 오래된 메타 파일 삭제. 더 새 파일(다른 기기)은 남긴다.
       // keepName 을 주면 같은 updatedAt 의 다른 변형(.json ↔ .del.json)도 정리한다.
+      /* ⚠ 단지메모는 옛 판을 **최근 __NOTE_HIST_KEEP 개 남긴다** (2026-10-25 사용자 요청 — 히스토리).
+         예전엔 새 판을 올리는 즉시 옛 판을 전부 files.delete(영구)로 지워, UI 버그로 빈 메모가 올라가면
+         정상본이 어디에도 남지 않았다(같은 마커 두 번 누르기 사고). 남긴 판은 메모 칸의 '🕘 이전 기록'
+         (__noteHistOpen)이 읽어 되돌릴 수 있다. 최신 판 고르기는 __lzNewest 가 updatedAt 으로 하므로
+         옛 판이 남아 있어도 동작은 같다. 메타 한 장이 1KB 남짓이라 용량 부담은 없다.
+         다른 종류(포토·폴리곤·매물)는 아직 예전처럼 지운다. */
+      const __NOTE_HIST_KEEP = 10;
       async function __dqDeleteOlderMeta(folderId, prefix, updatedAt, keepName) {
         const list = await __dqList(folderId);
+        const keep = String(prefix).startsWith('note_') ? __NOTE_HIST_KEEP : 0;
+        const olds = [];
         for (const [name, fileId] of Array.from(list.entries())) {
           const p = __parseMetaFilename(name);
           if (!p || p.prefix !== prefix) continue;
           if (p.updatedAt > updatedAt) continue;
           if (p.updatedAt === updatedAt && (!keepName || name === keepName)) continue;
-          try { await __driveDeleteFile(fileId); list.delete(name); }
-          catch (e) { console.warn('[dq] 옛 메타 삭제 실패(무시):', name, e?.message || e); }
+          olds.push({ name, fileId, t: p.updatedAt, del: p.deleted });
+        }
+        // 같은 시각의 다른 변형(.json ↔ .del.json)은 기록이 아니라 짝이므로 남기지 않는다
+        const hist = olds.filter((o) => o.t < updatedAt && !o.del).sort((a, b) => b.t - a.t).slice(0, keep);
+        const spare = new Set(hist.map((o) => o.name));
+        for (const o of olds) {
+          if (spare.has(o.name)) continue;
+          try { await __driveDeleteFile(o.fileId); list.delete(o.name); }
+          catch (e) { console.warn('[dq] 옛 메타 삭제 실패(무시):', o.name, e?.message || e); }
         }
       }
 
@@ -20683,6 +20717,13 @@ const originalBase64 = event.target.result;
         //   시군구 코드가 바뀐 지역(화성시 → 4개 구)에서 옛 코드 레코드가 지역 분류에서 빠지면 "로컬에 없음"으로 보여
         //   이 기기에서 고친 글이 올라가기 전에 드라이브의 옛 판으로 덮일 수 있었다. 큐가 곧 로컬 판을 올린다.
         if (local && !local.lazy && (Number(local.updatedAt) || 0) > (Number(meta.updatedAt) || 0)) return local;
+        // 드라이브 판이 이 기기의 글을 덮기 직전 — 덮이는 글을 기록에 남긴다(히스토리, 2026-10-25).
+        //   빈 메모·삭제 판이 다른 기기에서 와도 '🕘 이전 기록'으로 되돌릴 수 있게.
+        if (local && !local.lazy && !local.deletedAt &&
+            (meta.deletedAt || (!meta.lazy && (String(meta.memo || "") !== String(local.memo || "") ||
+              String(__noteHistImgKeys((meta.images || []).map((a) => ({ addedAt: a })))) !== String(__noteHistImgKeys(local.images)))))) {
+          __noteHistPush(id, local.updatedAt, local.memo, local.images);
+        }
         let rec;
         if (meta.deletedAt) {
           rec = { id, memo: '', images: [], sgg5: meta.sgg5, updatedAt: meta.updatedAt, deletedAt: meta.deletedAt };
@@ -26206,6 +26247,229 @@ const originalBase64 = event.target.result;
         clearTimeout(__noteDraftTimer);
         __noteDraftTimer = setTimeout(__noteDraftFlush, 1000);
       }
+
+      /* ── 단지메모 히스토리 (2026-10-25 사용자 요청: "히스토리 기능을 추가하고 셀렉트박스로 이전 기록을 볼 수 있게.
+            이전 목록을 선택 후 되돌리기 버튼을 클릭하면 최신 메모로 엎어쓰게") ──
+         기록은 두 군데에서 모은다:
+           ① 드라이브 — 옛 메타 판을 최근 __NOTE_HIST_KEEP 개 남긴다(__dqDeleteOlderMeta). 다른 기기에서 쓴 판도 보인다.
+           ② 이 기기 — 메모가 바뀌기 직전(saveNote), 드라이브 판에 덮이기 직전(__lzApplyNote)의 글을 localStorage 에 둔다.
+              드라이브에 올라가기 전에 덮인 판(오프라인·업로드 대기)도 지키려고.
+         되돌리기 = 고른 글을 메모 칸에 넣고 saveNote → **새 최신 판**으로 저장(지금 글은 다시 기록에 남는다).
+         사진은 건드리지 않는다 — 기록은 글만 되돌린다. */
+      const __NOTE_HIST_KEY = "__hongbuNoteHist_v1"; // { [aptId]: [{ t, memo, imgs }] } — t = 그 판의 updatedAt, imgs = 사진 찍은 시각 목록
+      const __NOTE_HIST_LOCAL_MAX = 10;   // 단지당
+      const __NOTE_HIST_APT_MAX = 300;    // 단지 수(넘으면 가장 오래 손 안 댄 단지부터 버린다)
+      function __noteHistAll() {
+        try { const o = JSON.parse(localStorage.getItem(__NOTE_HIST_KEY) || "{}"); return o && typeof o === "object" ? o : {}; }
+        catch (_) { return {}; }
+      }
+      // 사진 목록 → 찍은 시각 숫자 목록(정렬). 사진 자체는 드라이브 aptImages 에 한 장씩 따로 있다.
+      function __noteHistImgKeys(images) {
+        return (Array.isArray(images) ? images : [])
+          .map((it) => Number(it && typeof it === "object" ? it.addedAt : 0) || 0)
+          .filter(Boolean)
+          .sort((a, b) => a - b);
+      }
+      function __noteHistPush(id, t, memo, images) {
+        const m = String(memo ?? "");
+        const imgs = __noteHistImgKeys(images);
+        if (!m.trim() && !imgs.length) return; // 글도 사진도 없으면 되돌릴 것이 없다
+        try {
+          const all = __noteHistAll();
+          const k = String(id);
+          const arr = Array.isArray(all[k]) ? all[k] : [];
+          if (arr.some((e) => e.memo === m && Number(e.t) === Number(t) && String(e.imgs || []) === String(imgs))) return;
+          arr.unshift({ t: Number(t) || Date.now(), memo: m, imgs });
+          all[k] = arr.slice(0, __NOTE_HIST_LOCAL_MAX);
+          const keys = Object.keys(all);
+          if (keys.length > __NOTE_HIST_APT_MAX) {
+            keys.sort((a, b) => (Number(all[a]?.[0]?.t) || 0) - (Number(all[b]?.[0]?.t) || 0));
+            for (const kk of keys.slice(0, keys.length - __NOTE_HIST_APT_MAX)) delete all[kk];
+          }
+          localStorage.setItem(__NOTE_HIST_KEY, JSON.stringify(all));
+        } catch (e) {
+          console.warn("[note] 기록 남기기 실패(무시):", e?.message || e);
+        }
+      }
+      function __noteHistWhen(t) {
+        const d = new Date(Number(t) || 0);
+        if (!(d.getTime() > 0)) return "시각 모름";
+        const p = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear() % 100}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+      }
+      function __noteHistReadLocalRec(id) {
+        return new Promise((resolve) => {
+          try {
+            const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+            req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
+            req.onerror = () => resolve(null);
+            req.onsuccess = (e) => {
+              const db = e.target.result;
+              try {
+                const g = db.transaction(["apartmentNotes"], "readonly").objectStore("apartmentNotes").get(String(id));
+                g.onsuccess = () => { db.close(); resolve(g.result || null); };
+                g.onerror = () => { db.close(); resolve(null); };
+              } catch (_) { db.close(); resolve(null); }
+            };
+          } catch (_) { resolve(null); }
+        });
+      }
+      // 기록 목록: [{ t, memo|null, fileId?, from }] 최신순. memo 가 null 이면 드라이브 판 — 고를 때 받는다.
+      async function __noteHistList(id) {
+        const cur = await __noteHistReadLocalRec(id);
+        const curT = Number(cur?.updatedAt) || 0;
+        const curMemo = cur && !cur.deletedAt ? String(cur.memo || "") : "";
+        const curImgs = cur && !cur.deletedAt ? __noteHistImgKeys(cur.images) : [];
+        const sgg5 = String(cur?.sgg5 || "").trim() || (typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(id))?.sgg5 : "") || "";
+        const byT = new Map();
+        for (const e of __noteHistAll()[String(id)] || []) {
+          const imgs = Array.isArray(e.imgs) ? e.imgs.map(Number).filter(Boolean) : [];
+          if (!String(e.memo || "").trim() && !imgs.length) continue;
+          if (e.memo === curMemo && String(imgs) === String(curImgs)) continue; // 지금과 똑같다
+          byT.set(Number(e.t) || 0, { t: Number(e.t) || 0, memo: String(e.memo || ""), imgs, from: "기기" });
+        }
+        let driveErr = "";
+        if (window.__gdriveReady && window.__gdriveAccessToken) {
+          try {
+            const folder = sgg5 && typeof __lzFindSggFolder === "function" ? await __lzFindSggFolder("notes", sgg5) : null;
+            if (folder) {
+              const list = await __dqList(folder, true);
+              const prefix = `note_${sgg5}_${String(id)}`;
+              for (const [name, fileId] of list.entries()) {
+                const p = __parseMetaFilename(name);
+                if (!p || p.prefix !== prefix || p.deleted || p.updatedAt === curT) continue;
+                if (!byT.has(p.updatedAt)) byT.set(p.updatedAt, { t: p.updatedAt, memo: null, imgs: null, fileId, from: "드라이브" });
+              }
+            }
+          } catch (e) {
+            driveErr = e?.message || String(e);
+            console.warn("[note] 드라이브 기록 목록 실패(기기 기록만):", driveErr);
+          }
+        }
+        return { items: Array.from(byT.values()).sort((a, b) => b.t - a.t), curMemo, curImgs, sgg5, driveErr };
+      }
+      // 드라이브 aptImages 에 사진 파일이 남아 있나 — { addedAt → fileId } (✕로 뺀 사진은 파일이 남는다; 🗑 초기화는 지운다)
+      async function __noteHistImgFiles(sgg5, id) {
+        const out = new Map();
+        if (!sgg5 || !(window.__gdriveReady && window.__gdriveAccessToken) || typeof __lzFindSggFolder !== "function") return out;
+        const folder = await __lzFindSggFolder("aptImages", sgg5);
+        if (!folder) return out;
+        const list = await __dqList(folder, true);
+        const pre = `apt_${sgg5}_${String(id)}_`;
+        for (const [name, fid] of list.entries()) {
+          if (!name.startsWith(pre) || !name.endsWith(".jpg")) continue;
+          const at = Number(name.slice(pre.length, -4));
+          if (at) out.set(at, fid);
+        }
+        return out;
+      }
+      function __noteHistLabel(e) {
+        const snip = e.memo != null ? String(e.memo).replace(/\s+/g, " ").trim().slice(0, 22) : "";
+        const ph = Array.isArray(e.imgs) && e.imgs.length ? ` 📷${e.imgs.length}` : "";
+        return `${__noteHistWhen(e.t)} · ${e.memo == null ? "(고르면 불러옴)" : (snip || "(글 없음)")}${ph}`;
+      }
+      // '🕘 이전 기록' 단추 → 셀렉트박스·미리보기·되돌리기 단추를 채운다
+      async function __noteHistOpen(id) {
+        const btn = document.getElementById("noteHistBtn");
+        const sel = document.getElementById("noteHistSel");
+        const rst = document.getElementById("noteHistRestore");
+        const pv = document.getElementById("noteHistPreview");
+        if (!btn || !sel || !rst || !pv) return;
+        const here = () => String(document.getElementById("apartmentInfo")?.getAttribute("data-id") || "") === String(id);
+        btn.disabled = true;
+        btn.textContent = "🕘 불러오는 중…";
+        let r;
+        try { r = await __noteHistList(id); }
+        finally { btn.disabled = false; btn.textContent = "🕘 이전 기록"; }
+        if (!here()) return;
+        sel.innerHTML = "";
+        const head = document.createElement("option");
+        head.value = "";
+        head.textContent = r.items.length ? `이전 기록 ${r.items.length}개 — 골라 보세요` : "이전 기록이 없습니다";
+        sel.appendChild(head);
+        r.items.forEach((e, i) => {
+          const o = document.createElement("option");
+          o.value = String(i);
+          o.textContent = __noteHistLabel(e);
+          sel.appendChild(o);
+        });
+        sel.style.display = "";
+        rst.style.display = "";
+        rst.disabled = true;
+        pv.style.display = "none";
+        pv.textContent = "";
+        if (r.driveErr) { pv.style.display = ""; pv.textContent = "⚠ 드라이브 기록을 못 읽어 이 기기 기록만 보입니다."; }
+        // 사진 파일 목록은 처음 고를 때 한 번만 받는다
+        let filesP = null;
+        const files = () => (filesP ||= __noteHistImgFiles(r.sgg5, id).catch(() => new Map()));
+        let plan = null; // 고른 기록을 되돌리면 무엇이 바뀌나 { e, text, add:[{addedAt,fid}], gone }
+        sel.onchange = async () => {
+          rst.disabled = true;
+          plan = null;
+          const e = r.items[Number(sel.value)];
+          if (!e) { pv.style.display = "none"; return; }
+          pv.style.display = "";
+          if (e.memo == null || e.imgs == null) {
+            pv.textContent = "드라이브에서 불러오는 중…";
+            try {
+              const meta = await __lzReadMeta(e.fileId);
+              e.memo = String(meta?.memo || "");
+              e.imgs = (Array.isArray(meta?.images) ? meta.images : []).map(Number).filter(Boolean);
+            } catch (err) {
+              pv.textContent = "⚠ 불러오지 못했습니다 — " + (err?.message || err);
+              return;
+            }
+            const o = sel.options[Number(sel.value) + 1];
+            if (o) o.textContent = __noteHistLabel(e);
+          }
+          // 사진: 그 기록에 있었는데 **지금 빠진** 사진 중 드라이브에 파일이 남은 것을 다시 붙인다(지금 사진은 빼지 않는다)
+          const nowKeys = new Set(__noteHistImgKeys(aptMemoImageList[id] || []));
+          const lack = (e.imgs || []).filter((a) => !nowKeys.has(a));
+          const f = lack.length ? await files() : new Map();
+          if (!here() || r.items[Number(sel.value)] !== e) return; // 그새 다른 것을 골랐다
+          const add = lack.filter((a) => f.has(a)).map((a) => ({ addedAt: a, fid: f.get(a) }));
+          const gone = lack.length - add.length;
+          const el = document.getElementById("noteText");
+          const text = !!String(e.memo || "").trim() && e.memo !== (el ? el.value : r.curMemo);
+          plan = { e, text, add, gone };
+          const lines = [];
+          lines.push(e.memo ? e.memo : "(이 기록에는 글이 없습니다 — 글은 지금 것을 그대로 둡니다)");
+          lines.push("");
+          const n = (e.imgs || []).length;
+          lines.push(`📷 이 기록의 사진 ${n}장` +
+            (add.length ? ` — 지금 빠진 ${add.length}장을 다시 붙입니다` : n ? " — 지금도 모두 붙어 있습니다" : "") +
+            (gone ? ` (${gone}장은 드라이브에 파일이 없어 못 붙입니다)` : ""));
+          if (!text && e.memo) lines.push("✏️ 글은 지금과 같습니다");
+          pv.textContent = lines.join("\n");
+          rst.disabled = !(text || add.length);
+        };
+        rst.onclick = (ev) => {
+          ev.stopPropagation();
+          const p = plan;
+          const el = document.getElementById("noteText");
+          if (!p || !(p.text || p.add.length) || !el || !here()) return;
+          if (el.dataset.noteId !== String(id)) { alert("메모를 아직 불러오는 중입니다. 잠시 뒤 다시 눌러 주세요."); return; }
+          const what = [p.text ? "글" : "", p.add.length ? `사진 ${p.add.length}장` : ""].filter(Boolean).join("과 ");
+          if (!confirm(`${__noteHistWhen(p.e.t)} 기록으로 ${what}을 되돌립니다.\n지금 메모는 이전 기록에 남습니다.`)) return;
+          if (p.text) {
+            el.value = p.e.memo;
+            try { __fitNoteText(); } catch (_) {}
+          }
+          if (p.add.length) {
+            // 자리표시자 {addedAt, fid} 로 붙인다 — saveNote 가 그대로 저장하고(드라이브엔 이미 파일이 있다),
+            // 저장 뒤 loadNote 가 그 fid 로 사진을 받아 보여 준다
+            const list = Array.isArray(aptMemoImageList[id]) ? aptMemoImageList[id] : (aptMemoImageList[id] = []);
+            const have = new Set(__noteHistImgKeys(list));
+            for (const it of p.add.slice().sort((a, b) => a.addedAt - b.addedAt)) if (!have.has(it.addedAt)) list.push({ ...it });
+          }
+          saveNote(String(id)); // 새 최신 판으로 저장(드라이브에도 올라간다). 지금 판은 saveNote 가 기록에 남긴다
+          plan = null;
+          sel.style.display = "none";
+          rst.style.display = "none";
+          pv.style.display = "none";
+          try { showToast(`✅ 이전 기록으로 ${what}을 되돌렸습니다`, 2500); } catch (_) {}
+        };
+      }
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") __noteDraftFlush();
       });
@@ -26320,6 +26584,12 @@ const originalBase64 = event.target.result;
             getRequest.onsuccess = function () {
               try {
                 const existing = getRequest.result || null;
+                // 글이 바뀌기 직전의 판을 이 기기 기록에 남긴다(히스토리, 2026-10-25) — 지우기(빈 글)도 포함
+                // 글 또는 사진 목록이 바뀔 때 — 사진을 ✕로 뺀 것도 되돌릴 수 있게 사진 목록까지 남긴다
+                if (existing && !existing.deletedAt && !existing.lazy &&
+                    (String(existing.memo || "") !== memo || String(__noteHistImgKeys(existing.images)) !== String(__noteHistImgKeys(images)))) {
+                  __noteHistPush(id, existing.updatedAt, existing.memo, existing.images);
+                }
 
                 // ✅ 메모/사진 모두 없으면: 저장하지 않음. 기존 레코드가 있으면 tombstone으로 교체(개별 삭제).
                 if ((!memo || memo.length === 0) && (!images || images.length === 0)) {
