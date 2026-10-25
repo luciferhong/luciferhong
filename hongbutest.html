@@ -32591,6 +32591,26 @@ const originalBase64 = event.target.result;
         return m ? m[1] : "";
       }
 
+      // 금액 천 단위 쉼표(#,##0)·전세가율(0.00%) — 매물 축의 [from, to) 칸에 (2026-10-25 사용자: "금액은 천단위 콤마")
+      //   세로형: 항목 행 × 매물 열(ci) / 가로형: 매물 행 × 항목 열. 템플릿·열 늘리기·행 덧붙이기가 같이 쓴다.
+      const __LJ_COMMA_KEYS = ["pyeongPrice", "priceSale", "priceNego", "priceJeonse", "gap"]; // 입력 금액(__LJ_MONEY_KEYS) + 계산 금액
+      function __ljNumFmtRequests(sheetId, lay, from, to) {
+        const reqs = [];
+        if (!(to > from)) return reqs;
+        const idx = {};
+        __LJ_SHEET_ROWS.forEach((f, i) => { idx[f.k] = i; });
+        const box = (k) => lay === __LJ_LAY_H
+          ? { sheetId, startRowIndex: from, endRowIndex: to, startColumnIndex: idx[k], endColumnIndex: idx[k] + 1 }
+          : { sheetId, startRowIndex: idx[k], endRowIndex: idx[k] + 1, startColumnIndex: from, endColumnIndex: to };
+        const put = (k, numberFormat) => {
+          if (idx[k] == null) return;
+          reqs.push({ repeatCell: { range: box(k), cell: { userEnteredFormat: { numberFormat } }, fields: "userEnteredFormat.numberFormat" } });
+        };
+        for (const k of __LJ_COMMA_KEYS) put(k, { type: "NUMBER", pattern: "#,##0" });
+        put("jeonseRatio", { type: "NUMBER", pattern: '0.00"%"' });
+        return reqs;
+      }
+
       // 사진의 표 서식을 그대로 — 묶음 병합·색·빨강 라벨·테두리·숫자서식·틀고정
       function __ljFormatRequests(sheetId, nRecs) {
         const R = __LJ_SHEET_ROWS.length;
@@ -32642,10 +32662,10 @@ const originalBase64 = event.target.result;
         // 매전차이 굵게
         if (idx.gap != null) reqs.push(cell(idx.gap, idx.gap + 1, 1, C,
           { textFormat: { fontSize: 10, bold: true, foregroundColor: __LJ_C.ink } }, "userEnteredFormat.textFormat"));
-        // 간단기록용은 왼쪽 정렬이 읽기 편하다
+        // 간단기록용 — 정렬은 바탕과 같은 가운데·중간 (2026-10-25 사용자: "정렬을 전부 가운데 중간 맞춤", 전엔 왼쪽·위)
         if (idx.memo != null) {
           reqs.push(cell(idx.memo, idx.memo + 1, 2, C,
-            { horizontalAlignment: "LEFT", verticalAlignment: "TOP", textFormat: { fontSize: 9, foregroundColor: __LJ_C.ink } },
+            { horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", textFormat: { fontSize: 9, foregroundColor: __LJ_C.ink } },
             "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat)"));
           reqs.push({
             updateDimensionProperties: { range: { sheetId, dimension: "ROWS", startIndex: idx.memo, endIndex: idx.memo + 1 }, properties: { pixelSize: 150 }, fields: "pixelSize" },
@@ -32658,12 +32678,8 @@ const originalBase64 = event.target.result;
           if (idx[k] != null) reqs.push(cell(idx[k], idx[k] + 1, 2, C,
             { numberFormat: { type: "TEXT" } }, "userEnteredFormat.numberFormat"));
         }
-        // 숫자 서식
-        for (const k of ["pyeongPrice", "priceSale", "priceNego", "priceJeonse", "gap"]) {
-          if (idx[k] != null) reqs.push(cell(idx[k], idx[k] + 1, 2, C, { numberFormat: { type: "NUMBER", pattern: "#,##0" } }, "userEnteredFormat.numberFormat"));
-        }
-        if (idx.jeonseRatio != null) reqs.push(cell(idx.jeonseRatio, idx.jeonseRatio + 1, 2, C,
-          { numberFormat: { type: "NUMBER", pattern: '0.00"%"' } }, "userEnteredFormat.numberFormat"));
+        // 숫자 서식 — 금액 천 단위 쉼표·전세가율
+        reqs.push(...__ljNumFmtRequests(sheetId, __LJ_LAY_V, 2, C));
         // 메타 2줄은 작고 흐리게
         for (const k of ["__when", "__id", "__aptCode"]) {
           if (idx[k] != null) reqs.push(cell(idx[k], idx[k] + 1, 1, C,
@@ -33596,6 +33612,15 @@ const originalBase64 = event.target.result;
           reqs.push({ appendDimension: { sheetId: main.properties.sheetId, dimension: "COLUMNS", length: wantCols - (gp.columnCount || 0) } });
         }
         if (reqs.length) {
+          // 덧붙인 칸도 가운데·중간 정렬 + 줄바꿈 (2026-10-25 사용자: "정렬을 전부 가운데 중간")
+          const al = { cell: { userEnteredFormat: { horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", wrapStrategy: "WRAP" } },
+            fields: "userEnteredFormat(horizontalAlignment,verticalAlignment,wrapStrategy)" };
+          const sh = main.properties.sheetId, r1 = Math.max(gp.rowCount || 0, wantRows), c1 = Math.max(gp.columnCount || 0, wantCols);
+          if ((gp.rowCount || 0) < wantRows) reqs.push({ repeatCell: { range: { sheetId: sh, startRowIndex: gp.rowCount || 0, endRowIndex: wantRows, startColumnIndex: 0, endColumnIndex: c1 }, ...al } });
+          if ((gp.columnCount || 0) < wantCols) reqs.push({ repeatCell: { range: { sheetId: sh, startRowIndex: 0, endRowIndex: r1, startColumnIndex: gp.columnCount || 0, endColumnIndex: wantCols }, ...al } });
+          // 덧붙인 매물 칸의 금액 쉼표 — 가로형은 행, 세로형은 열이 매물 축
+          if (lay === __LJ_LAY_H) reqs.push(...__ljNumFmtRequests(sh, lay, Math.max(gp.rowCount || 0, 2), wantRows));
+          else reqs.push(...__ljNumFmtRequests(sh, lay, Math.max(gp.columnCount || 0, 2), wantCols));
           await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: reqs } });
           console.log(`[lj] 격자를 늘렸습니다 (${lay === __LJ_LAY_H ? "가로형" : "세로형"} · 행 ${wantRows} · 열 ${wantCols})`);
         }
@@ -34494,6 +34519,12 @@ const originalBase64 = event.target.result;
         const N = __ljPyeongTable(sgg5).length + 1;
         const grow = [{ updateSheetProperties: { properties: { sheetId: main.sheetId, gridProperties: { columnCount: 2 + to } }, fields: "gridProperties.columnCount" } }];
         if (py) grow.push({ updateSheetProperties: { properties: { sheetId: py.sheetId, gridProperties: { columnCount: 6 + 3 * to } }, fields: "gridProperties.columnCount" } });
+        // 늘린 열도 가운데·중간 정렬 + 줄바꿈 (2026-10-25 사용자: "정렬을 전부 가운데 중간") — 열 수만 늘리면 서식이 따라오지 않을 수 있다
+        grow.push({ repeatCell: {
+          range: { sheetId: main.sheetId, startRowIndex: 0, endRowIndex: main.gridProperties?.rowCount || __LJ_SHEET_ROWS.length, startColumnIndex: have, endColumnIndex: 2 + to },
+          cell: { userEnteredFormat: { horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", wrapStrategy: "WRAP" } },
+          fields: "userEnteredFormat(horizontalAlignment,verticalAlignment,wrapStrategy)" } });
+        grow.push(...__ljNumFmtRequests(main.sheetId, __LJ_LAY_V, have, 2 + to)); // 늘린 열의 금액 쉼표
         await gapi.client.sheets.spreadsheets.batchUpdate({ spreadsheetId: sid, resource: { requests: grow } });
         if (!py) { console.warn("[lj] 단지평형 탭이 없어 드롭다운 없이 열만 늘렸습니다"); return true; }
         const r = __ljInputColRequests(idx, N, main.sheetId, from, to);
@@ -34657,12 +34688,15 @@ const originalBase64 = event.target.result;
         // 매전차이 굵게 (라벨 + 값 전부)
         if (idx.gap != null) reqs.push(cell(1, R1, idx.gap, idx.gap + 1,
           { textFormat: { fontSize: 10, bold: true, foregroundColor: __LJ_C.ink } }, "userEnteredFormat.textFormat"));
-        // 메모는 왼쪽 정렬이 읽기 편하다 + 열을 넓게 (세로형은 행 높이를 키운다)
+        // 메모 — 정렬은 바탕과 같은 가운데·중간 (2026-10-25 사용자, 세로형과 같이) + 열을 넓게 (세로형은 행 높이를 키운다)
         if (idx.memo != null) {
           reqs.push(cell(R0, R1, idx.memo, idx.memo + 1,
-            { horizontalAlignment: "LEFT", verticalAlignment: "TOP", textFormat: { fontSize: 9, foregroundColor: __LJ_C.ink } },
+            { horizontalAlignment: "CENTER", verticalAlignment: "MIDDLE", textFormat: { fontSize: 9, foregroundColor: __LJ_C.ink } },
             "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat)"));
         }
+
+        // 숫자 서식 — 금액 천 단위 쉼표·전세가율 (2026-10-25, 가로형엔 빠져 있었다)
+        reqs.push(...__ljNumFmtRequests(mainId, __LJ_LAY_H, R0, R1));
 
         // 폭 · 머리 2줄 고정
         reqs.push(colW(0, N, 110));
