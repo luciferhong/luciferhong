@@ -26475,7 +26475,41 @@ const originalBase64 = event.target.result;
             console.warn("[note] 드라이브 기록 목록 실패(기기 기록만):", driveErr);
           }
         }
-        return { items: Array.from(byT.values()).sort((a, b) => b.t - a.t), curMemo, curImgs, sgg5, driveErr };
+        let items = Array.from(byT.values()).sort((a, b) => b.t - a.t);
+        /* ── 같은 내용 정리 (2026-10-25 사용자: "글 내용이나 사진이 똑같은 이전 기록이 있는 이유는?") ──
+           드라이브 판은 예전엔 **고를 때** 내용을 받아서, 지금과 같은 판·서로 같은 판을 거를 수 없었다.
+           이제 목록을 만들 때 내용을 같이 받고(최대 10개, 1KB 남짓) ① 지금과 똑같은 판은 빼고 ② 내용이 같은 판은
+           **가장 최근 것 하나만** 남기고 ③ 바로 앞(더 오래된) 판과 무엇이 달라졌는지 붙인다(__noteHistLabel). */
+        const need = items.filter((e) => e.memo == null && e.fileId);
+        await Promise.all(need.map(async (e) => {
+          try {
+            const meta = await __lzReadMeta(e.fileId);
+            e.memo = String(meta?.memo || "");
+            e.imgs = (Array.isArray(meta?.images) ? meta.images : []).map(Number).filter(Boolean).sort((a, b) => a - b);
+          } catch (err) { console.warn("[note] 드라이브 기록 받기 실패(고를 때 다시):", e.fileId, err?.message || err); }
+        }));
+        const keyOf = (e) => (e.memo == null ? "?" + e.t : e.memo + "|" + String(e.imgs || []));
+        const curKey = curMemo + "|" + String(curImgs);
+        const seen = new Set();
+        items = items.filter((e) => {
+          const k = keyOf(e);
+          if (k === curKey || seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+        // 바로 앞(더 오래된) 판과의 차이 — 목록은 최신순이라 i+1 이 더 오래된 판
+        items.forEach((e, i) => {
+          const prev = items[i + 1];
+          if (!prev || e.memo == null || prev.memo == null) { e.diff = ""; return; }
+          const parts = [];
+          if (e.memo !== prev.memo) parts.push("글 바뀜");
+          const a = new Set(e.imgs || []), b = new Set(prev.imgs || []);
+          const plus = [...a].filter((x) => !b.has(x)).length, minus = [...b].filter((x) => !a.has(x)).length;
+          if (plus) parts.push(`사진 +${plus}`);
+          if (minus) parts.push(`사진 −${minus}`);
+          e.diff = parts.join(" · ");
+        });
+        return { items, curMemo, curImgs, sgg5, driveErr };
       }
       // 드라이브 aptImages 에 사진 파일이 남아 있나 — { addedAt → fileId } (✕로 뺀 사진은 파일이 남는다; 🗑 초기화는 지운다)
       async function __noteHistImgFiles(sgg5, id) {
@@ -26512,7 +26546,8 @@ const originalBase64 = event.target.result;
       function __noteHistLabel(e) {
         const snip = e.memo != null ? String(e.memo).replace(/\s+/g, " ").trim().slice(0, 22) : "";
         const ph = Array.isArray(e.imgs) && e.imgs.length ? ` 📷${e.imgs.length}` : "";
-        return `${__noteHistWhen(e.t)} · ${e.memo == null ? "(고르면 불러옴)" : (snip || "(글 없음)")}${ph}`;
+        const df = e.diff ? ` [${e.diff}]` : "";
+        return `${__noteHistWhen(e.t)}${df} · ${e.memo == null ? "(고르면 불러옴)" : (snip || "(글 없음)")}${ph}`;
       }
       // '🕘 이전 기록' 단추 → 셀렉트박스·미리보기·되돌리기 단추를 채운다
       async function __noteHistOpen(id) {
@@ -26528,6 +26563,15 @@ const originalBase64 = event.target.result;
         try { r = await __noteHistList(id); }
         finally { btn.disabled = false; btn.textContent = "🕘 이전 기록"; }
         if (!here()) return;
+        // 단추는 내용을 안 받고 판 개수만 보고 띄운다 — 받아 보니 전부 지금과 같은 판이었으면 단추를 내린다
+        if (!r.items.length) {
+          btn.style.display = "none";
+          sel.style.display = "none";
+          rst.style.display = "none";
+          pv.style.display = "none";
+          try { showToast("지금 메모와 다른 이전 기록이 없습니다", 2500); } catch (_) {}
+          return;
+        }
         sel.innerHTML = "";
         const head = document.createElement("option");
         head.value = "";
