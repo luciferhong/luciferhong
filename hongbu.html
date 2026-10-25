@@ -26357,8 +26357,11 @@ const originalBase64 = event.target.result;
                   const oldImgs = Array.isArray(existing.images) ? existing.images : [];
                   let same = oldMemo === memo && oldImgs.length === images.length;
                   if (same) {
+                    // 저장된 사진은 addedAt 으로 같은지 본다 (2026-10-25) — 드라이브에서 막 받은 사진은 화면 목록에만
+                    // data 가 있고 DB 는 아직 자리표시자라, data 로 비교하면 '바뀜'으로 보여 저장이 일어났다.
+                    const __imgKey = (it) => (it && typeof it === 'object' && it.addedAt ? 'a:' + it.addedAt : 'd:' + (__getImgData(it) || ''));
                     for (let i = 0; i < oldImgs.length; i++) {
-                      if ((__getImgData(oldImgs[i]) || '') !== (__getImgData(images[i]) || '')) {
+                      if (__imgKey(oldImgs[i]) !== __imgKey(images[i])) {
                         same = false;
                         break;
                       }
@@ -26382,15 +26385,21 @@ const originalBase64 = event.target.result;
                 const now = Date.now();
                 toSave.images = (Array.isArray(images) ? images : []).map((img, i) => {
                   const data = __getImgData(img);
-                  if (!data) return null;
                   const existingAddedAt = (img && typeof img === 'object' && img.addedAt) ? img.addedAt : null;
+                  // ⚠ 아직 드라이브에서 못 받은 사진(자리표시자 {addedAt, fid})은 그대로 둔다 (2026-10-25).
+                  //   예전엔 data 가 없다고 버려, 사진을 다 받기 전에 다른 단지를 누르거나 패널을 닫으면
+                  //   그 사진들이 목록에서 빠진 채 드라이브 메타까지 올라가 모든 기기에서 사라졌다(조원 제보).
+                  if (!data) return existingAddedAt ? (img.fid ? { addedAt: existingAddedAt, fid: img.fid } : { addedAt: existingAddedAt }) : null;
                   return { data, addedAt: existingAddedAt || (now + i) };
                 }).filter(Boolean);
-                // 최종 방어: DataURL 기준 중복 제거
+                // 최종 방어: DataURL·addedAt 기준 중복 제거
                 const __seenImgData = new Set();
+                const __seenImgAt = new Set();
                 toSave.images = toSave.images.filter((img) => {
-                  if (__seenImgData.has(img.data)) return false;
-                  __seenImgData.add(img.data);
+                  if (img.data && __seenImgData.has(img.data)) return false;
+                  if (__seenImgAt.has(img.addedAt)) return false;
+                  if (img.data) __seenImgData.add(img.data);
+                  __seenImgAt.add(img.addedAt);
                   return true;
                 });
                 toSave.updatedAt = now;
@@ -26642,9 +26651,11 @@ const originalBase64 = event.target.result;
                     }
                     const dataUrl = await __blobToDataUrl(blob);
                     if (!dataUrl) { console.warn('[lazy] 단지메모 dataUrl 변환 실패', id, filename); slot.textContent = "✕"; return; }
-                    // 인메모리 업데이트
-                    const idx = aptMemoImageList[id].findIndex((i) => i?.addedAt === addedAt);
-                    if (idx >= 0) aptMemoImageList[id][idx] = { data: dataUrl, addedAt };
+                    // 인메모리 업데이트 — 그사이 다른 단지를 열었으면 목록이 비워져 있다(__memoKeepOnly).
+                    //   (2026-10-25) 예전엔 여기서 TypeError 로 끝나 받은 사진을 DB 에 안 썼다 → 저장(write-back)은 그대로 한다
+                    const __lst = aptMemoImageList[id];
+                    const idx = __lst ? __lst.findIndex((i) => i?.addedAt === addedAt) : -1;
+                    if (idx >= 0) __lst[idx] = { data: dataUrl, addedAt };
                     // (2026-09-19) 도착 즉시 그리고, IndexedDB 저장은 모아서 한 번에 — 저장을 기다린 뒤 그리면 같은 레코드 쓰기가
                     // 직렬화되어(그리고 레코드가 커질수록 느려져) 사진이 한 장씩 차례로 나타나던 문제
                     renderImgItem({ data: dataUrl, addedAt }, dataUrl, slot);
