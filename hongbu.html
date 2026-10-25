@@ -2330,8 +2330,16 @@
         }
       }
 
+      /* 이전 기록 '되돌리기' — 눌리지 않을 때(아직 안 고름·불러오는 중·할 일 없음)는 회색으로 (2026-10-25 사용자 지적:
+         파란색 그대로라 눌리는 줄 알았다). 인라인 배경색을 이기려고 !important. */
+      #noteHistRestore:disabled {
+        background: #c9ced6 !important;
+        color: #f4f5f7 !important;
+        cursor: default !important;
+      }
       /* 단지메모 복사 단추 — 매물임장 쪽(.lj-memo-copy)과 같은 모양 (2026-09-28) */
-      #noteCopyBtn {
+      #noteCopyBtn,
+      #noteHistBtn {
         margin-left: 8px;
         padding: 3px 7px;
         border: 1px solid #cfcfcf;
@@ -2344,6 +2352,11 @@
         cursor: pointer;
         touch-action: manipulation;
         vertical-align: 1px;
+      }
+      /* 복사 단추와의 간격을 절반으로 (2026-10-25 사용자 요청) — 복사 단추 오른쪽 여백 3px + 태그 사이 공백 ≈ 4px 만 남긴다
+         (예전: + 왼쪽 여백 8px = 약 15px) */
+      #noteHistBtn {
+        margin-left: 0;
       }
       /* ===== 메모 입력칸 스크롤바 ===== */
       #noteText {
@@ -4113,7 +4126,17 @@
         const isPhotoMemo = !!photoMemoRecord;
 
         if (panel) panel.style.display = isPhotoMemo ? "block" : "none";
-        if (input) input.value = isPhotoMemo ? String(photoMemoRecord.note || "") : "";
+        if (input) {
+          // ⚠ 같은 포토메모를 다시 채우는 것(원본이 늦게 도착)이고 사용자가 그새 글을 고쳤으면 **입력칸을 덮지 않는다**
+          //   (2026-10-25 검토 P2 — 예전엔 원본이 오는 순간 친 글이 사라지고 💾 는 "변경 없음"으로 닫혔다).
+          const nextId = isPhotoMemo ? String(photoMemoRecord.id) : "";
+          const nextNote = isPhotoMemo ? String(photoMemoRecord.note || "") : "";
+          const sameRec = nextId && input.dataset.pmId === nextId;
+          const edited = sameRec && input.value !== (input.dataset.base ?? input.value);
+          if (!edited) input.value = nextNote;
+          input.dataset.pmId = nextId;
+          input.dataset.base = nextNote;
+        }
         if (saveBtn) saveBtn.style.display = isPhotoMemo ? "inline-block" : "none";
         if (closeBtn) closeBtn.style.display = isPhotoMemo ? "inline-block" : "none";
 
@@ -11141,10 +11164,11 @@
     <div style="margin-top: 20px;">
       <label>메모:</label>
       <button type="button" id="noteCopyBtn" title="메모를 클립보드에 복사">📋 복사</button>
+      <!-- 복사 단추 옆 (2026-10-25 사용자 요청). 기록이 있을 때만 보인다(__noteHistRefreshBtn). 셀렉트박스·되돌리기는 메모 칸 아래 줄 -->
+      <button type="button" id="noteHistBtn" title="이전 기록 보기·되돌리기" style="display: none;">🕘 이전 기록</button>
       <textarea id="noteText" rows="4" style="width: 100%; box-sizing: border-box;"></textarea>
       <!-- 단지메모 히스토리 (2026-10-25) — 단추를 누르면 기록을 모아 셀렉트박스를 채운다(__noteHistOpen) -->
-      <div id="noteHistRow" style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px;">
-        <button type="button" id="noteHistBtn" style="margin: 0; padding: 5px 8px; font-size: 12.5px; background: #fff; color: #333; border: 1px solid #ccd; border-radius: 4px; cursor: pointer;">🕘 이전 기록</button>
+      <div id="noteHistRow" style="display: none; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px;">
         <select id="noteHistSel" style="display: none; flex: 1 1 160px; min-width: 0; max-width: 100%; padding: 4px; font-size: 12.5px;"></select>
         <button type="button" id="noteHistRestore" disabled style="display: none; margin: 0; padding: 5px 10px; font-size: 12.5px; background: #1a73e8; color: #fff; border: 0; border-radius: 4px; cursor: pointer;">되돌리기</button>
       </div>
@@ -11288,6 +11312,19 @@
                   imageDataUrl = originalDataUrl;
                 }
 
+                // ⚠ 압축(수백 ms~수 초)이 끝나기 전에 패널을 닫거나 다른 단지로 바꿨으면, 그때 saveNote 는 이 사진 없이
+                //   이미 저장했고 사진 목록도 비워졌다 — 여기서 목록에 넣어 봐야 아무도 저장하지 않아 **사진이 사라졌다**
+                //   (2026-10-25 검토). 그럴 때는 기기 저장소의 그 단지 메모에 **바로 붙여 저장**한다(드라이브에도 올라간다).
+                const __info = document.getElementById("apartmentInfo");
+                const __nt = document.getElementById("noteText");
+                const __stillOpen = __info && __info.style.display === "block" && String(__info.getAttribute("data-id")) === String(apartmentId) &&
+                  __nt && __nt.dataset.noteId === String(apartmentId);
+                if (!__stillOpen) {
+                  __noteAppendImageDirect(String(apartmentId), imageDataUrl)
+                    .then((ok) => { if (ok) { try { showToast("📷 닫힌 뒤 처리된 사진을 메모에 저장했습니다", 2500); } catch (_) {} } })
+                    .catch((err) => console.warn("[note] 닫힌 뒤 사진 저장 실패:", err));
+                  return;
+                }
                 if (!aptMemoImageList[apartmentId]) {
                   aptMemoImageList[apartmentId] = [];
                 }
@@ -14334,7 +14371,8 @@ const originalBase64 = event.target.result;
             } catch (_) {}
           }
           if (blobMigrated) {
-            __photoMemoPutLocal({ ...localRec, thumbBlob: undefined, imageBlob: undefined })
+            // 같은 이유(P1)로 이미지 칸만 — 변환하는 사이 저장된 메모를 덮지 않는다
+            __photoMemoPatchImages(idStr, { imageDataUrl: localRec.imageDataUrl, thumbDataUrl: localRec.thumbDataUrl })
               .catch((e) => console.warn("[legacy upgrade] blob→dataUrl 재저장 실패:", e));
           }
           // [파일명 기반] lazy 복구: imageDataUrl 비었고 sgg5/addedAt 있으면 filename 유도 → Drive fetch
@@ -14370,7 +14408,8 @@ const originalBase64 = event.target.result;
                       }
                     } catch (_) {}
                   }
-                  __photoMemoPutLocal({ ...localRec, thumbBlob: undefined, imageBlob: undefined })
+                  // ⚠ 받기 전에 읽은 localRec 을 통째로 쓰면 그 사이 저장한 메모가 옛 글로 되돌아간다 — 이미지 칸만 채운다(P1)
+                  __photoMemoPatchImages(idStr, { imageDataUrl: localRec.imageDataUrl, thumbDataUrl: localRec.thumbDataUrl })
                     .catch((e) => console.warn('[lazy] write-back 실패:', e));
                 }
               } else {
@@ -16857,6 +16896,10 @@ const originalBase64 = event.target.result;
         deleteBtn.title = "폴리곤 삭제";
         deleteBtn.addEventListener("click", (ev) => {
           ev.stopPropagation();
+          // ⚠ 메모 입력칸 바로 옆이라 잘못 누르기 쉽다 — 한 번 묻는다 (2026-10-25 검토 P5).
+          //   예전엔 누르는 즉시 지우고 드라이브로도 전파돼(옛 판은 영구 삭제) 되돌릴 길이 없었다.
+          const memoText = String(memoInput.value || "").trim();
+          if (!confirm(`이 면적을 지울까요?${memoText ? `\n\n메모: ${memoText.slice(0, 60)}` : ""}\n\n다른 기기에서도 지워집니다.`)) return;
           removePolygonMemo(polygon);
           closePolygonColorPalette();
         });
@@ -18034,6 +18077,37 @@ const originalBase64 = event.target.result;
         });
       }
 
+      /* 이미지 칸만 채운다 (2026-10-25 검토 P1). 원본을 드라이브에서 받는 데 1~2초가 걸리는데, 예전엔 받기 **전에**
+         읽어 둔 레코드를 통째로 다시 써서(__photoMemoPutLocal({...localRec})) 그 사이 사용자가 고쳐 저장한 메모가
+         **옛 글로 되돌아가고**(updatedAt 도 옛 값이라 업로드도 안 됨) 그 사이 지운 것은 되살아났다.
+         이제 쓰기 트랜잭션 안에서 **지금 레코드를 다시 읽어** 비어 있는 이미지 칸만 채운다. 글·시각·삭제 표시는 건드리지 않는다. */
+      async function __photoMemoPatchImages(id, patch) {
+        await initMemoIndexedDB();
+        const db = await __openHongbuMemoDb();
+        return await new Promise((resolve) => {
+          let done = false;
+          const tx = db.transaction(__photoTxStores(db), "readwrite");
+          tx.oncomplete = () => { db.close(); resolve(done); };
+          tx.onerror = () => { db.close(); resolve(false); };
+          const st = tx.objectStore("photoMemos");
+          const g = st.get(String(id));
+          g.onsuccess = () => {
+            const cur = g.result;
+            if (!cur || cur.deletedAt) return; // 그새 지워졌다 — 되살리지 않는다
+            let ch = false;
+            for (const k of ["imageDataUrl", "thumbDataUrl"]) {
+              if (patch?.[k] && !cur[k]) { cur[k] = patch[k]; ch = true; }
+            }
+            if (!ch) return;
+            delete cur.imageBlob;
+            delete cur.thumbBlob;
+            st.put(cur);
+            try { __photoIndexPut(tx, cur); } catch (_) {}
+            done = true;
+          };
+        });
+      }
+
       // IndexedDB에서 포토메모 삭제 (개별 삭제 → tombstone 생성, 동기화 시 Drive로 전파)
       async function __photoMemoDeleteLocal(id) {
         await __softDeletePhoto(id);
@@ -18692,6 +18766,18 @@ const originalBase64 = event.target.result;
       }
 
       // ── Drive 파일/폴더 삭제 (404 = 이미 없음 → 성공 취급, 폴더 삭제 시 하위 파일 포함) ──
+      // 휴지통으로 보내기 / 꺼내기 — 앱이 만든 파일이라 drive.file 권한으로 된다
+      async function __driveTrashFile(fileId, untrash) {
+        if (!fileId) return false;
+        try {
+          await gapi.client.drive.files.update({ fileId, resource: { trashed: !untrash } });
+          return true;
+        } catch (e) {
+          const code = e?.status ?? e?.result?.error?.code;
+          if (code === 404) return !untrash;
+          throw e;
+        }
+      }
       async function __driveDeleteFile(fileId) {
         if (!fileId) return false;
         try {
@@ -20005,7 +20091,9 @@ const originalBase64 = event.target.result;
             const [key, item] = picked; inFlight.add(key);
             try {
               await __dqProcess(item);
-              __dq.items.delete(key);
+              // ⚠ 처리하는 사이 같은 레코드가 **다시 저장돼 큐에 새로 들어왔으면**(ts 가 바뀜) 지우지 않는다 (2026-10-25 검토).
+              //   예전엔 그 새 항목까지 지워, 그 수정이 다음 접속 때까지 드라이브에 안 올라갔다. 남겨 두면 다음 차례에 올린다.
+              if (__dq.items.get(key) === item || __dq.items.get(key)?.ts === item.ts) __dq.items.delete(key);
               if (!stop) { __dq.failures = 0; __dq.lastError = ''; __dq.quotaFull = 0; __dq.timeoutStreak = 0; } // 다른 작업자의 실패 기록은 지우지 않는다
               if (__dq.recoverPending) { __dq.recoverPending = false; __dqShowRecovered(); }   // 지연·용량 안내 뒤 첫 성공
               __dqSave(); __dqEmit();
@@ -20052,8 +20140,8 @@ const originalBase64 = event.target.result;
                 console.warn(`[dq] ${key} 업로드 실패(${__dq.failures}회) — ${Math.round(wait / 60000)}분 후 재시도:`, __dq.lastError);
                 // 타임아웃·연결 끊김은 디버그 창에 '오류'로 올리지 않는다(위 진단·자동 재시도가 맡음) — 그 밖의 실패만 오류 기록
                 if (!__dqIsTimeoutish(e)) { try { window.hongbuDebugLog?.('ERR', '[dq] 업로드 실패', `${key} ${__dq.lastError}`); } catch (_) {} }
-                // 실패 항목은 뒤로 보내 다른 항목을 먼저 시도
-                __dq.items.delete(key); __dq.items.set(key, item);
+                // 실패 항목은 뒤로 보내 다른 항목을 먼저 시도 — 그새 새로 들어온 항목이 있으면 그것을 남긴다
+                { const latest = __dq.items.get(key) || item; __dq.items.delete(key); __dq.items.set(key, latest); }
                 clearTimeout(__dq.retryTimer);
                 __dq.retryAt = Date.now() + wait;
                 __dq.retryTimer = setTimeout(() => { __dq.retryAt = 0; __dqKick(0); }, wait);
@@ -20201,7 +20289,9 @@ const originalBase64 = event.target.result;
       const __NOTE_HIST_KEEP = 10;
       async function __dqDeleteOlderMeta(folderId, prefix, updatedAt, keepName) {
         const list = await __dqList(folderId);
-        const keep = String(prefix).startsWith('note_') ? __NOTE_HIST_KEEP : 0;
+        // 포토·면적 메모도 옛 판을 몇 개 남긴다(2026-10-25 검토) — 아직 되돌리기 화면은 없지만 드라이브에 남아 있으면 되살릴 수 있다
+        const p0 = String(prefix);
+        const keep = p0.startsWith('note_') ? __NOTE_HIST_KEEP : (p0.startsWith('photo_') || p0.startsWith('polygon_')) ? 5 : 0;
         const olds = [];
         for (const [name, fileId] of Array.from(list.entries())) {
           const p = __parseMetaFilename(name);
@@ -20352,7 +20442,9 @@ const originalBase64 = event.target.result;
             const pre = `apt_${sgg5}_${String(rec.id)}_`;
             for (const [n, fid] of Array.from(list.entries())) {
               if (!n.startsWith(pre)) continue;
-              try { await __driveDeleteFile(fid); list.delete(n); } catch (e) { console.warn('[dq] 삭제 단지 이미지 정리 실패(무시):', n, e?.message || e); }
+              // ⚠ 영구 삭제가 아니라 **휴지통**으로 (2026-10-25). 영구 삭제하면 '🕘 이전 기록'으로 메모를 되살려도
+              //   사진은 돌아오지 못했다. 휴지통은 30일 보관되고, 이전 기록 되돌리기가 거기서 꺼내 다시 붙인다(__noteHistImgFiles).
+              try { await __driveTrashFile(fid); list.delete(n); } catch (e) { console.warn('[dq] 삭제 단지 이미지 정리 실패(무시):', n, e?.message || e); }
             }
           }
         } else if (item.kind === 'photo') {
@@ -20409,7 +20501,8 @@ const originalBase64 = event.target.result;
                 if (!f) continue;
                 const list = await __dqList(f);
                 const fid = list.get(n);
-                if (fid) { await __driveDeleteFile(fid); list.delete(n); }
+                // 영구 삭제 대신 휴지통(30일) — 썸네일 모드 기기에선 드라이브가 유일한 원본이다(2026-10-25 검토)
+                if (fid) { await __driveTrashFile(fid); list.delete(n); }
               } catch (e) { console.warn('[dq] 삭제 사진 파일 정리 실패(무시):', n, e?.message || e); }
             }
           }
@@ -20712,7 +20805,10 @@ const originalBase64 = event.target.result;
       async function __lzApplyNote(meta, local) {
         const id = String(meta.id);
         // 시군구 매칭에서 빠진 로컬 레코드(sgg5 미상 등)를 덮어쓰지 않도록 id 로 한 번 더 확인
-        if (!local) { try { local = await __dqReadRecord('note', id); } catch (_) {} }
+        // ⚠ 넘겨받은 local 은 **네트워크를 기다리기 전에 읽어 둔 사본**이다(__lzOnNoteOpen·__lzIndexSgg, 1~2초).
+        //   그 사이 사용자가 저장했으면 그 사본으로 "로컬이 더 새 것" 검사를 통과해 방금 저장한 판을 덮었다
+        //   (2026-10-25 검토 D2). 쓰기 직전에 **지금 레코드를 다시 읽는다**.
+        try { const fresh = await __dqReadRecord('note', id); if (fresh || !local) local = fresh; } catch (_) {}
         // (2026-10-05) 로컬이 더 새 것이면 덮어쓰지 않는다 — 포토(__lzApplyPhoto)엔 있던 검사가 단지메모엔 없었다.
         //   시군구 코드가 바뀐 지역(화성시 → 4개 구)에서 옛 코드 레코드가 지역 분류에서 빠지면 "로컬에 없음"으로 보여
         //   이 기기에서 고친 글이 올라가기 전에 드라이브의 옛 판으로 덮일 수 있었다. 큐가 곧 로컬 판을 올린다.
@@ -20748,10 +20844,22 @@ const originalBase64 = event.target.result;
         await __lzIdbPut('apartmentNotes', rec);
         try { window.__memoPresenceCache?.delete(id); } catch (_) {}
         try { if (meta.deletedAt) window.__hongbuMemoKeySet?.delete(id); else window.__hongbuMemoKeySet?.add(id); } catch (_) {}
+        // 그 단지 패널이 열려 있고 **사용자가 아직 손대지 않았으면** 새 판으로 다시 그린다(2026-10-25 검토 D1).
+        //   예전엔 뒤에서 들어온 새 판을 화면이 몰라 옛 글을 보여 줬다. 손댄 뒤면 건드리지 않는다(쓰던 글 보호 —
+        //   닫을 때 저장되고, 덮인 새 판은 히스토리에 남는다).
+        try {
+          const info = document.getElementById("apartmentInfo");
+          const el = document.getElementById("noteText");
+          if (info && info.style.display === "block" && String(info.getAttribute("data-id")) === id && el && el.dataset.noteId === id &&
+              el.value.trim() === String(el.dataset.baseline || "").trim() && __noteImgSig(aptMemoImageList[id] || []) === el.dataset.baseImgs) {
+            loadNote(id, { keepUnsaved: true });
+          }
+        } catch (_) {}
       }
       async function __lzApplyPhoto(meta, local) {
         const id = String(meta.id);
-        if (!local) { try { local = await __dqReadRecord('photo', id); } catch (_) {} } // 로컬 원본·썸네일 보존
+        // 로컬 원본·썸네일 보존. 넘겨받은 사본은 낡았을 수 있어 쓰기 직전에 다시 읽는다(단지메모 D2 와 같은 이유)
+        try { const fresh = await __dqReadRecord('photo', id); if (fresh || !local) local = fresh; } catch (_) {}
         // 로컬(같은 id)이 더 새 것이면 덮어쓰지 않는다 — 파일명 prefix 가 어긋난 삭제 표시 등을 되살리지 않기 위해
         if (local && (Number(local.updatedAt) || 0) > (Number(meta.updatedAt) || 0)) return local;
         const rec = {
@@ -26291,6 +26399,61 @@ const originalBase64 = event.target.result;
           console.warn("[note] 기록 남기기 실패(무시):", e?.message || e);
         }
       }
+      // 사진 목록의 모습 — 저장된 사진은 찍은 시각, 아직 안 저장된 새 사진(dataURL 문자열)은 길이와 끝 몇 글자
+      function __noteImgSig(list) {
+        return (Array.isArray(list) ? list : []).map((it) =>
+          typeof it === "string" ? "s" + it.length + ":" + it.slice(-24) : "a" + (Number(it?.addedAt) || 0)).join(",");
+      }
+      /* '🕘 이전 기록' 단추는 **기록이 있을 때만** 보인다 (2026-10-25 사용자 요청).
+         이 기기 기록은 바로 보고, 없으면 드라이브 notes 폴더 목록에서 옛 판을 센다 — 목록은 10분 캐시라
+         선로드가 이미 받아 둔 경우가 많고, 아니면 그 시군구 목록 1회. 셀렉트박스의 '지금과 같은 판 빼기'와 같은 기준. */
+      /* ⚠ 단추는 **실제로 되돌릴 기록이 있을 때만** — 글·사진까지 본다 (2026-10-25 사용자: "이전 기록을 눌러야 지금과 다른
+         기록이 없다고 알려 준다. 사진까지 체크해서 없으면 단추를 보여 주지 마"). 예전엔 판 **개수**만 보고 띄워서,
+         눌러 봐야 "되돌릴 게 없다"가 나왔다. 이제 패널이 열릴 때 뒤에서 셀렉트박스와 **같은 목록**(__noteHistList —
+         같은 판·지금과 같은 판·되돌려도 바뀌는 게 없는 판 제외)을 만들어 보고, 남는 게 있을 때만 보인다.
+         만든 목록은 단추를 누를 때 그대로 쓴다(__noteHistReady, 1분). 비용: 후보가 하나도 없으면 아무것도 안 받는다.
+         있으면 드라이브 판 내용(파일 이름이 같으면 내용도 같으므로 한 번 받은 것은 기억 — __noteHistMetaCache)과,
+         빠진 사진이 있을 때만 사진 폴더 목록. 목록들은 10분 캐시를 쓴다. */
+      const __noteHistReady = new Map(); // aptId → { at, r }
+      async function __noteHistRefreshBtn(id, cur) {
+        const btn = () => document.getElementById("noteHistBtn");
+        const here = () => String(document.getElementById("apartmentInfo")?.getAttribute("data-id") || "") === String(id);
+        const show = (on) => { const b = btn(); if (b && here()) b.style.display = on ? "" : "none"; };
+        show(false);
+        __noteHistReady.delete(String(id));
+        // 후보가 하나라도 있나 — 없으면 네트워크 없이 끝
+        const curMemo = cur && !cur.deletedAt ? String(cur.memo || "") : "";
+        const curImgs = String(cur && !cur.deletedAt ? __noteHistImgKeys(cur.images) : []);
+        let cand = (__noteHistAll()[String(id)] || []).some((e) => {
+          const imgs = Array.isArray(e.imgs) ? e.imgs.map(Number).filter(Boolean) : [];
+          return (String(e.memo || "").trim() || imgs.length) && !(e.memo === curMemo && String(imgs) === curImgs);
+        });
+        if (!cand && window.__gdriveReady && window.__gdriveAccessToken && typeof __lzFindSggFolder === "function") {
+          const sgg5 = String(cur?.sgg5 || "").trim() || (typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(id))?.sgg5 : "") || "";
+          if (sgg5) {
+            try {
+              const folder = await __lzFindSggFolder("notes", sgg5);
+              if (folder) {
+                const list = await __dqList(folder);
+                const prefix = `note_${sgg5}_${String(id)}`;
+                const curT = Number(cur?.updatedAt) || 0;
+                for (const name of list.keys()) {
+                  const p = __parseMetaFilename(name);
+                  if (p && p.prefix === prefix && !p.deleted && p.updatedAt !== curT) { cand = true; break; }
+                }
+              }
+            } catch (_) {}
+          }
+        }
+        if (!cand || !here()) return;
+        // 후보가 있으면 실제 목록을 만들어 본다(내용·사진까지)
+        try {
+          const r = await __noteHistList(id);
+          if (!here()) return;
+          __noteHistReady.set(String(id), { at: Date.now(), r });
+          show(r.items.length > 0);
+        } catch (e) { console.warn("[note] 이전 기록 미리 보기 실패(단추 숨김):", e?.message || e); }
+      }
       function __noteHistWhen(t) {
         const d = new Date(Number(t) || 0);
         if (!(d.getTime() > 0)) return "시각 모름";
@@ -26314,6 +26477,7 @@ const originalBase64 = event.target.result;
           } catch (_) { resolve(null); }
         });
       }
+      const __noteHistMetaCache = new Map(); // 드라이브 메타 fileId → { memo, imgs } (판마다 고정)
       // 기록 목록: [{ t, memo|null, fileId?, from }] 최신순. memo 가 null 이면 드라이브 판 — 고를 때 받는다.
       async function __noteHistList(id) {
         const cur = await __noteHistReadLocalRec(id);
@@ -26346,7 +26510,64 @@ const originalBase64 = event.target.result;
             console.warn("[note] 드라이브 기록 목록 실패(기기 기록만):", driveErr);
           }
         }
-        return { items: Array.from(byT.values()).sort((a, b) => b.t - a.t), curMemo, curImgs, sgg5, driveErr };
+        let items = Array.from(byT.values()).sort((a, b) => b.t - a.t);
+        /* ── 같은 내용 정리 (2026-10-25 사용자: "글 내용이나 사진이 똑같은 이전 기록이 있는 이유는?") ──
+           드라이브 판은 예전엔 **고를 때** 내용을 받아서, 지금과 같은 판·서로 같은 판을 거를 수 없었다.
+           이제 목록을 만들 때 내용을 같이 받고(최대 10개, 1KB 남짓) ① 지금과 똑같은 판은 빼고 ② 내용이 같은 판은
+           **가장 최근 것 하나만** 남기고 ③ 바로 앞(더 오래된) 판과 무엇이 달라졌는지 붙인다(__noteHistLabel). */
+        const need = items.filter((e) => e.memo == null && e.fileId);
+        await Promise.all(need.map(async (e) => {
+          try {
+            // 메타 파일은 이름(=판)마다 내용이 고정이라 한 번 받은 것은 기억한다 — 패널을 다시 열어도 다시 받지 않는다
+            let got = __noteHistMetaCache.get(e.fileId);
+            if (!got) {
+              const meta = await __lzReadMeta(e.fileId);
+              got = { memo: String(meta?.memo || ""), imgs: (Array.isArray(meta?.images) ? meta.images : []).map(Number).filter(Boolean).sort((a, b) => a - b) };
+              __noteHistMetaCache.set(e.fileId, got);
+            }
+            e.memo = got.memo;
+            e.imgs = got.imgs.slice();
+          } catch (err) { console.warn("[note] 드라이브 기록 받기 실패(고를 때 다시):", e.fileId, err?.message || err); }
+        }));
+        const keyOf = (e) => (e.memo == null ? "?" + e.t : e.memo + "|" + String(e.imgs || []));
+        const curKey = curMemo + "|" + String(curImgs);
+        const seen = new Set();
+        items = items.filter((e) => {
+          const k = keyOf(e);
+          if (k === curKey || seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+        /* ⚠ **되돌려도 아무것도 안 바뀌는 기록은 뺀다** (2026-10-25 사용자: "이전 버전이 사진이 한 개라는 건가").
+           되돌리기는 글을 그 판으로 바꾸고(그 판에 글이 있을 때) **빠진 사진만** 다시 붙인다 — 지금 사진은 빼지 않는다.
+           그래서 글이 없거나 지금과 같고, 사진도 지금 다 붙어 있거나 다시 붙일 파일이 없는(드라이브·휴지통 어디에도)
+           기록은 골라도 할 일이 없다. 사진 파일 목록은 빠진 사진이 있는 기록이 있을 때만 받는다(10분 캐시). */
+        const curSet = new Set(curImgs);
+        const lackOf = (e) => (e.imgs || []).filter((a) => !curSet.has(a));
+        let files = null;
+        if (items.some((e) => e.memo != null && lackOf(e).length)) {
+          try { files = await __noteHistImgFiles(sgg5, id); } catch (_) { files = null; }
+        }
+        items = items.filter((e) => {
+          if (e.memo == null) return true; // 내용을 못 받았다 — 고를 때 다시 본다
+          const text = !!String(e.memo).trim() && e.memo !== curMemo;
+          const lack = lackOf(e);
+          const canAdd = lack.length && (files ? lack.some((a) => files.has(a)) : true); // 파일 목록을 못 받았으면 남긴다
+          return text || canAdd;
+        });
+        // 바로 앞(더 오래된) 판과의 차이 — 목록은 최신순이라 i+1 이 더 오래된 판
+        items.forEach((e, i) => {
+          const prev = items[i + 1];
+          if (!prev || e.memo == null || prev.memo == null) { e.diff = ""; return; }
+          const parts = [];
+          if (e.memo !== prev.memo) parts.push("글 바뀜");
+          const a = new Set(e.imgs || []), b = new Set(prev.imgs || []);
+          const plus = [...a].filter((x) => !b.has(x)).length, minus = [...b].filter((x) => !a.has(x)).length;
+          if (plus) parts.push(`사진 +${plus}`);
+          if (minus) parts.push(`사진 −${minus}`);
+          e.diff = parts.join(" · ");
+        });
+        return { items, curMemo, curImgs, sgg5, driveErr, files };
       }
       // 드라이브 aptImages 에 사진 파일이 남아 있나 — { addedAt → fileId } (✕로 뺀 사진은 파일이 남는다; 🗑 초기화는 지운다)
       async function __noteHistImgFiles(sgg5, id) {
@@ -26361,12 +26582,30 @@ const originalBase64 = event.target.result;
           const at = Number(name.slice(pre.length, -4));
           if (at) out.set(at, fid);
         }
+        // 🗑 초기화로 휴지통에 간 사진도 찾는다(30일 보관) — 되돌릴 때 꺼낸다(out.trashed)
+        out.trashed = new Set();
+        try {
+          let pageToken = "";
+          do {
+            const r = await gapi.client.drive.files.list({
+              q: `'${folder}' in parents and trashed=true and name contains '${pre}'`,
+              fields: "nextPageToken,files(id,name)", spaces: "drive", pageSize: 200, pageToken: pageToken || undefined,
+            });
+            for (const f of r.result.files || []) {
+              if (!String(f.name).startsWith(pre) || !String(f.name).endsWith(".jpg")) continue;
+              const at = Number(String(f.name).slice(pre.length, -4));
+              if (at && !out.has(at)) { out.set(at, f.id); out.trashed.add(f.id); }
+            }
+            pageToken = r.result.nextPageToken || "";
+          } while (pageToken);
+        } catch (e) { console.warn("[note] 휴지통 사진 찾기 실패(무시):", e?.message || e); }
         return out;
       }
       function __noteHistLabel(e) {
         const snip = e.memo != null ? String(e.memo).replace(/\s+/g, " ").trim().slice(0, 22) : "";
         const ph = Array.isArray(e.imgs) && e.imgs.length ? ` 📷${e.imgs.length}` : "";
-        return `${__noteHistWhen(e.t)} · ${e.memo == null ? "(고르면 불러옴)" : (snip || "(글 없음)")}${ph}`;
+        const df = e.diff ? ` [${e.diff}]` : "";
+        return `${__noteHistWhen(e.t)}${df} · ${e.memo == null ? "(고르면 불러옴)" : (snip || "(글 없음)")}${ph}`;
       }
       // '🕘 이전 기록' 단추 → 셀렉트박스·미리보기·되돌리기 단추를 채운다
       async function __noteHistOpen(id) {
@@ -26379,9 +26618,20 @@ const originalBase64 = event.target.result;
         btn.disabled = true;
         btn.textContent = "🕘 불러오는 중…";
         let r;
-        try { r = await __noteHistList(id); }
+        // 패널을 열 때 뒤에서 만들어 둔 목록이 1분 안이면 그대로 쓴다(다시 받지 않는다) — 저장하면 loadNote 가 새로 만든다
+        const ready = __noteHistReady.get(String(id));
+        try { r = ready && Date.now() - ready.at < 60000 ? ready.r : await __noteHistList(id); }
         finally { btn.disabled = false; btn.textContent = "🕘 이전 기록"; }
         if (!here()) return;
+        // 단추는 내용을 안 받고 판 개수만 보고 띄운다 — 받아 보니 전부 지금과 같은 판이었으면 단추를 내린다
+        if (!r.items.length) {
+          btn.style.display = "none";
+          sel.style.display = "none";
+          rst.style.display = "none";
+          pv.style.display = "none";
+          try { showToast("지금 메모와 다른 이전 기록이 없습니다", 2500); } catch (_) {}
+          return;
+        }
         sel.innerHTML = "";
         const head = document.createElement("option");
         head.value = "";
@@ -26395,13 +26645,16 @@ const originalBase64 = event.target.result;
         });
         sel.style.display = "";
         rst.style.display = "";
+        // 셀렉트박스 줄은 열 때만 보인다(단추가 복사 옆으로 옮겨 가 빈 줄이 자리만 먹었다, 2026-10-25)
+        const row = document.getElementById("noteHistRow");
+        if (row) row.style.display = "flex";
         rst.disabled = true;
         pv.style.display = "none";
         pv.textContent = "";
         if (r.driveErr) { pv.style.display = ""; pv.textContent = "⚠ 드라이브 기록을 못 읽어 이 기기 기록만 보입니다."; }
         // 사진 파일 목록은 처음 고를 때 한 번만 받는다
         let filesP = null;
-        const files = () => (filesP ||= __noteHistImgFiles(r.sgg5, id).catch(() => new Map()));
+        const files = () => (filesP ||= (r.files ? Promise.resolve(r.files) : __noteHistImgFiles(r.sgg5, id).catch(() => new Map()))); // 목록 만들 때 받았으면 그것을 쓴다
         let plan = null; // 고른 기록을 되돌리면 무엇이 바뀌나 { e, text, add:[{addedAt,fid}], gone }
         sel.onchange = async () => {
           rst.disabled = true;
@@ -26427,7 +26680,7 @@ const originalBase64 = event.target.result;
           const lack = (e.imgs || []).filter((a) => !nowKeys.has(a));
           const f = lack.length ? await files() : new Map();
           if (!here() || r.items[Number(sel.value)] !== e) return; // 그새 다른 것을 골랐다
-          const add = lack.filter((a) => f.has(a)).map((a) => ({ addedAt: a, fid: f.get(a) }));
+          const add = lack.filter((a) => f.has(a)).map((a) => ({ addedAt: a, fid: f.get(a), trashed: !!f.trashed?.has(f.get(a)) }));
           const gone = lack.length - add.length;
           const el = document.getElementById("noteText");
           const text = !!String(e.memo || "").trim() && e.memo !== (el ? el.value : r.curMemo);
@@ -26443,7 +26696,7 @@ const originalBase64 = event.target.result;
           pv.textContent = lines.join("\n");
           rst.disabled = !(text || add.length);
         };
-        rst.onclick = (ev) => {
+        rst.onclick = async (ev) => {
           ev.stopPropagation();
           const p = plan;
           const el = document.getElementById("noteText");
@@ -26456,17 +26709,27 @@ const originalBase64 = event.target.result;
             try { __fitNoteText(); } catch (_) {}
           }
           if (p.add.length) {
+            // 휴지통에 있던 사진은 먼저 꺼낸다(🗑 초기화 뒤 되돌리기). 못 꺼낸 장은 붙이지 않는다.
+            const ok = [];
+            for (const it of p.add) {
+              if (!it.trashed) { ok.push(it); continue; }
+              try { if (await __driveTrashFile(it.fid, true)) ok.push(it); }
+              catch (e) { console.warn("[note] 휴지통에서 사진 꺼내기 실패:", it.fid, e?.message || e); }
+            }
+            if (!here() || el.dataset.noteId !== String(id)) return;
+            try { __driveInvalidateNameCache(); } catch (_) {}
             // 자리표시자 {addedAt, fid} 로 붙인다 — saveNote 가 그대로 저장하고(드라이브엔 이미 파일이 있다),
             // 저장 뒤 loadNote 가 그 fid 로 사진을 받아 보여 준다
             const list = Array.isArray(aptMemoImageList[id]) ? aptMemoImageList[id] : (aptMemoImageList[id] = []);
             const have = new Set(__noteHistImgKeys(list));
-            for (const it of p.add.slice().sort((a, b) => a.addedAt - b.addedAt)) if (!have.has(it.addedAt)) list.push({ ...it });
+            for (const it of ok.sort((a, b) => a.addedAt - b.addedAt)) if (!have.has(it.addedAt)) list.push({ addedAt: it.addedAt, fid: it.fid });
           }
           saveNote(String(id)); // 새 최신 판으로 저장(드라이브에도 올라간다). 지금 판은 saveNote 가 기록에 남긴다
           plan = null;
           sel.style.display = "none";
           rst.style.display = "none";
           pv.style.display = "none";
+          { const row = document.getElementById("noteHistRow"); if (row) row.style.display = "none"; }
           try { showToast(`✅ 이전 기록으로 ${what}을 되돌렸습니다`, 2500); } catch (_) {}
         };
       }
@@ -26508,7 +26771,11 @@ const originalBase64 = event.target.result;
                   if ((Number(rec.updatedAt) || 0) > (d.t || 0)) { out = { skip: "db-newer" }; return; }
                   const memo = String(d.memo).trim();
                   if (!rec.deletedAt && (rec.memo || "") === memo) { out = { skip: "same" }; return; }
-                  const next = { ...rec, id, memo, updatedAt: Date.now(), deletedAt: null };
+                  // ⚠ 시각은 **임시본을 쓴 때(d.t)** 로 둔다 (2026-10-25 검토 S3). 예전엔 Date.now() 라, 최대 30일 묵은
+                  //   임시본이 그 사이 다른 기기에서 고친 새 판보다 "새 것"이 되어 이기고 그 판을 밀어냈다.
+                  //   이 옮기기는 선로드보다 먼저 돌아 이 기기 DB 에는 다른 기기 판이 아직 없다 — 그래서 시각을 부풀리면 안 된다.
+                  //   다른 기기 판이 더 새 것이면 업로드 큐가 건너뛰고(__newerOnDrive), 선로드가 그 판을 받으며 이 글은 히스토리에 남는다.
+                  const next = { ...rec, id, memo, updatedAt: Math.max(Number(d.t) || 0, (Number(rec.updatedAt) || 0) + 1), deletedAt: null };
                   if (rec.deletedAt) next.images = [];
                   delete next.lazy;
                   if (!next.sgg5) {
@@ -26538,6 +26805,54 @@ const originalBase64 = event.target.result;
       }
       window.addEventListener("load", () => setTimeout(() => { __noteDraftPromoteAll().catch(() => {}); }, 3000));
 
+      // 패널이 닫힌 뒤 압축이 끝난 사진을 그 단지 메모에 바로 붙여 저장한다(handleImageFiles, 2026-10-25 검토).
+      // 글·다른 사진은 건드리지 않는다. 지워진 메모(tombstone)였으면 사진만 있는 새 메모로 살린다. 저장 후 드라이브 큐에 넣는다.
+      async function __noteAppendImageDirect(id, dataUrl) {
+        if (!dataUrl) return false;
+        await initMemoIndexedDB();
+        const saved = await new Promise((resolve, reject) => {
+          const req = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
+          req.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
+          req.onerror = (e) => reject(e.target.error);
+          req.onsuccess = (e) => {
+            const db = e.target.result;
+            let out = null;
+            const tx = db.transaction(__noteTxStores(db), "readwrite");
+            const st = __noteStore(tx);
+            const g = st.get(id);
+            g.onsuccess = () => {
+              const cur = g.result && !g.result.deletedAt ? g.result : null;
+              const now = Date.now();
+              const images = Array.isArray(cur?.images) ? cur.images.slice() : [];
+              if (images.some((it) => __getImgData(it) === dataUrl)) return; // 이미 들어가 있다
+              if (cur) __noteHistPush(id, cur.updatedAt, cur.memo, cur.images);
+              let at = now;
+              const used = new Set(images.map((it) => Number(it?.addedAt) || 0));
+              while (used.has(at)) at++;
+              images.push({ data: dataUrl, addedAt: at });
+              const next = { ...(cur || { id, memo: "" }), id, images, updatedAt: Math.max(now, (Number(g.result?.updatedAt) || 0) + 1), deletedAt: null };
+              delete next.lazy;
+              if (!next.sgg5) { try { const r = __syncAptIndex.get(String(id)); if (r?.sgg5) next.sgg5 = r.sgg5; } catch (_) {} }
+              st.put(next);
+              out = next;
+            };
+            tx.oncomplete = () => { db.close(); resolve(out); };
+            tx.onerror = (ev) => { db.close(); reject(ev.target.error); };
+          };
+        });
+        if (!saved) return false;
+        try { window.__memoPresenceCache?.set(String(id), true); } catch (_) {}
+        try { window.__hongbuMemoKeySet?.add(String(id)); } catch (_) {}
+        try { __scheduleAutoSync(saved.sgg5, { aptId: id }, { kind: "note", id }); } catch (_) {}
+        try { __syncRegionCache.built = false; } catch (_) {}
+        // 그 단지 패널이 (다시) 열려 있으면 새 사진이 보이게
+        try {
+          const info = document.getElementById("apartmentInfo");
+          if (info && info.style.display === "block" && String(info.getAttribute("data-id")) === String(id)) loadNote(String(id), { keepUnsaved: true });
+        } catch (_) {}
+        return true;
+      }
+
       async function saveNote(id) {
         // ⚠ 글·사진은 await 전에 읽는다 (2026-10-05). DB 를 여는 동안 다른 단지가 그려지면
         //   그 단지의 입력칸(빈 칸이거나 다른 글)을 읽어 이 단지를 삭제 표시하거나 덮어쓸 수 있었다.
@@ -26556,6 +26871,15 @@ const originalBase64 = event.target.result;
         //   (2026-10-25 사용자 재현: 같은 마커 두 번 누르기). 불러오기 전 칸이면 **무조건** 건너뛴다.
         if (__noteEl && __noteEl.dataset.noteId !== String(id)) {
           console.warn("[note] 메모를 아직 불러오는 중 — 저장 건너뜀(빈 칸으로 덮지 않게):", id, { memo: !!memo, images: images.length });
+          return;
+        }
+        /* ⚠ **손대지 않았으면 저장하지 않는다** (2026-10-25 검토 D1). 아래의 "변경 없음" 판정은 지금 **DB** 와 비교한다.
+           그런데 패널을 연 사이 선로드가 다른 기기의 새 판을 DB 에 넣으면(패널은 다시 그려지지 않는다),
+           아무것도 안 고치고 닫아도 화면의 옛 글이 DB 와 달라 "바뀜"이 되어 **새 판을 옛 글로 덮었다**.
+           그래서 먼저 **불러온 모습**(loadNote 가 둔 baseline·baseImgs)과 견준다. 사진을 넣거나 빼거나 글을 고쳤으면 저장한다. */
+        if (__noteEl && __noteEl.dataset.baseline != null && __noteEl.dataset.baseImgs != null &&
+            memo === String(__noteEl.dataset.baseline || "").trim() && __noteImgSig(images) === __noteEl.dataset.baseImgs) {
+          __noteDraftClear(id, memo);
           return;
         }
 
@@ -26596,7 +26920,8 @@ const originalBase64 = event.target.result;
                   if (existing) {
                     // 이 트랜잭션에서 바로 tombstone put — 별도 __softDeleteNote 호출은 트랜잭션 충돌 위험
                     const now = Date.now();
-                    const delReq = store.put({ id, memo: '', images: [], updatedAt: now, deletedAt: now });
+                    // 시각은 늘 기존 판보다 뒤 — 시계가 늦은 기기에서도 새 판이 옛 판에 지지 않게(2026-10-25 검토)
+                    const delReq = store.put({ id, memo: '', images: [], updatedAt: Math.max(now, (Number(existing.updatedAt) || 0) + 1), deletedAt: now });
                     delReq.onsuccess = function () {
                       __noteDraftClear(id, "");
                       try {
@@ -26682,7 +27007,9 @@ const originalBase64 = event.target.result;
                   __seenImgAt.add(img.addedAt);
                   return true;
                 });
-                toSave.updatedAt = now;
+                // 시각은 늘 기존 판보다 뒤 (2026-10-25 검토) — 시계가 늦은 기기에서 고친 판이 옛 판보다 이른 시각이 되면
+                //   드라이브에 '더 새 판'이 있다고 보고 올라가지 않았고, 다음 선로드에서 옛 판으로 덮였다.
+                toSave.updatedAt = Math.max(now, (Number(existing?.updatedAt) || 0) + 1);
                 toSave.deletedAt = null;
 
                 const putRequest = store.put(toSave);
@@ -26799,6 +27126,10 @@ const originalBase64 = event.target.result;
             if (useDraft) console.log(`[note] 단지 ${id} 저장 안 된 글을 임시본에서 되살림`);
             // 저장 안 된 새 사진(문자열 항목) — keepUnsaved 일 때만 이어 붙인다
             const dbImgs = __sanitizeImages(result && !result.deletedAt ? result.images || [] : []);
+            // 불러온 사진 모습도 기준으로 둔다 — saveNote 가 "손대지 않았으면 저장 안 함"을 판정할 때 쓴다(D1)
+            if (noteEl) noteEl.dataset.baseImgs = __noteImgSig(dbImgs);
+            // 이전 기록이 있을 때만 '🕘 이전 기록' 단추를 보인다(2026-10-25 사용자 요청)
+            setTimeout(() => { __noteHistRefreshBtn(id, result).catch(() => {}); }, 0);
             let unsaved = [];
             if (opts.keepUnsaved) {
               const have = new Set(dbImgs.map(__getImgData).filter(Boolean));
@@ -27356,15 +27687,14 @@ const originalBase64 = event.target.result;
             typeof record.imageDataUrl === "string" && record.imageDataUrl.startsWith("data:")
               ? record.imageDataUrl
               : "";
+          // ⚠ 원본은 **원본에서만** 만든다 (2026-10-25 검토 P3). 예전엔 원본이 아직 없으면(드라이브에서 받는 중·썸네일만
+          //   있는 기기) 96px 썸네일을 원본 자리에 넣어 저장해, 그 뒤 이 기기에선 늘 흐린 썸네일이 원본으로 보이고
+          //   원본을 다시 받으러 가지도 않았다. 원본이 없으면 원본 칸은 비운 채 두고(나중에 받는다) 글만 바꾼다.
           const sourceImageBlob = sourceImageDataUrl
             ? __dataUrlToBlob(sourceImageDataUrl)
             : record.imageBlob instanceof Blob
               ? record.imageBlob
-              : record.thumbBlob instanceof Blob
-                ? record.thumbBlob
-                : typeof record.thumbDataUrl === "string" && record.thumbDataUrl.startsWith("data:")
-                  ? __dataUrlToBlob(record.thumbDataUrl)
-                  : null;
+              : null;
           const normalizedImageBlob =
             sourceImageBlob instanceof Blob
               ? sourceImageBlob.slice(
@@ -27394,7 +27724,7 @@ const originalBase64 = event.target.result;
           const nextRecord = {
             ...recordWithoutLegacyThumbBlob,
             note: nextNote,
-            imageDataUrl: normalizedImageDataUrl || sourceImageDataUrl || normalizedThumbDataUrl,
+            imageDataUrl: normalizedImageDataUrl || sourceImageDataUrl || "", // 썸네일로 채우지 않는다(P3)
             thumbDataUrl: normalizedThumbDataUrl,
           };
 
@@ -27543,7 +27873,21 @@ const originalBase64 = event.target.result;
       function deletePhotoMemoDB() {
         // ⚠️ 의도적 하드 clear — "이 기기 캐시 비우기" 시맨틱. tombstone을 남기지 않으므로
         //    Drive 데이터는 보존되고 다음 동기화 때 다시 받아진다. (개별 삭제는 tombstone으로 Drive 전파)
-        if (!confirm("이 기기의 포토메모 캐시를 모두 비웁니다.\nDrive 데이터는 보존되며, 다음 동기화 시 다시 받을 수 있습니다.\n\n계속하시겠습니까?")) return;
+        /* ⚠ 아직 드라이브에 안 올라간 것이 있으면 막는다 (2026-10-25 검토 P4).
+           예전엔 확인 창이 "Drive 데이터는 보존"이라고만 하고 그대로 지워서, 오프라인이거나 업로드 대기 중이던
+           사진·메모는 **드라이브에도 기기에도 없이** 사라졌다(대기열은 나중에 "레코드 없음"으로 그냥 끝난다). */
+        let pending = 0;
+        try { pending = Array.from(__dq.items.values()).filter((it) => it && it.kind === "photo").length; } catch (_) {}
+        if (pending > 0) {
+          alert(`아직 구글드라이브에 올라가지 않은 포토메모가 ${pending}건 있습니다.\n지금 비우면 그 사진·메모는 되살릴 수 없습니다.\n\n와이파이에 연결된 상태에서 업로드가 끝난 뒤 다시 시도해 주세요.`);
+          return;
+        }
+        let seeded = false;
+        try { seeded = localStorage.getItem(__DQ_SEED_KEY) === "1"; } catch (_) {}
+        if (!window.__gdriveReady || !seeded) {
+          if (!confirm("⚠ 구글드라이브에 연결돼 있지 않아, 이 기기에만 있는 포토메모가 있는지 확인할 수 없습니다.\n그런 포토메모는 비우면 되살릴 수 없습니다.\n\n그래도 이 기기의 포토메모를 모두 비울까요?")) return;
+        }
+        if (!confirm("이 기기의 포토메모를 모두 비웁니다.\n구글드라이브에 올라간 것은 남아 있어 다음 동기화 때 다시 받습니다.\n\n계속하시겠습니까?")) return;
 
         const request = indexedDB.open("hongbuMemo", HONGBU_MEMO_DB_VERSION);
         request.onupgradeneeded = (e) => __createMemoStores(e.target.result); // ⚠ __createMemoStores 주석 참고 — 여는 곳마다 반드시 붙인다
@@ -30370,13 +30714,21 @@ const originalBase64 = event.target.result;
         } catch (e) {
           console.warn("[lj] 시트 읽기 실패:", e?.result?.error?.message || e?.message || e);
           if (mine) {
-            __ljState.sid = "";
+            // ⚠ **같은 시군구의** 알던 시트 id 는 지우지 않는다 (2026-10-25 검토). 예전엔 한 번 읽기가 실패(일시 오류·
+            //   연결 시간 초과)하면 sid 를 비워, 그 뒤 저장이 전부 "시트를 몰라 저장 못 함"으로 조용히 끝났다.
+            //   다른 시군구 것이면 비운다 — 남겨 두면 엉뚱한 시트에 쓴다.
+            if (__ljState.sidSgg5 !== String(ctx?.sgg5 || "")) { __ljState.sid = ""; __ljState.sidSgg5 = ""; }
             __ljState.why = "시트를 읽지 못했습니다 — " + (e?.result?.error?.message || e?.message || e);
           }
           return [];
         }
         if (mine) {
-          __ljState.sid = r.sid || "";
+          // 시트가 정말 없을 때·다른 시군구일 때만 바꾼다 — 연결 전·Sheets API 못 불러옴 같은 일시 사정에는 알던 id 를 둔다
+          const gone = !r.sid && /아직 없습니다/.test(String(r.why || ""));
+          if (r.sid || gone || __ljState.sidSgg5 !== String(ctx?.sgg5 || "")) {
+            __ljState.sid = r.sid || "";
+            __ljState.sidSgg5 = r.sid ? String(ctx?.sgg5 || "") : "";
+          }
           __ljState.layout = r.layout || __LJ_LAY_V; // 이 시군구 시트의 배치(세로형/가로형)
           __ljState.headAt = r.headAt ?? 1;          // 항목명이 있는 줄(매물은 그 다음부터)
           __ljState.why = r.why || "";
@@ -30872,26 +31224,56 @@ const originalBase64 = event.target.result;
 
       // ── 드래프트(동기 미러) ──
       // seed·isNew 를 같이 담는다 — 복구할 때도 "빈 기록인지"를 판정할 수 있어야 한다.
+      /* ⚠ 드래프트는 **매물마다 따로** 둔다 (2026-10-25 검토). 예전엔 한 칸(__LJ_DRAFT_KEY)뿐이라, A 를 고치다
+         저장이 실패한 채 B 를 고치면 A 의 드래프트가 덮여 사라졌다. 저장이 끝나면 **그 매물 것만**, 그리고
+         그 뒤에 더 고친 것이 없을 때만 지운다(예전엔 어느 매물이든 저장 하나가 끝나면 통째로 지웠다).
+         모양: { [기록ID]: { rec, seed, isNew } }. 옛 한 칸 드래프트는 읽을 때 이쪽으로 옮긴다. */
+      const __LJ_DRAFTS_KEY = "__ljDrafts_v2";
+      function __ljDraftsAll() {
+        let all = {};
+        try { all = JSON.parse(localStorage.getItem(__LJ_DRAFTS_KEY) || "{}") || {}; } catch (_) { all = {}; }
+        try {
+          const old = JSON.parse(localStorage.getItem(__LJ_DRAFT_KEY) || "null");
+          if (old) {
+            const d = old.rec ? old : { rec: old, seed: {}, isNew: false }; // 구버전(레코드만 저장) 호환
+            if (d.rec?.id && !all[d.rec.id]) all[d.rec.id] = d;
+            localStorage.removeItem(__LJ_DRAFT_KEY);
+            localStorage.setItem(__LJ_DRAFTS_KEY, JSON.stringify(all));
+          }
+        } catch (_) {}
+        return all;
+      }
       function __ljDraftSet() {
         try {
           // ⚠ 사진 원본(dataURL)은 드래프트에 담지 않는다 — 한 장이 수백 KB 라 localStorage 5MB 를 금방 넘긴다.
           //   대신 addedAt 만 남긴다. 사진은 추가·삭제 즉시 IDB 에 확정하므로 드래프트가 지킬 것이 없다.
           //   복구할 때 이 자리표시자를 IDB 의 사진과 다시 맞춘다(__ljRecoverDraft).
           const rec = __ljState.rec;
-          const lean = rec ? { ...rec, photos: __ljShots(rec).map((it) => ({ addedAt: Number(it?.addedAt) || 0 })).filter((x) => x.addedAt) } : null;
-          localStorage.setItem(__LJ_DRAFT_KEY, JSON.stringify({ rec: lean, seed: __ljState.seed, isNew: !!__ljState.isNew }));
+          if (!rec?.id) return;
+          const lean = { ...rec, photos: __ljShots(rec).map((it) => ({ addedAt: Number(it?.addedAt) || 0 })).filter((x) => x.addedAt) };
+          const all = __ljDraftsAll();
+          all[rec.id] = { rec: lean, seed: __ljState.seed, isNew: !!__ljState.isNew };
+          localStorage.setItem(__LJ_DRAFTS_KEY, JSON.stringify(all));
         } catch (_) {}
       }
-      function __ljDraftGet() {
-        try {
-          const raw = JSON.parse(localStorage.getItem(__LJ_DRAFT_KEY) || "null");
-          if (!raw) return null;
-          return raw.rec ? raw : { rec: raw, seed: {}, isNew: false }; // 구버전(레코드만 저장) 호환
-        } catch (_) {
-          return null;
-        }
+      // id 를 주면 그 매물 드래프트, 안 주면 전부(배열)
+      function __ljDraftGet(id) {
+        const all = __ljDraftsAll();
+        if (id != null) return all[String(id)] || null;
+        return Object.values(all).filter((d) => d?.rec?.id);
       }
-      function __ljDraftClear() { try { localStorage.removeItem(__LJ_DRAFT_KEY); } catch (_) {} }
+      // upTo 를 주면 드래프트가 그 시각보다 **나중에 고친 것**이면 남긴다(쓰는 사이 더 고친 것을 지키려고)
+      function __ljDraftClear(id, upTo) {
+        try {
+          const all = __ljDraftsAll();
+          const k = String(id ?? __ljState.rec?.id ?? "");
+          if (!k || !all[k]) return;
+          if (upTo != null && (Number(all[k].rec?.updatedAt) || 0) > (Number(upTo) || 0)) return;
+          delete all[k];
+          if (Object.keys(all).length) localStorage.setItem(__LJ_DRAFTS_KEY, JSON.stringify(all));
+          else localStorage.removeItem(__LJ_DRAFTS_KEY);
+        } catch (_) {}
+      }
 
       function __ljTouch() {
         const rec = __ljState.rec;
@@ -30917,7 +31299,11 @@ const originalBase64 = event.target.result;
         const rec = recArg && recArg !== __ljState.rec ? recArg : __ljState.rec;
         const openRec = rec === __ljState.rec;
         if (!rec) return;
-        const sid = __ljState.sid;
+        // ⚠ 시트는 **그 매물의 시군구** 것을 쓴다 (2026-10-25 검토). 미뤄 둔 저장이 도는 사이 다른 시군구 단지를 열면
+        //   __ljState.sid 가 그쪽 시트로 바뀌어, 엉뚱한 시트 맨 뒤에 새 매물처럼 붙고 원래 시트에는 반영되지 않았다.
+        const sid = __ljSheetCache.get(String(rec.sgg5 || ""))?.sid ||
+          (__ljState.sidSgg5 === String(rec.sgg5 || "") ? __ljState.sid : "") || "";
+        if (!openRec && __ljSheetSig.has(rec)) sigArg = __ljSheetSig.get(rec); // 떠난 뒤엔 다시 읽어 맞춘 시트 모습과 견준다
         const st = () => document.getElementById("ljStatus");
         if (!sid || rec.ci == null) {
           const e = st();
@@ -30960,9 +31346,14 @@ const originalBase64 = event.target.result;
         if (__ljWriteBusy) { __ljWritePending = { sid, snap, sig }; return; }
         __ljWriteRun(sid, snap, sig);
       }
+      // 매물마다 "지금 시트의 모습" 서명 — 화면을 떠난 뒤 미뤄 둔 저장(__ljFlush(rec, …))이 이것과 견준다(__ljEditRefresh 가 채운다)
+      const __ljSheetSig = new WeakMap();
       let __ljWriteBusy = null;    // 지금 쓰고 있는 것 { sig }
       let __ljWritePending = null; // 그 뒤에 쓸 가장 최근 것 { sid, snap, sig }
-      function __ljWriteRun(sid, snap, sig) {
+      // 실패하면 5초·15초·45초 뒤 다시 (2026-10-25 검토 — 예전엔 빨간 글만 남기고 포기해 드래프트에만 남았다)
+      const __LJ_WRITE_RETRY_MS = [5000, 15000, 45000];
+      function __ljWriteRun(sid, snap, sig, tries) {
+        tries = tries || 0;
         const st = () => document.getElementById("ljStatus");
         const mine = () => __ljState.rec?.id === snap.id; // 쓰는 사이 다른 매물을 열었으면 그 화면은 건드리지 않는다
         __ljWriteBusy = { sig };
@@ -30978,10 +31369,11 @@ const originalBase64 = event.target.result;
             // 다음 목록은 시트에서 새로 읽는다 — 그때까지는 방금 쓴 모습으로 바로 보이게(swr, 2026-10-24)
             __ljCacheTouch(String(snap.sgg5), mine() ? __ljState.rec : snap);
             // 쓰는 동안 자리가 바뀌었으면(정렬) 열려 있는 입력 화면도 새 자리를 따른다
-            if (mine() && snap.ci != null) __ljState.rec.ci = snap.ci;
+            // ⚠ 여기서 __ljState.rec.ci = snap.ci 로 되돌리면 안 된다(2026-10-25 M1) — 쓴 뒤 정렬이 옮겼으면
+            //   정렬이 고쳐 둔 새 자리를 옛 자리로 덮는다. 자리는 __ljLocateCol·__ljApplySort 가 직접 맞춘다.
             if (__ljWritePending && __ljWritePending.snap.id === snap.id && snap.ci != null) __ljWritePending.snap.ci = snap.ci;
             __ljResortSoon(__ljState.ctx); // 기록일시·예약시각이 바뀌었으니 순서를 다시 맞춘다
-            if (!__ljWritePending) __ljDraftClear(); // 아직 못 쓴 것이 남았으면 드래프트를 지우지 않는다
+            __ljDraftClear(snap.id, snap.updatedAt); // 이 매물 것만, 쓴 뒤에 더 고친 것이 없을 때만 지운다
             const e = st();
             if (e && __ljState.view === "form" && mine()) {
               e.textContent = __ljWritePending ? "저장 중…" : "시트에 저장됨 " + (__ljWhen(snap.updatedAt).split(" ")[1] || "");
@@ -30991,7 +31383,17 @@ const originalBase64 = event.target.result;
           .catch((err) => {
             console.warn("[lj] 시트 저장 실패:", err?.result?.error?.message || err?.message || err);
             const e = st();
-            if (e) { e.textContent = "⚠ 시트 저장 실패 — 다시 시도하세요"; e.style.color = "#b3261e"; }
+            const wait = __LJ_WRITE_RETRY_MS[tries];
+            // 더 새 저장이 기다리고 있으면 그것이 이 매물을 다시 쓰므로 따로 다시 하지 않는다
+            const newer = __ljWritePending && __ljWritePending.snap.id === snap.id;
+            if (wait && !newer) {
+              if (e && mine()) { e.textContent = `⚠ 시트 저장 실패 — ${Math.round(wait / 1000)}초 뒤 다시 시도`; e.style.color = "#b3261e"; }
+              setTimeout(() => {
+                if (__ljWritePending && __ljWritePending.snap.id === snap.id) return; // 그새 더 새 것이 생겼다
+                if (__ljWriteBusy) { if (!__ljWritePending) __ljWritePending = { sid, snap, sig }; return; }
+                __ljWriteRun(sid, snap, sig, tries + 1);
+              }, wait);
+            } else if (e) { e.textContent = "⚠ 시트 저장 실패 — 다시 시도하세요(적은 내용은 기기에 남아 있습니다)"; e.style.color = "#b3261e"; }
           })
           .finally(() => {
             __ljWriteBusy = null;
@@ -31011,24 +31413,33 @@ const originalBase64 = event.target.result;
       //   이제 원본인 시트와 직접 대조하고, **시트에 올린 뒤에만** 지운다.
       //   못 올렸으면 그대로 두고 다음 부팅에 다시 시도한다.
       (async function __ljRecoverDraft() {
-        try {
-          const d = __ljDraftGet();
-          if (!d?.rec?.id) return;
-          if (d.isNew && __ljBlank(d.rec, d.seed)) { __ljDraftClear(); return; } // 빈 새 기록은 되살리지 않는다
-          const rec = d.rec;
-          const sgg5 = String(rec.sgg5 || "");
-          if (!/^\d{5}$/.test(sgg5) || rec.ci == null) return; // 어디에 쓸지 모르면 남겨 둔다
-          if (!(await __ljDriveWait(60000))) return;            // 로그인 전이면 다음 부팅에
-          const r = await __ljReadRegion({ sgg5, sigunguName: rec.sigunguName || "" }, true);
-          if (!r?.sid) return;
-          const cur = (r.recs || []).find((x) => String(x.id) === String(rec.id));
-          if (cur && __ljColSig(cur) === __ljColSig(rec)) { __ljDraftClear(); return; } // 이미 들어가 있다
-          await __ljWriteCol(r.sid, rec);
-          __ljSheetCache.delete(sgg5);
-          __ljDraftClear();
-          console.log("[lj] 시트에 못 올라간 작성분 복구:", rec.id);
-        } catch (e) {
-          console.warn("[lj] 드래프트 복구 실패(다음 부팅에 다시 시도):", e?.message || e);
+        // 매물마다 따로 (드래프트가 매물별로 바뀌었다, 2026-10-25)
+        for (const d of __ljDraftGet()) {
+          try {
+            if (!d?.rec?.id) continue;
+            if (d.isNew && __ljBlank(d.rec, d.seed)) { __ljDraftClear(d.rec.id); continue; } // 빈 새 기록은 되살리지 않는다
+            const rec = d.rec;
+            const sgg5 = String(rec.sgg5 || "");
+            if (!/^\d{5}$/.test(sgg5) || rec.ci == null) continue; // 어디에 쓸지 모르면 남겨 둔다
+            if (!(await __ljDriveWait(60000))) return;              // 로그인 전이면 다음 부팅에
+            const r = await __ljReadRegion({ sgg5, sigunguName: rec.sigunguName || "" }, true);
+            if (!r?.sid) continue;
+            const cur = (r.recs || []).find((x) => String(x.id) === String(rec.id));
+            if (cur && __ljColSig(cur) === __ljColSig(rec)) { __ljDraftClear(rec.id); continue; } // 이미 들어가 있다
+            // ⚠ 시트 쪽이 **더 나중에** 고쳐졌으면 덮지 않는다 (2026-10-25 검토). 예전엔 내용이 다르기만 하면 열을
+            //   통째로 다시 써서, 이 기기 저장이 실패한 뒤 파트너·다른 기기가 고친 것이 사라졌다. 기록일시는 초 단위라 1초 여유.
+            if (cur && cur.sheetWhen && (Number(rec.updatedAt) || 0) <= cur.sheetWhen + 999) {
+              console.warn("[lj] 드래프트보다 시트가 더 새것이라 복구하지 않음:", rec.id);
+              __ljDraftClear(rec.id);
+              continue;
+            }
+            await __ljWriteCol(r.sid, rec); // 시트 줄 안에서 기록ID 로 자리를 다시 찾아 쓴다(새 매물은 빈 자리)
+            __ljCacheTouch(sgg5, rec);
+            __ljDraftClear(rec.id, rec.updatedAt);
+            console.log("[lj] 시트에 못 올라간 작성분 복구:", rec.id);
+          } catch (e) {
+            console.warn("[lj] 드래프트 복구 실패(다음 부팅에 다시 시도):", d?.rec?.id, e?.message || e);
+          }
         }
       })();
 
@@ -31040,21 +31451,20 @@ const originalBase64 = event.target.result;
         if (!rec) return;
         if (__ljState.isNew && __ljBlank(rec, __ljState.seed)) {
           clearTimeout(__ljState.saveTimer); // 아직 안 나간 저장 예약을 먼저 끊는다
-          __ljDraftClear();
+          __ljDraftClear(rec.id);
           try {
             // ⚠ 이제 원본은 시트다. 로컬을 지우는 것으로는 아무 일도 일어나지 않는다 —
             //   메모를 치는 순간 이미 시트에 열이 써졌기 때문에, 그 **열을 비워야** 한다.
             //   (2026-09-28 실측: 메모를 쓰다 지우고 나갔는데 "(내용 없음)" 으로 남았다)
-            if (__ljState.savedOnce && __ljState.sid && rec.ci != null) {
+            // ⚠ 아직 안 나간 이 매물의 저장은 버린다. 쓰는 중인 저장은 __ljClearRecCol 이 끝나기를 기다린다
+            //   (예전엔 savedOnce 만 봐서, 첫 저장이 날아가는 중이면 지우지 않았고 그 저장이 나중에 도착해 빈 매물이 남았다).
+            if (__ljWritePending?.snap?.id === rec.id) __ljWritePending = null;
+            const inFlight = !!__ljWriteBusy;
+            if ((__ljState.savedOnce || inFlight) && __ljState.sid && rec.ci != null) {
               const lay = rec.lay || __ljState.layout || __LJ_LAY_V;
-              const where = __ljStripA1(lay, rec.ci, 0, __LJ_SHEET_ROWS.length);
-              await gapi.client.sheets.spreadsheets.values.clear({
-                spreadsheetId: __ljState.sid,
-                range: where,
-                resource: {},
-              });
+              const at = await __ljClearRecCol(__ljState.sid, rec, lay);
               __ljCacheTouch(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec, true);
-              console.log("[lj] 빈 새 기록 취소 — 시트에서 비움:", where);
+              console.log("[lj] 빈 새 기록 취소 —", at == null ? "시트에 없어 지울 것 없음" : `시트에서 비움(${__ljWhereText(lay, at)})`);
             }
           } catch (e) {
             console.warn("[lj] 빈 기록 취소 실패(그대로 둠):", e?.result?.error?.message || e?.message || e);
@@ -31828,7 +32238,7 @@ const originalBase64 = event.target.result;
           __ljState.sig = __ljColSig(cached);
           __ljRenderForm();
           // 다시 읽기가 끝날 때까지 저장은 기다린다(__ljFlush) — 그 전에 쓰면 그 사이 시트에서 고친 칸을 덮는다
-          const p = __ljEditRefresh(id, base)
+          const p = __ljEditRefresh(id, base, cached)
             .catch((e) => console.warn("[lj] 매물 다시 읽기 실패(무시 — 읽어 둔 값으로 계속):", e?.message || e))
             .finally(() => { if (__ljState.editRefreshing === p) __ljState.editRefreshing = null; });
           __ljState.editRefreshing = p;
@@ -31855,11 +32265,15 @@ const originalBase64 = event.target.result;
         b.__photos = __ljShots(rec).map((it) => Number(it?.addedAt) || 0).join(",");
         return b;
       }
-      async function __ljEditRefresh(id, base) {
+      async function __ljEditRefresh(id, base, target) {
         const ctx = __ljState.ctx;
         const fresh = (await __ljByApt(ctx?.aptId, true)).find((x) => x.id === id);
-        const cur = __ljState.rec;
-        if (!fresh || __ljState.view !== "form" || cur?.id !== id) return; // 그 사이 화면을 떠났다
+        // ⚠ 화면을 떠났어도 **병합은 한다** (2026-10-25 검토). 예전엔 떠났으면 그냥 돌아가서, 미뤄 둔 저장이
+        //   옛 캐시 값 + 사용자가 고친 칸으로 열을 통째로 써 그 사이 파트너가 시트에서 고친 칸을 덮었다.
+        //   다시 그리기만 화면에 있을 때 한다.
+        const cur = target || __ljState.rec;
+        if (!fresh || cur?.id !== id) return;
+        const onScreen = __ljState.view === "form" && __ljState.rec === cur;
         if (fresh.ci != null) cur.ci = fresh.ci; // 정렬로 자리가 바뀌었을 수 있다
         const changed = [];
         for (const k of __LJ_EDIT_KEYS()) {
@@ -31882,9 +32296,12 @@ const originalBase64 = event.target.result;
         for (const k of __LJ_EDIT_KEYS()) sheetNow[k] = fresh[k] ?? "";
         sheetNow.photos = fresh.photos;
         sheetNow.updatedAt = fresh.updatedAt;
-        __ljState.sig = __ljColSig(sheetNow);
+        const sheetSig = __ljColSig(sheetNow);
+        __ljSheetSig.set(cur, sheetSig);
+        if (__ljState.rec === cur) __ljState.sig = sheetSig;
         if (!changed.length) return;
         console.log(`[lj] 연 사이 시트에서 바뀐 칸을 반영: ${changed.join(", ")}`);
+        if (!onScreen) return; // 화면을 떠났다 — 값만 반영하고 다시 그리지 않는다
         // 지금 글을 쓰고 있으면(초점이 입력 칸) 다시 그리지 않는다 — 커서가 날아간다. 값은 이미 반영됐다.
         const panel = __ljPanelEl();
         if (panel && panel.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
@@ -32567,11 +32984,10 @@ const originalBase64 = event.target.result;
             say("④ 시트에서 지우는 중…");
             try {
               const lay = rec.lay || __ljState.layout || __LJ_LAY_V;
-              await gapi.client.sheets.spreadsheets.values.clear({
-                spreadsheetId: sid,
-                range: __ljStripA1(lay, rec.ci, 0, __LJ_SHEET_ROWS.length),
-                resource: {},
-              });
+              // ⚠ ① 에서 읽은 자리는 사진 정리(수 초) 동안 낡을 수 있다 — 지우기 직전에 기록ID 로 다시 찾는다(2026-10-25 M3)
+              if (__ljWritePending?.snap?.id === rec.id) __ljWritePending = null; // 지울 매물의 남은 저장은 버린다
+              const at = await __ljClearRecCol(sid, rec, lay);
+              if (at == null) console.warn("[lj] 지우려던 매물이 시트에 없습니다(이미 지워졌거나 ID 가 바뀜):", rec.id);
               __ljCacheTouch(String(rec.sgg5 || __ljState.ctx?.sgg5 || ""), rec, true); // 목록에서 바로 빠지게
             } catch (e) {
               console.error("[lj] 시트에서 지우기 실패:", e);
@@ -32583,7 +32999,7 @@ const originalBase64 = event.target.result;
           }
           say("⑤ 목록 새로 고치는 중…");
           __ljState.rec = null;
-          __ljDraftClear();
+          __ljDraftClear(id); // 드래프트가 매물별이라 id 로 (rec 를 비운 뒤라 기본값이 없다)
           await __ljRenderList();   // 여기서 화면이 통째로 바뀐다 — 단추도 같이 사라진다
         } catch (e) {
           console.error("[lj] 매물 삭제 실패:", e);
@@ -33496,6 +33912,11 @@ const originalBase64 = event.target.result;
         const at = {};
         __LJ_SHEET_ROWS.forEach((f, i) => { at[f.k] = col[i]; });
         const rec = { id: String(at.__id ?? "").trim(), aptId: String(__ljNum(at.__aptCode) ?? "").trim(), sgg5 };
+        // 시트의 기록일시(초 단위) — 드래프트 복구가 "시트가 더 새 것인가"를 볼 때 쓴다. 시트 칸에는 쓰지 않는 값이다.
+        {
+          const m = String(at.__when ?? "").match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/);
+          if (m) Object.defineProperty(rec, "sheetWhen", { value: new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime(), enumerable: false, writable: true });
+        }
         for (const f of __LJ_ROWS) {
           // ⚠ 드롭다운 안내 문구가 칸에 남아 있으면 값이 아니라 빈칸으로 본다
           const raw = at[f.k];
@@ -33582,19 +34003,57 @@ const originalBase64 = event.target.result;
         });
         return { order: order.map((x) => x.ci), moves, lo };
       }
+      /* ── 시트 하나에 줄 하나 (2026-10-25 검토 M1) ──
+         [자리 확인 + 쓰기](__ljWriteCol) · [정렬](__ljApplySort) · [열 지우기](__ljClearRecCol) 를 같은 시트에서
+         **한 번에 하나씩** 돌린다. 예전엔 정렬이 열을 옮기는 사이 다른 저장이 '옮기기 전 자리'를 확인하고 써서
+         **다른 매물 한 건을 통째로 덮을 수** 있었다(자리 확인과 쓰기 사이, 정렬 계획과 옮기기 사이에 틈).
+         ⚠ 다른 기기는 이 줄을 모른다 — 그래서 정렬은 옮기기 직전에 기록ID 줄을 다시 읽어 **읽은 그대로일 때만** 옮기고,
+            쓰기·지우기는 줄 안에서 기록ID 로 자리를 다시 확인한다. */
+      const __ljLocks = new Map(); // sid → 마지막 작업 Promise
+      function __ljSheetLock(sid, fn) {
+        const prev = __ljLocks.get(sid) || Promise.resolve();
+        const run = prev.catch(() => {}).then(fn);
+        const tail = run.catch(() => {});
+        __ljLocks.set(sid, tail);
+        tail.then(() => { if (__ljLocks.get(sid) === tail) __ljLocks.delete(sid); });
+        return run;
+      }
+      // 기록ID 줄 — 매물 자리(ci)마다 그 자리의 기록ID("" = 없음)
+      async function __ljReadIds(sid, lay) {
+        const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
+        const range = lay === __LJ_LAY_H ? `'매물'!${__ljColA1(idRow + 1)}:${__ljColA1(idRow + 1)}` : `'매물'!${idRow + 1}:${idRow + 1}`;
+        const res = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: sid, range, valueRenderOption: "UNFORMATTED_VALUE" });
+        const vals = res.result.values || [];
+        return lay === __LJ_LAY_H ? vals.map((r) => String(r?.[0] ?? "").trim()) : (vals[0] || []).map((v) => String(v ?? "").trim());
+      }
       async function __ljApplySort(sid, lay, headAt, read, recs) {
         const plan = __ljSortPlan(read, (headAt ?? 1) + 1);
         if (!plan.moves.length) return false;
         const mainId = await __ljMainSheetId(sid); // 세션에 한 번만 묻는다(저장도 같은 값을 쓴다)
         if (mainId == null) return false;
         const dim = lay === __LJ_LAY_H ? "ROWS" : "COLUMNS";
-        await gapi.client.sheets.spreadsheets.batchUpdate({
-          spreadsheetId: sid,
-          resource: { requests: plan.moves.map((m) => ({ moveDimension: {
-            source: { sheetId: mainId, dimension: dim, startIndex: m.from, endIndex: m.from + 1 },
-            destinationIndex: m.to,
-          } })) },
+        const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
+        // 읽기 결과에서 자리마다 있어야 할 기록ID — 고치기(ⓐ 채번)를 거친 recs 가 우선
+        const want = new Map();
+        for (const r of read) want.set(r.ci, String(r.col?.[idRow] ?? "").trim());
+        for (const r of recs || []) if (r.ci != null) want.set(r.ci, String(r.id || ""));
+        const moved0 = await __ljSheetLock(sid, async () => {
+          // 이 기기에서 쓰는 중이거나 쓸 것이 남았으면 이번엔 옮기지 않는다 — 다음 읽기에서 맞춘다
+          if (__ljWriteBusy || __ljWritePending) { console.log("[lj] 저장 중이라 정렬을 다음으로 미룸"); return false; }
+          const ids = await __ljReadIds(sid, lay);
+          for (const [ci, id] of want) {
+            if ((ids[ci] || "") !== id) { console.log(`[lj] 읽은 뒤 시트가 바뀌어 정렬을 다음으로 미룸 (${__ljWhereText(lay, ci)})`); return false; }
+          }
+          await gapi.client.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: sid,
+            resource: { requests: plan.moves.map((m) => ({ moveDimension: {
+              source: { sheetId: mainId, dimension: dim, startIndex: m.from, endIndex: m.from + 1 },
+              destinationIndex: m.to,
+            } })) },
+          });
+          return true;
         });
+        if (!moved0) return false;
         // 옮긴 자리로 고쳐 둔다 — 읽기 결과(read)·매물(recs)·지금 열려 있는 입력 화면까지
         const newCi = new Map(plan.order.map((ci, i) => [ci, plan.lo + i]));
         for (const r of read) if (newCi.has(r.ci)) r.ci = newCi.get(r.ci);
@@ -33611,21 +34070,58 @@ const originalBase64 = event.target.result;
       async function __ljLocateCol(sid, rec, lay) {
         const idRow = __LJ_SHEET_ROWS.findIndex((f) => f.k === "__id");
         if (idRow < 0 || !rec?.id || rec.ci == null) return rec?.ci;
-        const range = lay === __LJ_LAY_H ? `'매물'!${__ljColA1(idRow + 1)}:${__ljColA1(idRow + 1)}` : `'매물'!${idRow + 1}:${idRow + 1}`;
-        const res = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: sid, range, valueRenderOption: "UNFORMATTED_VALUE" });
-        const vals = res.result.values || [];
-        const ids = lay === __LJ_LAY_H ? vals.map((r) => String(r?.[0] ?? "").trim()) : (vals[0] || []).map((v) => String(v ?? "").trim());
+        const ids = await __ljReadIds(sid, lay);
         if (ids[rec.ci] === rec.id) return rec.ci;
         const found = ids.indexOf(rec.id);
         let ci = rec.ci;
         if (found >= 0) ci = found;
-        else if (ids[rec.ci]) ci = Math.max(ids.length, rec.ci + 1); // 새 매물인데 그 자리를 남이 차지했다 → 맨 뒤 다음 자리
+        else ci = await __ljFreeSlot(sid, lay, rec.ci); // 시트에 아직 없는 새 매물 — **완전히 빈** 자리에만 쓴다
         if (ci !== rec.ci) {
           console.warn(`[lj] ${rec.id} 의 자리가 바뀌었습니다 — ${__ljWhereText(lay, rec.ci)} → ${__ljWhereText(lay, ci)}`);
           rec.ci = ci;
           if (__ljState.rec?.id === rec.id) __ljState.rec.ci = ci;
         }
         return ci;
+      }
+      /* 그 매물의 열(가로형은 행)을 비운다 (2026-10-25 검토 M3). 예전엔 들고 있던 rec.ci 그대로 지웠다 —
+         정렬(이 기기·다른 기기)로 자리가 바뀌었으면 **엉뚱한 매물이 통째로 지워졌다**.
+         쓰는 중인 저장이 끝나기를 기다리고(그 저장이 나중에 도착하면 지운 것이 되살아난다), 시트 줄 안에서
+         기록ID 로 지금 자리를 찾아 **그 ID 가 있는 자리만** 지운다. 시트에 없으면 아무것도 안 지우고 null. */
+      async function __ljClearRecCol(sid, rec, lay) {
+        await __ljWritesIdle(15000);
+        return __ljSheetLock(sid, async () => {
+          const ids = await __ljReadIds(sid, lay);
+          const at = ids.indexOf(String(rec.id || ""));
+          if (!rec.id || at < 2) return null;
+          await gapi.client.sheets.spreadsheets.values.clear({
+            spreadsheetId: sid,
+            range: __ljStripA1(lay, at, 0, __LJ_SHEET_ROWS.length),
+            resource: {},
+          });
+          rec.ci = at;
+          return at;
+        });
+      }
+      /* 새 매물을 쓸 자리 (2026-10-25 검토 M2). 예전엔 기록ID 줄만 보고 "ID 가 비었으면 빈 자리"로 봤다 —
+         그런데 파트너가 시트에 손으로 적은 매물은 홍부가 읽기 전까지 **ID 가 없다**. 그 열에 새 매물을 덮어썼다.
+         이제 그 자리의 **모든 칸**을 본다. 하나라도 값이 있으면 값이 있는 마지막 자리 다음으로 간다.
+         (빈 입력 열의 수식은 "" 를 돌려주므로 빈 칸으로 보인다.) */
+      async function __ljFreeSlot(sid, lay, want) {
+        const N = __LJ_SHEET_ROWS.length;
+        const range = lay === __LJ_LAY_H ? `'매물'!A1:${__ljColA1(N)}5000` : `'매물'!A1:ZZ${N}`;
+        const res = await gapi.client.sheets.spreadsheets.values.get({ spreadsheetId: sid, range, valueRenderOption: "UNFORMATTED_VALUE" });
+        const vals = res.result.values || [];
+        const filled = new Set();
+        if (lay === __LJ_LAY_H) {
+          vals.forEach((row, ri) => { if ((row || []).some((v) => String(v ?? "").trim() !== "")) filled.add(ri); });
+        } else {
+          for (const row of vals) (row || []).forEach((v, ci) => { if (String(v ?? "").trim() !== "") filled.add(ci); });
+        }
+        const first = 2; // 세로형: C열부터 · 가로형: 3행부터 (둘 다 0부터 센 2)
+        if (want >= first && !filled.has(want)) return want;
+        let last = first - 1;
+        for (const c of filled) if (c > last) last = c;
+        return Math.max(last + 1, first);
       }
       // 저장 뒤 조금 있다가 다시 읽어 순서를 맞춘다(기록일시·예약시각·날짜가 바뀌었을 수 있다).
       // 입력 중 저장이 연달아 나므로 마지막 저장 뒤 3초에 한 번만.
@@ -34186,6 +34682,8 @@ const originalBase64 = event.target.result;
         const sheetId = await __ljMainSheetId(sid);
         if (sheetId == null) throw new Error("매물 탭 번호를 못 구했습니다");
         // 매물은 자동 정렬로 자리가 바뀐다 — 쓰기 전에 기록ID 로 지금 자리를 확인한다(2026-10-24)
+        // ⚠ 자리 확인과 쓰기는 **시트 줄 안에서** 한 덩어리로 한다(2026-10-25 M1) — 사이에 정렬이 끼면 남의 열에 쓴다
+        return __ljSheetLock(sid, async () => {
         await __ljLocateCol(sid, rec, lay);
         const idx = {};
         __LJ_SHEET_ROWS.forEach((f, i) => { idx[f.k] = i; });
@@ -34241,6 +34739,7 @@ const originalBase64 = event.target.result;
           await __ljEnsureGrid(sid, lay, __LJ_SHEET_ROWS.length, rec.ci + 1);
           await put();
         }
+        });
       }
       /* 사진 보기 칸 하나를 칩으로 채운다. 저장할 때와, 읽다가 **칸이 비어 있는 것을 발견했을 때**
          둘 다 여기로 온다 (2026-09-29). 실패해도 조용히 넘어간다 — 다음 기회에 다시 채워진다. */
