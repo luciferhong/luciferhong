@@ -2330,6 +2330,13 @@
         }
       }
 
+      /* 이전 기록 '되돌리기' — 눌리지 않을 때(아직 안 고름·불러오는 중·할 일 없음)는 회색으로 (2026-10-25 사용자 지적:
+         파란색 그대로라 눌리는 줄 알았다). 인라인 배경색을 이기려고 !important. */
+      #noteHistRestore:disabled {
+        background: #c9ced6 !important;
+        color: #f4f5f7 !important;
+        cursor: default !important;
+      }
       /* 단지메모 복사 단추 — 매물임장 쪽(.lj-memo-copy)과 같은 모양 (2026-09-28) */
       #noteCopyBtn {
         margin-left: 8px;
@@ -26497,6 +26504,23 @@ const originalBase64 = event.target.result;
           seen.add(k);
           return true;
         });
+        /* ⚠ **되돌려도 아무것도 안 바뀌는 기록은 뺀다** (2026-10-25 사용자: "이전 버전이 사진이 한 개라는 건가").
+           되돌리기는 글을 그 판으로 바꾸고(그 판에 글이 있을 때) **빠진 사진만** 다시 붙인다 — 지금 사진은 빼지 않는다.
+           그래서 글이 없거나 지금과 같고, 사진도 지금 다 붙어 있거나 다시 붙일 파일이 없는(드라이브·휴지통 어디에도)
+           기록은 골라도 할 일이 없다. 사진 파일 목록은 빠진 사진이 있는 기록이 있을 때만 받는다(10분 캐시). */
+        const curSet = new Set(curImgs);
+        const lackOf = (e) => (e.imgs || []).filter((a) => !curSet.has(a));
+        let files = null;
+        if (items.some((e) => e.memo != null && lackOf(e).length)) {
+          try { files = await __noteHistImgFiles(sgg5, id); } catch (_) { files = null; }
+        }
+        items = items.filter((e) => {
+          if (e.memo == null) return true; // 내용을 못 받았다 — 고를 때 다시 본다
+          const text = !!String(e.memo).trim() && e.memo !== curMemo;
+          const lack = lackOf(e);
+          const canAdd = lack.length && (files ? lack.some((a) => files.has(a)) : true); // 파일 목록을 못 받았으면 남긴다
+          return text || canAdd;
+        });
         // 바로 앞(더 오래된) 판과의 차이 — 목록은 최신순이라 i+1 이 더 오래된 판
         items.forEach((e, i) => {
           const prev = items[i + 1];
@@ -26509,7 +26533,7 @@ const originalBase64 = event.target.result;
           if (minus) parts.push(`사진 −${minus}`);
           e.diff = parts.join(" · ");
         });
-        return { items, curMemo, curImgs, sgg5, driveErr };
+        return { items, curMemo, curImgs, sgg5, driveErr, files };
       }
       // 드라이브 aptImages 에 사진 파일이 남아 있나 — { addedAt → fileId } (✕로 뺀 사진은 파일이 남는다; 🗑 초기화는 지운다)
       async function __noteHistImgFiles(sgg5, id) {
@@ -26591,7 +26615,7 @@ const originalBase64 = event.target.result;
         if (r.driveErr) { pv.style.display = ""; pv.textContent = "⚠ 드라이브 기록을 못 읽어 이 기기 기록만 보입니다."; }
         // 사진 파일 목록은 처음 고를 때 한 번만 받는다
         let filesP = null;
-        const files = () => (filesP ||= __noteHistImgFiles(r.sgg5, id).catch(() => new Map()));
+        const files = () => (filesP ||= (r.files ? Promise.resolve(r.files) : __noteHistImgFiles(r.sgg5, id).catch(() => new Map()))); // 목록 만들 때 받았으면 그것을 쓴다
         let plan = null; // 고른 기록을 되돌리면 무엇이 바뀌나 { e, text, add:[{addedAt,fid}], gone }
         sel.onchange = async () => {
           rst.disabled = true;
