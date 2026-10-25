@@ -26400,32 +26400,52 @@ const originalBase64 = event.target.result;
       /* '🕘 이전 기록' 단추는 **기록이 있을 때만** 보인다 (2026-10-25 사용자 요청).
          이 기기 기록은 바로 보고, 없으면 드라이브 notes 폴더 목록에서 옛 판을 센다 — 목록은 10분 캐시라
          선로드가 이미 받아 둔 경우가 많고, 아니면 그 시군구 목록 1회. 셀렉트박스의 '지금과 같은 판 빼기'와 같은 기준. */
+      /* ⚠ 단추는 **실제로 되돌릴 기록이 있을 때만** — 글·사진까지 본다 (2026-10-25 사용자: "이전 기록을 눌러야 지금과 다른
+         기록이 없다고 알려 준다. 사진까지 체크해서 없으면 단추를 보여 주지 마"). 예전엔 판 **개수**만 보고 띄워서,
+         눌러 봐야 "되돌릴 게 없다"가 나왔다. 이제 패널이 열릴 때 뒤에서 셀렉트박스와 **같은 목록**(__noteHistList —
+         같은 판·지금과 같은 판·되돌려도 바뀌는 게 없는 판 제외)을 만들어 보고, 남는 게 있을 때만 보인다.
+         만든 목록은 단추를 누를 때 그대로 쓴다(__noteHistReady, 1분). 비용: 후보가 하나도 없으면 아무것도 안 받는다.
+         있으면 드라이브 판 내용(파일 이름이 같으면 내용도 같으므로 한 번 받은 것은 기억 — __noteHistMetaCache)과,
+         빠진 사진이 있을 때만 사진 폴더 목록. 목록들은 10분 캐시를 쓴다. */
+      const __noteHistReady = new Map(); // aptId → { at, r }
       async function __noteHistRefreshBtn(id, cur) {
         const btn = () => document.getElementById("noteHistBtn");
         const here = () => String(document.getElementById("apartmentInfo")?.getAttribute("data-id") || "") === String(id);
         const show = (on) => { const b = btn(); if (b && here()) b.style.display = on ? "" : "none"; };
+        show(false);
+        __noteHistReady.delete(String(id));
+        // 후보가 하나라도 있나 — 없으면 네트워크 없이 끝
         const curMemo = cur && !cur.deletedAt ? String(cur.memo || "") : "";
         const curImgs = String(cur && !cur.deletedAt ? __noteHistImgKeys(cur.images) : []);
-        const local = (__noteHistAll()[String(id)] || []).some((e) => {
+        let cand = (__noteHistAll()[String(id)] || []).some((e) => {
           const imgs = Array.isArray(e.imgs) ? e.imgs.map(Number).filter(Boolean) : [];
           return (String(e.memo || "").trim() || imgs.length) && !(e.memo === curMemo && String(imgs) === curImgs);
         });
-        if (local) { show(true); return; }
-        show(false);
-        if (!(window.__gdriveReady && window.__gdriveAccessToken) || typeof __lzFindSggFolder !== "function") return;
-        const sgg5 = String(cur?.sgg5 || "").trim() || (typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(id))?.sgg5 : "") || "";
-        if (!sgg5) return;
-        try {
-          const folder = await __lzFindSggFolder("notes", sgg5);
-          if (!folder) return;
-          const list = await __dqList(folder);
-          const prefix = `note_${sgg5}_${String(id)}`;
-          const curT = Number(cur?.updatedAt) || 0;
-          for (const name of list.keys()) {
-            const p = __parseMetaFilename(name);
-            if (p && p.prefix === prefix && !p.deleted && p.updatedAt !== curT) { show(true); return; }
+        if (!cand && window.__gdriveReady && window.__gdriveAccessToken && typeof __lzFindSggFolder === "function") {
+          const sgg5 = String(cur?.sgg5 || "").trim() || (typeof __syncAptIndex !== "undefined" ? __syncAptIndex.get(String(id))?.sgg5 : "") || "";
+          if (sgg5) {
+            try {
+              const folder = await __lzFindSggFolder("notes", sgg5);
+              if (folder) {
+                const list = await __dqList(folder);
+                const prefix = `note_${sgg5}_${String(id)}`;
+                const curT = Number(cur?.updatedAt) || 0;
+                for (const name of list.keys()) {
+                  const p = __parseMetaFilename(name);
+                  if (p && p.prefix === prefix && !p.deleted && p.updatedAt !== curT) { cand = true; break; }
+                }
+              }
+            } catch (_) {}
           }
-        } catch (_) {}
+        }
+        if (!cand || !here()) return;
+        // 후보가 있으면 실제 목록을 만들어 본다(내용·사진까지)
+        try {
+          const r = await __noteHistList(id);
+          if (!here()) return;
+          __noteHistReady.set(String(id), { at: Date.now(), r });
+          show(r.items.length > 0);
+        } catch (e) { console.warn("[note] 이전 기록 미리 보기 실패(단추 숨김):", e?.message || e); }
       }
       function __noteHistWhen(t) {
         const d = new Date(Number(t) || 0);
@@ -26450,6 +26470,7 @@ const originalBase64 = event.target.result;
           } catch (_) { resolve(null); }
         });
       }
+      const __noteHistMetaCache = new Map(); // 드라이브 메타 fileId → { memo, imgs } (판마다 고정)
       // 기록 목록: [{ t, memo|null, fileId?, from }] 최신순. memo 가 null 이면 드라이브 판 — 고를 때 받는다.
       async function __noteHistList(id) {
         const cur = await __noteHistReadLocalRec(id);
@@ -26490,9 +26511,15 @@ const originalBase64 = event.target.result;
         const need = items.filter((e) => e.memo == null && e.fileId);
         await Promise.all(need.map(async (e) => {
           try {
-            const meta = await __lzReadMeta(e.fileId);
-            e.memo = String(meta?.memo || "");
-            e.imgs = (Array.isArray(meta?.images) ? meta.images : []).map(Number).filter(Boolean).sort((a, b) => a - b);
+            // 메타 파일은 이름(=판)마다 내용이 고정이라 한 번 받은 것은 기억한다 — 패널을 다시 열어도 다시 받지 않는다
+            let got = __noteHistMetaCache.get(e.fileId);
+            if (!got) {
+              const meta = await __lzReadMeta(e.fileId);
+              got = { memo: String(meta?.memo || ""), imgs: (Array.isArray(meta?.images) ? meta.images : []).map(Number).filter(Boolean).sort((a, b) => a - b) };
+              __noteHistMetaCache.set(e.fileId, got);
+            }
+            e.memo = got.memo;
+            e.imgs = got.imgs.slice();
           } catch (err) { console.warn("[note] 드라이브 기록 받기 실패(고를 때 다시):", e.fileId, err?.message || err); }
         }));
         const keyOf = (e) => (e.memo == null ? "?" + e.t : e.memo + "|" + String(e.imgs || []));
@@ -26584,7 +26611,9 @@ const originalBase64 = event.target.result;
         btn.disabled = true;
         btn.textContent = "🕘 불러오는 중…";
         let r;
-        try { r = await __noteHistList(id); }
+        // 패널을 열 때 뒤에서 만들어 둔 목록이 1분 안이면 그대로 쓴다(다시 받지 않는다) — 저장하면 loadNote 가 새로 만든다
+        const ready = __noteHistReady.get(String(id));
+        try { r = ready && Date.now() - ready.at < 60000 ? ready.r : await __noteHistList(id); }
         finally { btn.disabled = false; btn.textContent = "🕘 이전 기록"; }
         if (!here()) return;
         // 단추는 내용을 안 받고 판 개수만 보고 띄운다 — 받아 보니 전부 지금과 같은 판이었으면 단추를 내린다
