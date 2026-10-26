@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
     <meta name="robots" content="noindex, nofollow">
     <meta name="Yeti" content="noindex, nofollow">
@@ -28,6 +28,12 @@
             font-weight: bold;
         }
 
+        #captchaCanvas {
+            display: none;
+            margin: 0 auto 1rem;
+            border: 1px solid #bbb;
+        }
+
         .input-section {
             margin-top: 1rem;
         }
@@ -47,28 +53,34 @@
 </head>
 <body>
     <div class="container">
-        <p>4초 안에 입력하지 않으면 다음 숫자로 넘어갑니다.</p>
-        <div class="number-display" id="numberDisplay">Press Start</div>
-        <button onclick="startGame()" id="startButton">Start</button>
+        <div class="number-display" id="numberDisplay">시작을 누르세요</div>
+        <canvas id="captchaCanvas"></canvas>
+        <button onclick="startGame()" id="startButton">시작</button>
         <div class="input-section" style="display: none;" id="inputSection">
-            <input type="text" id="userInput" maxlength="6" placeholder="Enter the number" onkeydown="handleEnter(event)">
-            <button onclick="checkAnswer()">Submit</button>
+            <input type="text" id="userInput" maxlength="6" placeholder="숫자 입력" onkeydown="handleEnter(event)">
+            <button onclick="checkAnswer()">입력</button>
         </div>
         <div class="message" id="message"></div>
+        <div class="message" id="result" style="font-weight: bold;"></div>
     </div>
 
     <script>
         let randomNumber;
-        let timer;
         let attempts = 0;
         let successes = 0;
         let totalTime = 0;
         let startTime;
+        let gameOverAt = 0;
 
         function startGame() {
             if (attempts >= 10) {
-                document.getElementById('message').textContent = `Game Over! You succeeded ${successes} out of 10 times. Total time: ${totalTime / 1000} seconds.`;
-                document.getElementById('numberDisplay').textContent = 'Press Start';
+                document.getElementById('result').textContent = `끝! 10번 중 ${successes}번 성공 · 총 ${(totalTime / 1000).toFixed(2)}초`;
+                gameOverAt = Date.now();
+                document.getElementById('message').textContent = '';
+                document.getElementById('numberDisplay').textContent = '시작을 누르세요';
+                document.getElementById('numberDisplay').style.display = '';
+                document.getElementById('captchaCanvas').style.display = 'none';
+                document.getElementById('startButton').style.display = '';
                 document.getElementById('inputSection').style.display = 'none';
                 attempts = 0;
                 successes = 0;
@@ -77,38 +89,86 @@
             }
 
             randomNumber = Math.floor(100000 + Math.random() * 900000).toString();
-            document.getElementById('numberDisplay').textContent = randomNumber;
+            document.getElementById('numberDisplay').style.display = 'none';
+            drawCaptcha(randomNumber);
+            document.getElementById('startButton').style.display = 'none';
             document.getElementById('inputSection').style.display = 'block';
-            document.getElementById('message').textContent = '';
+            if (attempts === 0) {
+                document.getElementById('message').textContent = '';
+                document.getElementById('result').textContent = '';
+            }
             document.getElementById('userInput').value = '';
             document.getElementById('userInput').focus();
             
             // Record start time
             startTime = new Date();
 
-            // Start the timer
-            clearTimeout(timer);
-            timer = setTimeout(() => {
-                document.getElementById('message').textContent = 'Time is up! You failed.';
-                document.getElementById('inputSection').style.display = 'none';
-                attempts++;
-                startGame();
-            }, 4000);
+        }
+
+        // 예매 사이트 보안문자처럼: 회색 그라데이션 바탕 + 그림자 진 굵은 숫자 + 숫자를 가로지르는 선
+        function drawCaptcha(text) {
+            const W = 280, H = 80;
+            const canvas = document.getElementById('captchaCanvas');
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = W * dpr;
+            canvas.height = H * dpr;
+            canvas.style.width = W + 'px';
+            canvas.style.height = H + 'px';
+            canvas.style.display = 'block';
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            const rand = (a, b) => a + Math.random() * (b - a);
+
+            const bg = ctx.createLinearGradient(0, 0, W, H * 0.6);
+            bg.addColorStop(0, '#2b2b2b');
+            bg.addColorStop(0.45, '#9a9a9a');
+            bg.addColorStop(1, '#ffffff');
+            ctx.fillStyle = bg;
+            ctx.fillRect(0, 0, W, H);
+
+            ctx.font = 'bold 54px Arial Black, Arial, sans-serif';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center';
+            const step = 38;
+            let x = (W - step * (text.length - 1)) / 2;
+            for (const ch of text) {
+                ctx.save();
+                ctx.translate(x + rand(-2, 2), H / 2 + rand(-4, 4));
+                ctx.rotate(rand(-0.15, 0.15));
+                ctx.shadowColor = 'rgba(0,0,0,0.55)';
+                ctx.shadowOffsetX = 4;
+                ctx.shadowOffsetY = 4;
+                ctx.shadowBlur = 3;
+                ctx.fillStyle = '#111';
+                ctx.fillText(ch, 0, 0);
+                ctx.restore();
+                x += step;
+            }
+
+            // 왼쪽 아래에서 오른쪽 위로 뻗는 선 3개(숫자를 덮어 읽기 어렵게)
+            ctx.strokeStyle = '#111';
+            ctx.lineCap = 'round';
+            for (let i = 0; i < 3; i++) {
+                ctx.lineWidth = rand(2, 3.5);
+                ctx.beginPath();
+                ctx.moveTo(rand(30, 110), rand(H * 0.35, H * 0.95));
+                ctx.lineTo(W, rand(H * 0.05, H * 0.85));
+                ctx.stroke();
+            }
         }
 
         function checkAnswer() {
             const userInput = document.getElementById('userInput').value;
-            clearTimeout(timer); // Stop the timer
 
             const endTime = new Date();
             const elapsedTime = endTime - startTime;
             totalTime += elapsedTime;
 
             if (userInput === randomNumber) {
-                document.getElementById('message').textContent = `Success! You entered the correct number in ${(elapsedTime / 1000).toFixed(2)} seconds.`;
+                document.getElementById('message').textContent = `성공! ${(elapsedTime / 1000).toFixed(2)}초`;
                 successes++;
             } else {
-                document.getElementById('message').textContent = 'Failure! Incorrect number.';
+                document.getElementById('message').textContent = '실패! 숫자가 틀렸습니다.';
             }
 
             document.getElementById('inputSection').style.display = 'none';
@@ -129,6 +189,8 @@
             const tag = (event.target.tagName || '').toUpperCase();
             if (tag === 'BUTTON' || tag === 'INPUT') return; // 버튼·입력창은 자체 처리(이중 실행 방지)
             if (document.getElementById('inputSection').style.display !== 'none') return;
+            if (Date.now() - gameOverAt < 1500) return; // 마지막 답 직후 엔터 연타로 결과가 바로 사라지지 않게
+
             event.preventDefault();
             startGame();
         });
