@@ -7865,6 +7865,7 @@
 			align-items: center;
 			justify-content: center;
 			padding: 2px 5px; /* ✅ 최소 패딩 유지 */
+			line-height: 16px; /* 마커 높이를 40px(두 줄 × 20)로 고정 — anchor 정중앙 계산용 */
 			border-radius: 3px;
 			min-width: 85px; /* ✅ 최소 너비 고정 */
 			max-width: 85px; /* ✅ 최대 너비 고정 */
@@ -7877,6 +7878,7 @@
         detailsElement.style = `
 			font-size: 12px;
 			padding: 2px 5px;
+			line-height: 16px;
 			min-width: 85px; /* ✅ 세부 정보도 최소 크기 동일 */
 			max-width: 85px;
 			display: flex;
@@ -7978,12 +7980,14 @@
           applyMemoIconLazy(String(apartment.id), markerElement);
         })(); // ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
 
+        // 단지 좌표 = 마커 정중앙(2026-10-28 사용자 요청). 예전 (10, 30) 은 아래 줄 왼쪽 끝이라 상자가 좌표 오른쪽 위로 뻗었다.
+        //   마커 = 폭 95(85 + 좌우 패딩 5) × 높이 40(두 줄 × [줄높이 16 + 위아래 패딩 2]). 호버로 늘어날 때는 기준점 그대로.
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(apartment.lat, apartment.lng),
           map: window.map,
           icon: {
             content: markerElement,
-            anchor: new naver.maps.Point(10, 30),
+            anchor: new naver.maps.Point(47.5, 20),
           },
         });
         marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
@@ -8023,7 +8027,7 @@
           map: window.map,
           icon: {
             content: markerElement,
-            anchor: new naver.maps.Point(10, 30),
+            anchor: new naver.maps.Point(42.5, 10), // 85×20 정중앙(일반 단지 마커와 같게)
           },
         });
         marker.apartmentId = apartment.id; // ✅ 마커 객체에 직접 ID 저장
@@ -8852,7 +8856,13 @@
       //   부산진(부산진구)은 동네 이름이라 그대로, ○○대학교사범대학부설 → ○○대사범대학부설(어느 대학인지 남김).
       //   kind = '초' | '중'. 대상 목록 검토: _tools/_school_prefix_review.py (siseVer2.html 에도 같은 함수)
       const __SCHOOL_SIDO = ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"];
+      // 끝의 '여자중'→'여중', '여자고'→'여고'(2026-10-28 사용자: "숭의여자중은 숭의여중으로"). 시도를 뗀 뒤에 적용하므로
+      //   서울여자중 → (시도 떼면 '여자중'뿐이라 유지) → 서울여중. 여자상업고·여자정보고 등은 그대로.
+      const __shortSchoolFemale = (s) => s.replace(/여자(중|고)$/, "여$1");
       function shortSchoolName(name, kind) {
+        return __shortSchoolFemale(__shortSchoolSido(name, kind));
+      }
+      function __shortSchoolSido(name, kind) {
         const n = String(name || "").trim();   // 원본에 끝 공백이 붙은 이름이 있다('세종중 ')
         const p = __SCHOOL_SIDO.find((s) => n.startsWith(s) && n.length > s.length);
         if (!p || n.startsWith("부산진")) return n;
@@ -9085,7 +9095,8 @@
 
       // 초등학교 마커: 학교 건물(깃발·지붕·몸통) 모양 SVG 의 몸통 안에 이름·숫자를 넣는다(2026-10-28 시안 A 채택,
       //   시안 모음 _tools/school_marker_drafts.html). 예전엔 eliSchool.png 32px 로고 + 흰 라벨이 따로라 세로로 컸다.
-      //   색은 로고 색 그대로(초 eliSchool.png #754d37 · 중 midSchool.png #a349a4 · 고 highSchool.png #2f6fd6). 좌표 = 몸통 아래 가운데.
+      //   색은 로고 색 그대로(초 eliSchool.png #754d37 · 중 midSchool.png #a349a4 · 고 highSchool.png #2f6fd6).
+      //   좌표 = 마커 정중앙(2026-10-28 사용자 요청 — 단지 마커와 같게. 처음엔 몸통 아래 가운데였다).
       const _SCHOOL_MK_COLOR = "#754d37";
       const _MIDDLE_SCHOOL_MK_COLOR = "#a349a4";
       const _HIGH_SCHOOL_MK_COLOR = "#2f6fd6";
@@ -9162,12 +9173,12 @@
         items.forEach((it, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(it); });
         const GAP = 2;
         groups.forEach((g) => {
-          if (g.length === 1) { g[0].ax = g[0].en.W / 2; g[0].ay = g[0].en.H; return; }
+          if (g.length === 1) { g[0].ax = g[0].en.W / 2; g[0].ay = g[0].en.H / 2; return; }
           // 위도가 조금이라도 다르면(사용자 지시 2026-10-28 — 문일중이 문일고보다 5.6m 북쪽) 위아래로 쌓는다:
-          //   가장 남쪽 학교의 아래 끝이 제 좌표에 오고, 북쪽 학교일수록 그 위로. 가로는 각자 제 좌표 가운데.
+          //   가장 남쪽 학교 마커의 정중앙이 제 좌표에 오고, 북쪽 학교일수록 그 위로. 가로는 각자 제 좌표 가운데.
           if (g.some((it) => it.en.lat !== g[0].en.lat)) {
             g.sort((a, b) => b.y - a.y || _SCHOOL_MK_KIND_ORDER[a.en.kind] - _SCHOOL_MK_KIND_ORDER[b.en.kind]);
-            let bottom = g[0].y;
+            let bottom = g[0].y + g[0].en.H / 2;
             g.forEach((it) => {
               it.ax = it.en.W / 2;
               it.ay = it.en.H + (it.y - bottom);
@@ -9183,7 +9194,7 @@
           let left = cx - total / 2;
           g.forEach((it) => {
             it.ax = it.x - left;               // 마커 왼쪽 끝이 left 에 오도록
-            it.ay = it.en.H + (it.y - cy);     // 아래 끝은 묶음 가운데 높이로 맞춘다
+            it.ay = it.en.H / 2 + (it.y - cy); // 정중앙 높이를 묶음 가운데 높이로 맞춘다
             left += it.en.W + GAP;
           });
         });
@@ -9214,7 +9225,7 @@
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(school.latitude, school.longitude),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H / 2) },
         });
         addMarkerRightClickEvent(marker, markerElement);
         detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openSchoolDetailPopup(school, marker); });
@@ -9225,7 +9236,7 @@
           if (wasSameSchool) { clearActiveSchoolDetailButton(); closeActiveSchoolInfoWindow(); }
           else { setActiveSchoolDetailButton(detailBtn, schoolId); }
         });
-        return { marker, lat: school.latitude, lng: school.longitude, school, detailBtn, kind: "e", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H };
+        return { marker, lat: school.latitude, lng: school.longitude, school, detailBtn, kind: "e", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H / 2 };
       }
 
       async function rebuildSchoolPool() {
@@ -11947,10 +11958,10 @@ const originalBase64 = event.target.result;
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(school["위도"], school["경도"]),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H / 2) },
         });
         addMarkerRightClickEvent(marker, markerElement);
-        return { marker, lat: school["위도"], lng: school["경도"], kind: "m", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H };
+        return { marker, lat: school["위도"], lng: school["경도"], kind: "m", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H / 2 };
       }
 
       async function rebuildMiddleSchoolPool() {
@@ -12129,7 +12140,7 @@ const originalBase64 = event.target.result;
       }
 
       function _highSchoolLabel(school) {
-        const short = String(school["학교명"] || "").replace(/고등학교$/, "고");
+        const short = __shortSchoolFemale(String(school["학교명"] || "").trim().replace(/고등학교$/, "고"));
         const est = "";   // 2026-09-22 설립유형 표기 제거(배정 방식이 같아 의미 없음)
         return est + short;
       }
@@ -12148,10 +12159,10 @@ const originalBase64 = event.target.result;
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(school["위도"], school["경도"]),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H / 2) },
         });
         addMarkerRightClickEvent(marker, markerElement);
-        return { marker, lat: school["위도"], lng: school["경도"], kind: "h", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H };
+        return { marker, lat: school["위도"], lng: school["경도"], kind: "h", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H / 2 };
       }
 
       async function rebuildHighSchoolPool() {
