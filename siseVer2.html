@@ -1782,7 +1782,7 @@ function setActiveSchoolDetailButton(buttonEl, schoolId) {
     activeSchoolDetailButtonId = schoolId;
     if (activeSchoolDetailButtonEl) {
         const labelEl = activeSchoolDetailButtonEl.previousElementSibling;
-        if (labelEl) {
+        if (labelEl && !activeSchoolDetailButtonEl.dataset.fixedH) {
             const h = Math.ceil(labelEl.getBoundingClientRect().height);
             if (h > 0) activeSchoolDetailButtonEl.style.height = `${h}px`;
         }
@@ -2118,15 +2118,118 @@ async function loadSchools() {
 
 
 
+// 초·중 학교 마커 = 학교 건물(깃발·지붕·몸통) SVG 몸통 안에 이름·숫자(2026-10-28, hongbutest.html 과 **완전히 동일**하게 유지 —
+//   _buildSchoolMarkerSvg·__layoutSchoolMarkers 는 hongbutest 의 같은 이름 함수를 그대로 옮긴 것. 고칠 때 두 파일 같이).
+//   색은 로고 색 그대로(초 eliSchool.png #754d37 · 중 midSchool.png #a349a4). 좌표 = 마커 정중앙.
+const _SCHOOL_MK_COLOR = "#754d37";
+const _MIDDLE_SCHOOL_MK_COLOR = "#a349a4";
+let _schoolMkCanvas = null;
+function _schoolMkTextW(text, font) {
+    if (!_schoolMkCanvas) _schoolMkCanvas = document.createElement("canvas").getContext("2d");
+    _schoolMkCanvas.font = font;
+    return _schoolMkCanvas.measureText(text).width;
+}
+// fullH: 숫자 줄이 없어도 몸통을 두 줄 높이로, 이름은 세로 가운데.
+// 이름이 6글자 이상이면 반으로 나눠 두 줄(앞쪽이 한 글자 더 길게: 국립전통 / 예술고).
+function _buildSchoolMarkerSvg(name, numText, color = _SCHOOL_MK_COLOR, fullH = false) {
+    const FONT = "Malgun Gothic, Apple SD Gothic Neo, sans-serif";
+    const nameLines = name.length >= 6 ? [name.slice(0, Math.ceil(name.length / 2)), name.slice(Math.ceil(name.length / 2))] : [name];
+    const w1 = Math.max(...nameLines.map((t) => _schoolMkTextW(t, `bold 12px ${FONT}`))) + 14;
+    const w2 = numText ? _schoolMkTextW(numText, `10px ${FONT}`) + 12 : 0;
+    const W = Math.max(44, Math.ceil(Math.max(w1, w2)));
+    const flagH = 9, roofH = 10, top = flagH + roofH;
+    // 줄 기준선(몸통 위 기준): 이름 첫 줄 13, 이름 다음 줄 +13, 숫자 줄 +12. 몸통 = 마지막 기준선 + 5.
+    let nameY0 = 13;
+    const lastName = nameY0 + 13 * (nameLines.length - 1);
+    const numY = lastName + 12;
+    let bodyH = (numText ? numY : lastName) + 5;
+    if (fullH && bodyH < 30) { nameY0 += (30 - bodyH) / 2; bodyH = 30; }
+    const H = top + bodyH;
+    const cx = W / 2, c = color;
+    const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+    const svg =
+        `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;overflow:visible;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.35));">` +
+        `<line x1="${cx}" y1="1" x2="${cx}" y2="${flagH + 2}" stroke="${c}" stroke-width="1.5"/>` +
+        `<path d="M${cx} 1 h7 l-1.5 2.5 l1.5 2.5 h-7z" fill="${c}"/>` +
+        `<path d="M2 ${flagH + roofH} L${cx} ${flagH} L${W - 2} ${flagH + roofH}z" fill="${c}"/>` +
+        `<rect x="3" y="${flagH + roofH - 1}" width="${W - 6}" height="${bodyH + 1}" rx="2" fill="${c}"/>` +
+        nameLines.map((t, i) => `<text x="${cx}" y="${top + nameY0 + 13 * i}" text-anchor="middle" font-size="12" font-weight="bold" fill="#fff" font-family="${FONT}">${esc(t)}</text>`).join("") +
+        (numText ? `<text x="${cx}" y="${top + numY}" text-anchor="middle" font-size="10" fill="#fff" fill-opacity="0.88" font-family="${FONT}">${esc(numText)}</text>` : "") +
+        `</svg>`;
+    return { svg, W, H, bodyTop: flagH + roofH - 1, bodyH: bodyH + 1 };
+}
+// 거의 포개진 학교 마커 펼치기(hongbutest 와 동일): 가로·세로 모두 작은 쪽 마커 크기의 40% 안쪽이면 묶어,
+//   위도가 다르면 위아래로 쌓고(남쪽 학교 정중앙이 제 좌표) 완전히 같으면 좌우로. anchor 만 바꾼다.
+//   여기서는 마커를 매번 새로 만들므로 마커 객체의 __mk(kind·el·W·H·ax·ay·lat·lng)를 읽는다.
+const _SCHOOL_MK_KIND_ORDER = { e: 0, m: 1, h: 2 };
+let _schoolMkLayoutTimer = null;
+function __scheduleSchoolMkLayout() {
+    clearTimeout(_schoolMkLayoutTimer);
+    _schoolMkLayoutTimer = setTimeout(__layoutSchoolMarkers, 0);
+}
+function __layoutSchoolMarkers() {
+    const proj = window.map?.getProjection?.();
+    if (!proj) return;
+    const items = [];
+    [schoolMarkers, middleSchoolMarkers].forEach((arr) => arr.forEach((m) => {
+        const en = m.__mk;
+        if (!en || !m.getMap()) return;
+        const p = proj.fromCoordToOffset(new naver.maps.LatLng(en.lat, en.lng));
+        items.push({ en, x: p.x, y: p.y });
+    }));
+    const NEAR = 0.4;
+    const parent = items.map((_, i) => i);
+    const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    for (let i = 0; i < items.length; i++) {
+        for (let j = i + 1; j < items.length; j++) {
+            const a = items[i], b = items[j];
+            if (Math.abs(a.x - b.x) < NEAR * Math.min(a.en.W, b.en.W) && Math.abs(a.y - b.y) < NEAR * Math.min(a.en.H, b.en.H)) parent[find(i)] = find(j);
+        }
+    }
+    const groups = new Map();
+    items.forEach((it, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(it); });
+    const GAP = 2;
+    groups.forEach((g) => {
+        if (g.length === 1) { g[0].ax = g[0].en.W / 2; g[0].ay = g[0].en.H / 2; return; }
+        if (g.some((it) => it.en.lat !== g[0].en.lat)) {
+            g.sort((a, b) => b.y - a.y || _SCHOOL_MK_KIND_ORDER[a.en.kind] - _SCHOOL_MK_KIND_ORDER[b.en.kind]);
+            let bottom = g[0].y + g[0].en.H / 2;
+            g.forEach((it) => {
+                it.ax = it.en.W / 2;
+                it.ay = it.en.H + (it.y - bottom);
+                bottom -= it.en.H + GAP;
+            });
+            return;
+        }
+        g.sort((a, b) => a.x - b.x || _SCHOOL_MK_KIND_ORDER[a.en.kind] - _SCHOOL_MK_KIND_ORDER[b.en.kind]);
+        const cx = g.reduce((s, it) => s + it.x, 0) / g.length;
+        const cy = g.reduce((s, it) => s + it.y, 0) / g.length;
+        const total = g.reduce((s, it) => s + it.en.W, 0) + GAP * (g.length - 1);
+        let left = cx - total / 2;
+        g.forEach((it) => {
+            it.ax = it.x - left;
+            it.ay = it.en.H / 2 + (it.y - cy);
+            left += it.en.W + GAP;
+        });
+    });
+    items.forEach((it) => {
+        const ax = Math.round(it.ax), ay = Math.round(it.ay);
+        if (it.en.ax === ax && it.en.ay === ay) return;
+        it.en.ax = ax; it.en.ay = ay;
+        it.en.marker.setIcon({ content: it.en.el, anchor: new naver.maps.Point(ax, ay) });
+    });
+}
+
 function updateSchoolMarkers() {
     const showSchools = document.getElementById("toggleSchools").checked;
 
     // ✅ 기존 학교 마커 제거
     schoolMarkers.forEach(marker => marker.setMap(null));
     schoolMarkers = [];
+    __scheduleSchoolMkLayout(); // 끈 뒤에도 남은 중학교 마커가 제자리로 오게
 
     if (!showSchools) return; // 초등학교 표시 체크 해제 시 종료
-	if (window.map.getZoom() < 14) { 
+	if (window.map.getZoom() < 14) {
 			return; // ✅ 줌 레벨이 14보다 작으면 실행 중단
 	}
     let bounds = window.map.getBounds();
@@ -2135,80 +2238,29 @@ function updateSchoolMarkers() {
     );
 
     filteredSchools.forEach(school => {
-    // ✅ 마커 컨테이너를 markerElement로 활용
-    const markerElement = document.createElement("div");
-    markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-    const markerIcon = document.createElement("img");
-    markerIcon.src = "eliSchool.png";
-    markerIcon.style = "width: 32px; height: 32px;";
-
-    const infoBox = document.createElement("div");
-          infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 4px;
-        padding: 2px 5px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
+          // hongbutest _buildSchoolMarkerEntry 와 동일한 건물 모양 마커
           const rawPerClass = school.studentCountPerClassroom;
           const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
-
           const total = school.totalStudentCount ?? "";
-
-          const suffix =
-            perClass !== "" || total !== ""
-              ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})`
-              : "";
-
-          infoBox.textContent = `${shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초")}${suffix}`;
-
-          const infoWrap = document.createElement("div");
-          infoWrap.style = "position: relative; display: inline-block;";
-
+          const numText = perClass !== "" || total !== "" ? `${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"}` : "";
+          const name = shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초");
+          const mk = _buildSchoolMarkerSvg(name, numText);
+          const markerElement = document.createElement("div");
+          markerElement.style = `position:relative;width:${mk.W}px;height:${mk.H}px;cursor:pointer;`;
+          markerElement.title = `${name}${numText ? ` — 학급당 / 전교생 ${numText}` : ""}`;
+          markerElement.innerHTML = mk.svg;
           const detailBtn = document.createElement("button");
           detailBtn.textContent = "상세정보";
-          detailBtn.style = `
-      position: absolute;
-      left: 100%;
-      top: 0;
-      height: 100%;
-      box-sizing: border-box;
-      display: flex;
-      align-items: center;
-      margin: 0;
-      appearance: none;
-      border: 1px solid #4a90e2;
-      background: #eef5ff;
-      color: #1757a8;
-      border-radius: 6px;
-      padding: 0 8px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      z-index: 1;
-    `;
-          detailBtn.style.display = "none";
-
-          infoWrap.appendChild(infoBox);
-          infoWrap.appendChild(detailBtn);
-
-          markerElement.appendChild(markerIcon);
-          markerElement.appendChild(infoWrap);
+          detailBtn.dataset.fixedH = "1"; // setActiveSchoolDetailButton 이 앞 형제(SVG) 높이로 늘리지 않게
+          detailBtn.style = `position:absolute;left:100%;top:${mk.bodyTop}px;height:${mk.bodyH}px;margin-left:3px;box-sizing:border-box;display:none;align-items:center;appearance:none;border:1px solid #4a90e2;background:#eef5ff;color:#1757a8;border-radius:6px;padding:0 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;z-index:1;`;
+          markerElement.appendChild(detailBtn);
 
           const marker = new naver.maps.Marker({
               position: new naver.maps.LatLng(school.latitude, school.longitude),
               map: window.map,
-              icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) }
+              icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H / 2) }
           });
+          marker.__mk = { marker, lat: school.latitude, lng: school.longitude, kind: "e", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H / 2 };
 
           // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
           addMarkerRightClickEvent(marker, markerElement);
@@ -2239,6 +2291,7 @@ function updateSchoolMarkers() {
           schoolMarkers.push(marker);
       });
 
+  __scheduleSchoolMkLayout();
   if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
 
@@ -2467,6 +2520,7 @@ function updateMiddleSchoolMarkers() {
     // ✅ 기존 중학교 마커 제거
     middleSchoolMarkers.forEach(marker => marker.setMap(null));
     middleSchoolMarkers = [];
+    __scheduleSchoolMkLayout(); // 끈 뒤에도 남은 초등학교 마커가 제자리로 오게
 
     if (!showMiddleSchools) return; // 중학교 표시 체크 해제 시 종료
 	
@@ -2480,39 +2534,23 @@ function updateMiddleSchoolMarkers() {
     );
 
     filteredSchools.forEach(school => {
-    // ✅ 마커 컨테이너를 markerElement로 활용
+    // hongbutest _buildMiddleSchoolMarkerEntry 와 동일한 건물 모양 마커(보라). 학업성취도·특목고가 둘 다 비면 숫자 줄 생략.
+    const _ach = String(school["학업성취도"] ?? "").replaceAll("%", "").trim();
+    const _spc = String(school["특목고"] ?? "").replaceAll("%", "").trim();
+    const numText = _ach || _spc ? `${_ach} / ${_spc}` : "";
+    const name = shortSchoolName(school["학교명"], "중");
+    const mk = _buildSchoolMarkerSvg(name, numText, _MIDDLE_SCHOOL_MK_COLOR);
     const markerElement = document.createElement("div");
-    markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-
-    const markerIcon = document.createElement("img");
-    markerIcon.src = "midSchool.png";
-    markerIcon.style = "width: 32px; height: 32px;";
-
-    const infoBox = document.createElement("div");
-    infoBox.style = `
-        background: white;
-        border: 1px solid gray;
-        border-radius: 4px;
-        padding: 2px 5px;
-        font-size: 12px;
-        font-weight: bold;
-        box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.3);
-        white-space: nowrap;
-        display: inline-block;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        text-align: center;
-    `;
-    infoBox.textContent = `${shortSchoolName(school["학교명"], "중")} (${String(school["학업성취도"]).replaceAll("%", "")} / ${String(school["특목고"]).replaceAll("%", "")})`;
-
-    markerElement.appendChild(markerIcon);
-    markerElement.appendChild(infoBox);
+    markerElement.style = `position:relative;width:${mk.W}px;height:${mk.H}px;`;
+    markerElement.title = `${name}${numText ? ` — 학업성취도 / 특목고 ${numText}` : ""}`;
+    markerElement.innerHTML = mk.svg;
 
     const marker = new naver.maps.Marker({
         position: new naver.maps.LatLng(school["위도"], school["경도"]),
         map: window.map,
-        icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) }
+        icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H / 2) }
     });
+    marker.__mk = { marker, lat: school["위도"], lng: school["경도"], kind: "m", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H / 2 };
 
     // ✅ 우클릭 이벤트에 markerElement 전달 (테두리 활성화 가능)
     addMarkerRightClickEvent(marker, markerElement);
@@ -2520,6 +2558,7 @@ function updateMiddleSchoolMarkers() {
     middleSchoolMarkers.push(marker);
 });
 
+  __scheduleSchoolMkLayout();
   if (typeof _reapplyMarkerTransforms === 'function') _reapplyMarkerTransforms();
 }
 
