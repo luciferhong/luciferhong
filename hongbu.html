@@ -8640,7 +8640,7 @@
         activeSchoolDetailButtonId = schoolId;
         if (activeSchoolDetailButtonEl) {
           const labelEl = activeSchoolDetailButtonEl.previousElementSibling;
-          if (labelEl) {
+          if (labelEl && !activeSchoolDetailButtonEl.dataset.fixedH) {
             const h = Math.ceil(labelEl.getBoundingClientRect().height);
             if (h > 0) activeSchoolDetailButtonEl.style.height = `${h}px`;
           }
@@ -9083,34 +9083,138 @@
         }
       }
 
+      // 초등학교 마커: 학교 건물(깃발·지붕·몸통) 모양 SVG 의 몸통 안에 이름·숫자를 넣는다(2026-10-28 시안 A 채택,
+      //   시안 모음 _tools/school_marker_drafts.html). 예전엔 eliSchool.png 32px 로고 + 흰 라벨이 따로라 세로로 컸다.
+      //   색은 로고 색 그대로(초 eliSchool.png #754d37 · 중 midSchool.png #a349a4 · 고 highSchool.png #2f6fd6). 좌표 = 몸통 아래 가운데.
+      const _SCHOOL_MK_COLOR = "#754d37";
+      const _MIDDLE_SCHOOL_MK_COLOR = "#a349a4";
+      const _HIGH_SCHOOL_MK_COLOR = "#2f6fd6";
+      let _schoolMkCanvas = null;
+      function _schoolMkTextW(text, font) {
+        if (!_schoolMkCanvas) _schoolMkCanvas = document.createElement("canvas").getContext("2d");
+        _schoolMkCanvas.font = font;
+        return _schoolMkCanvas.measureText(text).width;
+      }
+      // fullH: 숫자 줄이 없어도 몸통을 두 줄 높이로(고등학교 — 초·중과 크기를 맞춘다), 이름은 세로 가운데.
+      // 이름이 6글자 이상(국립전통예술고 등)이면 반으로 나눠 두 줄(앞쪽이 한 글자 더 길게: 국립전통 / 예술고) — 2026-10-28 사용자 요청.
+      function _buildSchoolMarkerSvg(name, numText, color = _SCHOOL_MK_COLOR, fullH = false) {
+        const FONT = "Malgun Gothic, Apple SD Gothic Neo, sans-serif";
+        const nameLines = name.length >= 6 ? [name.slice(0, Math.ceil(name.length / 2)), name.slice(Math.ceil(name.length / 2))] : [name];
+        const w1 = Math.max(...nameLines.map((t) => _schoolMkTextW(t, `bold 12px ${FONT}`))) + 14;
+        const w2 = numText ? _schoolMkTextW(numText, `10px ${FONT}`) + 12 : 0;
+        const W = Math.max(44, Math.ceil(Math.max(w1, w2)));
+        const flagH = 9, roofH = 10, top = flagH + roofH;
+        // 줄 기준선(몸통 위 기준): 이름 첫 줄 13, 이름 다음 줄 +13, 숫자 줄 +12. 몸통 = 마지막 기준선 + 5.
+        let nameY0 = 13;
+        const lastName = nameY0 + 13 * (nameLines.length - 1);
+        const numY = lastName + 12;
+        let bodyH = (numText ? numY : lastName) + 5;
+        if (fullH && bodyH < 30) { nameY0 += (30 - bodyH) / 2; bodyH = 30; } // 한 줄 고등학교: 두 줄 높이에 세로 가운데
+        const H = top + bodyH;
+        const cx = W / 2, c = color;
+        const esc = (s) => String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+        const svg =
+          `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;overflow:visible;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.35));">` +
+          `<line x1="${cx}" y1="1" x2="${cx}" y2="${flagH + 2}" stroke="${c}" stroke-width="1.5"/>` +
+          `<path d="M${cx} 1 h7 l-1.5 2.5 l1.5 2.5 h-7z" fill="${c}"/>` +
+          `<path d="M2 ${flagH + roofH} L${cx} ${flagH} L${W - 2} ${flagH + roofH}z" fill="${c}"/>` +
+          `<rect x="3" y="${flagH + roofH - 1}" width="${W - 6}" height="${bodyH + 1}" rx="2" fill="${c}"/>` +
+          nameLines.map((t, i) => `<text x="${cx}" y="${top + nameY0 + 13 * i}" text-anchor="middle" font-size="12" font-weight="bold" fill="#fff" font-family="${FONT}">${esc(t)}</text>`).join("") +
+          (numText ? `<text x="${cx}" y="${top + numY}" text-anchor="middle" font-size="10" fill="#fff" fill-opacity="0.88" font-family="${FONT}">${esc(numText)}</text>` : "") +
+          `</svg>`;
+        return { svg, W, H, bodyTop: flagH + roofH - 1, bodyH: bodyH + 1 };
+      }
+
+      // 초·중·고 마커 겹침 풀기(2026-10-28): 같은 캠퍼스 중·고(문일중·문일고)처럼 좌표가 붙은 학교는 건물 마커가 통째로
+      //   포개진다. 지금 지도에 떠 있는 학교 마커를 화면 픽셀로 비교해 상자가 겹치는 것끼리 묶고, 위도가 다르면 위아래로
+      //   쌓고 완전히 같으면 좌우로 펼친다(마커 anchor 만 바꾼다 — 좌표·데이터는 그대로). 확대해서 떨어지면 저절로 제자리.
+      //   세 update*SchoolMarkers 의 모든 출구에서 부른다(층을 끄면 남은 마커가 제자리로 돌아와야 하므로).
+      const _SCHOOL_MK_KIND_ORDER = { e: 0, m: 1, h: 2 };
+      let _schoolMkLayoutTimer = null;
+      function __scheduleSchoolMkLayout() {
+        clearTimeout(_schoolMkLayoutTimer);
+        _schoolMkLayoutTimer = setTimeout(__layoutSchoolMarkers, 0);
+      }
+      function __layoutSchoolMarkers() {
+        const proj = window.map?.getProjection?.();
+        if (!proj) return;
+        const items = [];
+        const pushFrom = (coll) => coll?.forEach((en) => {
+          if (!en.el || !en.marker.getMap()) return;
+          const p = proj.fromCoordToOffset(new naver.maps.LatLng(en.lat, en.lng));
+          items.push({ en, x: p.x, y: p.y });
+        });
+        [window.__schoolMarkerPool, window.__schoolMarkerCache, window.__middleSchoolMarkerPool, window.__middleSchoolMarkerCache,
+          window.__highSchoolMarkerPool, window.__highSchoolMarkerCache].forEach(pushFrom);
+        // 묶기(union-find): **거의 포개질 때만** 같은 묶음 — 좌표 차이가 가로·세로 모두 작은 쪽 마커 크기의 40% 미만.
+        //   ⚠ 2026-10-28 사용자 지적: 처음엔 상자가 조금만 걸쳐도 묶었더니 줌 아웃 때 국립전통예술고가 시흥중 위로 탑처럼
+        //   쌓여 제자리를 크게 벗어났다. "일부 겹쳐도 되니 과한 보정 금지" — 살짝 걸치는 건 그대로 둔다.
+        const NEAR = 0.4;
+        const parent = items.map((_, i) => i);
+        const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+        for (let i = 0; i < items.length; i++) {
+          for (let j = i + 1; j < items.length; j++) {
+            const a = items[i], b = items[j];
+            if (Math.abs(a.x - b.x) < NEAR * Math.min(a.en.W, b.en.W) && Math.abs(a.y - b.y) < NEAR * Math.min(a.en.H, b.en.H)) parent[find(i)] = find(j);
+          }
+        }
+        const groups = new Map();
+        items.forEach((it, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(it); });
+        const GAP = 2;
+        groups.forEach((g) => {
+          if (g.length === 1) { g[0].ax = g[0].en.W / 2; g[0].ay = g[0].en.H; return; }
+          // 위도가 조금이라도 다르면(사용자 지시 2026-10-28 — 문일중이 문일고보다 5.6m 북쪽) 위아래로 쌓는다:
+          //   가장 남쪽 학교의 아래 끝이 제 좌표에 오고, 북쪽 학교일수록 그 위로. 가로는 각자 제 좌표 가운데.
+          if (g.some((it) => it.en.lat !== g[0].en.lat)) {
+            g.sort((a, b) => b.y - a.y || _SCHOOL_MK_KIND_ORDER[a.en.kind] - _SCHOOL_MK_KIND_ORDER[b.en.kind]);
+            let bottom = g[0].y;
+            g.forEach((it) => {
+              it.ax = it.en.W / 2;
+              it.ay = it.en.H + (it.y - bottom);
+              bottom -= it.en.H + GAP;
+            });
+            return;
+          }
+          // 좌표가 완전히 같으면 좌우로 나란히
+          g.sort((a, b) => a.x - b.x || _SCHOOL_MK_KIND_ORDER[a.en.kind] - _SCHOOL_MK_KIND_ORDER[b.en.kind]);
+          const cx = g.reduce((s, it) => s + it.x, 0) / g.length;
+          const cy = g.reduce((s, it) => s + it.y, 0) / g.length;
+          const total = g.reduce((s, it) => s + it.en.W, 0) + GAP * (g.length - 1);
+          let left = cx - total / 2;
+          g.forEach((it) => {
+            it.ax = it.x - left;               // 마커 왼쪽 끝이 left 에 오도록
+            it.ay = it.en.H + (it.y - cy);     // 아래 끝은 묶음 가운데 높이로 맞춘다
+            left += it.en.W + GAP;
+          });
+        });
+        items.forEach((it) => {
+          const ax = Math.round(it.ax), ay = Math.round(it.ay);
+          if (it.en.ax === ax && it.en.ay === ay) return;
+          it.en.ax = ax; it.en.ay = ay;
+          it.en.marker.setIcon({ content: it.en.el, anchor: new naver.maps.Point(ax, ay) });
+        });
+      }
+
       function _buildSchoolMarkerEntry(school) {
-        const markerElement = document.createElement("div");
-        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-        const markerIcon = document.createElement("img");
-        markerIcon.src = "eliSchool.png";
-        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
-        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
-        markerIcon.style = "width: 32px; height: 32px;";
-        const infoBox = document.createElement("div");
-        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
         const rawPerClass = school.studentCountPerClassroom;
         const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
         const total = school.totalStudentCount ?? "";
-        const suffix = perClass !== "" || total !== "" ? ` (${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"})` : "";
-        infoBox.textContent = `${shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초")}${suffix}`;
-        const infoWrap = document.createElement("div");
-        infoWrap.style = "position: relative; display: inline-block;";
+        const numText = perClass !== "" || total !== "" ? `${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"}` : "";
+        const name = shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초");
+        const mk = _buildSchoolMarkerSvg(name, numText);
+        const markerElement = document.createElement("div");
+        markerElement.style = `position:relative;width:${mk.W}px;height:${mk.H}px;cursor:pointer;`;
+        markerElement.title = `${name}${numText ? ` — 학급당 / 전교생 ${numText}` : ""}`;
+        markerElement.innerHTML = mk.svg;
         const detailBtn = document.createElement("button");
         detailBtn.textContent = "상세정보";
-        detailBtn.style = "position:absolute;left:100%;top:0;height:100%;box-sizing:border-box;display:none;align-items:center;margin:0;appearance:none;border:1px solid #4a90e2;background:#eef5ff;color:#1757a8;border-radius:6px;padding:0 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;z-index:1;";
-        infoWrap.appendChild(infoBox);
-        infoWrap.appendChild(detailBtn);
-        markerElement.appendChild(markerIcon);
-        markerElement.appendChild(infoWrap);
+        detailBtn.dataset.fixedH = "1"; // setActiveSchoolDetailButton 이 앞 형제(SVG) 높이로 늘리지 않게
+        detailBtn.style = `position:absolute;left:100%;top:${mk.bodyTop}px;height:${mk.bodyH}px;margin-left:3px;box-sizing:border-box;display:none;align-items:center;appearance:none;border:1px solid #4a90e2;background:#eef5ff;color:#1757a8;border-radius:6px;padding:0 8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;z-index:1;`;
+        markerElement.appendChild(detailBtn);
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(school.latitude, school.longitude),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H) },
         });
         addMarkerRightClickEvent(marker, markerElement);
         detailBtn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openSchoolDetailPopup(school, marker); });
@@ -9121,7 +9225,7 @@
           if (wasSameSchool) { clearActiveSchoolDetailButton(); closeActiveSchoolInfoWindow(); }
           else { setActiveSchoolDetailButton(detailBtn, schoolId); }
         });
-        return { marker, lat: school.latitude, lng: school.longitude, school, detailBtn };
+        return { marker, lat: school.latitude, lng: school.longitude, school, detailBtn, kind: "e", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H };
       }
 
       async function rebuildSchoolPool() {
@@ -9142,6 +9246,7 @@
           clearActiveSchoolDetailButton();
           window.__schoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
           window.__schoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          __scheduleSchoolMkLayout();
           return;
         }
         const bounds = window.map.getBounds();
@@ -9170,6 +9275,7 @@
           });
           window.__schoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
         }
+        __scheduleSchoolMkLayout();
       }
 
 
@@ -11825,32 +11931,26 @@ const originalBase64 = event.target.result;
       }
 
       function _buildMiddleSchoolMarkerEntry(school) {
-        const markerElement = document.createElement("div");
-        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-        const markerIcon = document.createElement("img");
-        markerIcon.src = "midSchool.png";
-        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
-        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
-        markerIcon.style = "width: 32px; height: 32px;";
-        const infoBox = document.createElement("div");
-        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
+        // 2026-10-28: 초등학교와 같은 건물 모양 SVG(_buildSchoolMarkerSvg)로 교체, 색은 midSchool.png 의 보라.
         // 2026-09-22 사용자 요청: 설립유형(국립/공립/사립) 접두 — 신네부 fin 크롤로 채운 `설립` 필드(없으면 접두 생략)
         // 2026-09-22: 설립유형 표기 제거(사용자 판단 — 중·고는 배정 방식이 같아 구분 의미가 없다). `설립` 필드는 데이터에 그대로 둔다.
-        const estPrefix = "";
-        // 2026-09-22: 신설 중학교는 학업성취도·특목고가 없다 → 둘 다 비면 괄호까지 생략
+        // 2026-09-22: 신설 중학교는 학업성취도·특목고가 없다 → 둘 다 비면 숫자 줄 생략
         const _ach = String(school["학업성취도"] ?? "").replaceAll("%", "").trim();
         const _spc = String(school["특목고"] ?? "").replaceAll("%", "").trim();
-        const _suffix = _ach || _spc ? ` (${_ach} / ${_spc})` : "";
-        infoBox.textContent = `${estPrefix}${shortSchoolName(school["학교명"], "중")}${_suffix}`;
-        markerElement.appendChild(markerIcon);
-        markerElement.appendChild(infoBox);
+        const numText = _ach || _spc ? `${_ach} / ${_spc}` : "";
+        const name = shortSchoolName(school["학교명"], "중");
+        const mk = _buildSchoolMarkerSvg(name, numText, _MIDDLE_SCHOOL_MK_COLOR);
+        const markerElement = document.createElement("div");
+        markerElement.style = `position:relative;width:${mk.W}px;height:${mk.H}px;`;
+        markerElement.title = `${name}${numText ? ` — 학업성취도 / 특목고 ${numText}` : ""}`;
+        markerElement.innerHTML = mk.svg;
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(school["위도"], school["경도"]),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H) },
         });
         addMarkerRightClickEvent(marker, markerElement);
-        return { marker, lat: school["위도"], lng: school["경도"] };
+        return { marker, lat: school["위도"], lng: school["경도"], kind: "m", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H };
       }
 
       async function rebuildMiddleSchoolPool() {
@@ -11870,6 +11970,7 @@ const originalBase64 = event.target.result;
         if (!showMiddleSchools || window.map.getZoom() < 14) {
           window.__middleSchoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
           window.__middleSchoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          __scheduleSchoolMkLayout();
           return;
         }
         const bounds = window.map.getBounds();
@@ -11893,6 +11994,7 @@ const originalBase64 = event.target.result;
           toShow.forEach(({ marker }) => marker.setMap(window.map));
           window.__middleSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
         }
+        __scheduleSchoolMkLayout();
       }
 
       // ✅ 중학교 체크박스 변경 시 마커 업데이트
@@ -12033,30 +12135,23 @@ const originalBase64 = event.target.result;
       }
 
       function _buildHighSchoolMarkerEntry(school) {
+        // 2026-10-28: 초·중과 같은 건물 모양 SVG(_buildSchoolMarkerSvg)로 교체, 색은 highSchool.png 의 파랑. 숫자 줄 없이 이름만.
+        const mk = _buildSchoolMarkerSvg(_highSchoolLabel(school), "", _HIGH_SCHOOL_MK_COLOR, true);
         const markerElement = document.createElement("div");
-        markerElement.style = "text-align: center; display: flex; flex-direction: column; align-items: center;";
-        const markerIcon = document.createElement("img");
-        markerIcon.src = "highSchool.png";
-        // ⚠ 로고 PNG 는 배경이 투명이라 밑에 깔린 경계선이 비쳐 보인다. 2026-09-22 에 흰 바탕을 깔았다가
-        //   2026-09-23 사용자 지시로 **원래대로 투명** 복원(경계 캔버스를 마커 아래 층으로 내린 뒤라 덮임 자체는 해결됐다).
-        markerIcon.style = "width: 32px; height: 32px;";
-        const infoBox = document.createElement("div");
-        infoBox.style = "background:white;border:1px solid gray;border-radius:4px;padding:2px 5px;font-size:12px;font-weight:bold;box-shadow:1px 1px 3px rgba(0,0,0,0.3);white-space:nowrap;display:inline-block;overflow:hidden;text-overflow:ellipsis;text-align:center;";
-        infoBox.textContent = _highSchoolLabel(school);
+        markerElement.style = `position:relative;width:${mk.W}px;height:${mk.H}px;`;
+        markerElement.innerHTML = mk.svg;
         const tip = [];
         if (school["학급당"] != null) tip.push(`학급당 ${school["학급당"]}명`);
         if (school["교사당"] != null) tip.push(`교사당 ${school["교사당"]}명`);
         if (school["주소"]) tip.push(school["주소"]);
         if (tip.length) markerElement.title = tip.join(" · ");
-        markerElement.appendChild(markerIcon);
-        markerElement.appendChild(infoBox);
         const marker = new naver.maps.Marker({
           position: new naver.maps.LatLng(school["위도"], school["경도"]),
           map: null,
-          icon: { content: markerElement, anchor: new naver.maps.Point(16, 32) },
+          icon: { content: markerElement, anchor: new naver.maps.Point(mk.W / 2, mk.H) },
         });
         addMarkerRightClickEvent(marker, markerElement);
-        return { marker, lat: school["위도"], lng: school["경도"] };
+        return { marker, lat: school["위도"], lng: school["경도"], kind: "h", el: markerElement, W: mk.W, H: mk.H, ax: mk.W / 2, ay: mk.H };
       }
 
       async function rebuildHighSchoolPool() {
@@ -12076,6 +12171,7 @@ const originalBase64 = event.target.result;
         if (!show || window.map.getZoom() < 14) {
           window.__highSchoolMarkerPool?.forEach(({ marker }) => marker.setMap(null));
           window.__highSchoolMarkerCache?.forEach(({ marker }) => marker.setMap(null));
+          __scheduleSchoolMkLayout();
           return;
         }
         const bounds = window.map.getBounds();
@@ -12100,6 +12196,7 @@ const originalBase64 = event.target.result;
           toShow.forEach(({ marker }) => marker.setMap(window.map));
           window.__highSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
         }
+        __scheduleSchoolMkLayout();
       }
 
       document.getElementById("toggleHighSchools").addEventListener("change", async () => {
