@@ -71,7 +71,16 @@ button:hover { filter: brightness(0.96); }
 .item { display: contents; }
 .items .loading { grid-column: 1 / -1; }
 .chip { width: 12px; height: 12px; border-radius: 50%; flex: none; }
-.item .vis { width: 16px; height: 16px; padding: 0; border: 2px solid transparent; cursor: pointer; }
+.item .vis { width: 16px; height: 16px; padding: 0; border: 2px solid transparent; cursor: pointer; touch-action: none; -webkit-touch-callout: none; user-select: none; }
+/* 색 네모를 길게 눌러 끌면 단지 순서 이동(2026-10-29) — 끄는 줄은 흐리게 */
+/* 끄는 동안: 원래 자리는 빈 자리처럼 옅게, 줄 전체를 본뜬 상자(.rghost)가 손가락·커서를 따라 움직인다 */
+.item.moving > * { opacity: .18; }
+.rghost { position: fixed; z-index: 9999; pointer-events: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; box-sizing: border-box;
+  background: var(--card); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 10px 28px rgba(0,0,0,.22); transform: scale(1.02); font-size: 13px; }
+.rghost .chip { width: 14px; height: 14px; border-radius: 2px; flex: none; }
+.rghost b { white-space: nowrap; }
+.rghost span { color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+body.reordering, body.reordering * { cursor: grabbing !important; user-select: none !important; }
 .item.off .vis { background: #fff !important; }
 .item.off .srch input, .item.off select, .item.off .st { opacity: .45; }
 /* 단지명 칸은 글자 길이만큼(field-sizing), 남는 폭은 평형 선택이 가져간다 (2026-10-29 사용자 요청) */
@@ -997,6 +1006,69 @@ function bindPanel(p) {
   paintYr();
 }
 
+// ── 단지 순서 이동 (2026-10-29 사용자 "색 부분을 길게 눌러 순서 이동") ──
+// 색 네모를 0.35초 누르고 있으면 끌기 시작 — 위아래로 움직이면 줄이 그 자리로 옮겨 가고, 놓으면 그 순서로 저장.
+// 짧게 누르면 원래대로 숨기기/보이기. 색은 자리 순서를 따른다(첫 줄 = 첫 색). PC·폰 모두(포인터 이벤트).
+// 줄(.item)은 PC 에서 display:contents 라 크기가 없어 자식들의 사각형을 합쳐 위치를 잰다.
+let reorderJust = false;   // 길게 눌러 끈 뒤 따라오는 click 은 숨기기로 치지 않는다
+const rowBox = row => { let t = 1e9, b = -1e9, l = 1e9, r2 = -1e9; for (const c of row.children) { const r = c.getBoundingClientRect(); if (r.height) { t = Math.min(t, r.top); b = Math.max(b, r.bottom); l = Math.min(l, r.left); r2 = Math.max(r2, r.right); } } return { t, b, l, r: r2, m: (t + b) / 2 }; };
+function bindReorder(p, row) {
+  const vis = row.querySelector('.vis'), list = row.parentNode;
+  let timer = 0, on = false, pid = null, x0 = 0, y0 = 0, ghost = null, dy = 0;
+  // ⚠ 움직임·떼기는 window 에서 받는다. 줄을 insertBefore 로 옮기는 순간 색 네모가 문서에서 잠깐 빠져
+  //   포인터 캡처가 풀리고, 그 뒤 pointerup 이 네모에 오지 않아 끌던 상자가 화면에 멈춰 남았다(2026-10-29 사용자 보고).
+  const off = () => {
+    removeEventListener('pointermove', move, true); removeEventListener('pointerup', up, true);
+    removeEventListener('pointercancel', up, true); removeEventListener('blur', up);
+  };
+  const cancel = () => { clearTimeout(timer); timer = 0; };
+  vis.addEventListener('contextmenu', e => e.preventDefault());   // 폰 길게 누르기 메뉴
+  vis.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || p.items.length < 2) return;
+    pid = e.pointerId; x0 = e.clientX; y0 = e.clientY;
+    addEventListener('pointermove', move, true); addEventListener('pointerup', up, true);
+    addEventListener('pointercancel', up, true); addEventListener('blur', up);
+    timer = setTimeout(() => {
+      timer = 0; on = true;
+      // 줄 전체를 본뜬 상자 — 색·단지명·평형·동 정보. 누른 자리와 상자 위 끝의 거리(dy)를 지켜 따라 움직인다
+      const bx = rowBox(row), it = p.items[+row.dataset.i] || {}, sel = row.querySelector('.ar');
+      ghost = document.createElement('div'); ghost.className = 'rghost';
+      ghost.innerHTML = `<i class="chip" style="background:${getComputedStyle(vis).backgroundColor}"></i><b>${esc(it.name || '(빈 줄)')}</b>`
+        + `<span>${esc(sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '')}${row.querySelector('.st')?.textContent ? ' · ' + esc(row.querySelector('.st').textContent) : ''}</span>`;
+      Object.assign(ghost.style, { left: bx.l + 'px', top: bx.t + 'px', width: (bx.r - bx.l) + 'px', minHeight: Math.min(bx.b - bx.t, 60) + 'px' });
+      document.body.appendChild(ghost); dy = y0 - bx.t;
+      row.classList.add('moving'); document.body.classList.add('reordering');
+      if (navigator.vibrate) try { navigator.vibrate(15); } catch (_) {}
+    }, 350);
+  });
+  function move(e) {
+    if (e.pointerId !== pid) return;
+    if (timer && Math.hypot(e.clientX - x0, e.clientY - y0) > 8) { cancel(); off(); return; }   // 누르는 동안 움직이면 끌기 아님
+    if (!on) return;
+    e.preventDefault();
+    if (ghost) ghost.style.top = (e.clientY - dy) + 'px';
+    // 커서가 다른 줄의 가운데를 넘으면 그 줄 앞/뒤로 옮긴다
+    const rows = [...list.querySelectorAll(':scope > .item')];
+    for (const o of rows) {
+      if (o === row) continue;
+      const b = rowBox(o), mine = rowBox(row);
+      if (e.clientY < b.m && mine.t > b.m) { list.insertBefore(row, o); break; }
+      if (e.clientY > b.m && mine.b < b.m) { list.insertBefore(row, o.nextSibling); break; }
+    }
+  }
+  function up(e) {
+    if (e && e.pointerId != null && e.pointerId !== pid) return;
+    cancel(); off();
+    if (!on) return;
+    on = false; reorderJust = true; setTimeout(() => { reorderJust = false; }, 400);
+    ghost?.remove(); ghost = null;
+    row.classList.remove('moving'); document.body.classList.remove('reordering');
+    const order = [...list.querySelectorAll(':scope > .item')].map(o => +o.dataset.i);
+    if (order.every((v, k) => v === k)) return;
+    p.items = order.map(k => p.items[k]);
+    save(); renderItems(p); refresh(p); tlSync(p);
+  }
+}
 function bindItem(p, i) {
   const it = p.items[i], row = panelEl(p).querySelector(`.item[data-i="${i}"]`);
   const inp = row.querySelector('input'), dd = row.querySelector('.dd'), sel = row.querySelector('.ar'), st = row.querySelector('.st');
@@ -1034,7 +1106,8 @@ function bindItem(p, i) {
   row.querySelector('.rm').onclick = () => { p.items.splice(i, 1); p.drag = null; save(); renderItems(p); refresh(p); };
   // 잠시 숨기기 — 단지·평형은 그대로 두고 차트·요약·끌기 결과에서만 뺀다
   row.classList.toggle('off', !!it.hidden);
-  row.querySelector('.vis').onclick = () => { it.hidden = !it.hidden; row.classList.toggle('off', it.hidden); syncAllVis(p); save(); refresh(p); tlSync(p); };
+  bindReorder(p, row);
+  row.querySelector('.vis').onclick = () => { if (reorderJust) { reorderJust = false; return; } it.hidden = !it.hidden; row.classList.toggle('off', it.hidden); syncAllVis(p); save(); refresh(p); tlSync(p); };
   sel.onchange = () => {
     const [ar, t] = sel.value.split('|'); it.ar = +ar; it.t = t || null; p.drag = null;
     it.tn = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.tn || '';
