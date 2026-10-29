@@ -29268,7 +29268,7 @@ const originalBase64 = event.target.result;
       //   여는 곳: 지도 왼쪽 중간 측정 카드(#msCard) 의 [단지비교](강남 km 아래 — 터치 기기는 카드째 숨김 = PC 전용).
       //   단지 넣기: ① 패널 안 검색 ② 지도 단지 마커를 끌어 패널에 놓기 — 패널이 열려 있을 때만.
       //   마커 끌기: 마커 위 mousedown 을 문서 캡처 단계에서 가로채 지도 끌기를 막고, 6px 넘게 움직이면 끌기,
-      //   안 움직이고 떼면 원래처럼 단지 정보 창(showApartmentInfo)을 연다. 손가락·펜은 마커를 길게(0.45초) 눌러야 끌기 시작
+      //   안 움직이고 떼면 원래처럼 단지 정보 창(showApartmentInfo)을 연다. 손가락·펜은 마커를 길게(0.35초) 눌러야 끌기 시작
       //   (2026-10-30 — 숨은 'PC 화면'에서 터치로 패널을 쓰는 경우). 단지 번호는 마커 요소의 data-apt-id
       //   (createDefaultMapMarker·createWhiteMapMarker 에서 붙임 — 마커 보관함은 단지번호별이라 요소의 단지가 바뀌지 않는다).
       //   측정(__msActive)·강남(__gnOn)·경로/면적 그리기(#drawBar 보임) 중에는 쉰다.
@@ -29291,6 +29291,7 @@ const originalBase64 = event.target.result;
 #cmpDock.drop-ok{box-shadow:-6px 0 18px rgba(0,0,0,.18),inset 0 0 0 3px #0f766e}
 #cmpDock.drop-no{box-shadow:-6px 0 18px rgba(0,0,0,.18),inset 0 0 0 3px #c2410c}
 #cmpDock.busy iframe{pointer-events:none}
+body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-user-drag:none}
 #cmpGhost{position:fixed;z-index:10090;pointer-events:none;padding:4px 9px;border-radius:6px;background:#2b2622;color:#fff;
   font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translate(12px,10px)}
 #cmpGhost small{font-weight:400;opacity:.8;margin-left:6px}
@@ -29343,10 +29344,10 @@ const originalBase64 = event.target.result;
         window.__cmpOpen = function () {
           build();
           if (!C.loaded) { C.frame.src = "siseCompare.html?embed=1"; C.loaded = true; }
-          C.open = true; C.el.classList.add("on"); place();
+          C.open = true; C.el.classList.add("on"); document.body.classList.add("cmp-open"); place();
           window.__msSyncCard?.();
         };
-        window.__cmpClose = function () { C.open = false; C.el?.classList.remove("on"); window.__msSyncCard?.(); };
+        window.__cmpClose = function () { C.open = false; C.el?.classList.remove("on"); document.body.classList.remove("cmp-open"); window.__msSyncCard?.(); };
         window.__cmpIsOpen = () => C.open;
         window.__cmpToggle = () => (C.open ? window.__cmpClose() : window.__cmpOpen());
         addEventListener("resize", place);
@@ -29364,21 +29365,24 @@ const originalBase64 = event.target.result;
         const busyTools = () => !!(window.__msActive || window.__gnOn || document.getElementById("drawBar")?.hidden === false);
 
         // ── 마커 끌기 ──
-        // 네이버 지도가 pointer·mouse 어느 쪽으로 끌기를 시작하든 막도록 둘 다 문서 캡처 단계에서 가로챈다.
+        // 마우스: 네이버 지도가 pointer·mouse 어느 쪽으로 끌기를 시작하든 막도록 둘 다 문서 캡처 단계에서 가로챈다.
         // ⚠ pointerdown 에 preventDefault 를 하면 뒤따르는 mousedown 이 안 생겨 글자 선택 막기를 못 하므로 그건 mousedown 에서.
-        // 손가락·펜(2026-10-30 사용자: 숨은 'PC 화면'으로 패널을 열었는데 터치로는 못 끌었다): 마커를 HOLD_MS 동안
-        //   거의 그대로 누르고 있으면 끌기 시작. 그 전에 움직이면 평소처럼 지도 이동·탭(정보 창)은 손대지 않는다
-        //   — 그래서 pointerdown 은 가로채지 않고(H 로 지켜보기만), 끌기가 시작된 뒤부터 이동·touchmove 를 막는다.
-        //   길게 누르면 뜨는 contextmenu(윈도우·안드로이드)는 지켜보는 동안·끄는 동안 막는다.
-        const HOLD_MS = 450, HOLD_JITTER = 10;
+        // 손가락·펜(2026-10-30 사용자: 숨은 'PC 화면'으로 패널을 열었는데 폰에서 못 끌었다): 마커를 HOLD_MS 동안
+        //   거의 그대로 누르고 있으면 끌기 시작. 그 전에 움직이면 평소처럼 지도 이동·탭(정보 창)은 손대지 않는다.
+        //   ⚠ 포인터 이벤트가 아니라 **touch 이벤트**로 따라간다 — 안드로이드 크롬은 길게 누르면 글자 선택으로 터치를
+        //     가져가며 pointercancel 을 보내 끌기가 끊겼다(1차 시도 실패, 사용자 보고 "글자 선택·메뉴가 뜸").
+        //     그래서 ① 패널이 열린 동안 마커 글자 선택·콜아웃을 끄고(body.cmp-open CSS) ② 안드로이드 길게 누르기(400ms)보다
+        //     먼저 끌기를 시작하고 ③ contextmenu 를 막고 ④ touchmove 를 preventDefault 해 지도가 따라 움직이지 않게 한다.
+        const HOLD_MS = 350, HOLD_JITTER = 10;
         let D = null;   // { id, name, x0, y0, dragging, ghost, touch }
-        let H = null;   // 터치 길게 누르기 대기 { id, name, pid, x0, y0, t }
+        let H = null;   // 터치 길게 누르기 대기 { id, name, x0, y0, t }
         const stop = (e) => { e.stopPropagation(); e.stopImmediatePropagation?.(); };
-        const markerAt = (e) => {
-          if (!C.open || e.button !== 0 || e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || busyTools()) return null;
-          const mapEl = document.getElementById("map"), mk = e.target.closest?.("[data-apt-id]");
+        const markerOf = (t) => {
+          if (!C.open || busyTools()) return null;
+          const mapEl = document.getElementById("map"), mk = t?.closest?.("[data-apt-id]");
           return mk && mapEl && mapEl.contains(mk) ? mk : null;
         };
+        const markerAt = (e) => (e.button !== 0 || e.ctrlKey || e.shiftKey || e.altKey || e.metaKey ? null : markerOf(e.target));
         const cancelHold = () => { if (H) { clearTimeout(H.t); H = null; } };
         function startDrag(x, y) {
           D.dragging = true;
@@ -29389,61 +29393,92 @@ const originalBase64 = event.target.result;
           D.ghost.style.left = x + "px"; D.ghost.style.top = y + "px";
           D.ghost.innerHTML = `${escapeHtml(D.name)}<small>비교 패널로 끌어 놓기</small>`;
         }
-        document.addEventListener("pointerdown", (e) => {
-          cancelHold();
-          const mk = markerAt(e); if (!mk) return;
-          if (e.pointerType && e.pointerType !== "mouse") {
-            const h = { id: mk.dataset.aptId, name: mk.dataset.aptName || "", pid: e.pointerId, x0: e.clientX, y0: e.clientY };
-            h.t = setTimeout(() => {
-              if (H !== h) return;
-              H = null;
-              D = { id: h.id, name: h.name, x0: h.x0, y0: h.y0, dragging: false, touch: true, pid: h.pid };
-              startDrag(h.x0, h.y0);
-              try { navigator.vibrate?.(30); } catch (_) {}
-            }, HOLD_MS);
-            H = h;
-            return;
-          }
-          stop(e);
-          D = { id: mk.dataset.aptId, name: mk.dataset.aptName || "", x0: e.clientX, y0: e.clientY, dragging: false };
-        }, true);
-        document.addEventListener("mousedown", (e) => { if (D && !D.touch) { e.preventDefault(); stop(e); } }, true);
-        // 끄는 동안 지도가 touch 이벤트로 따라 움직이지 않게(passive:false 라야 preventDefault 가 듣는다)
-        document.addEventListener("touchmove", (e) => { if (D?.touch) { e.preventDefault(); stop(e); } }, { capture: true, passive: false });
-        document.addEventListener("contextmenu", (e) => { if (H || D?.touch) { e.preventDefault(); stop(e); } }, true);
-        function onMove(e) {
-          if (H && e.pointerId === H.pid && Math.hypot(e.clientX - H.x0, e.clientY - H.y0) > HOLD_JITTER) cancelHold();
-          if (!D) return;
-          if (D.touch && e.pointerId !== D.pid) return;
-          stop(e);
-          if (!D.dragging) {
-            if (Math.hypot(e.clientX - D.x0, e.clientY - D.y0) < 6) return;
-            startDrag(e.clientX, e.clientY);
-          }
-          e.preventDefault();
-          D.ghost.style.left = e.clientX + "px"; D.ghost.style.top = e.clientY + "px";
+        function dragMove(x, y) {
+          D.ghost.style.left = x + "px"; D.ghost.style.top = y + "px";
           let st = null;
-          if (inDock(e.clientX, e.clientY)) { const w = fw(); st = w?.cmpHover ? w.cmpHover(...frameXY(e.clientX, e.clientY)) : "ok"; }
+          if (inDock(x, y)) { const w = fw(); st = w?.cmpHover ? w.cmpHover(...frameXY(x, y)) : "ok"; }
           else fw()?.cmpHover?.(null);
           C.el.classList.toggle("drop-ok", st === "ok");
           C.el.classList.toggle("drop-no", st === "full");
           D.ghost.innerHTML = `${escapeHtml(D.name)}<small>${st === "ok" ? "놓으면 추가" : st === "full" ? "10개 가득 참" : "비교 패널로 끌어 놓기"}</small>`;
         }
-        document.addEventListener("pointermove", onMove, true);
-        document.addEventListener("mousemove", (e) => { if (D) stop(e); }, true);
         function endDrag(d = D) {
           d?.ghost?.remove();
           C.el.classList.remove("busy", "drop-ok", "drop-no");
           document.body.style.cursor = "";
         }
-        function onUp(e) {
-          if (H && e.pointerId === H.pid) cancelHold();   // 짧게 탭 — 원래 동작(정보 창) 그대로
-          if (!D) return;
-          if (D.touch && e.pointerId !== D.pid) return;
+        function drop(d, x, y) {
+          endDrag(d);
+          const w = fw();
+          if (!inDock(x, y)) { w?.cmpHover?.(null); return; }
+          if (!w?.cmpAdd) return toast("비교 화면을 불러오는 중입니다. 잠시 뒤 다시 놓아 주세요.");
+          const res = w.cmpAdd(d.id, d.name, ...frameXY(x, y));
+          toast(res === "ok" ? `${d.name} 추가` : res === "dup" ? `${d.name} — 이미 들어 있습니다` : "한 묶음에 10개까지 넣을 수 있습니다");
+        }
+        const abort = () => { cancelHold(); if (D) { endDrag(); fw()?.cmpHover?.(null); D = null; } };
+
+        // ── 손가락(touch 이벤트) ──
+        document.addEventListener("touchstart", (e) => {
+          cancelHold();
+          if (D?.touch) { abort(); return; }   // 끄는 중 두 번째 손가락 = 취소
+          if (e.touches.length !== 1) return;
+          const mk = markerOf(e.target); if (!mk) return;
+          const p = e.touches[0];
+          const h = { id: mk.dataset.aptId, name: mk.dataset.aptName || "", x0: p.clientX, y0: p.clientY };
+          h.t = setTimeout(() => {
+            if (H !== h) return;
+            H = null;
+            D = { id: h.id, name: h.name, x0: h.x0, y0: h.y0, dragging: false, touch: true };
+            startDrag(h.x0, h.y0);
+            try { navigator.vibrate?.(30); } catch (_) {}
+          }, HOLD_MS);
+          H = h;
+        }, { capture: true, passive: true });
+        // passive:false 라야 preventDefault 가 듣는다(지도 이동·스크롤 막기)
+        document.addEventListener("touchmove", (e) => {
+          const p = e.touches[0];
+          if (H && (e.touches.length !== 1 || !p || Math.hypot(p.clientX - H.x0, p.clientY - H.y0) > HOLD_JITTER)) cancelHold();
+          if (!D?.touch || !p) return;
+          e.preventDefault(); stop(e);
+          dragMove(p.clientX, p.clientY);
+        }, { capture: true, passive: false });
+        document.addEventListener("touchend", (e) => {
+          cancelHold();   // 짧게 탭 — 원래 동작(정보 창) 그대로
+          if (!D?.touch) return;
           const d = D; D = null;
-          // 터치는 pointerdown 을 지도가 이미 받았으므로 pointerup 은 흘려보내 지도의 누름 상태를 풀어 준다(뒤따르는 click 만 삼킨다)
-          if (!d.touch) stop(e);
+          // touchend 는 흘려보내 지도의 누름 상태를 풀어 준다. preventDefault 로 뒤따르는 마우스 흉내·click 은 없앤다.
           e.preventDefault();
+          window.__cmpSwallowClick = Date.now();
+          const p = e.changedTouches[0];
+          if (p) drop(d, p.clientX, p.clientY); else endDrag(d);
+        }, { capture: true, passive: false });
+        document.addEventListener("touchcancel", abort, true);
+        document.addEventListener("contextmenu", (e) => { if (H || D?.touch) { e.preventDefault(); stop(e); } }, true);
+
+        // ── 마우스(pointer 이벤트) ──
+        document.addEventListener("pointerdown", (e) => {
+          if (e.pointerType && e.pointerType !== "mouse") return;   // 손가락·펜은 위 touch 쪽
+          const mk = markerAt(e); if (!mk) return;
+          stop(e);
+          D = { id: mk.dataset.aptId, name: mk.dataset.aptName || "", x0: e.clientX, y0: e.clientY, dragging: false };
+        }, true);
+        document.addEventListener("mousedown", (e) => { if (D && !D.touch) { e.preventDefault(); stop(e); } }, true);
+        document.addEventListener("pointermove", (e) => {
+          if (!D) return;
+          stop(e);   // 손가락 끌기 중에도 지도가 pointermove 로 따라 움직이지 않게
+          if (D.touch) return;
+          if (!D.dragging) {
+            if (Math.hypot(e.clientX - D.x0, e.clientY - D.y0) < 6) return;
+            startDrag(e.clientX, e.clientY);
+          }
+          e.preventDefault();
+          dragMove(e.clientX, e.clientY);
+        }, true);
+        document.addEventListener("mousemove", (e) => { if (D) stop(e); }, true);
+        document.addEventListener("pointerup", (e) => {
+          if (!D || D.touch) return;   // 손가락은 touchend 에서
+          const d = D; D = null;
+          stop(e); e.preventDefault();
           window.__cmpSwallowClick = Date.now();   // 뒤따르는 click 을 삼킨다(아래)
           if (!d.dragging) {
             // 그냥 클릭 — 원래 마커 클릭과 같게 정보 창(offset = 지도 안 좌표)
@@ -29451,20 +29486,15 @@ const originalBase64 = event.target.result;
             try { (window.showApartmentInfo || showApartmentInfo)(d.id, { x: e.clientX - r.left, y: e.clientY - r.top }); } catch (err) { console.warn(err); }
             return;
           }
-          endDrag(d);
-          const w = fw();
-          if (!inDock(e.clientX, e.clientY)) { w?.cmpHover?.(null); return; }
-          if (!w?.cmpAdd) return toast("비교 화면을 불러오는 중입니다. 잠시 뒤 다시 놓아 주세요.");
-          const res = w.cmpAdd(d.id, d.name, ...frameXY(e.clientX, e.clientY));
-          toast(res === "ok" ? `${d.name} 추가` : res === "dup" ? `${d.name} — 이미 들어 있습니다` : "한 묶음에 10개까지 넣을 수 있습니다");
-        }
-        document.addEventListener("pointerup", onUp, true);
+          drop(d, e.clientX, e.clientY);
+        }, true);
         document.addEventListener("mouseup", (e) => { if (window.__cmpSwallowClick && Date.now() - window.__cmpSwallowClick < 400) stop(e); }, true);
         // 가로챈 뒤의 click 이 지도·마커로 가지 않게(정보 창은 pointerup 에서 이미 열었다)
         document.addEventListener("click", (e) => {
           if (window.__cmpSwallowClick && Date.now() - window.__cmpSwallowClick < 400) { window.__cmpSwallowClick = 0; e.preventDefault(); stop(e); }
         }, true);
-        document.addEventListener("pointercancel", () => { cancelHold(); if (D) { endDrag(); fw()?.cmpHover?.(null); D = null; } }, true);
+        // 손가락 끌기는 브라우저가 pointercancel 을 보내도 touch 이벤트로 계속 따라가므로 무시
+        document.addEventListener("pointercancel", () => { if (D && !D.touch) abort(); }, true);
         addEventListener("keydown", (e) => {
           if (e.key === "Escape" && D?.dragging) { endDrag(); fw()?.cmpHover?.(null); D = null; }
         });
