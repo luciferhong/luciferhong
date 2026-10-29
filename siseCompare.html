@@ -640,8 +640,32 @@ const marksPlugin = {
       }
       ctx.restore();
     }
+    // 범례 — 차트 안 왼쪽 위, 반투명 바탕 상자에 [색 네모] 단지명  평형 글(2026-10-29 사용자 "차트만 캡처해도 모든 정보를 알 수 있게").
+    // 자리는 먼저 잡아(boxes) 전고·전저 글이 피해 가게 하고, 그리기는 선들보다 위에 오게 맨 마지막에.
+    const legBox = []; let drawLegend = () => {};
+    if ((o.legend || []).length) {
+      ctx.save();
+      ctx.font = `600 11px ${SK.font}`; const nw = Math.max(...o.legend.map(l => ctx.measureText(l.name).width));
+      ctx.font = `400 11px ${SK.font}`; const uw = Math.max(...o.legend.map(l => ctx.measureText(l.unit).width));
+      ctx.restore();
+      const lh = 16, pad = 6, w = pad * 2 + 13 + nw + 10 + uw, h = pad * 2 + lh * o.legend.length - 2, x0 = ca.left + 6, y0 = ca.top + 6;
+      legBox.push({ x1: x0, x2: x0 + w, y1: y0, y2: y0 + h });
+      drawLegend = () => {
+        ctx.save();
+        ctx.globalAlpha = 0.88; ctx.fillStyle = SK.dotFill; ctx.fillRect(x0, y0, w, h); ctx.globalAlpha = 1;
+        ctx.strokeStyle = SK.grid; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+        ctx.textBaseline = 'middle';
+        o.legend.forEach((l, k) => {
+          const y = y0 + pad + lh * k + 7;
+          ctx.fillStyle = l.c; ctx.fillRect(x0 + pad, y - 4.5, 9, 9);
+          ctx.fillStyle = SK.tick; ctx.font = `600 11px ${SK.font}`; ctx.fillText(l.name, x0 + pad + 13, y);
+          ctx.font = `400 11px ${SK.font}`; ctx.fillText(l.unit, x0 + pad + 13 + nw + 10, y);
+        });
+        ctx.restore();
+      };
+    }
     // 표시 글자는 겹치면 아랫줄로 내린다(2026-10-29 — 고점·저점이 가까운 단지에서 저점 글자가 고점 글자를 덮었다)
-    const placed = [], boxes = [];
+    const placed = [], boxes = [...legBox];
     const hit = (a, b) => a.x1 < b.x2 + 2 && a.x2 > b.x1 - 2 && a.y1 < b.y2 + 1 && a.y2 > b.y1 - 1;
     // 겹치지 않는 자리 찾기 — dy 방향으로 한 칸씩 밀어 본다
     const spot = (lx, ly, w, h, dy) => {
@@ -697,9 +721,29 @@ const marksPlugin = {
       ctx.fillStyle = l.color; ctx.fillRect(lx, ly, w, 12); ctx.fillStyle = '#fff'; ctx.textBaseline = 'top'; ctx.fillText(l.label, lx + 3, ly + 1);
       ctx.restore();
     }
+    drawLegend();
   },
 };
 Chart.register(marksPlugin);
+// 범례의 평형 글 — 건수는 빼고 구조를 한 글자로(계단식→계, 복도식→복, 복합식→합; 2026-10-29 사용자)
+const legUnit = it => (it.ul || `${it.ar}㎡`).replace(/ · [\d,]+건$/, '').replace(/계단식/g, '계').replace(/복도식/g, '복').replace(/복합식/g, '합');
+// 툴팁: 마우스에 가장 가까운 점의 달(일별 보기는 ±15일)에 있는 다른 단지 선의 점도 함께 보여 준다
+// (2026-10-29 사용자 "점에 마우스를 올리면 그 단지뿐 아니라 비교하는 단지 모두"). 개별 거래 점은 가까운 그 점만.
+Chart.Interaction.modes.sameMonth = (chart, e, options, useFinal) => {
+  const near = Chart.Interaction.modes.nearest(chart, e, { intersect: false, axis: 'xy' }, useFinal);
+  if (!near.length) return [];
+  const n0 = near[0], ds0 = chart.data.datasets[n0.datasetIndex];
+  if (!ds0 || ds0.type !== 'line') return near;
+  const x0 = ds0.data[n0.index].x, tol = state.cfg.view === 'day' ? 15 / 365 : 1 / 24;
+  const out = [n0];
+  chart.data.datasets.forEach((ds, di) => {
+    if (di === n0.datasetIndex || ds.type !== 'line' || !chart.isDatasetVisible(di)) return;
+    let bi = -1, bd = tol;
+    ds.data.forEach((pt, i) => { const d = Math.abs(pt.x - x0); if (d <= bd) { bd = d; bi = i; } });
+    if (bi >= 0) out.push({ element: chart.getDatasetMeta(di).data[bi], datasetIndex: di, index: bi });
+  });
+  return out;
+};
 
 // ── 렌더 ─────────────────────────────────────────────
 const charts = new Map();
@@ -889,6 +933,7 @@ function bindItem(p, i) {
   sel.onchange = () => {
     const [ar, t] = sel.value.split('|'); it.ar = +ar; it.t = t || null;
     it.tn = sel.selectedOptions[0] && sel.selectedOptions[0].dataset.tn || '';
+    it.ul = sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '';   // 범례에 쓰는 고른 평형 글
     save(); refresh(p);
   };
 
@@ -909,6 +954,7 @@ function bindItem(p, i) {
       const optHtml = o => `<option value="${optVal(o)}" data-tn="${esc(o.tn)}" ${optVal(o) === cur ? 'selected' : ''}>${esc(o.label)}</option>`;
       sel.innerHTML = opts.map(g => g.opts.length > 1
         ? `<optgroup label="${esc(g.group)}">${g.opts.map(optHtml).join('')}</optgroup>` : optHtml(g.opts[0])).join('');
+      it.ul = sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '';
       const a = APT_BY_ID.get(String(it.cid));
       // 단지 줄 옆: 동 · 연식 · 세대수 (같은 이름 단지 구분용)
       const stTxt = b => { if (!it.dong && b.dong) { it.dong = b.dong; save(); } return [b.dong, b.year ? `${b.year.slice(2, 4)}년` : '', b.units ? `${b.units}세대` : ''].filter(Boolean).join(' · '); };
@@ -1062,7 +1108,7 @@ function drawChart(p, el, ready, cfg) {
     type: 'scatter', data: { datasets: ds },
     options: {
       animation: false, responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'nearest', intersect: false },
+      interaction: { mode: 'sameMonth', intersect: false },
       scales: {
         x: { type: 'linear', min: xLo, max: xHi, ticks: { stepSize: xt.step, maxTicksLimit: 1000, autoSkip: false, maxRotation: 0, callback: xt.label }, afterBuildTicks: xt.build, grid: { display: SK.gridX !== false, color: SK.grid }, border: { color: SK.grid } },
         y: { min: yLo, max: yHi, position: SK.yRight ? 'right' : 'left', ticks: { display: ready.length > 0, callback: v => (y2 && v < y2._realLo ? '' : +(v / 1e4).toFixed(2) + '억') }, grid: { color: SK.grid }, border: { display: !SK.yRight, color: SK.grid } },
@@ -1071,7 +1117,7 @@ function drawChart(p, el, ready, cfg) {
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: ctx => (ctx.dataset._tip ? ctx.dataset._tip(ctx.raw) : ''), title: () => '' } },
-        cmpMarks: { lines, bands, vols },
+        cmpMarks: { lines, bands, vols, legend: ready.map(r => ({ c: COLORS[r.i], name: r.it.name || '', unit: legUnit(r.it) })) },
       },
     },
   }));
