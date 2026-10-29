@@ -705,9 +705,10 @@ Chart.register(marksPlugin);
 const charts = new Map();
 const board = $('#board');
 
-// 평형 목록 — 전용 정수별 묶음(optgroup). 그 안에 타입이 둘 이상이면 타입별 항목 + '전용 N 전체'(2026-10-29).
-// 타입 = 서버 types(전용면적이 소수까지 같은 타입은 한 묶음 — 실거래로 구분 불가).
-const typeDesc = t => [t.st, t.room ? `방${t.room}` : '', t.bath ? `욕${t.bath}` : ''].filter(Boolean).join(' ');
+// 평형 목록 — 전용 정수별 묶음(optgroup). 그 안에 구조(계단식/복도식·방·욕실)가 둘 이상이면 구조별 항목 + '전체'(2026-10-29).
+// 타입 = 서버 types(전용 정수 + 구조 + 방 + 욕실이 같으면 한 타입). 평은 같은 전용 안에서도 공급면적이 달라
+// 헷갈려서 쓰지 않는다. 구조는 최대한 짧게 '계단식/3/2'(구조/방/욕실), 건수는 매매 건수(2026-10-29 사용자).
+const typeDesc = t => [t.st, t.room, t.bath].filter(Boolean).join('/');
 function unitOptions(d) {
   const by = new Map(), byT = new Map();
   for (const t of d.trades) {
@@ -716,23 +717,21 @@ function unitOptions(d) {
     if (t[9]) { const q = byT.get(t[9]) || { S: 0, J: 0 }; q[t[4]]++; byT.set(t[9], q); }
   }
   for (const a of d.asks) if (!by.has(a[1])) by.set(a[1], { S: 0, J: 0 });
-  const types = d.types || [];
+  const types = d.types || [], cnt = n => `${n.toLocaleString()}건`;
   return [...by.entries()].sort((a, b) => a[0] - b[0]).map(([ar, o]) => {
-    const ts = types.filter(t => t.ar === ar).sort((a, b) => a.names[0].localeCompare(b.names[0], 'ko', { numeric: true })), sup = (ts[0] && ts[0].supply) || (d.supply && d.supply[ar]);
-    const py = sup ? ` · ${Math.round(sup / 3.3058)}평` : '';
+    const ts = types.filter(t => t.ar === ar).sort((a, b) => typeDesc(a).localeCompare(typeDesc(b), 'ko', { numeric: true }));
     const opts = [];
     if (ts.length > 1) {
       for (const t of ts) {
         const q = byT.get(t.k) || { S: 0 };
-        opts.push({ ar, t: t.k, tn: t.names.join('/'), S: q.S,
-          label: `${t.names.join('/')} · ${typeDesc(t)}${t.hh ? ` · ${t.hh}세대` : ''} · 매매 ${q.S}건` });
+        opts.push({ ar, t: t.k, tn: typeDesc(t), S: q.S, label: `${ar}㎡ · ${typeDesc(t)} · ${cnt(q.S)}` });
       }
-      opts.push({ ar, t: null, tn: '', S: o.S, label: `전용 ${ar}㎡ 전체 · 매매 ${o.S}건` });
+      opts.push({ ar, t: null, tn: '', S: o.S, label: `${ar}㎡ 전체 · ${cnt(o.S)}` });
     } else {
       const t = ts[0];
-      opts.push({ ar, t: null, tn: '', S: o.S, label: `전용 ${ar}㎡${py}${t ? ` · ${typeDesc(t)}` : ''} · 매매 ${o.S}건` });
+      opts.push({ ar, t: null, tn: '', S: o.S, label: `${ar}㎡${t ? ` · ${typeDesc(t)}` : ''} · ${cnt(o.S)}` });
     }
-    return { ar, group: `전용 ${ar}㎡${py}${ts.length > 1 ? ` · 타입 ${ts.length}개` : ''}`, opts };
+    return { ar, group: `${ar}㎡ · 구조 ${ts.length}개`, opts };
   });
 }
 function defaultAr(groups) {
@@ -1281,8 +1280,8 @@ async function drawTradeList() {
     }
     const chips = [top.has(t) ? '<em class="new">신고가</em>' : '', renew ? '<em>갱신</em>' : '', direct ? '<em>직거래</em>' : '', silv ? '<em>분양권</em>' : '', cancel ? '<em class="cx">취소</em>' : ''].join('');
     // 거래동(2026-10-29) — 국토부 매매에만 있다
-    // 구조(2026-10-29 사용자 "실거래표에서 구조도 표기") — 거래의 타입 키로 계단식/복도식·방 수(욕실은 길어서 목록에선 뺌)
-    const ty = typeOf.get(t[9]), stx = ty ? [ty.st, ty.room ? `방${ty.room}` : ''].filter(Boolean).join(' ') : '';
+    // 구조(2026-10-29 사용자 "실거래표에서 구조도 표기") — 거래의 타입 키로 '계단식/3/2'
+    const ty = typeOf.get(t[9]), stx = ty ? typeDesc(ty) : '';
     const meta = [`${a}㎡${stx ? ' ' + stx : ''}`, dong ? `${esc(dong)}동` : '', floor != null && floor !== '' ? `${floor}층` : ''].filter(Boolean).join(' · ');
     body += `<div class="tl-r${cancel ? ' cx' : ''}"><div class="dd2">${+date.slice(8, 10)}<small>일</small></div>
       <div class="mid"><div><span class="kd ${kind === 'S' ? 's' : 'j'}">${kind === 'S' ? '매매' : '전세'}</span><b class="pv">${pr(price)}</b>${chips}</div></div>
