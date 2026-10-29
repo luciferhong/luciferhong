@@ -147,7 +147,9 @@ button:hover { filter: brightness(0.96); }
   .panel { width: 100% !important; }
   .ph { padding: 6px 8px; }
   /* 단지 줄: [색 | 단지명 | ✕] / [   | 평형 선택 ] / [   | 동·연식·세대 ] — dense 로 ✕ 를 첫 줄에 채운다 */
-  .items { grid-template-columns: auto minmax(0, 1fr) auto; grid-auto-flow: row dense; gap: 4px 6px; padding: 8px 8px 4px; }
+  /* 단지 하나 = 자기 격자 하나(2026-10-29 — 묶음 전체를 dense 격자로 두니 둘째 단지의 색 점이 첫 단지 평형 줄의 빈 칸으로 끌려 올라갔다) */
+  .items { display: flex; flex-direction: column; gap: 8px; padding: 8px 8px 4px; }
+  .item { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-auto-flow: row dense; gap: 4px 6px; align-items: center; }
   .item .vis { grid-column: 1; }
   .item .srch { grid-column: 2; }
   .item .srch input { max-width: none; field-sizing: fixed; }
@@ -1184,11 +1186,11 @@ function bindDrag(p, canvas) {
 // 묶음의 단지를 위 탭으로 고르고, 면적(전체/전용별)·매매/전세·연도로 거른다. 달별로 묶고 그때까지의 매매 최고가를 넘은 거래에 '최고가'.
 // 직거래·갱신·취소 거르기는 머리 설정(직거래 제외·전세 갱신 제외·취소 거래 포함)을 그대로 따른다.
 const won = v => { const e = Math.floor(v / 1e4), r = Math.round(v % 1e4); return e ? `${e}억${r ? ' ' + r.toLocaleString() : ''}` : r.toLocaleString(); };
-const tl = { p: null, i: 0, ar: null, k: 'all', year: '' };
+const tl = { p: null, i: 0, ar: null, t: null, k: 'all', year: '' };   // t = 구조(타입) 키 — 면적 선택에서 타입까지 고르면
 function openTradeList(p) {
   const items = p.items.filter(x => x.cid && x.ar != null);
   if (!items.length) return alert('먼저 단지를 넣으세요.');
-  Object.assign(tl, { p, i: Math.min(tl.p === p ? tl.i : 0, items.length - 1), ar: 'sel', year: '' });
+  Object.assign(tl, { p, i: Math.min(tl.p === p ? tl.i : 0, items.length - 1), ar: 'sel', t: null, year: '' });
   $('#tl').style.display = 'flex';
   placeTL();
   tlObs.disconnect(); const pe = panelEl(p); if (pe) tlObs.observe(pe);   // 묶음 폭을 바꾸면 따라 움직인다
@@ -1210,11 +1212,13 @@ async function drawTradeList() {
   let d; try { d = await loadData(it.cid); } catch (e) { box.innerHTML = `<div class="tl-load">오류: ${esc(e.message)}</div>`; return; }
   const ars = [...new Set(d.trades.map(t => t[1]))].sort((a, b) => a - b);
   const hhOf = a => (d.types || []).filter(x => x.ar === a).reduce((s, x) => s + (x.hh || 0), 0);
+  const typeOf = new Map((d.types || []).map(x => [x.k, x]));
   const useAr = tl.ar === 'sel' ? it.ar : tl.ar;   // 'sel' = 묶음에서 고른 평형(타입까지), null = 전체 면적
   const rows = d.trades.filter(t => {
     const [date, a, , , kind, , , direct, renew, tk, cancel] = t;
     if (useAr != null && a !== useAr) return false;
     if (tl.ar === 'sel' && it.t && tk !== it.t) return false;
+    if (tl.ar !== 'sel' && tl.t && tk !== tl.t) return false;
     if (cancel && !cfg.inCancel) return false;
     if (direct && kind === 'S' && cfg.exDirect) return false;
     if (renew && kind === 'J' && cfg.exRenew) return false;
@@ -1246,13 +1250,23 @@ async function drawTradeList() {
     }
     const chips = [top.has(t) ? '<em class="new">신고가</em>' : '', renew ? '<em>갱신</em>' : '', direct ? '<em>직거래</em>' : '', silv ? '<em>분양권</em>' : '', cancel ? '<em class="cx">취소</em>' : ''].join('');
     // 거래동(2026-10-29) — 국토부 매매에만 있다
-    const meta = [`${a}㎡`, dong ? `${esc(dong)}동` : '', floor != null && floor !== '' ? `${floor}층` : ''].filter(Boolean).join(' · ');
+    // 구조(2026-10-29 사용자 "실거래표에서 구조도 표기") — 거래의 타입 키로 계단식/복도식·방 수(욕실은 길어서 목록에선 뺌)
+    const ty = typeOf.get(t[9]), stx = ty ? [ty.st, ty.room ? `방${ty.room}` : ''].filter(Boolean).join(' ') : '';
+    const meta = [`${a}㎡${stx ? ' ' + stx : ''}`, dong ? `${esc(dong)}동` : '', floor != null && floor !== '' ? `${floor}층` : ''].filter(Boolean).join(' · ');
     body += `<div class="tl-r${cancel ? ' cx' : ''}"><div class="dd2">${+date.slice(8, 10)}<small>일</small></div>
       <div class="mid"><div><span class="kd ${kind === 'S' ? 's' : 'j'}">${kind === 'S' ? '매매' : '전세'}</span><b class="pv">${pr(price)}</b>${chips}</div></div>
       <div class="meta">${meta}</div></div>`;   // 직전 대비 증감은 빼고 그 자리(오른쪽)에 면적·동·층(2026-10-29 사용자 요청)
   }
   const tab = (on, attr, txt) => `<button class="${on ? 'on' : ''}" ${attr}>${txt}</button>`;
   const opt = (v, txt, on) => `<option value="${v}" ${on ? 'selected' : ''}>${txt}</option>`;
+  // 면적 선택에 구조 — 타입이 하나면 그 줄에 붙이고, 둘 이상이면 '전용 N 전체' 아래에 타입별 줄
+  const hhTxt = n => (n ? ` (${n.toLocaleString()}세대)` : '');
+  const arOpts = ars.map(a => {
+    const ts = (d.types || []).filter(x => x.ar === a);
+    if (ts.length <= 1) return opt(a, `${a}㎡${ts[0] ? ' · ' + esc(typeDesc(ts[0])) : ''}${hhTxt(hhOf(a))}`, tl.ar === a && !tl.t);
+    return opt(a, `${a}㎡ 전체${hhTxt(hhOf(a))}`, tl.ar === a && !tl.t)
+      + ts.map(x => opt(`${a}|${x.k}`, `\u00a0\u00a0└ ${a}㎡ ${esc(typeDesc(x))}${hhTxt(x.hh)}`, tl.ar === a && tl.t === x.k)).join('');
+  }).join('');
   // 아실과 다르게(2026-10-29 사용자 "실거래표가 너무 아실과 똑같다") — 요약 칸 3개, 종류는 한 줄 선택 막대, 면적은 선택 상자,
   // 달은 띠 머리(건수·평균), 거래는 날짜 동그라미 + 억 단위 + 직전 대비 증감
   box.innerHTML = `<div class="tl-h"><b>거래 내역</b>${items.length > 1 ? `<span class="tl-tabs">${items.map((x, j) => tab(j === tl.i, `data-i="${j}"`, `<span class="chip" style="display:inline-block;background:${COLORS[tl.p.items.indexOf(x)]}"></span> ${esc(x.name)}`)).join('')}</span>` : ` <span>${esc(it.name)}</span>`}
@@ -1261,13 +1275,13 @@ async function drawTradeList() {
       <div><small>전세 최고</small><b class="j">${mJ ? pr(mJ[2]) : '—'}</b><span>${mJ ? ymTxt(mJ[0]) : ''}</span></div>
       <div><small>보이는 거래</small><b>${shown.length.toLocaleString()}건</b><span>${shown.length > 1500 ? '1,500건까지 표시' : ''}</span></div></div>
     <div class="tl-f"><span class="seg">${tab(tl.k === 'all', 'data-k="all"', '전체')}${tab(tl.k === 'S', 'data-k="S"', '매매')}${tab(tl.k === 'J', 'data-k="J"', '전세')}</span>
-      <select class="tl-ar">${opt('sel', `고른 평형 ${esc(it.ar + '㎡' + (it.tn ? ' ' + it.tn : ''))}`, tl.ar === 'sel')}${opt('', '모든 면적', tl.ar == null)}${ars.map(a => opt(a, `${a}㎡${hhOf(a) ? ` (${hhOf(a).toLocaleString()}세대)` : ''}`, tl.ar === a)).join('')}</select>
+      <select class="tl-ar">${opt('sel', `고른 평형 ${esc(it.ar + '㎡' + (it.tn ? ' ' + it.tn : ''))}`, tl.ar === 'sel')}${opt('', '모든 면적', tl.ar == null)}${arOpts}</select>
       <select class="tl-y">${opt('', '전체 연도', !tl.year)}${years.map(y => opt(y, y + '년', y === tl.year)).join('')}</select></div>
     <div class="tl-b">${body || '<div class="none" style="padding:16px">거래 없음</div>'}</div>`;
   box.querySelector('.tl-x').onclick = () => { $('#tl').style.display = 'none'; };
-  box.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { tl.i = +b.dataset.i; tl.ar = 'sel'; tl.year = ''; drawTradeList(); });
+  box.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { tl.i = +b.dataset.i; tl.ar = 'sel'; tl.t = null; tl.year = ''; drawTradeList(); });
   box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { tl.k = b.dataset.k; drawTradeList(); });
-  box.querySelector('.tl-ar').onchange = e => { const v = e.target.value; tl.ar = v === 'sel' ? 'sel' : v === '' ? null : +v; drawTradeList(); };
+  box.querySelector('.tl-ar').onchange = e => { const [v, k] = e.target.value.split('|'); tl.ar = v === 'sel' ? 'sel' : v === '' ? null : +v; tl.t = k || null; drawTradeList(); };
   box.querySelector('.tl-y').onchange = e => { tl.year = e.target.value; drawTradeList(); };
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#tl').style.display !== 'none') $('#tl').style.display = 'none'; });
