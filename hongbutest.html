@@ -1445,21 +1445,16 @@
         #gnPanel .gn-sum { font-size: 12px; padding: 4px 10px; }
         #gnPanel .gn-sum b { font-size: 13px; }
       }
+      /* 결과 줄은 메인 검색 자동완성(.apartment-result-item)과 같은 모양 — 2026-10-29 통일 */
       #gnDrop {
         position: fixed;
         z-index: 10070; /* 팝업은 늘 맨 위 */
         overflow-y: auto;
-        background: #fff;
+        background: white;
         border: 1px solid #ccc;
-        border-radius: 6px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
       }
       #gnDrop[hidden] { display: none; }
-      #gnDrop .gn-item { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; cursor: pointer; }
-      #gnDrop .gn-item:hover { background: #eef4ff; }
-      #gnDrop .gn-item b { font-size: 14px; color: #1a1a2e; }
-      #gnDrop .gn-item mark { background: #fff176; border-radius: 2px; }
-      #gnDrop .gn-meta { margin-top: 2px; color: #888; font-size: 12px; }
       #gnDrop .gn-none { color: #999; cursor: default; }
       #gnMenu {
         position: fixed;
@@ -7454,6 +7449,16 @@
         }
       }
 
+      // ===== 단지 → 법정동 (Pages aptEmd.json, 432KB) — 검색창·알림 관리 목록 공용, 처음 쓸 때 한 번 받는다 (2026-10-29) =====
+      // 검색에 동을 넣은 이유: "동대문 동아" 처럼 같은 시군구에 같은 이름 단지가 둘 이상이면 동으로만 가를 수 있다(사용자 요청).
+      window.__aptEmd = null;
+      window.__loadAptEmd = function () {
+        if (!window.__aptEmdP) window.__aptEmdP = fetch(new URL("aptEmd.json", location.href).href)
+          .then((r) => (r.ok ? r.json() : {})).catch(() => ({}))
+          .then((d) => (window.__aptEmd = d || {}));
+        return window.__aptEmdP;
+      };
+
       // ===== 아파트 검색 기능 초기화 =====
       function initApartmentSearch() {
         const searchInput = document.getElementById("apartmentSearchInput");
@@ -7485,6 +7490,12 @@
         //   ※ 플래그는 위의 early return 뒤에 세운다 — 요소가 아직 없어 돌아간 경우까지 등록을 막으면 안 된다.
         if (window.__aptSearchListenersReady) return;
         window.__aptSearchListenersReady = true;
+
+        // 동 이름은 검색창을 처음 누를 때 받는다. 이미 쳐 둔 글자가 있으면 받은 뒤 결과를 다시 그린다.
+        searchInput.addEventListener("focus", () => {
+          if (window.__aptEmd) return;
+          window.__loadAptEmd().then(() => { if (searchInput.value.trim()) searchInput.dispatchEvent(new Event("input")); });
+        });
 
         // 검색 결과 위치 업데이트 함수
         function updateResultsPosition() {
@@ -7522,6 +7533,7 @@
 					<div class="apartment-result-info">
 						<span>${escapeHtml(apt.sidoNm)}</span>
 						<span>${escapeHtml(apt.sigunguNm)}</span>
+						${apt.dong ? `<span>${escapeHtml(apt.dong)}</span>` : ""}
 						<span>연식: ${escapeHtml(apt.year)}</span>
 						<span>세대수: ${escapeHtml(apt.units)}</span>
 						${apt.distance !== undefined ? `<span style="color: #0066cc; font-weight: 600;">📍 ${apt.distance.toFixed(2)}km</span>` : ""}
@@ -7574,16 +7586,18 @@
         // 검색어를 공백으로 분리 (예: "동대문구 두산" -> ["동대문구", "두산"])
         const searchTerms = lowerQuery.split(/\s+/).filter((term) => term.length > 0);
 
-        // 모든 검색어가 포함되는 아파트 찾기
+        // 모든 검색어가 포함되는 아파트 찾기 (법정동 포함 — window.__aptEmd, 아직 안 받았으면 동 없이)
+        const emd = window.__aptEmd || {};
         let results = apartmentData.filter((apt) => {
           const lowerName = apt.name.toLowerCase();
           const lowerSido = apt.sidoNm.toLowerCase();
           const lowerSigungu = apt.sigunguNm.toLowerCase();
-          const combinedText = `${lowerName} ${lowerSido} ${lowerSigungu}`;
+          const dong = emd[apt.id] || "";
+          const combinedText = `${lowerName} ${lowerSido} ${lowerSigungu} ${dong}`;
 
-          // 모든 검색 단어가 아파트명, 시도명, 시군구명 중 어디든 포함되어야 함
+          // 모든 검색 단어가 아파트명, 시도명, 시군구명, 동 중 어디든 포함되어야 함
           return searchTerms.every((term) => combinedText.includes(term));
-        });
+        }).map((apt) => (emd[apt.id] ? { ...apt, dong: emd[apt.id] } : apt));
 
         // 지도의 현재 중심 좌표 기준으로 거리순 정렬
         if (window.map) {
@@ -25956,42 +25970,37 @@ const originalBase64 = event.target.result;
           cmpSize(box); // 높이가 바뀌어 세로 스크롤바가 생기거나 없어지면 폭도 다시
         }
 
-        // ── 검색 ──
-        function search(q) {
-          const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-          const list = (apartmentData || []).filter((a) => {
-            const hay = (a.name + " " + (a.sidoNm || "") + " " + (a.sigunguNm || "")).toLowerCase();
-            return terms.every((t) => hay.includes(t));
-          });
-          const c = window.map?.getCenter?.();
-          if (c) {
-            const cl = c.lat(), cg = c.lng();
-            list.sort((a, b) => calculateDistance(cl, cg, a.lat, a.lng) - calculateDistance(cl, cg, b.lat, b.lng));
-          }
-          return list.slice(0, 50);
-        }
+        // ── 검색 ── 메인 검색창과 같은 규칙·모양(2026-10-29 사용자 "강남모드 검색창도 메인과 통일"):
+        //   searchApartments(이름·시도·시군구·법정동 낱말 AND, 지도 중심 가까운 순) + .apartment-result-item 칩 + 50개 넘으면 안내 줄.
         function hi(text, q) {
           let out = escapeHtml(text);
           q.split(/\s+/).filter(Boolean).forEach((t) => {
             const re = new RegExp("(" + escapeHtml(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi");
-            out = out.replace(re, "<mark>$1</mark>");
+            out = out.replace(re, '<mark style="background-color: #ffeb3b; font-weight: 600;">$1</mark>');
           });
           return out;
         }
         function showDrop(i, inp) {
           const q = inp.value.trim();
           if (!q) return closeDrop();
-          const res = search(q);
+          // 동 이름(aptEmd.json)은 처음 쓸 때 한 번 받고, 받은 뒤 결과를 다시 그린다
+          if (!window.__aptEmd) window.__loadAptEmd?.().then(() => { if (!drop.hidden && dropFor === i && inp.value.trim()) showDrop(i, inp); });
+          const res = searchApartments(q);
           drop.innerHTML = res.length
-            ? res.map((a) =>
-                '<div class="gn-item" data-id="' + escapeHtml(a.id) + '"><b>' + hi(a.name, q) + "</b><div class=\"gn-meta\">" +
-                escapeHtml([a.sidoNm, a.sigunguNm, a.year ? "준공 " + a.year : "", a.units ? a.units + "세대" : ""].filter(Boolean).join(" · ")) +
-                "</div></div>").join("")
-            : '<div class="gn-item gn-none">검색 결과 없음</div>';
+            ? res.slice(0, 50).map((a) =>
+                '<div class="gn-item apartment-result-item" data-id="' + escapeHtml(a.id) + '"><strong>' + hi(a.name, q) + "</strong>" +
+                '<div class="apartment-result-info">' +
+                "<span>" + escapeHtml(a.sidoNm) + "</span><span>" + escapeHtml(a.sigunguNm) + "</span>" +
+                (a.dong ? "<span>" + escapeHtml(a.dong) + "</span>" : "") +
+                "<span>연식: " + escapeHtml(a.year) + "</span><span>세대수: " + escapeHtml(a.units) + "</span>" +
+                (a.distance !== undefined ? '<span style="color: #0066cc; font-weight: 600;">📍 ' + a.distance.toFixed(2) + "km</span>" : "") +
+                "</div></div>").join("") +
+              (res.length > 50 ? '<div class="apartment-result-item gn-none" style="text-align: center; padding: 8px;">... 외 ' + (res.length - 50) + "개 더 있습니다.</div>" : "")
+            : '<div class="apartment-result-item gn-none">검색 결과가 없습니다.</div>';
           dropFor = i;
           drop.hidden = false;
           const r = inp.getBoundingClientRect();
-          const w = Math.min(Math.max(r.width, 300), window.innerWidth - 16);
+          const w = Math.min(Math.max(r.width, 500), window.innerWidth - 16); // 메인 검색 결과 상자와 같은 500px
           drop.style.width = w + "px";
           drop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
           drop.style.top = Math.round(r.bottom + 4) + "px";
@@ -37287,8 +37296,7 @@ const originalBase64 = event.target.result;
         // 비교는 내 단지가 있는 시군구만(휴대폰 부담 없게).
         let emdMap = null, emdP = null;
         function loadEmd() {
-          if (!emdP) emdP = fetch(new URL("aptEmd.json", location.href).href).then((r) => (r.ok ? r.json() : {}))
-            .then((d) => { emdMap = d || {}; }).catch(() => { emdMap = {}; });
+          if (!emdP) emdP = window.__loadAptEmd().then((d) => { emdMap = d || {}; });   // 검색창과 같은 받기(2026-10-29 공용화)
           return emdP;
         }
         function dupNamesFor(sggCodes) {

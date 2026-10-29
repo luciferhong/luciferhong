@@ -163,35 +163,49 @@
     }
     .apt-card.has-selection .apt-clear-btn { display: flex; }
 
-    /* ─── 검색 드롭다운 ─── */
+    /* ─── 검색 드롭다운 — hongbutest 아파트 검색 자동완성과 같은 모양(2026-10-29 통일) ─── */
     .search-results {
       position: fixed;
       background: #fff;
       border: 1px solid #ccc;
-      border-radius: 6px;
-      max-height: 280px;
+      max-height: 300px;
       overflow-y: auto;
-      box-shadow: 0 4px 12px rgba(0,0,0,.15);
+      box-shadow: 0 4px 6px rgba(0,0,0,.1);
       z-index: 99999;
-      width: 340px;
+      width: 500px;
+      max-width: calc(100vw - 16px);
       display: none;
     }
 
     .search-result-item {
-      padding: 8px 12px;
+      padding: 9px 14px;
       cursor: pointer;
-      border-bottom: 1px solid #f0f0f0;
-      font-size: 13px;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 12.5px;
+      background: #fff;
+      transition: background-color 0.12s ease;
     }
-    .search-result-item:hover { background: #eef4ff; }
-    .search-result-item strong { color: #1a1a2e; font-size: 14px; }
+    .search-result-item:hover { background-color: #fdf1e8; }
+    .search-result-item:active { background-color: #fadfc9; }
+    .search-result-item strong { color: #a83c12; font-weight: 700; }
     .search-result-meta {
-      color: #888;
-      font-size: 12px;
-      margin-top: 2px;
+      font-size: 11.5px;
+      color: #64748b;
+      margin-top: 3px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
     }
-    .search-result-meta span { margin-right: 8px; }
-    .highlight { background: #fff176; border-radius: 2px; }
+    .search-result-meta span {
+      background: #f1f5f9;
+      color: #475569;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      border: 1px solid #e2e8f0;
+    }
+    .search-result-meta span.dist { color: #0066cc; font-weight: 600; }
+    .highlight { background-color: #ffeb3b; font-weight: 600; }
 
     /* ─── 거리 요약 배너 ─── */
     #distanceSummary {
@@ -1065,35 +1079,49 @@ function updateSummary() {
   if (window.__cmpRefresh) window.__cmpRefresh();
 }
 
-// ─── 아파트 검색 & 드롭다운 ───
+// ─── 아파트 검색 & 드롭다운 — hongbutest 검색과 같은 규칙(2026-10-29 통일) ───
+// 띄어쓰기로 나눈 낱말이 단지명·시도·시군구·법정동에 모두 들어 있으면 맞음, 지도 중심 가까운 순, 50개 + "외 N개".
+function escHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function highlight(text, query) {
-  if (!query) return text;
+  let result = escHtml(text);
+  if (!query) return result;
   const terms = query.trim().split(/\s+/).filter(Boolean);
-  let result = text;
   terms.forEach(term => {
-    const re = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    result = result.replace(re, '<span class="highlight">$1</span>');
+    const re = new RegExp(`(${escHtml(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    result = result.replace(re, '<mark class="highlight">$1</mark>');
   });
   return result;
 }
 
+// 단지 → 법정동(aptEmd.json, 432KB) — 검색창을 처음 누를 때 한 번 받는다. 실패하면 동 없이 검색.
+let aptEmd = null, aptEmdP = null;
+function loadAptEmd() {
+  if (!aptEmdP) aptEmdP = fetch('aptEmd.json')
+    .then(r => (r.ok ? r.json() : {})).catch(() => ({}))
+    .then(d => (aptEmd = d || {}));
+  return aptEmdP;
+}
+
 function searchApts(query) {
   const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
-  const filtered = apartmentData.filter(apt => {
-    const hay = `${apt.name} ${apt.sidoNm||''} ${apt.sigunguNm||''}`.toLowerCase();
+  const emd = aptEmd || {};
+  let results = apartmentData.filter(apt => {
+    const hay = `${apt.name} ${apt.sidoNm||''} ${apt.sigunguNm||''} ${emd[apt.id]||''}`.toLowerCase();
     return terms.every(t => hay.includes(t));
-  });
+  }).map(apt => (emd[apt.id] ? { ...apt, dong: emd[apt.id] } : apt));
 
   // 지도 현재 중심 기준 거리순 정렬
   if (map) {
     const center = map.getCenter();
     const cLat = center.lat(), cLng = center.lng();
-    filtered.sort((a, b) =>
-      haversineKm(cLat, cLng, a.lat, a.lng) - haversineKm(cLat, cLng, b.lat, b.lng)
-    );
+    results = results.map(apt => ({ ...apt, distance: haversineKm(cLat, cLng, apt.lat, apt.lng) }));
+    results.sort((a, b) => a.distance - b.distance);
   }
 
-  return filtered.slice(0, 50);
+  return results;
 }
 
 function setupSearch(idx) {
@@ -1140,19 +1168,24 @@ function setupSearch(idx) {
     if (!q) { closeDrop(); return; }
     const results = searchApts(q);
     if (!results.length) {
-      drop.innerHTML = '<div class="search-result-item" style="color:#999">검색 결과 없음</div>';
+      drop.innerHTML = '<div class="search-result-item" style="color:#999">검색 결과가 없습니다.</div>';
     } else {
-      drop.innerHTML = results.map(apt => `
-        <div class="search-result-item" data-id="${apt.id}">
+      drop.innerHTML = results.slice(0, 50).map(apt => `
+        <div class="search-result-item" data-id="${escHtml(apt.id)}">
           <strong>${highlight(apt.name, q)}</strong>
           <div class="search-result-meta">
-            <span>${apt.sidoNm||''}</span>
-            <span>${apt.sigunguNm||''}</span>
-            <span>준공 ${apt.year||''}</span>
-            <span>${apt.units}세대</span>
+            <span>${escHtml(apt.sidoNm)}</span>
+            <span>${escHtml(apt.sigunguNm)}</span>
+            ${apt.dong ? `<span>${escHtml(apt.dong)}</span>` : ''}
+            <span>연식: ${escHtml(apt.year)}</span>
+            <span>세대수: ${escHtml(apt.units)}</span>
+            ${apt.distance !== undefined ? `<span class="dist">📍 ${apt.distance.toFixed(2)}km</span>` : ''}
           </div>
         </div>
       `).join('');
+      if (results.length > 50) {
+        drop.innerHTML += `<div class="search-result-item" style="color:#999;text-align:center;padding:8px;">... 외 ${results.length - 50}개 더 있습니다.</div>`;
+      }
     }
     drop.style.display = 'block';
     positionDrop();
@@ -1165,7 +1198,11 @@ function setupSearch(idx) {
     });
   });
 
-  input.addEventListener('focus', () => { if (drop.innerHTML) { drop.style.display='block'; positionDrop(); } });
+  input.addEventListener('focus', () => {
+    // 동 이름은 처음 누를 때 받는다. 이미 쳐 둔 글자가 있으면 받은 뒤 결과를 다시 그린다.
+    if (!aptEmd) loadAptEmd().then(() => { if (input.value.trim()) input.dispatchEvent(new Event('input')); });
+    if (drop.innerHTML) { drop.style.display='block'; positionDrop(); }
+  });
 
   clearBtn.addEventListener('click', () => {
     selectedApt[idx] = null;
