@@ -360,7 +360,7 @@ html.embed #hist { max-height: 320px; overflow: auto; }
     <label>보기 <select id="cView"><option value="month">월별</option><option value="day">일별</option></select></label>
     <label><input type="checkbox" id="cExDirect">직거래 제외</label>
     <label title="계약갱신(청구권 포함) 전세 거래를 뺀다 — 갱신 표시는 2021년 이후 거래에만 있다"><input type="checkbox" id="cExRenew">전세 갱신 제외</label>
-    <label title="계약이 취소(해제)된 거래를 뺀다 — 아실은 취소 거래도 넣어 계산한다"><input type="checkbox" id="cExCancel">취소 거래 제외</label>
+    <!-- 취소(해제) 거래는 항상 뺀다 — 체크박스 없앰(2026-10-29 사용자). 해제의 약 2/3 가 정정 재신고라 넣으면 같은 계약이 2건으로 잡힌다 -->
   </span>
   <span class="grp" title="자동 모드에서 단지마다 이 구간의 최고점을 고점으로 잡는다">
     <label>고점 찾기 <input type="month" id="cPeakFrom"></label>~<input type="month" id="cPeakTo">
@@ -422,7 +422,7 @@ const MAX_ITEMS = 10;   // 한 묶음 단지 수(2026-10-29 사용자 4 → 10).
 const $ = s => document.querySelector(s);
 
 // ── 상태 ─────────────────────────────────────────────
-const DEF_CFG = { peakFrom: '2021-01', peakTo: '2022-12', troughFrom: '2022-01', troughTo: '2024-12', showSale: true, showRent: true, showDots: true, showTrades: false, showVol: false, view: 'month', exDirect: false, exRenew: false, exCancel: false };
+const DEF_CFG = { peakFrom: '2021-01', peakTo: '2022-12', troughFrom: '2022-01', troughTo: '2024-12', showSale: true, showRent: true, showDots: true, showTrades: false, showVol: false, view: 'month', exDirect: false, exRenew: false };
 const X_MIN = 2006, X_END = new Date().getFullYear() + 1;   // 연도 슬라이더 범위(X_END = 현재까지)
 const newPanel = n => ({ id: Date.now() + Math.random(), title: `비교 ${n}`, items: [], mode: 'auto', manual: { a: '', b: '', c: '' }, xFrom: 2006 });
 let state;
@@ -431,10 +431,11 @@ if (!state || !Array.isArray(state.panels)) state = { cfg: { ...DEF_CFG }, panel
 state.cfg = { ...DEF_CFG, ...state.cfg };
 // 머리 설정 기본값 바꿈(2026-10-29 사용자) — '취소 거래 포함' → '취소 거래 제외', 직거래·갱신·취소 제외는 기본 해제, 매매·전세·점은 기본 체크.
 // 예전에 저장된 설정은 한 번만 새 기본으로 맞추고(cfgVer 2), 그 뒤로는 사용자가 고른 값을 그대로 기억한다(state.cfg 는 localStorage 에 저장).
-if (state.cfgVer !== 2) {
-  Object.assign(state.cfg, { exDirect: false, exRenew: false, exCancel: false, showSale: true, showRent: true, showDots: true });
+if (!(state.cfgVer >= 2)) {   // ⚠ !== 2 이면 cfgVer 3 이 된 뒤 매번 다시 기본으로 돌아간다
+  Object.assign(state.cfg, { exDirect: false, exRenew: false, showSale: true, showRent: true, showDots: true });
   delete state.cfg.inCancel; state.cfgVer = 2;
 }
+delete state.cfg.exCancel;   // 예전 '취소 거래 제외' 토글 값 — 이제 항상 뺀다
 // 새로고침하면 고른 단지·끌어서 고른 구간은 비운다(2026-10-29 사용자 요청) — 다시 보려면 오른쪽 최근 비교 목록에서.
 const restoredItems = state.panels.map(p => (p.items || []).filter(x => x.cid && x.ar != null));   // 옛 판에 저장돼 있던 선택은 목록으로 옮긴다
 // 처음엔 빈 단지 줄 둘을 둔다(2026-10-29 사용자 — 처음 하나 → '초기 2개')
@@ -608,8 +609,9 @@ function prep(d, ar, cfg, t) {
   let lastS = null, cnt = { S: 0, J: 0, direct: 0, renew: 0, cancel: 0 };
   for (const [date, a, price, floor, kind, src, silv, direct, renew, tk, cancel] of d.trades) {
     if (a !== ar || (t && tk !== t)) continue;
-    // 해제(계약 취소) — 아실은 넣고 우리는 기본으로 뺀다(2026-10-29 아실 대조 후 사용자 요청으로 토글)
-    if (cancel) { cnt.cancel++; if (cfg.exCancel) continue; }
+    // 해제(계약 취소)는 항상 뺀다(2026-10-29 사용자 — 토글이었다가 제거). 아실은 넣는다.
+    // 국토부 해제의 68% 가 같은 날·면적·층의 재신고와 짝(정정 신고)이라 넣으면 같은 계약이 2건이 된다(2024~ 실측)
+    if (cancel) { cnt.cancel++; continue; }
     if (direct && kind === 'S') { cnt.direct++; if (cfg.exDirect) continue; }
     if (renew && kind === 'J') { cnt.renew++; if (cfg.exRenew) continue; }
     const m = toMi(date), map = kind === 'S' ? S : J;
@@ -1590,7 +1592,7 @@ async function drawTradeList() {
     if (useAr != null && a !== useAr) return false;
     if (tl.ar === 'sel' && it.t && tk !== it.t) return false;
     if (tl.ar !== 'sel' && tl.t && tk !== tl.t) return false;
-    if (cancel && cfg.exCancel) return false;
+    if (cancel) return false;   // 취소(해제)는 항상 뺀다
     if (direct && kind === 'S' && cfg.exDirect) return false;
     if (renew && kind === 'J' && cfg.exRenew) return false;
     return true;
@@ -1691,7 +1693,7 @@ function bindCfg() {
   const c = state.cfg;
   const map = [['#cPeakFrom', 'peakFrom'], ['#cPeakTo', 'peakTo'], ['#cTroughFrom', 'troughFrom'], ['#cTroughTo', 'troughTo'], ['#cView', 'view']];
   for (const [id, k] of map) { const e = $(id); e.value = c[k]; e.onchange = () => { c[k] = k === 'ma' ? Math.min(12, Math.max(1, +e.value || 3)) : e.value; save(); state.panels.forEach(p => refresh(p)); }; }
-  for (const [id, k] of [['#cSale', 'showSale'], ['#cRent', 'showRent'], ['#cDots', 'showDots'], ['#cTrades', 'showTrades'], ['#cVol', 'showVol'], ['#cExDirect', 'exDirect'], ['#cExRenew', 'exRenew'], ['#cExCancel', 'exCancel']]) {
+  for (const [id, k] of [['#cSale', 'showSale'], ['#cRent', 'showRent'], ['#cDots', 'showDots'], ['#cTrades', 'showTrades'], ['#cVol', 'showVol'], ['#cExDirect', 'exDirect'], ['#cExRenew', 'exRenew']]) {
     const e = $(id); e.checked = c[k];
     e.onchange = () => { c[k] = e.checked; save(); state.panels.forEach(p => refresh(p, !k.startsWith('ex'))); };   // 거래를 넣고 빼는 토글은 숫자도 바뀐다
   }
