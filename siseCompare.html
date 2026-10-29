@@ -312,6 +312,12 @@ html[data-skin=mini] #hist .he:hover { background: #f3f4f6; }
 html[data-skin=mini] .dc { border: 0; background: #f6f7f9; border-left: 4px solid var(--c); }
 html[data-skin=mini] .xrow { padding: 0 16px 8px; }
 html[data-skin=mini] .dragres.cards { margin: 0 14px 12px; }
+/* 실거래표만 보기(?trades=단지번호, 2026-10-29) — 홍부 상세 모달 [실거래] 탭 iframe 안. 단지 비교의 거래 내역 창을 화면 가득 */
+html.tonly header, html.tonly #main, html.tonly .note, html.tonly #msg { display: none !important; }
+html.tonly body { margin: 0; background: var(--card); }
+html.tonly .tl-back { position: static; width: auto; max-width: none; height: 100vh; }
+html.tonly .tl { border: 0; border-radius: 0; box-shadow: none; }
+html.tonly .tl-x { display: none; }
 /* 끼워 넣기 모드(?embed=1, 2026-10-29) — 홍부 지도(hongbuCompare.html) 오른쪽 패널 iframe 안. 제목은 숨긴다 */
 html.embed header h1 { display: none; }
 /* 최근 비교 목록은 보인다(같은 날 사용자 "최근 비교 이력은 안 보이나?" — 처음엔 숨겼다). 패널이 좁아 묶음 아래로 내려가므로 높이를 줄여 안에서 스크롤 */
@@ -410,6 +416,8 @@ function applySkin(k) {
 }
 applySkin(skin);
 if (new URLSearchParams(location.search).has('embed')) document.documentElement.classList.add('embed');
+const TONLY = new URLSearchParams(location.search).get('trades');   // 실거래표만 보기(홍부 상세 모달 [실거래] 탭)
+if (TONLY) document.documentElement.classList.add('tonly');
 const MAX_ITEMS = 10;   // 한 묶음 단지 수(2026-10-29 사용자 4 → 10). 시안마다 색도 10개
 const $ = s => document.querySelector(s);
 
@@ -1638,7 +1646,7 @@ async function drawTradeList() {
       <div><small>전세 최고</small><b class="j">${mJ ? pr(mJ[2]) : '—'}</b><span>${mJ ? ymTxt(mJ[0]) : ''}</span></div>
       <div><small>보이는 거래</small><b>${shown.length.toLocaleString()}건</b><span>${shown.length > 1500 ? '1,500건까지 표시' : ''}</span></div></div>
     <div class="tl-f"><span class="seg">${tab(tl.k === 'all', 'data-k="all"', '전체')}${tab(tl.k === 'S', 'data-k="S"', '매매')}${tab(tl.k === 'J', 'data-k="J"', '전세')}</span>
-      <select class="tl-ar">${opt('sel', `고른 평형 ${esc(it.ar + '㎡' + (it.tn ? ' ' + it.tn : ''))}`, tl.ar === 'sel')}${opt('', '모든 면적', tl.ar == null)}${arOpts}</select>
+      <select class="tl-ar">${opt('sel', `${TONLY ? '기본' : '고른'} 평형 ${esc(it.ar + '㎡' + (it.tn ? ' ' + it.tn : ''))}`, tl.ar === 'sel')}${opt('', '모든 면적', tl.ar == null)}${arOpts}</select>
       <select class="tl-y">${opt('', '전체 연도', !tl.year)}${years.map(y => opt(y, y + '년', y === tl.year)).join('')}</select></div>
     <div class="tl-b">${body || '<div class="none" style="padding:16px">거래 없음</div>'}</div>`;
   box.querySelector('.tl-x').onclick = () => { $('#tl').style.display = 'none'; };
@@ -1647,7 +1655,7 @@ async function drawTradeList() {
   box.querySelector('.tl-ar').onchange = e => { const [v, k] = e.target.value.split('|'); tl.ar = v === 'sel' ? 'sel' : v === '' ? null : +v; tl.t = k || null; drawTradeList(); };
   box.querySelector('.tl-y').onchange = e => { tl.year = e.target.value; drawTradeList(); };
 }
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#tl').style.display !== 'none') $('#tl').style.display = 'none'; });
+document.addEventListener('keydown', e => { if (!TONLY && e.key === 'Escape' && $('#tl').style.display !== 'none') $('#tl').style.display = 'none'; });
 
 // ── 이미지 저장 ──────────────────────────────────────
 let h2c = null;
@@ -1702,11 +1710,30 @@ const syncHdr = () => document.documentElement.style.setProperty('--hdr', docume
 window.addEventListener('resize', syncHdr);
 syncHdr();
 
+// 실거래표만 보기 — 묶음·차트는 만들지 않고, 단지 하나짜리 보이지 않는 묶음으로 거래 내역 창만 그린다.
+// 기본 평형은 단지 비교에서 단지를 넣을 때와 같은 규칙(defaultAr — 84 밴드 → 59 → 최다), 거르기 설정(취소·직거래·갱신 제외)은 단지 비교에 저장된 값.
+async function bootTradesOnly(cid) {
+  const p0 = { id: -1, items: [{ cid: String(cid), name: '', ar: null }] }, it = p0.items[0], box = $('#tl .tl');
+  $('#tl').style.display = 'flex';
+  box.innerHTML = '<div class="tl-load">불러오는 중…</div>';
+  try {
+    const d = await loadData(it.cid);
+    it.name = d.name || '';
+    const o = defaultAr(unitOptions(d));
+    if (!o) { box.innerHTML = '<div class="tl-load">거래 없음</div>'; return; }
+    it.ar = o.ar; it.t = o.t; it.tn = o.tn;
+    Object.assign(tl, { p: p0, i: 0, ar: 'sel', t: null, year: '' });
+    drawTradeList();
+  } catch (e) { box.innerHTML = `<div class="tl-load">오류: ${esc(e.message)}</div>`; }
+}
+if (TONLY) bootTradesOnly(TONLY);
+else {
 bindCfg();
 renderBoard();
 renderHist();
 // 마우스 쓰는 화면에서만 첫 검색칸에 바로 입력되게(휴대폰은 자판이 갑자기 뜨지 않게 그대로)
 if (matchMedia('(pointer: fine)').matches) { const f = board.querySelector('.item .srch input'); if (f) f.focus(); }
+}
 </script>
 </body>
 </html>
