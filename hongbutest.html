@@ -7854,6 +7854,8 @@
 
         const markerElement = document.createElement("div");
         markerElement.className = "apartment-marker-container"; /* ✅ 클래스 추가 */
+        markerElement.dataset.aptId = apartment.id; // 단지 비교 패널로 끌어 놓기(hongbuCompare, 2026-10-29)
+        markerElement.dataset.aptName = apartment.name;
         markerElement.style = `
 			background-color: ${bgColor};
 			color: ${fongColor};
@@ -8021,6 +8023,8 @@
       // ✅ 백지도용 흰 마커 생성 (백지도 체크 시) - 과거 스타일(빈 흰 사각형 + 검정 테두리)
       function createWhiteMapMarker(apartment) {
         const markerElement = document.createElement("div");
+        markerElement.dataset.aptId = apartment.id; // 단지 비교 패널로 끌어 놓기(hongbuCompare, 2026-10-29)
+        markerElement.dataset.aptName = apartment.name;
         markerElement.style = `
         background: #ffffff;
         border: 2px solid #000000;
@@ -25278,6 +25282,8 @@ const originalBase64 = event.target.result;
           radius: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><path d="M12 12 18 6.5"/></svg>',
           // 강남 = 강남역까지 거리 → 아이콘 대신 'km' 글자(2026-10-04 사용자 지정, 예전엔 지하철 그림)
           gangnam: '<b class="ms-km">km</b>',
+          // 단지비교 = 오른쪽 단지 비교 패널 켜기/끄기(2026-10-29 사용자 "강남 km 아래에 단지비교, 기능 메뉴에서는 제거")
+          compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5h17"/><path d="M4.5 16l5-5.5 4 3 6-7"/><path d="M4.5 18.5l5-3 4 1.5 6-4" opacity=".55"/></svg>',
           clear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>',
         };
         function ensureCard() {
@@ -25289,7 +25295,7 @@ const originalBase64 = event.target.result;
             card.id = "msCard";
             card.setAttribute("role", "toolbar");
             card.setAttribute("aria-label", "지도 측정");
-            [["ruler", "거리", "두 점 사이 직선거리"], ["radius", "반경", "중심과 반경으로 원 그리기"], ["gangnam", "강남", "강남역까지 거리 비교(지점 1·2·3) 켜기/끄기"], ["clear", "지우기", "측정 모두 지우기"]].forEach(([k, t, tip]) => {
+            [["ruler", "거리", "두 점 사이 직선거리"], ["radius", "반경", "중심과 반경으로 원 그리기"], ["gangnam", "강남", "강남역까지 거리 비교(지점 1·2·3) 켜기/끄기"], ["compare", "단지비교", "단지 비교 패널 켜기/끄기 — 지도 마커를 끌어 넣기"], ["clear", "지우기", "측정 모두 지우기"]].forEach(([k, t, tip]) => {
               const b = document.createElement("button");
               b.type = "button";
               b.dataset.ms = k;
@@ -25308,6 +25314,7 @@ const originalBase64 = event.target.result;
               const k = b.dataset.ms;
               if (k === "clear") return clearAll();
               if (k === "gangnam") return window.__gnToggle?.(); // 강남거리 모드는 켜고 끄는 단추
+              if (k === "compare") return window.__cmpToggle?.(); // 단지 비교 패널(__cmpInit)
               if (S.mode === k) return stop(); // 켜진 도구를 다시 누르면 취소
               start(k);
             });
@@ -25323,6 +25330,7 @@ const originalBase64 = event.target.result;
             const k = b.dataset.ms;
             if (k === "clear") b.hidden = !S.items.length;
             else if (k === "gangnam") b.classList.toggle("on", !!window.__gnOn);
+            else if (k === "compare") b.classList.toggle("on", !!window.__cmpIsOpen?.());
             else b.classList.toggle("on", S.mode === k);
           });
         }
@@ -25820,7 +25828,9 @@ const originalBase64 = event.target.result;
           const stepMin = steps.reduce((a, st) => a + (st.duration || 0), 0);
           const badges = steps.map((st) => {
             if (st.type === "WALKING") return '<span class="gn-cmp-line gn-cmp-walk">🚶도보 ' + st.duration + "분</span>";
-            const nm = st.type === "BUS" ? "🚌" + (st.name || "버스") : st.name || st.lineType || st.type;
+            // 지하철은 뒤에 승차역 — 2호선(서울대입구역) (2026-10-29 사용자, hongbuCompare)
+            const sta = st.from ? "(" + (/역$/.test(st.from) ? st.from : st.from + "역") + ")" : "";
+            const nm = st.type === "BUS" ? "🚌" + (st.name || "버스") : (st.name || st.lineType || st.type) + sta;
             return '<span class="gn-cmp-line" style="background:' + escapeHtml(st.color || "#6b7280") + '">' + escapeHtml(nm) + "</span>";
           }).join(" → ");
           const extra = [];
@@ -29035,6 +29045,181 @@ const originalBase64 = event.target.result;
       function __aptCntClose() {
         __APTCNT.overlay?.classList.remove("on");
       }
+
+      // ───────────────────────────────────────────────────────────────────────────
+      // 단지 비교 패널 (2026-10-29, hongbuCompare.html — PC 전용)
+      //   siseCompare.html?embed=1 을 지도 오른쪽 패널 iframe 으로 띄운다(aptCnt 오버레이와 같은 이유 — 전역 CSS 격리).
+      //   비교 화면을 고치면 여기에도 그대로 반영된다(같은 파일). 같은 오리진이라 iframe 의 cmpAdd·cmpHover 를 바로 부른다.
+      //   여는 곳: 지도 왼쪽 중간 측정 카드(#msCard) 의 [단지비교](강남 km 아래 — 터치 기기는 카드째 숨김 = PC 전용).
+      //   단지 넣기: ① 패널 안 검색 ② 지도 단지 마커를 끌어 패널에 놓기 — 패널이 열려 있을 때만.
+      //   마커 끌기: 마커 위 mousedown 을 문서 캡처 단계에서 가로채 지도 끌기를 막고, 6px 넘게 움직이면 끌기,
+      //   안 움직이고 떼면 원래처럼 단지 정보 창(showApartmentInfo)을 연다. 단지 번호는 마커 요소의 data-apt-id
+      //   (createDefaultMapMarker·createWhiteMapMarker 에서 붙임 — 마커 보관함은 단지번호별이라 요소의 단지가 바뀌지 않는다).
+      //   측정(__msActive)·강남(__gnOn)·경로/면적 그리기(#drawBar 보임) 중에는 쉰다.
+      // ───────────────────────────────────────────────────────────────────────────
+      (function __cmpInit() {
+        const W_KEY = "hongbuCompare_w", W_MIN = 420, W_DEF = 620;
+        const C = { el: null, frame: null, loaded: false, open: false };
+        const css = `
+#cmpDock{position:fixed;right:0;top:0;bottom:0;z-index:10055;display:none;flex-direction:column;background:#fffdf8;
+  border-left:1px solid #cbbda5;box-shadow:-6px 0 18px rgba(0,0,0,.18)}
+#cmpDock.on{display:flex}
+#cmpDock .cd-head{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid #e7dccb;flex:none;font-size:13px}
+#cmpDock .cd-title{font-weight:800;color:#2b2622}
+#msCard button[data-ms=compare] span{letter-spacing:-.6px}
+#cmpDock .cd-hint{color:#857a6c;font-size:12px;margin-right:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#cmpDock .cd-btn{border:1px solid #cbbda5;background:#fff;color:#2b2622;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer;margin:0}
+#cmpDock .cd-btn:hover{transform:none;background:#f7efe2}
+#cmpDock iframe{flex:1 1 auto;min-height:0;width:100%;border:0;background:#fffdf8}
+#cmpDock .cd-rsz{position:absolute;left:-4px;top:0;bottom:0;width:8px;cursor:ew-resize}
+#cmpDock.drop-ok{box-shadow:-6px 0 18px rgba(0,0,0,.18),inset 0 0 0 3px #0f766e}
+#cmpDock.drop-no{box-shadow:-6px 0 18px rgba(0,0,0,.18),inset 0 0 0 3px #c2410c}
+#cmpDock.busy iframe{pointer-events:none}
+#cmpGhost{position:fixed;z-index:10090;pointer-events:none;padding:4px 9px;border-radius:6px;background:#2b2622;color:#fff;
+  font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.3);transform:translate(12px,10px)}
+#cmpGhost small{font-weight:400;opacity:.8;margin-left:6px}
+#cmpToast{position:fixed;z-index:10090;left:50%;bottom:28px;transform:translateX(-50%);padding:7px 14px;border-radius:8px;
+  background:rgba(43,38,34,.92);color:#fff;font-size:13px;pointer-events:none;display:none}
+`;
+
+        const savedW = () => { try { return Math.max(W_MIN, +localStorage.getItem(W_KEY) || W_DEF); } catch (e) { return W_DEF; } };
+        const fitW = (w) => Math.round(Math.min(Math.max(W_MIN, w), innerWidth * 0.75));
+        // 위 끝 = 지도 위 끝(툴바 아래). 툴바 줄 수가 바뀌어도 맞도록 열 때·창 크기·스크롤 때 다시 잰다.
+        function place() {
+          if (!C.open) return;
+          const mw = document.getElementById("mapWrapper");
+          const top = mw ? Math.max(0, mw.getBoundingClientRect().top) : 0;
+          C.el.style.top = top + "px";
+          C.el.style.width = fitW(parseFloat(C.el.style.width) || savedW()) + "px";
+        }
+        function build() {
+          if (C.el) return;
+          const st = document.createElement("style"); st.id = "cmpStyle"; st.textContent = css; document.head.appendChild(st);
+          const el = document.createElement("div");
+          el.id = "cmpDock";
+          el.innerHTML = `<div class="cd-rsz" title="끌어서 폭 조절"></div>
+<div class="cd-head"><span class="cd-title">📊 단지 비교</span>
+  <span class="cd-hint">지도의 단지 마커를 끌어 여기에 놓으면 추가됩니다</span>
+  <button type="button" class="cd-btn cd-new">새 탭</button>
+  <button type="button" class="cd-btn cd-x">닫기</button></div>`;
+          const fr = document.createElement("iframe");
+          fr.title = "단지 비교";
+          el.appendChild(fr);
+          document.body.appendChild(el);   // ⚠ 지도 DOM 에 끼우지 않는다(body 직속 + fixed)
+          el.style.width = fitW(savedW()) + "px";
+          el.querySelector(".cd-x").onclick = () => window.__cmpClose();
+          el.querySelector(".cd-new").onclick = () => window.open("siseCompare.html", "_blank");
+          // 왼쪽 끝을 끌어 폭 조절 — 끄는 동안 iframe 이 마우스를 먹지 않게 busy
+          el.querySelector(".cd-rsz").addEventListener("mousedown", (e) => {
+            e.preventDefault();
+            el.classList.add("busy");
+            const mv = (ev) => { el.style.width = fitW(innerWidth - ev.clientX) + "px"; };
+            const up = () => {
+              document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up);
+              el.classList.remove("busy");
+              try { localStorage.setItem(W_KEY, parseInt(el.style.width)); } catch (_) {}
+            };
+            document.addEventListener("mousemove", mv); document.addEventListener("mouseup", up);
+          });
+          const tt = document.createElement("div"); tt.id = "cmpToast"; document.body.appendChild(tt);
+          C.el = el; C.frame = fr;
+        }
+        window.__cmpOpen = function () {
+          build();
+          if (!C.loaded) { C.frame.src = "siseCompare.html?embed=1"; C.loaded = true; }
+          C.open = true; C.el.classList.add("on"); place();
+          window.__msSyncCard?.();
+        };
+        window.__cmpClose = function () { C.open = false; C.el?.classList.remove("on"); window.__msSyncCard?.(); };
+        window.__cmpIsOpen = () => C.open;
+        window.__cmpToggle = () => (C.open ? window.__cmpClose() : window.__cmpOpen());
+        addEventListener("resize", place);
+        addEventListener("scroll", place, { passive: true });
+
+        let toastT = 0;
+        function toast(msg) {
+          const t = document.getElementById("cmpToast"); if (!t) return;
+          t.textContent = msg; t.style.display = "block";
+          clearTimeout(toastT); toastT = setTimeout(() => { t.style.display = "none"; }, 1800);
+        }
+        const fw = () => { try { return C.frame?.contentWindow; } catch (e) { return null; } };
+        const inDock = (x, y) => { const r = C.el.getBoundingClientRect(); return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; };
+        const frameXY = (x, y) => { const r = C.frame.getBoundingClientRect(); return [x - r.left, y - r.top]; };
+        const busyTools = () => !!(window.__msActive || window.__gnOn || document.getElementById("drawBar")?.hidden === false);
+
+        // ── 마커 끌기 ──
+        // 네이버 지도가 pointer·mouse 어느 쪽으로 끌기를 시작하든 막도록 둘 다 문서 캡처 단계에서 가로챈다.
+        // ⚠ pointerdown 에 preventDefault 를 하면 뒤따르는 mousedown 이 안 생겨 글자 선택 막기를 못 하므로 그건 mousedown 에서.
+        let D = null;   // { id, name, x0, y0, dragging, ghost }
+        const stop = (e) => { e.stopPropagation(); e.stopImmediatePropagation?.(); };
+        const markerAt = (e) => {
+          if (!C.open || e.button !== 0 || e.ctrlKey || e.shiftKey || e.altKey || e.metaKey || busyTools()) return null;
+          if (e.pointerType && e.pointerType !== "mouse") return null;   // PC 전용
+          const mapEl = document.getElementById("map"), mk = e.target.closest?.("[data-apt-id]");
+          return mk && mapEl && mapEl.contains(mk) ? mk : null;
+        };
+        document.addEventListener("pointerdown", (e) => {
+          const mk = markerAt(e); if (!mk) return;
+          stop(e);
+          D = { id: mk.dataset.aptId, name: mk.dataset.aptName || "", x0: e.clientX, y0: e.clientY, dragging: false };
+        }, true);
+        document.addEventListener("mousedown", (e) => { if (D) { e.preventDefault(); stop(e); } }, true);
+        function onMove(e) {
+          if (!D) return;
+          stop(e);
+          if (!D.dragging) {
+            if (Math.hypot(e.clientX - D.x0, e.clientY - D.y0) < 6) return;
+            D.dragging = true;
+            D.ghost = document.createElement("div"); D.ghost.id = "cmpGhost";
+            document.body.appendChild(D.ghost);
+            C.el.classList.add("busy");   // iframe 위에서도 이동이 이 문서로 오게
+            document.body.style.cursor = "grabbing";
+          }
+          e.preventDefault();
+          D.ghost.style.left = e.clientX + "px"; D.ghost.style.top = e.clientY + "px";
+          let st = null;
+          if (inDock(e.clientX, e.clientY)) { const w = fw(); st = w?.cmpHover ? w.cmpHover(...frameXY(e.clientX, e.clientY)) : "ok"; }
+          else fw()?.cmpHover?.(null);
+          C.el.classList.toggle("drop-ok", st === "ok");
+          C.el.classList.toggle("drop-no", st === "full");
+          D.ghost.innerHTML = `${escapeHtml(D.name)}<small>${st === "ok" ? "놓으면 추가" : st === "full" ? "10개 가득 참" : "비교 패널로 끌어 놓기"}</small>`;
+        }
+        document.addEventListener("pointermove", onMove, true);
+        document.addEventListener("mousemove", (e) => { if (D) stop(e); }, true);
+        function endDrag(d = D) {
+          d?.ghost?.remove();
+          C.el.classList.remove("busy", "drop-ok", "drop-no");
+          document.body.style.cursor = "";
+        }
+        function onUp(e) {
+          if (!D) return;
+          const d = D; D = null;
+          stop(e); e.preventDefault();
+          window.__cmpSwallowClick = Date.now();   // 뒤따르는 click 을 삼킨다(아래)
+          if (!d.dragging) {
+            // 그냥 클릭 — 원래 마커 클릭과 같게 정보 창(offset = 지도 안 좌표)
+            const r = document.getElementById("map").getBoundingClientRect();
+            try { (window.showApartmentInfo || showApartmentInfo)(d.id, { x: e.clientX - r.left, y: e.clientY - r.top }); } catch (err) { console.warn(err); }
+            return;
+          }
+          endDrag(d);
+          const w = fw();
+          if (!inDock(e.clientX, e.clientY)) { w?.cmpHover?.(null); return; }
+          if (!w?.cmpAdd) return toast("비교 화면을 불러오는 중입니다. 잠시 뒤 다시 놓아 주세요.");
+          const res = w.cmpAdd(d.id, d.name, ...frameXY(e.clientX, e.clientY));
+          toast(res === "ok" ? `${d.name} 추가` : res === "dup" ? `${d.name} — 이미 들어 있습니다` : "한 묶음에 10개까지 넣을 수 있습니다");
+        }
+        document.addEventListener("pointerup", onUp, true);
+        document.addEventListener("mouseup", (e) => { if (window.__cmpSwallowClick && Date.now() - window.__cmpSwallowClick < 400) stop(e); }, true);
+        // 가로챈 뒤의 click 이 지도·마커로 가지 않게(정보 창은 pointerup 에서 이미 열었다)
+        document.addEventListener("click", (e) => {
+          if (window.__cmpSwallowClick && Date.now() - window.__cmpSwallowClick < 400) { window.__cmpSwallowClick = 0; e.preventDefault(); stop(e); }
+        }, true);
+        document.addEventListener("pointercancel", () => { if (D) { endDrag(); fw()?.cmpHover?.(null); D = null; } }, true);
+        addEventListener("keydown", (e) => {
+          if (e.key === "Escape" && D?.dragging) { endDrag(); fw()?.cmpHover?.(null); D = null; }
+        });
+      })();
 
       // ───────────────────────────────────────────────────────────────────────────
       // 업무지구 길찾기 — 홍부 지도에 경로를 직접 그리기 (2026-09-26)
