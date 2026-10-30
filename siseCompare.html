@@ -768,7 +768,19 @@ const marksPlugin = {
       };
       let fs = Math.max(11, Math.min(20, Math.round(caW / 50))), g = measure(fs);   // ÷70 은 800px 차트에서 11px 로 작았다(같은 날 "이 경우 더 커져도") → ÷50, 최대 20
       while (fs > 9 && (g.h > caH * 0.4 || g.w > caW * 0.95)) g = measure(--fs);
-      const x0 = ca.left + 6, y0 = ca.top + 6;
+      // 기본 자리는 왼쪽 위. 전고·전저 표식(▲▼ 포함)을 덮을 때만 네 귀퉁이 중 표식을 덮지 않고 선 점을 가장 적게 가리는 곳으로 옮긴다(2026-10-30)
+      let x0 = ca.left + 6, y0 = ca.top + 6;
+      const marks = SK.marks === 'bar' ? [] : (o.lines || []).filter(l => l.y != null).map(l => ({ px: x.getPixelForValue(l.x), py: y.getPixelForValue(l.y) })).filter(m => m.px >= ca.left && m.px <= ca.right);
+      const covers = (bx, by) => marks.some(m => m.px >= bx - 6 && m.px <= bx + g.w + 6 && m.py >= by - 20 && m.py <= by + g.h + 20);
+      if (covers(x0, y0)) {
+        const rx = ca.right - 6 - g.w, by1 = ca.bottom - 6 - g.h;
+        const hidden = (bx, by) => { let n = 0; ch.data.datasets.forEach((ds, i) => { if (!ch.isDatasetVisible(i)) return; for (const pt of ds.data) { if (!pt || pt.y == null) continue; const dx = x.getPixelForValue(pt.x), dy = y.getPixelForValue(pt.y); if (dx >= bx && dx <= bx + g.w && dy >= by && dy <= by + g.h) n++; } }); return n; };
+        let best = Infinity;
+        for (const [bx, by] of [[x0, y0], [rx, y0], [x0, by1], [rx, by1]]) {
+          const sc = (covers(bx, by) ? 1e6 : 0) + hidden(bx, by);
+          if (sc < best) { best = sc; x0 = bx; y0 = by; }
+        }
+      }
       legBox.push({ x1: x0, x2: x0 + g.w, y1: y0, y2: y0 + g.h });
       drawLegend = () => {
         const cs = getComputedStyle(document.documentElement), upC = cs.getPropertyValue('--up').trim() || '#e11d48', dnC = cs.getPropertyValue('--down').trim() || '#2563eb';
@@ -798,10 +810,14 @@ const marksPlugin = {
     // 표시 글자는 겹치면 아랫줄로 내린다(2026-10-29 — 고점·저점이 가까운 단지에서 저점 글자가 고점 글자를 덮었다)
     const placed = [], boxes = [...legBox];
     const hit = (a, b) => a.x1 < b.x2 + 2 && a.x2 > b.x1 - 2 && a.y1 < b.y2 + 1 && a.y2 > b.y1 - 1;
-    // 겹치지 않는 자리 찾기 — dy 방향으로 한 칸씩 밀어 본다
-    const spot = (lx, ly, w, h, dy) => {
-      let r = { x1: lx, x2: lx + w, y1: ly, y2: ly + h };
-      for (let k = 0; k < 8 && boxes.some(b => hit(r, b)); k++) r = { ...r, y1: r.y1 + dy, y2: r.y2 + dy };
+    // 겹치지 않는 자리 찾기 — 기본 자리 → alts(표식 옆) → dy 방향 → 반대 방향 순. 차트 밖 자리는 고르지 않는다
+    // (2026-10-30 사용자 "전고점 툴팁이 가린다" — 범례를 피해 위로만 밀다가 차트 위로 나가 글자가 잘렸다)
+    const spot = (lx, ly, w, h, dy, alts = []) => {
+      const at = (ax, ay) => ({ x1: ax, x2: ax + w, y1: ay, y2: ay + h });
+      const free = r => r.x1 >= ca.left && r.x2 <= ca.right && r.y1 >= ca.top && r.y2 <= ca.bottom && !boxes.some(b => hit(r, b));
+      const tries = [at(lx, ly), ...alts.map(([ax, ay]) => at(ax, ay))];
+      for (const s of [1, -1]) for (let k = 1; k <= 8; k++) tries.push(at(lx, ly + s * k * dy));
+      const r = tries.find(free) || tries[0];
       boxes.push(r); return r;
     };
     for (const l of (o.lines || [])) {
@@ -826,7 +842,9 @@ const marksPlugin = {
           const ty = up ? py - 7 : py + 7, s = up ? -1 : 1;
           ctx.fillStyle = l.color; ctx.beginPath(); ctx.moveTo(px - 4.5, ty + s * 6); ctx.lineTo(px + 4.5, ty + s * 6); ctx.lineTo(px, ty); ctx.closePath(); ctx.fill();
           const w = tw + 10, h = 15, lx = Math.min(Math.max(px - w / 2, ca.left), ca.right - w);
-          const r = spot(lx, Math.min(Math.max(up ? ty - 8 - h : ty + 8, ca.top), ca.bottom - h), w, h, up ? -(h + 2) : h + 2);
+          // 꼭대기·바닥 점은 양옆으로 선이 멀어지므로 ▲▼ 바로 옆이 비어 있다 — 오른쪽, 왼쪽 순으로 쓴다
+          const sideY = up ? py - h - 3 : py + 3;
+          const r = spot(lx, Math.min(Math.max(up ? ty - 8 - h : ty + 8, ca.top), ca.bottom - h), w, h, up ? -(h + 2) : h + 2, [[px + 7, sideY], [px - 7 - w, sideY]]);
           ctx.beginPath(); ctx.roundRect(r.x1, r.y1, w, h, 3); ctx.fillStyle = SK.dotFill; ctx.fill();
           ctx.strokeStyle = l.color; ctx.lineWidth = 1.2; ctx.stroke();
           ctx.fillStyle = l.color; ctx.fillText(l.label, r.x1 + 5, r.y1 + h / 2 + 0.5);
@@ -916,6 +934,8 @@ function defaultAr(groups) {
 }
 const optVal = o => `${o.ar}|${o.t || ''}`;
 const itLabel = it => `${it.name} ${it.ar}㎡${it.tn ? ` ${it.tn}` : ''}`;
+// 범례·요약 카드의 이름 앞에 시군구(2026-10-30 사용자). 단지 목록을 받기 전이면 이름만 — refresh 가 목록을 받은 뒤 다시 그린다
+const withSgg = (it, s) => { const a = APT_BY_ID.get(String(it.cid)); return a && a.sigunguNm ? `${a.sigunguNm} ${s}` : s; };
 
 function panelHtml(p, idx) {
   return `<div class="panel" data-id="${p.id}" style="width:${p.w || DEF_W}px">
@@ -968,12 +988,25 @@ function bindResize(p, el) {
   }
 }
 
+// 폭 손잡이 세로 자리 = 묶음에서 지금 화면에 보이는 부분의 가운데(2026-10-30 사용자 "왜 중간이 아니라 아래에 있지?")
+// — CSS top:50% 는 묶음 전체의 가운데라 요약 카드가 쌓여 묶음이 길면 화면 아래로 내려갔다
+function placeRsz() {
+  const hdr = document.querySelector('header'), minY = hdr ? hdr.getBoundingClientRect().bottom : 0;
+  for (const el of board.querySelectorAll('.panel')) {
+    const r = el.getBoundingClientRect(), top = Math.max(r.top, minY), bot = Math.min(r.bottom, innerHeight);
+    if (bot <= top) continue;
+    const y = Math.round(Math.min(Math.max((top + bot) / 2 - r.top, 48), r.height - 48));
+    for (const h of el.querySelectorAll('.rsz.l, .rsz.r')) h.style.top = y + 'px';
+  }
+}
+
 function renderBoard() {
   for (const c of charts.values()) c.destroy();
   charts.clear();
   board.innerHTML = state.panels.map(panelHtml).join('');
   state.panels.forEach(p => { bindPanel(p); renderItems(p); refresh(p); });
   setActive(state.panels.some(p => p.id === activeId) ? activeId : state.panels[0].id);
+  placeRsz();
 }
 const panelEl = p => board.querySelector(`.panel[data-id="${p.id}"]`);
 
@@ -1215,6 +1248,7 @@ async function refresh(p, axisOnly) {
   ready.forEach(r => { r.S = summarize(r.P, p, cfg); });
   if (!axisOnly && ready.length) recordHist(p);
   drawChart(p, el, ready, cfg);
+  if (!APT && ready.length) loadApt().then(() => { if (refreshSeq.get(p.id) === seq) refresh(p, true); }).catch(() => {});
 }
 
 // x축 눈금(2026-10-29 사용자 "월도 추가 — 월별이면 월 단위, 일별이면 보름 간격") — 눈금(세로 격자)은 기본 단위(월별 1달, 일별 보름)로
@@ -1336,7 +1370,7 @@ function drawChart(p, el, ready, cfg) {
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: ctx => (ctx.dataset._tip ? ctx.dataset._tip(ctx.raw) : ''), title: () => '' } },
-        cmpMarks: { lines, bands, vols, legend: ready.map(r => ({ c: COLORS[r.i], name: r.it.name || '', unit: legUnit(r.it) })) },
+        cmpMarks: { lines, bands, vols, legend: ready.map(r => ({ c: COLORS[r.i], name: withSgg(r.it, r.it.name || ''), unit: legUnit(r.it) })) },
       },
     },
   }));
@@ -1377,7 +1411,7 @@ function dragCards(ms, months) {
   }).join('')}</div>`;
 }
 // 기본 요약 — 직전 매매·전세(가장 최근 거래 달 평균, 2026-10-29 이름 "현재" → "직전"), 갭(투자금)·전세가율, 최고 전세가율(매매·전세가 같은 달에 다 있는 달 중),
-// 전고점(= 고점 찾기 구간의 고점, 차트 '고' 표식과 같음), 전고 대비(현재 매매 ÷ 전고점)
+// 전고점·전저점(= 고점·저점 찾기 구간의 값, 차트 표식과 같음), 전저 대비(현재 매매 ÷ 전저점)
 function baseSummary(ready) {
   const ym = m => miYM(m).replace('-', '.');
   const ms = ready.map(r => {
@@ -1386,28 +1420,29 @@ function baseSummary(ready) {
     const pair = curS != null && curJ != null && Math.abs(P.lastS - lastJ) <= 12;   // 1년 넘게 벌어진 두 값으로는 갭을 안 잡는다
     let mx = null;
     for (const [m] of P.S) if (P.J.has(m)) { const v = S.fJ(m) / S.fS(m) * 100; if (mx == null || v > mx.v) mx = { m, v }; }
-    const pk = S.peak && S.peak.s != null ? S.peak : null;
-    return { c: COLORS[r.i], name: itLabel(r.it), curS, curJ, lastS: P.lastS, lastJ, gap: pair ? curS - curJ : null, ratio: pair ? curJ / curS * 100 : null, mx, pk,
-      vs: pk && curS != null ? (curS / pk.s - 1) * 100 : null };
+    const pk = S.peak && S.peak.s != null ? S.peak : null, tr = S.trough && S.trough.s != null ? S.trough : null;
+    return { c: COLORS[r.i], name: withSgg(r.it, itLabel(r.it)), curS, curJ, lastS: P.lastS, lastJ, gap: pair ? curS - curJ : null, ratio: pair ? curJ / curS * 100 : null, mx, pk, tr,
+      vs: tr && curS != null ? (curS / tr.s - 1) * 100 : null };
   });
   const cur = (v, m) => v != null ? `${eok(v)} <span class="none">(${ym(m)})</span>` : '<span class="none">거래 없음</span>';
   const gap = m => m.gap != null ? `${eok(m.gap)} <span class="none">· 전세가율</span> <b>${m.ratio.toFixed(0)}%</b>` : '<span class="none">—</span>';
   const mxs = m => m.mx ? `<b>${m.mx.v.toFixed(0)}%</b> <span class="none">(${ym(m.mx.m)})</span>` : '<span class="none">—</span>';
   const pks = m => m.pk ? `${eok(m.pk.s)} <span class="none">(${ym(m.pk.m)})</span>` : '<span class="none">구간 안 거래 없음</span>';
-  // 현재 매매가 전고점을 넘었으면 '전고대비 상승률', 못 넘었으면 '전고대비 하락률' 하나만(2026-10-29 사용자 확정 — 저점 기준 하락률은 뺐다)
-  const vsName = v => (v >= 0 ? '전고대비 상승률' : '전고대비 하락률');
-  const vss = m => m.vs != null ? `<span class="none">${m.vs >= 0 ? '상승률' : '하락률'}</span> <b class="${cls(m.vs)}">${sgn(m.vs)}${Math.abs(m.vs).toFixed(0)}%</b> <span class="${cls(m.vs)}">${diffEok(m.pk.s, m.curS)}</span>` : '<span class="none">—</span>';
-  // 카드: 큰 숫자 = 전고 대비 증감률·증감액, 전고점은 아래 칸 목록 맨 위로(2026-10-29 — 구간 결과 카드와 같은 짜임)
+  const trs = m => m.tr ? `${eok(m.tr.s)} <span class="none">(${ym(m.tr.m)})</span>` : '<span class="none">구간 안 거래 없음</span>';
+  // 전고대비 → 전저대비(2026-10-30 사용자). 현재 매매가 전저점보다 높으면 '전저대비 상승률', 낮으면 '전저대비 하락률' 하나만
+  const vsName = v => (v >= 0 ? '전저대비 상승률' : '전저대비 하락률');
+  const vss = m => m.vs != null ? `<span class="none">${m.vs >= 0 ? '상승률' : '하락률'}</span> <b class="${cls(m.vs)}">${sgn(m.vs)}${Math.abs(m.vs).toFixed(0)}%</b> <span class="${cls(m.vs)}">${diffEok(m.tr.s, m.curS)}</span>` : '<span class="none">—</span>';
+  // 카드: 큰 숫자 = 전저 대비 증감률·증감액, 전고점·전저점은 아래 칸 목록 맨 위로(2026-10-29 — 구간 결과 카드와 같은 짜임)
   if (SK.drag === 'cards') {
     return `<div class="cardgrid">${ms.map(m => `<div class="dc" style="--c:${m.c}"><div class="nm"><span class="chip" style="background:${m.c}"></span>${esc(m.name)}</div>
-      ${m.vs != null ? `<div class="big ${cls(m.vs)}">${sgn(m.vs)}${Math.abs(m.vs).toFixed(0)}% <small>${diffEok(m.pk.s, m.curS)} · ${vsName(m.vs)}</small></div>` : '<div class="sub">전고점 비교 불가</div>'}
-      <dl>${m.pk ? `<dt>전고점</dt><dd>${eok(m.pk.s)} <span class="none">(${ym(m.pk.m)})</span></dd>` : ''}<dt>직전 매매</dt><dd>${cur(m.curS, m.lastS)}</dd><dt>직전 전세</dt><dd>${cur(m.curJ, m.lastJ)}</dd>
+      ${m.vs != null ? `<div class="big ${cls(m.vs)}">${sgn(m.vs)}${Math.abs(m.vs).toFixed(0)}% <small>${diffEok(m.tr.s, m.curS)} · ${vsName(m.vs)}</small></div>` : '<div class="sub">전저점 비교 불가</div>'}
+      <dl>${m.pk ? `<dt>전고점</dt><dd>${pks(m)}</dd>` : ''}${m.tr ? `<dt>전저점</dt><dd>${trs(m)}</dd>` : ''}<dt>직전 매매</dt><dd>${cur(m.curS, m.lastS)}</dd><dt>직전 전세</dt><dd>${cur(m.curJ, m.lastJ)}</dd>
         <dt>갭</dt><dd>${gap(m)}</dd><dt>최고 전세가율</dt><dd>${mxs(m)}</dd></dl></div>`).join('')}</div>`;
   }
   const row = (k, f) => `<tr><td class="k">${k}</td>${ms.map(m => `<td>${f(m)}</td>`).join('')}</tr>`;
   return `<table class="cmp"><thead><tr><th></th>${ms.map(m => `<th><span class="chip" style="display:inline-block;background:${m.c}"></span> ${esc(m.name)}</th>`).join('')}</tr></thead><tbody>`
     + row('직전 매매', m => cur(m.curS, m.lastS)) + row('직전 전세', m => cur(m.curJ, m.lastJ)) + row('갭(투자금)', gap)
-    + row('최고 전세가율', mxs) + row('전고점', pks) + row('전고대비', vss) + '</tbody></table>';
+    + row('최고 전세가율', mxs) + row('전고점', pks) + row('전저점', trs) + row('전저대비', vss) + '</tbody></table>';
 }
 // ── 업무지구 대중교통 (2026-10-29 사용자 "강남 km 처럼 강남역과의 거리, 강남·시청·여의도 대중교통 시간") ──
 // 홍부 강남km 비교표와 같은 계산: 경로는 시세 서버 공개 /route(대중교통, summary=1, 최적 1개, 토큰 없음·IP 당 분당 60회),
@@ -1508,7 +1543,7 @@ function renderDrag(p) {
   const dr = p.drag;
   if (!dr) {
     ch.options.plugins.cmpMarks.drag = null; ch.options.plugins.cmpMarks.legendHd = null; (ch.options.plugins.cmpMarks.legend || []).forEach(l => { l.ex = null; }); ch.update('none');
-    // 구간을 안 골랐을 때 기본 요약(2026-10-29 사용자 요청 — 갭·최고 전세가율·전고점·전고 대비)
+    // 구간을 안 골랐을 때 기본 요약(2026-10-29 사용자 요청 — 갭·최고 전세가율·전고점·전저점·전저 대비)
     if (!ready.length) { box.style.display = 'none'; return; }
     box.className = 'dragres ' + SK.drag;
     box.innerHTML = `<div class="hd">현재 요약 <span class="none" style="font-weight:400">· 차트를 좌우로 끌면 구간 증감</span></div>${baseSummary(ready)}`;
@@ -1530,7 +1565,7 @@ function renderDrag(p) {
     const nS = cntIn(r.P.S), types = (r.d.types || []);
     let hh = r.it.t ? (types.find(x => x.k === r.it.t) || {}).hh || 0 : types.filter(x => x.ar === r.it.ar).reduce((s, x) => s + (x.hh || 0), 0), hhNote = '';
     if (!hh) { const a = APT_BY_ID.get(String(r.it.cid)); hh = a ? a.units : 0; hhNote = ' · 단지 기준'; }
-    return { c, name: itLabel(r.it), s: [s1 && s1.v, s2 && s2.v], j: [j1 && j1.v, j2 && j2.v],
+    return { c, name: withSgg(r.it, itLabel(r.it)), s: [s1 && s1.v, s2 && s2.v], j: [j1 && j1.v, j2 && j2.v],
       gap: [s1 && j1 ? s1.v - j1.v : null, s2 && j2 ? s2.v - j2.v : null],   // 투자금 = 매매 − 전세
       g, nS, nJ: cntIn(r.P.J), hh, hhNote,
       turn: hh ? nS / hh * 100 * 12 / (months + 1) : null };   // 기간 전체 값은 너무 커 보여 연평균만(2026-10-29 사용자 확정)
@@ -1608,6 +1643,9 @@ function placeTL() {
 const tlObs = new ResizeObserver(placeTL);
 window.addEventListener('resize', placeTL);
 window.addEventListener('scroll', placeTL, { passive: true });
+window.addEventListener('scroll', placeRsz, { passive: true });
+window.addEventListener('resize', placeRsz);
+new ResizeObserver(placeRsz).observe(board);   // 요약 카드가 그려지거나 폭을 바꿔 묶음 길이가 달라질 때
 async function drawTradeList() {
   const box = $('#tl .tl'), items = tlItems(tl.p), it = items[tl.i], cfg = state.cfg;
   tl.cid = it.cid;
