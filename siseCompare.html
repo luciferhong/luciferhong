@@ -360,6 +360,9 @@ html.embed #hist { max-height: 320px; overflow: auto; }
 .cmt .ln { display: inline-block; padding: 0 4px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 700; line-height: 15px; white-space: nowrap; }
 .cmt .ln.walk { background: #eee8dc; color: #5b5146; }
 .cmt .mute { color: var(--sub); font-size: 11px; }
+.cmt a.go { display: block; color: inherit; text-decoration: none; border-radius: 4px; }
+.cmt a.go:hover { background: rgba(15, 118, 110, .1); }
+.cmt a.go:hover .m { text-decoration: underline; }
 .cmt.fold table { display: none; }
 </style>
 </head>
@@ -921,7 +924,8 @@ function unitOptions(d) {
       }
       opts.push({ ar, t: null, tn: '', S: o.S, label: `${ar}㎡ 전체 · ${cnt(o.S)}` });
     } else {
-      const t = ts[0];
+      // 이 전용 거래가 타입에 하나도 안 붙었으면 구조를 모르는 것 — 전용면적만 표기(2026-10-30 사용자)
+      const t = ts[0] && byT.has(ts[0].k) ? ts[0] : null;
       opts.push({ ar, t: null, tn: '', S: o.S, label: `${ar}㎡${t ? ` · ${typeDesc(t)}` : ''} · ${cnt(o.S)}` });
     }
     return { ar, group: `${ar}㎡ · 구조 ${ts.length}개`, opts };
@@ -1500,6 +1504,13 @@ function cmtRouteHtml(r) {
   const wait = Math.max(0, (r.duration || 0) - stepMin); if (wait > 0) ex.push('도보·대기 ' + wait + '분');
   return `<div class="rt">${b || '도보'}${ex.length ? '<br>' + ex.join(' · ') : ''}</div>`;
 }
+// 칸을 누르면 네이버지도 대중교통 길찾기(2026-10-30 사용자) — 주소 형식은 hongbutest __naverMapWebUrl·__naverMapAppUrl 과 같다. 폰은 앱, PC 는 새 탭
+const cmtMapUrl = (a, d) => {
+  const nm = s => encodeURIComponent(String(s).replace(/,/g, ' '));   // 웹 주소는 쉼표로 칸을 나눈다('미륭,미성,삼호3차')
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+    ? `nmap://route/public?slat=${a.lat}&slng=${a.lng}&sname=${nm(a.name)}&dlat=${d.lat}&dlng=${d.lng}&dname=${nm(d.sub)}&appname=com.luciferhong.hongbutest`
+    : `https://map.naver.com/p/directions/${a.lng},${a.lat},${nm(a.name)}/${d.lng},${d.lat},${nm(d.sub)}/-/transit`;
+};
 function renderCommute(p) {
   const el = panelEl(p), box = el && el.querySelector('.cmt'); if (!box) return;
   const its = p.items.map((it, i) => ({ it, i })).filter(x => x.it.cid && !x.it.hidden);
@@ -1526,7 +1537,8 @@ function renderCommute(p) {
         : c.state === 'close' ? '<span class="m">도보권</span>'
         : c.state === 'fail' ? `<span class="mute" title="${esc(c.err)}">조회 실패</span>`
         : `<span class="m${v > 60 ? ' slow' : ''}">${v}분</span>${cmtRouteHtml(c.r)}`;
-      h += `<td class="${v != null && v === best[k] ? 'best' : ''}">${body}</td>`;
+      const link = v != null ? `<a class="go" href="${esc(cmtMapUrl(x.a, d))}" target="_blank" rel="noopener" title="네이버지도에서 길찾기">${body}</a>` : body;
+      h += `<td class="${v != null && v === best[k] ? 'best' : ''}">${link}</td>`;
     });
     h += '</tr>';
   });
@@ -1704,7 +1716,7 @@ async function drawTradeList() {
   const hhTxt = n => (n ? ` (${n.toLocaleString()}세대)` : '');
   const arOpts = ars.map(a => {
     const ts = (d.types || []).filter(x => x.ar === a);
-    if (ts.length <= 1) return opt(a, `${a}㎡${ts[0] ? ' · ' + esc(typeDesc(ts[0])) : ''}${hhTxt(hhOf(a))}`, tl.ar === a && !tl.t);
+    if (ts.length <= 1) return opt(a, `${a}㎡${ts[0] && d.trades.some(t => t[9] === ts[0].k) ? ' · ' + esc(typeDesc(ts[0])) : ''}${hhTxt(hhOf(a))}`, tl.ar === a && !tl.t);
     return opt(a, `${a}㎡ 전체${hhTxt(hhOf(a))}`, tl.ar === a && !tl.t)
       + ts.map(x => opt(`${a}|${x.k}`, `\u00a0\u00a0└ ${a}㎡ ${esc(typeDesc(x))}${hhTxt(x.hh)}`, tl.ar === a && tl.t === x.k)).join('');
   }).join('');
