@@ -404,13 +404,26 @@ html.embed #hist { max-height: 320px; overflow: auto; }
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-// 페이지는 GitHub Pages, 데이터는 A1 서버의 공개 경로 /pub/compare_data(토큰 없음, IP 당 분당 제한) — 2026-10-29 사용자 요청.
+// 페이지는 GitHub Pages, 데이터는 A1 서버의 공개 경로 /pub/compare_data(IP 당 분당 제한) — 2026-10-29 사용자 요청.
 // 로컬(localhost:8000 등)에서 열면 이 PC 의 시세 서버를 쓴다.
 const SERVER = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? 'http://127.0.0.1:7123' : 'https://sise-cloud.luciferhong.com';
 // 네이버 `실거래`(2023-10 이전) 는 집 PC 에만 있다 — VM 에서 열면 집 PC 터널로 다시 묻는다(sise_history 추이 모달과 같은 방식).
 const HOME_TUNNEL = 'https://sise.luciferhong.com';
 const apiUrl = (p, base = SERVER) => `${base}${p}`;
+// 업무지구 대중교통 표시 여부(2026-11-02 사용자 지정).
+const SISE_TOKEN = (() => {
+  try {
+    const u = new URL(location.href), t = u.searchParams.get('token');
+    if (t) {
+      if (t === 'off') localStorage.removeItem('hongbuSiseToken');
+      else localStorage.setItem('hongbuSiseToken', t);
+      u.searchParams.delete('token');
+      history.replaceState(null, '', u.toString());
+    }
+    return localStorage.getItem('hongbuSiseToken') || '';
+  } catch (e) { return ''; }
+})();
 const APT_JSON_URL = 'https://luciferhong.github.io/luciferhong/apt.json';
 const APT_EMD_URL = 'https://luciferhong.github.io/luciferhong/aptEmd.json';
 const STORE = 'siseCompare_v1';
@@ -753,7 +766,7 @@ const marksPlugin = {
     const legBox = []; let drawLegend = () => {};
     if ((o.legend || []).length) {
       const caW = ca.right - ca.left, caH = ca.bottom - ca.top, n = o.legend.length, hasEx = o.legend.some(l => l.ex);
-      const measure = fs => {
+      const measure = (fs, wrap) => {
         const k = fs / 13, g = { lh: Math.round(fs * 1.45), pad: Math.round(fs * 0.55), sq: Math.round(fs * 0.85), gap: Math.round(10 * k), EXG: [0, 4, 5, 12, 4, 5].map(v => Math.round(v * k)) };
         ctx.save();
         ctx.font = `600 ${fs}px ${SK.font}`; g.nw = Math.max(...o.legend.map(l => ctx.measureText(l.name).width));
@@ -763,14 +776,21 @@ const marksPlugin = {
         ctx.font = `700 ${fs}px ${SK.font}`; g.hdw = o.legendHd ? ctx.measureText(o.legendHd).width : 0;
         ctx.restore();
         g.exw = hasEx ? g.cw.reduce((t, w, c) => t + w + g.EXG[c], 0) : 0;
-        g.w = g.pad * 2 + g.sq + 4 + g.nw + g.gap + g.uw + (g.exw ? g.gap + g.exw : 0);
+        g.wrap = wrap;   // 증감(매·전)을 단지명 다음 줄로 내린 배치
+        g.w = g.pad * 2 + g.sq + 4 + (wrap ? Math.max(g.nw + g.gap + g.uw, g.exw) : g.nw + g.gap + g.uw + (g.exw ? g.gap + g.exw : 0));
         g.w = Math.max(g.w, g.pad * 2 + g.hdw);
         g.hd = o.legendHd ? g.lh : 0;   // 기간 줄 높이(구간을 골랐을 때만)
-        g.h = g.pad * 2 + g.lh * n - 2 + g.hd;
+        g.h = g.pad * 2 + g.lh * (n + (wrap ? o.legend.filter(l => l.ex).length : 0)) - 2 + g.hd;
         g.fs = fs; return g;
       };
-      let fs = Math.max(11, Math.min(20, Math.round(caW / 50))), g = measure(fs);   // ÷70 은 800px 차트에서 11px 로 작았다(같은 날 "이 경우 더 커져도") → ÷50, 최대 20
-      while (fs > 9 && (g.h > caH * 0.4 || g.w > caW * 0.95)) g = measure(--fs);
+      const fit = wrap => {
+        let fs = Math.max(11, Math.min(20, Math.round(caW / 50))), g = measure(fs, wrap);   // ÷70 은 800px 차트에서 11px 로 작았다(같은 날 "이 경우 더 커져도") → ÷50, 최대 20
+        while (fs > 9 && (g.h > caH * 0.4 || g.w > caW * 0.95)) g = measure(--fs, wrap);
+        return g;
+      };
+      // 한 줄에 넣느라 글자가 줄어들 때만, 다음 줄로 내려 글자가 더 커지면 그쪽을 쓴다(2026-11-02 사용자 "매매부터 다음 줄로")
+      let g = fit(false);
+      if (hasEx) { const g2 = fit(true); if (g2.fs > g.fs) g = g2; }
       // 기본 자리는 왼쪽 위. 표식·선·거래 점을 하나라도 가리면 네 귀퉁이 → 위·아래 줄의 중간 자리 순으로 안 가리는 곳을 찾고, 없으면 가장 적게 가리는 곳으로
       // (2026-11-02 사용자 "범례가 차트를 가린다" — 표식이 없는 차트에서 옮기지 않았고, 점 사이를 지나는 선은 세지 않았다)
       let x0 = ca.left + 6, y0 = ca.top + 6;
@@ -820,18 +840,20 @@ const marksPlugin = {
         ctx.strokeStyle = SK.grid; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, g.w - 1, g.h - 1);
         ctx.textBaseline = 'middle';
         if (g.hd) { ctx.fillStyle = SK.tick; ctx.font = `700 ${g.fs}px ${SK.font}`; ctx.fillText(o.legendHd, x0 + g.pad, y0 + g.pad + g.lh / 2 - 1); }
-        o.legend.forEach((l, k) => {
-          const y = y0 + g.pad + g.hd + g.lh * k + g.lh / 2 - 1;
+        let row = 0;
+        o.legend.forEach(l => {
+          const y = y0 + g.pad + g.hd + g.lh * row + g.lh / 2 - 1, two = g.wrap && l.ex, ey = two ? y + g.lh : y;
+          row += two ? 2 : 1;
           ctx.fillStyle = l.c; ctx.fillRect(x0 + g.pad, y - g.sq / 2, g.sq, g.sq);
           const xn = x0 + g.pad + g.sq + 4;
           ctx.fillStyle = SK.tick; ctx.font = `600 ${g.fs}px ${SK.font}`; ctx.fillText(l.name, xn, y);
           ctx.font = `400 ${g.fs}px ${SK.font}`; ctx.fillText(l.unit, xn + g.nw + g.gap, y);
-          let ex = xn + g.nw + g.gap + g.uw + g.gap;
+          let ex = two ? xn : xn + g.nw + g.gap + g.uw + g.gap;
           (l.ex || []).forEach((x, c) => {
             ex += g.EXG[c];
             ctx.fillStyle = x.s > 0 ? upC : x.s < 0 ? dnC : SK.tick;
             const num = c % 3 !== 0;   // 증감액·증감률은 칸 오른쪽 맞춤, '매'·'전' 글은 왼쪽
-            ctx.textAlign = num ? 'right' : 'left'; ctx.fillText(x.t, num ? ex + g.cw[c] : ex, y); ctx.textAlign = 'left';
+            ctx.textAlign = num ? 'right' : 'left'; ctx.fillText(x.t, num ? ex + g.cw[c] : ex, ey); ctx.textAlign = 'left';
             ex += g.cw[c];
           });
         });
@@ -1079,9 +1101,9 @@ function bindPanel(p) {
     its.forEach(x => { x.hidden = hideAll; });
     save(); renderItems(p); refresh(p); tlSync(p);
   };
-  // 전체 삭제(2026-10-29 사용자) — 이 묶음의 단지를 모두 빼고 처음처럼 빈 줄 둘
+  // 전체 삭제(2026-10-29 사용자) — 이 묶음의 단지를 모두 빼고 처음처럼 빈 줄 둘. 최근 비교에서 되불러올 수 있어 묻지 않는다(2026-11-02 사용자)
   el.querySelector('.allrm').onclick = () => {
-    if (!p.items.some(x => x.cid) || !confirm('이 묶음의 단지를 모두 뺄까요?')) return;
+    if (!p.items.some(x => x.cid)) return;
     p.items = [{ cid: '', name: '', ar: null }, { cid: '', name: '', ar: null }]; p.drag = null;
     save(); renderItems(p); refresh(p); tlSync(p);
   };
@@ -1477,7 +1499,7 @@ function baseSummary(ready) {
     + row('최고 전세가율', mxs) + row('전고점', pks) + row('전저점', trs) + row('전저대비', vss) + '</tbody></table>';
 }
 // ── 업무지구 대중교통 (2026-10-29 사용자 "강남 km 처럼 강남역과의 거리, 강남·시청·여의도 대중교통 시간") ──
-// 홍부 강남km 비교표와 같은 계산: 경로는 시세 서버 공개 /route(대중교통, summary=1, 최적 1개, 토큰 없음·IP 당 분당 60회),
+// 홍부 강남km 비교표와 같은 계산: 경로는 시세 서버 /route(대중교통, summary=1, 최적 1개, IP 당 분당 60회),
 // 출발은 가장 가까운 월요일 07:30(홍부 업무지구 길찾기 기본값과 같다). 단지가 행, 목적지가 열(단지가 10개까지라 세로로).
 // 결과는 localStorage(siseCompare_route_v3 — v2 부터 승차역, v3 부터 급행 표기 포함)에 7일 기억(같은 단지·목적지·출발 시각) — 단지를 다시 넣어도 다시 묻지 않는다.
 const CMT_DESTS = [
@@ -1508,8 +1530,14 @@ function cmtRoute(a, dest, dep, done) {
   hit = { state: 'wait' }; cmtLive.set(key, hit);
   cmtQ.push(async () => {
     try {
-      const r = await fetch(apiUrl(`/route?mode=pubtrans&summary=1&alt=1&start=${a.lng},${a.lat}&goal=${dest.lng},${dest.lat}&departureTime=${encodeURIComponent(dep)}`));
-      const j = await r.json().catch(() => ({}));
+      let r, j;
+      // 서버 동시 제한에 걸리면(BUSY) 잠시 뒤 다시 요청 — 실패 칸으로 두지 않는다
+      for (let t = 0; ; t++) {
+        r = await fetch(apiUrl(`/route?mode=pubtrans&summary=1&alt=1&start=${a.lng},${a.lat}&goal=${dest.lng},${dest.lat}&departureTime=${encodeURIComponent(dep)}&token=${encodeURIComponent(SISE_TOKEN)}`));
+        j = await r.json().catch(() => ({}));
+        if (j.code !== 'BUSY' || t >= 5) break;
+        await new Promise(ok => setTimeout(ok, 2000 + Math.random() * 2000));
+      }
       if (j.ok && j.routes && j.routes.length) { const x = j.routes[0]; hit.state = 'ok'; hit.r = { duration: x.duration, transferCount: x.transferCount, steps: (x.steps || []).map(s => ({ type: s.type, name: s.name, lineType: s.lineType, operation: s.operation, color: s.color, duration: s.duration, from: s.from })) }; }
       else if (j.code === 'TOO_CLOSE') hit.state = 'close';
       else { hit.state = 'fail'; hit.err = j.error || 'HTTP ' + r.status; }
@@ -1541,6 +1569,7 @@ const cmtMapUrl = (a, d) => {
 };
 function renderCommute(p) {
   const el = panelEl(p), box = el && el.querySelector('.cmt'); if (!box) return;
+  if (!SISE_TOKEN) { box.style.display = 'none'; return; }
   const its = p.items.map((it, i) => ({ it, i })).filter(x => x.it.cid && !x.it.hidden);
   if (!its.length) { box.style.display = 'none'; return; }
   if (!APT) { loadApt().then(() => renderCommute(p)).catch(() => {}); box.style.display = 'none'; return; }

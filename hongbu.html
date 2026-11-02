@@ -26,6 +26,17 @@
         window.__forcePc = on;
         if (on) document.documentElement.classList.add("force-pc");
       })();
+      // 대중교통 비교표·지도에 그리기 표시 여부(2026-11-02 사용자 지정 — 네이버 차단 위험을 줄인다).
+      // 저장은 파일 끝 스크립트에서 하므로, 그 전에 불려도 맞도록 주소를 먼저 본다.
+      window.__hasToken = function () {
+        try {
+          var q = new URLSearchParams(location.search).get("token");
+          if (q) return q !== "off";
+          return !!localStorage.getItem("hongbuSiseToken");
+        } catch (e) {
+          return false;
+        }
+      };
     </script>
     <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8&submodules=drawing,panorama"></script>
     <script type="text/javascript" src="MarkerClustering.js"></script>
@@ -8275,7 +8286,7 @@
       // 신네부 줌14 응답을 실측해 보니 서버가 범위 안 690단지 중 79개만 골랐다: **화면을 '지금 줌+2' 타일
       // (=64px) 칸으로 나눠 칸마다 대표 하나**(신네부는 조회수 1등, 41칸 중 40칸 일치). 홍부도 **조회수 1등**
       // (사용자 지정) — 전용 확장 [👁 조회수]로 한 번 받아 시세 서버에 둔 신네부 viewCount 를
-      // `/apt_viewcount.json`(토큰 없으면 가벼운 판 {v:{단지번호:조회수}}, gzip ~150KB)으로 받는다.
+      // `/apt_viewcount.json`(가벼운 판 {v:{단지번호:조회수}}, gzip ~150KB)으로 받는다.
       // 조회수가 같거나 없으면 세대수, 그것도 같으면 id. 파일을 아직 못 받았으면 세대수로 고르고, 받으면 다시 그린다.
       // 예전엔 필터를 통과한 단지를 전부 그려 줌14 강남에 340개 — 이름표가 겹쳐
       // 안 읽히고, 네이버 지도가 줌·끌기 끝마다 마커 전부를 재배치하느라 70~110ms 씩 끊겼다(크롬 실측).
@@ -11435,11 +11446,11 @@
       </div>
       <div id="naverRouteOptions" onclick="closeNaverRouteOptions(); event.stopPropagation();"
         style="display: none; position: absolute; top: 100%; left: 0; right: 0; gap: 6px; flex-wrap: nowrap; margin-top: 4px; padding: 6px; background: var(--clr-surface, #fff); border: 1px solid var(--clr-border, #ddd); border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18); z-index: 10;">
-        <!-- 강남역·시청역·여의도역 단추 3개를 [업무지구] 하나로 합쳤다(2026-10-28 사용자 지정) — 강남km 과 같은 7대 업무지구 비교표 -->
-        <button onclick="window.__gnCmpShow && window.__gnCmpShow(${apartmentId}); closeNaverRouteOptions(); event.stopPropagation();"
+        <!-- 강남역·시청역·여의도역 단추 3개를 [업무지구] 하나로 합쳤다(2026-10-28 사용자 지정) — 강남km 과 같은 7대 업무지구 비교표. -->
+        ${window.__hasToken() ? `<button onclick="window.__gnCmpShow && window.__gnCmpShow(${apartmentId}); closeNaverRouteOptions(); event.stopPropagation();"
           style="flex: 1; padding: 8px 4px; background: #F2F2F2; color: #191919; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;">
           🏢 업무지구
-        </button>
+        </button>` : ""}
         <button onclick="openNaverMapDirections(${apartmentId}); closeNaverRouteOptions(); event.stopPropagation();"
           style="flex: 1; padding: 8px 4px; background: #F2F2F2; color: #191919; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;">
           🚶 아파트
@@ -25004,7 +25015,7 @@ const originalBase64 = event.target.result;
            ⚠ 애드온(server/hongbuSise.js)은 **손대지 않는다.** 애드온은 예전처럼 툴바의
              #siseToolbarAnchor 뒤에 자기 묶음을 통째로 넣고, 여기서 체크박스 라벨 하나만
              꺼내 온다. 요소를 옮기는 것뿐이라 애드온이 건 핸들러는 그대로 산다.
-           ⚠ 애드온은 토큰이 있어야 뜨고 언제 들어올지 모른다 — 들어올 때까지 지켜본다.
+           ⚠ 애드온은 언제 들어올지 모른다 — 들어올 때까지 지켜본다.
            ⚠ 애드온이 묶음을 다시 그리면 체크박스가 되돌아갈 수 있어, 그때 다시 옮긴다. */
         (function __siseCheckMove() {
           const slot = el("siseCheckSlot");
@@ -25906,10 +25917,17 @@ const originalBase64 = event.target.result;
           cmpCache.set(key, hit);
           cmpQueue.push(async () => {
             const url = __wrApiBase() + "/route?mode=pubtrans&summary=1&alt=1&start=" + s.lng + "," + s.lat +
-              "&goal=" + dest.lng + "," + dest.lat + (dep ? "&departureTime=" + encodeURIComponent(dep) : "");
+              "&goal=" + dest.lng + "," + dest.lat + (dep ? "&departureTime=" + encodeURIComponent(dep) : "") +
+              "&token=" + encodeURIComponent(__wrToken());
             try {
-              const res = await fetch(url);
-              const j = await res.json().catch(() => ({}));
+              let res, j;
+              // 서버 동시 제한에 걸리면(BUSY) 잠시 뒤 다시 요청 — 실패 칸으로 두지 않는다
+              for (let t = 0; ; t++) {
+                res = await fetch(url);
+                j = await res.json().catch(() => ({}));
+                if (j.code !== "BUSY" || t >= 5) break;
+                await new Promise(ok => setTimeout(ok, 2000 + Math.random() * 2000));
+              }
               if (j.ok && j.routes && j.routes.length) { hit.state = "ok"; hit.r = j.routes[0]; }
               else if (j.code === "TOO_CLOSE") hit.state = "close";
               else { hit.state = "fail"; hit.err = j.error || "HTTP " + res.status; }
@@ -25930,7 +25948,7 @@ const originalBase64 = event.target.result;
             if (st.type === "WALKING") return '<span class="gn-cmp-line gn-cmp-walk">🚶도보 ' + st.duration + "분</span>";
             // 지하철은 뒤에 승차역 — 2호선(서울대입구역) (2026-10-29 사용자, hongbuCompare)
             const sta = st.from ? "(" + (/역$/.test(st.from) ? st.from : st.from + "역") + ")" : "";
-            const nm = st.type === "BUS" ? "🚌" + (st.name || "버스") : (st.name || st.lineType || st.type) + sta;
+            const nm = st.type === "BUS" ? "🚌" + (st.name || "버스") : (st.name || st.lineType || st.type) + (st.operation ? " " + st.operation : "") + sta;
             return '<span class="gn-cmp-line" style="background:' + escapeHtml(st.color || "#6b7280") + '">' + escapeHtml(nm) + "</span>";
           }).join(" → ");
           const extra = [];
@@ -25945,7 +25963,7 @@ const originalBase64 = event.target.result;
           const box = p?.querySelector(".gn-cmp");
           if (!box) return;
           const cols = G.sel.map((s, i) => (s ? { s, i } : null)).filter(Boolean);
-          box.hidden = !G.on || !cols.length;
+          box.hidden = !G.on || !cols.length || !window.__hasToken();
           if (box.hidden) return;
           cmpBuild(box, cols);
           cmpFit();
@@ -26069,6 +26087,7 @@ const originalBase64 = event.target.result;
           head.addEventListener("pointercancel", end);
         }
         window.__gnCmpShow = function (apartmentId) {
+          if (!window.__hasToken()) return;
           const a = (apartmentData || []).find((x) => String(x.id) === String(apartmentId));
           if (!a || !isFinite(+a.lat) || !isFinite(+a.lng)) return;
           if (!cmpPop) {
@@ -30081,7 +30100,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
       function __wrSegLabel(st) {
         if (st.type === "WALKING") return "도보";
         if (st.type === "CAR") return "자동차";
-        return st.name || st.lineType || st.type;
+        return (st.name || st.lineType || st.type) + (st.operation ? " " + st.operation : "");
       }
 
       // 지하철 역 이름에 '역'을 붙인다(네이버는 '신도림'처럼 접미사 없이 준다). 버스 정류장은 그대로.
@@ -30511,7 +30530,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         document.body.appendChild(routeButton);
 
         // 🗺️ "지도에 그리기" 버튼 (2026-09-26 추가 — 홍부 지도에 경로를 직접 그린다.
-        //  서버 프록시가 필요해 토큰이 없으면 아예 띄우지 않고 카카오맵만 남긴다)
+        //  조건이 안 맞으면 아예 띄우지 않고 카카오맵만 남긴다)
         var drawButton = document.createElement("button");
         drawButton.innerText = "지도에 그리기";
         drawButton.style.position = "absolute";
@@ -30598,10 +30617,10 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         // startX/startY = 출발 경도/위도, mouseX/mouseY = 팝업 왼쪽 위 화면 좌표.
         function __fwShowPopup(startX, startY, mouseX, mouseY) {
           // 마우스 우클릭 위치에 버튼 2개(지도에 그리기 / 카카오맵)와 체크박스 표시
-          // 지도에 그리기는 토큰 없이도 쓸 수 있다(2026-09-26 사용자 지정 — 서버 /route 가 공개).
+          // 지도에 그리기 표시 여부(2026-11-02 사용자 지정 — 서버 /route 를 쓴다). 안 보이면 카카오맵만 남는다.
           // 강남거리(km강남) 모드에서는 '지도에 그리기'를 빼고 카카오맵 팝업만 둔다(2026-10-28 사용자 지정 —
           // 여러 지점을 한 번에 보는 카카오맵 창을 쓴다). 카카오맵 단추가 그 자리(맨 위)로 올라간다.
-          var noDraw = !!window.__gnOn;
+          var noDraw = !!window.__gnOn || !window.__hasToken();
           drawButton.style.left = mouseX + "px";
           drawButton.style.top = mouseY + "px";
           drawButton.style.display = noDraw ? "none" : "block";
@@ -30656,15 +30675,15 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             hidePopup();
           };
           // 오른쪽·아래로 넘치면 화면 안으로 당긴다(강남 카드의 지점 3 처럼 오른쪽 끝에서 열 때)
-          var totalW = drawButton.offsetWidth + checkboxContainer.offsetWidth;
+          var totalW = btnW + checkboxContainer.offsetWidth;
           var dx = Math.min(0, window.innerWidth - 8 - (mouseX + totalW));
           var dy = Math.min(0, window.innerHeight - 8 - (mouseY + Math.max(checkboxContainer.offsetHeight, 84)));
           if (dx || dy) {
             drawButton.style.left = mouseX + dx + "px";
             drawButton.style.top = mouseY + dy + "px";
             routeButton.style.left = mouseX + dx + "px";
-            routeButton.style.top = mouseY + dy + 42 + "px";
-            checkboxContainer.style.left = mouseX + dx + drawButton.offsetWidth + "px";
+            routeButton.style.top = mouseY + dy + (noDraw ? 0 : 42) + "px";
+            checkboxContainer.style.left = mouseX + dx + btnW + "px";
             checkboxContainer.style.top = mouseY + dy + "px";
           }
         }
@@ -31568,9 +31587,8 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
       })();
     </script>
     <script>
-      // ✅ DB 시세보기 애드온 로더 (개인용, 토큰 필요)
-      //    최초 1회 ?token=<토큰> 으로 접속하면 localStorage에 저장 → 이후 평소 URL로도 활성화.
-      //    해제: ?token=off. 토큰이 없으면 아무것도 로드하지 않는다(일반 방문자 무영향).
+      // ✅ DB 시세보기 애드온 로더 (개인용)
+      //    일반 방문자에게는 아무것도 로드하지 않는다.
       /* =====================================================================
          🏠 매물임장 (2026-09-27)
          단지 상세 모달의 3번째 탭. 시세이력 탭과 똑같이 모달 안에서 열린다.
