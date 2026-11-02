@@ -771,17 +771,45 @@ const marksPlugin = {
       };
       let fs = Math.max(11, Math.min(20, Math.round(caW / 50))), g = measure(fs);   // ÷70 은 800px 차트에서 11px 로 작았다(같은 날 "이 경우 더 커져도") → ÷50, 최대 20
       while (fs > 9 && (g.h > caH * 0.4 || g.w > caW * 0.95)) g = measure(--fs);
-      // 기본 자리는 왼쪽 위. 전고·전저 표식(▲▼ 포함)을 덮을 때만 네 귀퉁이 중 표식을 덮지 않고 선 점을 가장 적게 가리는 곳으로 옮긴다(2026-10-30)
+      // 기본 자리는 왼쪽 위. 표식·선·거래 점을 하나라도 가리면 네 귀퉁이 → 위·아래 줄의 중간 자리 순으로 안 가리는 곳을 찾고, 없으면 가장 적게 가리는 곳으로
+      // (2026-11-02 사용자 "범례가 차트를 가린다" — 표식이 없는 차트에서 옮기지 않았고, 점 사이를 지나는 선은 세지 않았다)
       let x0 = ca.left + 6, y0 = ca.top + 6;
       const marks = SK.marks === 'bar' ? [] : (o.lines || []).filter(l => l.y != null).map(l => ({ px: x.getPixelForValue(l.x), py: y.getPixelForValue(l.y) })).filter(m => m.px >= ca.left && m.px <= ca.right);
       const covers = (bx, by) => marks.some(m => m.px >= bx - 6 && m.px <= bx + g.w + 6 && m.py >= by - 20 && m.py <= by + g.h + 20);
-      if (covers(x0, y0)) {
-        const rx = ca.right - 6 - g.w, by1 = ca.bottom - 6 - g.h;
-        const hidden = (bx, by) => { let n = 0; ch.data.datasets.forEach((ds, i) => { if (!ch.isDatasetVisible(i)) return; for (const pt of ds.data) { if (!pt || pt.y == null) continue; const dx = x.getPixelForValue(pt.x), dy = y.getPixelForValue(pt.y); if (dx >= bx && dx <= bx + g.w && dy >= by && dy <= by + g.h) n++; } }); return n; };
+      const segs = [], dots = [];   // 픽셀 좌표. 점 하나뿐인 선도 잡히게 길이 0 선분으로 시작한다(값 없는 칸에선 선이 끊긴다)
+      ch.data.datasets.forEach((ds, i) => {
+        if (!ch.isDatasetVisible(i)) return;
+        let prev = null;
+        for (const pt of ds.data) {
+          if (!pt || pt.y == null) { prev = null; continue; }
+          const q = [x.getPixelForValue(pt.x), y.getPixelForValue(pt.y)];
+          if (ds.type === 'line') segs.push(prev ? [...prev, ...q] : [...q, ...q]); else dots.push(q);
+          prev = q;
+        }
+      });
+      const segIn = ([ax, ay, bx, by], l, t, r, b) => {   // 선분이 네모를 지나는지(Liang-Barsky)
+        let t0 = 0, t1 = 1;
+        for (const [d, q] of [[ax - bx, ax - l], [bx - ax, r - ax], [ay - by, ay - t], [by - ay, b - ay]]) {
+          if (d === 0) { if (q < 0) return false; continue; }
+          const k = q / d;
+          if (d < 0) { if (k > t1) return false; if (k > t0) t0 = k; } else { if (k < t0) return false; if (k < t1) t1 = k; }
+        }
+        return true;
+      };
+      const score = (bx, by) => {   // 표식 > 선 > 거래 점 순으로 무겁게. 글자 네모 둘레 3px 까지 가리는 것으로 친다
+        const l = bx - 3, t = by - 3, r = bx + g.w + 3, b = by + g.h + 3;
+        return (covers(bx, by) ? 1e6 : 0) + segs.filter(s => segIn(s, l, t, r, b)).length * 100 + dots.filter(([dx, dy]) => dx >= l && dx <= r && dy >= t && dy <= b).length;
+      };
+      if (score(x0, y0)) {
+        // 거래량 막대를 켜면 아래 25% 는 막대 자리라 아래 줄을 그 위로 올린다
+        const rx = ca.right - 6 - g.w, by1 = (o.vols && ch.scales.y2 ? ca.bottom - caH * 0.25 : ca.bottom) - 6 - g.h;
+        const spots = [[x0, y0], [rx, y0], [x0, by1], [rx, by1]];
+        for (const by of [y0, by1]) for (let k = 1; k < 8; k++) spots.push([x0 + (rx - x0) * k / 8, by]);
         let best = Infinity;
-        for (const [bx, by] of [[x0, y0], [rx, y0], [x0, by1], [rx, by1]]) {
-          const sc = (covers(bx, by) ? 1e6 : 0) + hidden(bx, by);
+        for (const [bx, by] of spots) {
+          const sc = score(bx, by);
           if (sc < best) { best = sc; x0 = bx; y0 = by; }
+          if (!sc) break;
         }
       }
       legBox.push({ x1: x0, x2: x0 + g.w, y1: y0, y2: y0 + g.h });
