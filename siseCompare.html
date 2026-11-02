@@ -1479,13 +1479,13 @@ function baseSummary(ready) {
 // ── 업무지구 대중교통 (2026-10-29 사용자 "강남 km 처럼 강남역과의 거리, 강남·시청·여의도 대중교통 시간") ──
 // 홍부 강남km 비교표와 같은 계산: 경로는 시세 서버 공개 /route(대중교통, summary=1, 최적 1개, 토큰 없음·IP 당 분당 60회),
 // 출발은 가장 가까운 월요일 07:30(홍부 업무지구 길찾기 기본값과 같다). 단지가 행, 목적지가 열(단지가 10개까지라 세로로).
-// 결과는 localStorage(siseCompare_route_v2 — v2 부터 승차역 포함)에 7일 기억(같은 단지·목적지·출발 시각) — 단지를 다시 넣어도 다시 묻지 않는다.
+// 결과는 localStorage(siseCompare_route_v3 — v2 부터 승차역, v3 부터 급행 표기 포함)에 7일 기억(같은 단지·목적지·출발 시각) — 단지를 다시 넣어도 다시 묻지 않는다.
 const CMT_DESTS = [
   { key: 'gbd', label: '강남', sub: '강남역', lat: 37.497951, lng: 127.027636 },
   { key: 'cbd', label: '시청', sub: '시청역', lat: 37.564719, lng: 126.977022 },
   { key: 'ybd', label: '여의도', sub: '여의도역', lat: 37.521624, lng: 126.924374 },
 ];
-const CMT_KEY = 'siseCompare_route_v2', CMT_TTL = 7 * 864e5;
+const CMT_KEY = 'siseCompare_route_v3', CMT_TTL = 7 * 864e5;
 let cmtStore = {};
 try { cmtStore = JSON.parse(localStorage.getItem(CMT_KEY) || '{}'); } catch (e) { cmtStore = {}; }
 { const now = Date.now(); for (const k in cmtStore) if (!cmtStore[k] || now - cmtStore[k].at > CMT_TTL) delete cmtStore[k]; }
@@ -1510,7 +1510,7 @@ function cmtRoute(a, dest, dep, done) {
     try {
       const r = await fetch(apiUrl(`/route?mode=pubtrans&summary=1&alt=1&start=${a.lng},${a.lat}&goal=${dest.lng},${dest.lat}&departureTime=${encodeURIComponent(dep)}`));
       const j = await r.json().catch(() => ({}));
-      if (j.ok && j.routes && j.routes.length) { const x = j.routes[0]; hit.state = 'ok'; hit.r = { duration: x.duration, transferCount: x.transferCount, steps: (x.steps || []).map(s => ({ type: s.type, name: s.name, lineType: s.lineType, color: s.color, duration: s.duration, from: s.from })) }; }
+      if (j.ok && j.routes && j.routes.length) { const x = j.routes[0]; hit.state = 'ok'; hit.r = { duration: x.duration, transferCount: x.transferCount, steps: (x.steps || []).map(s => ({ type: s.type, name: s.name, lineType: s.lineType, operation: s.operation, color: s.color, duration: s.duration, from: s.from })) }; }
       else if (j.code === 'TOO_CLOSE') hit.state = 'close';
       else { hit.state = 'fail'; hit.err = j.error || 'HTTP ' + r.status; }
     } catch (e) { hit.state = 'fail'; hit.err = e.message || String(e); }
@@ -1527,7 +1527,7 @@ function cmtRouteHtml(r) {
   const steps = (r.steps || []).filter(st => st.type !== 'WALKING' || st.duration >= 10);
   const stepMin = steps.reduce((t, st) => t + (st.duration || 0), 0);
   const b = steps.map(st => st.type === 'WALKING' ? `<span class="ln walk">도보 ${st.duration}분</span>`
-    : `<span class="ln" style="background:${esc(st.color || '#6b7280')}">${esc(st.type === 'BUS' ? '버스 ' + (st.name || '') : (st.name || st.lineType || st.type) + cmtSta(st.from))}</span>`).join(' → ');
+    : `<span class="ln" style="background:${esc(st.color || '#6b7280')}">${esc(st.type === 'BUS' ? '버스 ' + (st.name || '') : (st.name || st.lineType || st.type) + (st.operation ? ' ' + st.operation : '') + cmtSta(st.from))}</span>`).join(' → ');
   const ex = []; if (r.transferCount > 0) ex.push('환승 ' + r.transferCount);
   const wait = Math.max(0, (r.duration || 0) - stepMin); if (wait > 0) ex.push('도보·대기 ' + wait + '분');
   return `<div class="rt">${b || '도보'}${ex.length ? '<br>' + ex.join(' · ') : ''}</div>`;
