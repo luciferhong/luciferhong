@@ -908,6 +908,10 @@
           </div>
         </span>
         <span class="label-control-group">
+          <input type="checkbox" id="guUnitCheckbox" class="label-checkbox" disabled />
+          <span class="filter-label">구 단위로 보기</span>
+        </span>
+        <span class="label-control-group">
           <input type="checkbox" id="alwaysShowLabelsCheckbox" class="label-checkbox" checked />
           <span class="filter-label">동이름 항상 표시</span>
         </span>
@@ -1070,9 +1074,11 @@
     const MAX_AGE_CHART_BARS_SIGUNGU = 80;
 
     const SIG_GEO_URLS = [
-      "./sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part01.geojson",
-      "./sig_from_emd_wgs84_utf8_2025-11-01_sggfields_part02.geojson"
+      "./sig_wgs84_30m.geojson"
     ];
+
+    // 동 경계는 옛 코드(시 하나)인데 인구 통계는 구별 코드로 바뀐 시: 동 이름으로 통계 코드를 찾는다
+    const SPLIT_CITY_SIG_CODES = new Set(["41590"]);
 
     const SIDO_NAME_BY_CODE = {
       "11": "서울특별시",
@@ -1110,10 +1116,12 @@
       selected: null,
       sggNameByCode: null,
       sggGeometryByCode: null,
+      cityByGuCode: {},
       regionCatalog: null,
       filters: {
         sidoCode: "",
-        sigunguCodes: new Set()
+        sigunguCodes: new Set(),
+        guUnit: false
       },
       cache: {
         EMD: null,
@@ -1437,12 +1445,14 @@
         return true;
       });
 
-      // 시군구가 전체(미선택)면 시군구 단위로 집계해서 표시
-      if (selectedSigunguCodes.size === 0) {
+      // 시군구가 전체(미선택)이거나 구 단위 보기면 시군구 단위로 집계해서 표시
+      if (selectedSigunguCodes.size === 0 || state.filters.guUnit) {
         const bySigungu = new Map();
         for (const r of scoped) {
           const rowCode = normalizeDigits(r?.code || r?.label || "");
           if (rowCode.length < 5) continue;
+          // 시군구 집계 레코드(예: 4111100000)는 동 합계와 같으므로 더하면 두 배가 된다
+          if (rowCode.endsWith("00000")) continue;
           const sggCode = rowCode.slice(0, 5);
           const sggName = (state.sggNameByCode && state.sggNameByCode[sggCode]) || sggCode;
 
@@ -1499,6 +1509,11 @@
       if (codes.length === 1) {
         const code = String(codes[0]);
         return (state.sggNameByCode && state.sggNameByCode[code]) || code;
+      }
+      const city = state.cityByGuCode[codes[0]];
+      if (city && getCityGuCodes(city.cityCode).length === codes.length
+          && codes.every((c) => state.cityByGuCode[c]?.cityCode === city.cityCode)) {
+        return city.cityName;
       }
       return "선택 시군구";
     }
@@ -2270,7 +2285,40 @@
     }
 
     function getSggName(sggCode, props) {
+      if (state.cityByGuCode[sggCode]) return state.sggNameByCode[sggCode];
       return props?.sggnm || (state.sggNameByCode && state.sggNameByCode[sggCode]) || sggCode || "기타";
+    }
+
+    function getCityGuCodes(cityCode) {
+      return Object.keys(state.cityByGuCode).filter((c) => state.cityByGuCode[c].cityCode === cityCode);
+    }
+
+    // 구가 있는 시 찾기: 끝자리 0 인 상위 코드가 통계에만 있고(경계 없음) 자기 경계가 있는 시군구가 구다
+    function buildCityByGuCode(sigCodes, admItems) {
+      const out = {};
+      const lastToken = (name) => String(name || "").trim().split(/\s+/).pop();
+      for (const code of sigCodes) {
+        if (code.endsWith("0")) continue;
+        const cityCode = code.slice(0, 4) + "0";
+        const cityItem = admItems[cityCode + "00000"];
+        const guItem = admItems[code + "00000"];
+        if (!cityItem || !guItem || sigCodes.has(cityCode)) continue;
+        out[code] = { cityCode, cityName: lastToken(cityItem.name), guName: lastToken(guItem.name) };
+      }
+      return out;
+    }
+
+    // 동 이름 -> 구별 통계 코드 (SPLIT_CITY_SIG_CODES 의 시만)
+    function buildSplitCityCodeIndex(populationItems) {
+      const out = new Map();
+      for (const key of Object.keys(populationItems || {})) {
+        const d = normalizeDigits(key);
+        if (!SPLIT_CITY_SIG_CODES.has(d.slice(0, 4) + "0")) continue;
+        // 시도·시·구·동 순서. 읍면 아래 리 단위 이름은 읍면 이름으로 찾는다
+        const dongName = String(populationItems[key]?.name || "").trim().split(/\s+/)[3];
+        if (dongName && !out.has(dongName)) out.set(dongName, key);
+      }
+      return out;
     }
 
     function geometryToPathSets(geometry) {
@@ -2346,6 +2394,12 @@
             }
           }
         }
+        const admData = await loadModeData(MODE.ADM);
+        state.cityByGuCode = buildCityByGuCode(new Set(Object.keys(geoMap)), admData.populationItems);
+        // 구 이름 표기를 "수원시 장안구" 로 통일
+        for (const [code, city] of Object.entries(state.cityByGuCode)) {
+          out[code] = `${city.cityName} ${city.guName}`;
+        }
       } catch (_) {
         // no-op: fallback to codes only
       }
@@ -2380,13 +2434,18 @@
 
     function buildRows(mode, data) {
       if (data.rows) return data.rows;
+      const splitIndex = buildSplitCityCodeIndex(data.populationItems);
       data.rows = data.features.map((feature) => {
         const props = feature?.properties || {};
-        const code = getAreaCode(mode, props);
+        let code = getAreaCode(mode, props);
+        const splitCode = code && SPLIT_CITY_SIG_CODES.has(code.slice(0, 5))
+          ? splitIndex.get(getAreaName(mode, props, null))
+          : null;
+        if (splitCode) code = splitCode;
         const popItem = code ? data.populationItems[code] : null;
         const totalPopulation = Number(popItem?.totalPopulation);
         const sidoCode = getSidoCode(mode, props, code);
-        const sigunguCode = getSggCode(mode, props, code);
+        const sigunguCode = splitCode ? splitCode.slice(0, 5) : getSggCode(mode, props, code);
         return {
           feature,
           code,
@@ -2487,8 +2546,14 @@
       const selected = state.filters.sigunguCodes;
       if (!selected || selected.size === 0) {
         textEl.textContent = "전체";
+        state.filters.guUnit = false;
       } else {
         textEl.textContent = `${selected.size}개 선택`;
+      }
+      const guUnitCb = document.getElementById("guUnitCheckbox");
+      if (guUnitCb) {
+        guUnitCb.disabled = !selected || selected.size === 0;
+        guUnitCb.checked = !!state.filters.guUnit;
       }
     }
 
@@ -2524,10 +2589,24 @@
         </label>
       `;
 
+      const seenCities = new Set();
       const html = list.map(([code, name]) => {
         const checked = !allChecked && selected.has(code) ? "checked" : "";
-        return `
+        const city = state.cityByGuCode[code];
+        let cityHtml = "";
+        if (city && !seenCities.has(city.cityCode)) {
+          seenCities.add(city.cityCode);
+          const guCodes = getCityGuCodes(city.cityCode);
+          const cityChecked = !allChecked && guCodes.every((c) => selected.has(c)) ? "checked" : "";
+          cityHtml = `
           <label class="sigungu-option">
+            <input type="checkbox" data-city-code="${escapeHtml(city.cityCode)}" ${cityChecked}>
+            <span>${escapeHtml(city.cityName)} (구별 비교)</span>
+          </label>
+        `;
+        }
+        return cityHtml + `
+          <label class="sigungu-option"${city ? ' style="padding-left:22px"' : ""}>
             <input type="checkbox" data-sigungu-code="${escapeHtml(code)}" ${checked}>
             <span>${escapeHtml(name)}</span>
           </label>
@@ -3049,6 +3128,7 @@
     // 시도 전체 선택 시 시군구 단위 렌더링 (동 단위보다 가벼움)
     async function drawSigunguLevel(mode, rows, shouldMove, populationItems = {}) {
       const selectedSidoCode = state.filters.sidoCode;
+      const selectedSigunguCodes = state.filters.sigunguCodes || new Set();
       const activeSidoCodes = getActiveSidoCodes();
       const geoMap = state.sggGeometryByCode || {};
       const nameMap = state.sggNameByCode || {};
@@ -3112,6 +3192,13 @@
           households,
           sidoCode: prev.sidoCode || sggCode.slice(0, 2)
         });
+      }
+
+      // 경계 없는 상위 시 레코드(수원시 전체 등)는 색 구간과 개수에서 뺀다. 구 단위 보기는 선택한 구만
+      for (const sggCode of Array.from(sggPopMap.keys())) {
+        const notDrawn = !geoMap[sggCode];
+        const notSelected = selectedSigunguCodes.size > 0 && !selectedSigunguCodes.has(sggCode);
+        if (notDrawn || notSelected) sggPopMap.delete(sggCode);
       }
 
       if (sggPopMap.size === 0) {
@@ -3204,7 +3291,8 @@
       }
 
       const sidoName = getSidoFilterLabel(selectedSidoCode);
-      setStatus(`시군구 단위 표시: ${sggPopMap.size}개 (${sidoName} 전체)`);
+      const scopeLabel = selectedSigunguCodes.size > 0 ? getCurrentSigunguDisplayName() : `${sidoName} 전체`;
+      setStatus(`시군구 단위 표시: ${sggPopMap.size}개 (${scopeLabel})`);
       setInfoPanel(null);
       updateLabelPlacement();
     }
@@ -3233,9 +3321,10 @@
           return;
         }
 
-        // 시도 선택 + 시군구 전체 = 시군구 단위로 렌더링 (가볍게)
-        const isAllSigungu = state.filters.sidoCode && (!state.filters.sigunguCodes || state.filters.sigunguCodes.size === 0);
-        if (isAllSigungu) {
+        // 시도 선택 + 시군구 전체 또는 구 단위 보기 = 시군구 단위로 렌더링 (가볍게)
+        const isSigunguUnit = state.filters.sidoCode
+          && (!state.filters.sigunguCodes || state.filters.sigunguCodes.size === 0 || state.filters.guUnit);
+        if (isSigunguUnit) {
           await drawSigunguLevel(mode, rows, shouldMove, data.populationItems || {});
           return;
         }
@@ -3460,6 +3549,7 @@
         sidoSelect.addEventListener("change", async (e) => {
           state.filters.sidoCode = (e.target?.value || "").trim();
           state.filters.sigunguCodes = new Set();
+          state.filters.guUnit = false;
           const data = await loadModeData(state.mode);
           const rows = buildRows(state.mode, data);
           await updateSigunguFilter(rows);
@@ -3481,6 +3571,19 @@
         sigunguPanel.addEventListener("change", async (e) => {
           const checkbox = e.target;
           if (!checkbox || checkbox.tagName !== "INPUT") return;
+          const cityCode = String(checkbox.getAttribute("data-city-code") || "").trim();
+          if (cityCode) {
+            // 시 묶음: 그 시의 구를 한꺼번에 고르고 구 단위로 비교한다
+            for (const guCode of getCityGuCodes(cityCode)) {
+              if (checkbox.checked) state.filters.sigunguCodes.add(guCode);
+              else state.filters.sigunguCodes.delete(guCode);
+            }
+            if (checkbox.checked) state.filters.guUnit = true;
+            resetUserLabelScaleToAuto();
+            updateSigunguDisplayText();
+            await drawMode(state.mode, { moveMap: state.filters.sigunguCodes.size > 0 });
+            return;
+          }
           const code = String(checkbox.getAttribute("data-sigungu-code") || "").trim();
           if (!code) return;
 
@@ -3510,6 +3613,15 @@
         if (!sigunguWrapper) return;
         if (!sigunguWrapper.contains(e.target)) setSigunguPanelOpen(false);
       });
+
+      const guUnitCheckbox = document.getElementById("guUnitCheckbox");
+      if (guUnitCheckbox) {
+        guUnitCheckbox.addEventListener("change", async () => {
+          state.filters.guUnit = guUnitCheckbox.checked;
+          resetUserLabelScaleToAuto();
+          await drawMode(state.mode, { moveMap: true });
+        });
+      }
 
       if (sigunguWrapper) {
         // 초기 상태
