@@ -1386,9 +1386,12 @@
         left: 50%;
         top: 50%;
         transform: translate(-50%, -50%);
+        width: max-content; /* 옮겨도 폭이 그대로 — 없으면 left 가 커질수록 화면 오른쪽 남은 폭만큼 창이 줄어든다 */
       }
       #gnCmpPop[hidden] { display: none; }
       #gnCmpPop .gn-cmp { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35); }
+      #gnCmpPop .gn-cmp-h { cursor: move; user-select: none; touch-action: none; } /* 머리 줄을 끌어 창을 옮긴다 */
+      #gnCmpPop .gn-cmp-h :is(input, select, button) { cursor: pointer; }
       #gnCmpPop .gn-cmp-b { max-height: calc(100vh - 80px); }
       :is(#gnPanel, #gnCmpPop) .gn-cmp-h {
         /* 머리 줄은 표 폭을 넓히지 않는다(width 0 + min-width 100%) — 표가 좁으면(지점 1개 등) 줄바꿈 */
@@ -26041,6 +26044,30 @@ const originalBase64 = event.target.result;
           cmpBuild(box, [{ s: cmpPopSel, i: -1 }]);
           cmpSize(box);
         }
+        // 창 위치 — 머리 줄이 화면 밖으로 나가 다시 못 잡는 일이 없게 가둔다(좌우는 80px 남기고, 위아래는 머리 줄 전체)
+        function cmpPopPlace(x, y) {
+          const head = cmpPop.querySelector(".gn-cmp-h");
+          cmpPop.style.left = Math.max(80 - cmpPop.offsetWidth, Math.min(window.innerWidth - 80, x)) + "px";
+          cmpPop.style.top = Math.max(0, Math.min(window.innerHeight - head.offsetHeight, y)) + "px";
+        }
+        // 머리 줄을 끌어 창을 옮긴다(2026-11-02 사용자 지정). 날짜·시각·단추는 제외. 옮긴 위치는 창을 다시 열어도 유지.
+        function cmpPopDrag(head) {
+          let d = null;
+          head.addEventListener("pointerdown", (e) => {
+            if (e.button !== 0 || e.target.closest("input, select, button")) return;
+            const r = cmpPop.getBoundingClientRect();
+            d = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top };
+            cmpPop.style.transform = "none"; // 가운데 정렬(translate) 을 풀고 left·top 으로만 옮긴다
+            cmpPopPlace(r.left, r.top);
+            head.setPointerCapture(e.pointerId);
+          });
+          head.addEventListener("pointermove", (e) => {
+            if (d && e.pointerId === d.id) cmpPopPlace(e.clientX - d.dx, e.clientY - d.dy);
+          });
+          const end = (e) => { if (d && e.pointerId === d.id) d = null; };
+          head.addEventListener("pointerup", end);
+          head.addEventListener("pointercancel", end);
+        }
         window.__gnCmpShow = function (apartmentId) {
           const a = (apartmentData || []).find((x) => String(x.id) === String(apartmentId));
           if (!a || !isFinite(+a.lat) || !isFinite(+a.lng)) return;
@@ -26054,6 +26081,7 @@ const originalBase64 = event.target.result;
             const box = cmpPop.querySelector(".gn-cmp");
             cmpSetup(box, cmpPopRender, false);
             box.querySelector(".gn-cmp-close").addEventListener("click", cmpPopClose);
+            cmpPopDrag(box.querySelector(".gn-cmp-h"));
             // 창 바깥을 누르면 창만 닫는다(모달은 __outsideCloseBlocked 가 이번엔 안 닫는다)
             document.addEventListener("pointerdown", (e) => {
               if (cmpPop && !cmpPop.hidden && !cmpPop.contains(e.target)) cmpPopClose();
@@ -26063,6 +26091,8 @@ const originalBase64 = event.target.result;
           cmpPopSel = { id: a.id, name: a.name, lat: +a.lat, lng: +a.lng };
           cmpPop.hidden = false;
           cmpPopRender();
+          // 옮겨 둔 창은 그 자리에 다시 연다 — 그사이 브라우저 창이 줄었으면 화면 안으로 되돌린다
+          if (cmpPop.style.left) cmpPopPlace(parseFloat(cmpPop.style.left), parseFloat(cmpPop.style.top));
         };
         // 표 몸통 높이 = 지도 아래 끝까지(카드·요약 줄 아래 남는 만큼)
         function cmpFit() {
