@@ -216,6 +216,7 @@ body.reordering, body.reordering * { cursor: grabbing !important; user-select: n
 .tl .seg button { border: 0; border-radius: 999px; padding: 2px 11px; background: transparent; }
 .tl .seg button.on { background: var(--ink); color: var(--card); }
 .tl-b { flex: 1; overflow: auto; }
+.tl-more { display: block; width: 100%; padding: 10px; border: 0; background: transparent; color: var(--sub); font-size: 12px; cursor: pointer; }
 .tl-g { position: sticky; top: 0; z-index: 1; display: flex; align-items: baseline; gap: 10px; padding: 6px 14px; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 12px; }
 .tl-g b { font-size: 13px; }
 .tl-g span { color: var(--sub); }
@@ -1683,7 +1684,10 @@ function bindDrag(p, canvas) {
 // 묶음의 단지를 위 탭으로 고르고, 면적(전체/전용별)·매매/전세·연도로 거른다. 달별로 묶고 그때까지의 매매 최고가를 넘은 거래에 '최고가'.
 // 직거래·갱신·취소 거르기는 머리 설정(직거래 제외·전세 갱신 제외·취소 거래 포함)을 그대로 따른다.
 const won = v => { const e = Math.floor(v / 1e4), r = Math.round(v % 1e4); return e ? `${e}억${r ? ' ' + r.toLocaleString() : ''}` : r.toLocaleString(); };
-const tl = { p: null, i: 0, ar: null, t: null, k: 'all', year: '' };   // t = 구조(타입) 키 — 면적 선택에서 타입까지 고르면
+// 홍부 [실거래] 탭의 종류(전체·매매·전세)는 기본 매매, 이후는 마지막에 고른 값(2026-11-03 사용자). 단지 비교의 거래 내역 창은 그대로 전체로 시작
+const TL_KIND_KEY = 'siseCompare_tradeKind';
+const tlKindInit = () => { if (!TONLY) return 'all'; let v = null; try { v = localStorage.getItem(TL_KIND_KEY); } catch (e) {} return ['all', 'S', 'J'].includes(v) ? v : 'S'; };
+const tl = { p: null, i: 0, ar: null, t: null, k: tlKindInit(), year: '' };   // t = 구조(타입) 키 — 면적 선택에서 타입까지 고르면
 // 거래 내역은 차트에 보이는 단지만(2026-10-29 사용자 "숨기기 된 단지는 제외")
 const tlItems = p => p.items.filter(x => x.cid && x.ar != null && !x.hidden);
 // 색 점·전체 선택/해제로 보이기가 바뀌면 열린 거래 내역을 맞춘다 — 보던 단지가 남아 있으면 그대로, 없으면 첫 단지, 하나도 없으면 닫는다
@@ -1751,8 +1755,15 @@ async function drawTradeList() {
   const byYm = new Map();
   for (const t of shown) { const k = t[0].slice(0, 7), o = byYm.get(k) || { S: [], J: [] }; if (!t[10]) o[t[4]].push(t[2]); byYm.set(k, o); }
   const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
-  let lastYm = '', body = '';
-  for (const t of shown.slice(0, 1500)) {
+  // 처음엔 직전 2년치(2년 전 같은 달 1일부터)만 그린다(2026-11-03 사용자 "실거래가 많으면 모바일이 느려진다") — 느린 건 줄 수천 개를 그리는 일이라 그리기를 나눈다.
+  // 데이터는 통째로 받아 둔다(가장 큰 단지도 압축 124KB, 11-03 실측): 매매·전세 최고, 신고가, 연도 목록이 전체 이력으로 계산되기 때문이다.
+  // 나머지는 스크롤·[더 보기]로 한 해씩, 연도를 고르면 그 해 전부. 2년 안에 거래가 없으면 가장 최근 해부터.
+  const now = new Date(), cutDate = `${now.getFullYear() - 2}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  let lastYm = '', pos = 0;
+  const takeTo = end => { const list = shown.slice(pos, end); pos = end; return rowsHtml(list); };
+  const yearEnd = () => { const y = shown[pos][0].slice(0, 4), i = shown.findIndex((t, j) => j >= pos && !t[0].startsWith(y)); return i < 0 ? shown.length : i; };
+  const firstEnd = () => { if (tl.year || !shown.length) return shown.length; const i = shown.findIndex(t => t[0] < cutDate); return i < 0 ? shown.length : i || yearEnd(); };
+  const rowsHtml = list => { let body = ''; for (const t of list) {
     const [date, a, price, floor, kind, , silv, direct, renew, , cancel, dong] = t, ym = date.slice(0, 7);
     if (ym !== lastYm) {
       const o = byYm.get(ym);
@@ -1767,7 +1778,8 @@ async function drawTradeList() {
     body += `<div class="tl-r${cancel ? ' cx' : ''}"><div class="dd2">${+date.slice(8, 10)}<small>일</small></div>
       <div class="mid"><div><span class="kd ${kind === 'S' ? 's' : 'j'}">${kind === 'S' ? '매매' : '전세'}</span><b class="pv">${pr(price)}</b>${chips}</div></div>
       <div class="meta">${meta}</div></div>`;   // 직전 대비 증감은 빼고 그 자리(오른쪽)에 면적·동·층(2026-10-29 사용자 요청)
-  }
+  } return body; };
+  const body = takeTo(firstEnd());
   const tab = (on, attr, txt) => `<button class="${on ? 'on' : ''}" ${attr}>${txt}</button>`;
   const opt = (v, txt, on) => `<option value="${v}" ${on ? 'selected' : ''}>${txt}</option>`;
   // 면적 선택에 구조 — 타입이 하나면 그 줄에 붙이고, 둘 이상이면 '전용 N 전체' 아래에 타입별 줄
@@ -1784,14 +1796,23 @@ async function drawTradeList() {
       <button class="tl-x" title="닫기">✕</button></div>
     <div class="tl-sum"><div><small>매매 최고</small><b class="s">${mS ? pr(mS[2]) : '—'}</b><span>${mS ? ymTxt(mS[0]) : ''}</span></div>
       <div><small>전세 최고</small><b class="j">${mJ ? pr(mJ[2]) : '—'}</b><span>${mJ ? ymTxt(mJ[0]) : ''}</span></div>
-      <div><small>보이는 거래</small><b>${shown.length.toLocaleString()}건</b><span>${shown.length > 1500 ? '1,500건까지 표시' : ''}</span></div></div>
+      <div><small>보이는 거래</small><b>${shown.length.toLocaleString()}건</b><span></span></div></div>
     <div class="tl-f"><span class="seg">${tab(tl.k === 'all', 'data-k="all"', '전체')}${tab(tl.k === 'S', 'data-k="S"', '매매')}${tab(tl.k === 'J', 'data-k="J"', '전세')}</span>
       <select class="tl-ar">${opt('sel', `${TONLY ? '기본' : '고른'} 평형 ${esc(it.ar + '㎡' + (it.tn ? ' ' + it.tn : ''))}`, tl.ar === 'sel')}${opt('', '모든 면적', tl.ar == null)}${arOpts}</select>
       <select class="tl-y">${opt('', '전체 연도', !tl.year)}${years.map(y => opt(y, y + '년', y === tl.year)).join('')}</select></div>
-    <div class="tl-b">${body || '<div class="none" style="padding:16px">거래 없음</div>'}</div>`;
+    <div class="tl-b">${body || '<div class="none" style="padding:16px">거래 없음</div>'}<button class="tl-more"></button></div>`;
+  const listEl = box.querySelector('.tl-b'), moreEl = box.querySelector('.tl-more');
+  const syncMore = () => { moreEl.style.display = pos < shown.length ? '' : 'none'; if (pos < shown.length) moreEl.textContent = `▼ ${shown[pos][0].slice(0, 4)}년 거래 더 보기`; };
+  const loadMore = () => { if (pos >= shown.length) return; moreEl.insertAdjacentHTML('beforebegin', takeTo(yearEnd())); syncMore(); };
+  // 끝에서 300px 안으로 오면 다음 해. ⚠ 안 보이는 상태(높이 0)에서는 끝에 닿은 것으로 잡혀 전부 그려 버리므로 건너뛴다
+  const fillList = () => { while (listEl.clientHeight && pos < shown.length && listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 300) loadMore(); };
+  syncMore();
+  moreEl.onclick = loadMore;
+  listEl.onscroll = fillList;
+  fillList();
   box.querySelector('.tl-x').onclick = () => { $('#tl').style.display = 'none'; };
   box.querySelectorAll('[data-i]').forEach(b => b.onclick = () => { tl.i = +b.dataset.i; tl.ar = 'sel'; tl.t = null; tl.year = ''; drawTradeList(); });
-  box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { tl.k = b.dataset.k; drawTradeList(); });
+  box.querySelectorAll('[data-k]').forEach(b => b.onclick = () => { tl.k = b.dataset.k; if (TONLY) { try { localStorage.setItem(TL_KIND_KEY, tl.k); } catch (e) {} } drawTradeList(); });
   box.querySelector('.tl-ar').onchange = e => { const [v, k] = e.target.value.split('|'); tl.ar = v === 'sel' ? 'sel' : v === '' ? null : +v; tl.t = k || null; drawTradeList(); };
   box.querySelector('.tl-y').onchange = e => { tl.year = e.target.value; drawTradeList(); };
 }

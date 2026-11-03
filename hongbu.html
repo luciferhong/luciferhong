@@ -2510,6 +2510,21 @@
         color: #f4f5f7 !important;
         cursor: default !important;
       }
+      /* 평형 표 접기·펼치기 (2026-11-03) — 표시·글자는 __fitTypeTable 이 정한다 */
+      #typeFoldBtn {
+        width: 100%;
+        margin-top: 4px;
+        padding: 5px 6px;
+        border: 1px solid #cfcfcf;
+        border-radius: 5px;
+        background: #fff;
+        color: #4a4a48;
+        font: inherit;
+        font-size: 12px;
+        line-height: 1.3;
+        cursor: pointer;
+        touch-action: manipulation;
+      }
       /* 단지메모 복사 단추 — 매물임장 쪽(.lj-memo-copy)과 같은 모양 (2026-09-28) */
       #noteCopyBtn,
       #noteHistBtn {
@@ -10963,9 +10978,59 @@
 
       // 단지정보 메모 — 값을 코드로 채워 넣는 곳(loadNote·초기화)에서도 불러야 해 window 에 건다
       function __fitNoteText() {
-        __fitMemo(document.getElementById("noteText"));
+        const el = document.getElementById("noteText");
+        __fitMemo(el);
+        try { __fitTypeTable(el); } catch (e) { console.warn("[apt] 평형 표 접기 실패:", e); }
       }
       window.__fitNoteText = __fitNoteText;
+
+      // 평형 표 접기 (2026-11-03 사용자 "평형 표를 제외한 나머지는 필수로 스크롤 없이 한 화면에")
+      //   모달이 넘치는 동안 표 아래 줄부터 한 줄씩 숨긴다(위에서부터 순서대로 남긴다, 사용자 지정). 몇 줄이 들어갈지는 상수로 잡지 않고
+      //   실제 scrollHeight 로 잰다 — 메모 길이·사진·시세 상자·기기마다 다르다. 표를 다 숨겨도 넘치면 메모를 최소 2줄까지 줄인다.
+      //   [펼치기] 를 누른 단지는 스크롤을 감수하고 표 전체를 보여 준다(다른 단지를 열면 다시 접힌다).
+      let __typeTableOpenApt = null;
+      function __fitTypeTable(memo) {
+        const panel = document.getElementById("apartmentInfo");
+        const table = document.getElementById("aptTypeTable");
+        const btn = document.getElementById("typeFoldBtn");
+        const photoRow = document.getElementById("notePhotoRow");
+        // 다른 탭을 보는 중이면 잴 수 없다 — 단지정보로 돌아오면 사진 줄의 ResizeObserver 가 다시 부른다
+        if (!panel || !table || !btn || !memo || !photoRow?.getClientRects().length) return;
+        const rows = Array.from(table.rows).slice(1);
+        if (!rows.length) return;
+        const over = () => panel.scrollHeight - panel.clientHeight > 1;
+        table.style.display = "";
+        rows.forEach((r) => (r.style.display = ""));
+        btn.style.display = "none";
+        __fitMemo(memo);
+        if (!over()) return;
+        btn.style.display = "block";
+        if (__typeTableOpenApt === btn.dataset.apt) {
+          btn.textContent = "▲ 평형 표 접기";
+          return;
+        }
+        let hidden = 0;
+        for (let i = rows.length - 1; i >= 0 && over(); i--) {
+          rows[i].style.display = "none";
+          hidden++;
+        }
+        if (hidden === rows.length) table.style.display = "none"; // 머리 줄까지
+        const left = rows.length - hidden;
+        btn.textContent = left
+          ? `▼ 나머지 ${hidden}개 펼치기 (전체 ${rows.length}개)`
+          : `▼ 평형 표 펼치기 (${rows.length}개)`;
+        __fitMemo(memo); // 줄을 숨기고 남은 자투리는 메모가 먹는다(모바일)
+        const extra = panel.scrollHeight - panel.clientHeight;
+        if (extra > 1) {
+          const cs = getComputedStyle(memo);
+          let lh = parseFloat(cs.lineHeight);
+          if (!(lh > 0)) lh = (parseFloat(cs.fontSize) || 13) * 1.4;
+          const chrome = memo.offsetHeight - memo.clientHeight + (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+          const h = Math.max(Math.round(lh * __MEMO_LINES_MIN + chrome), memo.offsetHeight - Math.ceil(extra));
+          memo.style.height = h + "px";
+          memo.style.maxHeight = h + "px";
+        }
+      }
 
       // ⚠ 모달 안에는 **나중에 채워지는 칸**이 있다 — 사진 미리보기는 한 장씩 도착하고,
       //   시세 상자들도 비동기로 들어온다. 메모가 그 전에 여유를 다 가져가 버리면, 사진이
@@ -10984,7 +11049,7 @@
             try { __ljRefitMemos(); } catch (_) {}
           }, 80);
         });
-        for (const id of ["imagePreview", "sisePriceBox", "similarPriceBox", "similarPriceResultBox"]) {
+        for (const id of ["imagePreview", "sisePriceBox", "similarPriceBox", "similarPriceResultBox", "notePhotoRow"]) {
           const el = document.getElementById(id);
           if (el) { try { __lateBoxRO.observe(el); } catch (_) {} }
         }
@@ -11065,7 +11130,7 @@
             //   삐져나간다(2026-09-28 실측: 971 을 넣었는데 실제 993, 화면은 987).
             //   PC 분기가 이미 같은 이유로 여백을 빼고 있다.
             const cs = getComputedStyle(panel);
-            const chrome =
+            const chrome = cs.boxSizing === "border-box" ? 0 : // 실거래 탭(rt-active)은 border-box
               (parseFloat(cs.paddingTop) || 0) +
               (parseFloat(cs.paddingBottom) || 0) +
               (parseFloat(cs.borderTopWidth) || 0) +
@@ -11093,7 +11158,7 @@
         // 상하 패딩(14+14)·테두리만큼 실제 높이가 더 커져 지도 아래 버튼줄을 덮었다.
         // 폭(PC 400px, 표 8열 기준)을 건드리지 않으려고 box-sizing 대신 세로 여백만 빼서 맞춘다.
         const cs = getComputedStyle(panel);
-        const chrome =
+        const chrome = cs.boxSizing === "border-box" ? 0 : // 실거래 탭(rt-active)은 border-box
           (parseFloat(cs.paddingTop) || 0) +
           (parseFloat(cs.paddingBottom) || 0) +
           (parseFloat(cs.borderTopWidth) || 0) +
@@ -11471,7 +11536,7 @@
       ${apt.용적률 != null ? `<div><span style="color:#888">용적률 : </span>${apt.용적률}%</div>` : "<div></div>"}
       ${apt.주차대수 != null ? `<div><span style="color:#888">주차대수 : </span>${apt.주차대수}대</div>` : ""}
     </div>
-    <table style="width: 100%; border-collapse: collapse;">
+    <table id="aptTypeTable" style="width: 100%; border-collapse: collapse;">
       <tr>
         <th>공급평수</th>
         <th>공급㎡</th>
@@ -11499,6 +11564,7 @@
 
         infoHtml += `
     </table>
+    <button type="button" id="typeFoldBtn" data-apt="${apartmentId}" style="display: none;"></button>
     <div style="margin-top: 20px;">
       <label>메모:</label>
       <button type="button" id="noteCopyBtn" title="메모를 클립보드에 복사">📋 복사</button>
@@ -11512,7 +11578,7 @@
       </div>
       <div id="noteHistPreview" style="display: none; margin-top: 6px; padding: 6px 8px; max-height: 140px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.5; color: #333; background: #f6f7f9; border: 1px solid #e2e5ea; border-radius: 4px;"></div>
       <div id="imagePreview" style="margin-top: 10px; display: none;"></div>
-      <div style="display: flex; gap: 15px; align-items: center; margin-top: 10px;">
+      <div id="notePhotoRow" style="display: flex; gap: 15px; align-items: center; margin-top: 10px;">
 
         <label style="cursor: pointer; background: white; color: black; padding: 8px 4px; border-radius: 4px;">
           📷 사진 촬영
@@ -11598,6 +11664,14 @@
             });
           };
         }
+        const typeFoldBtn = document.getElementById("typeFoldBtn");
+        if (typeFoldBtn) {
+          typeFoldBtn.onclick = (e) => {
+            e.stopPropagation();
+            __typeTableOpenApt = __typeTableOpenApt === typeFoldBtn.dataset.apt ? null : typeFoldBtn.dataset.apt;
+            __fitNoteText();
+          };
+        }
         const noteTextEl = document.getElementById("noteText");
         if (noteTextEl) {
           // 글 길이에 맞춰 칸을 줄인다 (2026-09-28 사용자 요청 — rows=4 로 못 박혀 있어
@@ -11627,6 +11701,7 @@
           try { __ljMountTabButton(apartmentId); } catch (e) { console.warn("[lj] 탭 버튼 주입 실패:", e); }
           // 📋 실거래 탭 — 매물임장 뒤에 붙여야 탭 줄에서 매물임장 앞(단지정보·시세이력 다음)에 끼울 수 있다
           try { __rtMountTab(apartmentId); } catch (e) { console.warn("[rt] 실거래 탭 주입 실패:", e); }
+          __fitNoteText(); // 탭 줄이 생긴 만큼 평형 표를 다시 맞춘다
         }, 0);
 
         setTimeout(() => {
@@ -29215,6 +29290,10 @@ const originalBase64 = event.target.result;
    height:100dvh 는 도킹이면 인라인 height 에, 가운데 모달이면 인라인 max-height 에 눌려 실제 모달 높이가 된다 */
 #apartmentInfo.rt-active{display:flex !important;flex-direction:column;height:100vh;height:100dvh}
 #apartmentInfo.rt-active > *{flex:0 0 auto}
+/* 표를 모달 끝까지 붙인다(2026-11-03 사용자 "스크롤 오른쪽 여유공간 없이") — 모달 패딩과 PC 의 scrollbar-gutter 가 표의 오른쪽을 비우고 있었다. 탭 줄만 안쪽 여백을 갖는다 */
+#apartmentInfo.rt-active{padding:0;scrollbar-gutter:auto}
+#apartmentInfo.rt-active #__siseTabBar{padding:8px;margin:0}
+#apartmentInfo.rt-active #rtSoloRow,#apartmentInfo.rt-active #ljSoloRow{margin:8px 8px 0 !important}
 #apartmentInfo.rt-active #__siseTab1{display:flex !important;flex-direction:column;flex:1 1 auto;min-height:0}
 #apartmentInfo.rt-active #rtTab{position:relative;flex:1 1 auto;min-height:380px}
 #rtTab iframe{position:absolute;inset:0;display:block;width:100%;height:100%;border:0;background:#fffdf8}
@@ -29244,6 +29323,7 @@ const originalBase64 = event.target.result;
           __rtState.active = true; // 아래에서 남의 단추를 끄는 것이 관찰자에 걸려도 꺼지지 않게 먼저
           tabs?.querySelectorAll("button").forEach((b) => { b.classList.toggle("active", b === btn && !!bar); b.classList.toggle("on", b === btn && !bar); });
           infoDiv.classList.add("rt-active");
+          __dockApartmentPanel(); // 패딩·box-sizing 이 바뀌어 인라인 높이를 다시 잡아야 한다
           if (!panel.querySelector("iframe")) {
             const fr = document.createElement("iframe");
             fr.title = "실거래";
@@ -29253,6 +29333,7 @@ const originalBase64 = event.target.result;
         } else {
           __rtState.active = false;
           infoDiv.classList.remove("rt-active");
+          __dockApartmentPanel();
           btn.classList.remove("active", "on");
           if (!bar) infoDiv.querySelector("#ljSoloInfo, #rtSoloInfo")?.classList.toggle("on", !window.__ljState?.active);
         }
