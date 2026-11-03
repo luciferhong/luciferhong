@@ -9291,6 +9291,21 @@
       //   포개진다. 지금 지도에 떠 있는 학교 마커를 화면 픽셀로 비교해 상자가 겹치는 것끼리 묶고, 위도가 다르면 위아래로
       //   쌓고 완전히 같으면 좌우로 펼친다(마커 anchor 만 바꾼다 — 좌표·데이터는 그대로). 확대해서 떨어지면 저절로 제자리.
       //   세 update*SchoolMarkers 의 모든 출구에서 부른다(층을 끄면 남은 마커가 제자리로 돌아와야 하므로).
+      // 학교·환경 마커는 화면보다 조금 넓은 범위까지 미리 붙인다 (2026-11-03 사용자 "지도를 움직이면 초중환경 마커가 떨리고 버벅인다").
+      //   딱 화면 범위로 자르면 끌어 오는 동안 가장자리 마커가 비어 있다가 멈추는 순간 툭 생기고, 환경 마커는 겹침 풀기에
+      //   들어가는 이웃이 매번 달라져 자리가 바뀐다(떨림). ratio = 위아래·좌우 각각 화면 크기의 몇 배를 더 붙일지.
+      function __padBounds(b, ratio) {
+        const sw = b.getSW(), ne = b.getNE();
+        const dLat = (ne.lat() - sw.lat()) * ratio, dLng = (ne.lng() - sw.lng()) * ratio;
+        return new naver.maps.LatLngBounds(
+          new naver.maps.LatLng(sw.lat() - dLat, sw.lng() - dLng),
+          new naver.maps.LatLng(ne.lat() + dLat, ne.lng() + dLng));
+      }
+      // 이미 붙어 있는 마커에 setMap 을 또 부르지 않는다 — idle 마다 화면의 학교 마커 전부를 다시 붙이지 않게
+      function __mkShow(marker, on) {
+        const want = on ? window.map : null;
+        if (marker.getMap() !== want) marker.setMap(want);
+      }
       const _SCHOOL_MK_KIND_ORDER = { e: 0, m: 1, h: 2 };
       let _schoolMkLayoutTimer = null;
       function __scheduleSchoolMkLayout() {
@@ -9411,12 +9426,12 @@
           __scheduleSchoolMkLayout();
           return;
         }
-        const bounds = window.map.getBounds();
+        const bounds = __padBounds(window.map.getBounds(), 0.3);
         if (selectedSigunguSet.size > 0) {
           if (!window.__schoolMarkerPool) { await rebuildSchoolPool(); }
           window.__schoolMarkerPool.forEach(({ marker, lat, lng, school, detailBtn }) => {
             const visible = bounds.hasLatLng(new naver.maps.LatLng(lat, lng));
-            marker.setMap(visible ? window.map : null);
+            __mkShow(marker, visible);
             if (visible && activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school))
               setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
           });
@@ -9432,10 +9447,10 @@
             toShow.push(window.__schoolMarkerCache.get(key));
           }
           toShow.forEach(({ marker, school, detailBtn }) => {
-            marker.setMap(window.map);
+            __mkShow(marker, true);
             if (activeSchoolZoneId && activeSchoolZoneId === _getSchoolZoneId(school)) setActiveSchoolDetailButton(detailBtn, activeSchoolZoneId);
           });
-          window.__schoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+          window.__schoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) __mkShow(entry.marker, false); });
         }
         __scheduleSchoolMkLayout();
       }
@@ -10668,6 +10683,12 @@
           //   남으므로 현재 탭 이동(앱 설치 시 iOS가 가로채 지도 탭 보존).
           if (window.__forcePc || (window.matchMedia && window.matchMedia("(pointer: fine)").matches)) {
             window.open(url, "_blank", "noopener");
+          } else if (/Android/i.test(navigator.userAgent)) {
+            // 안드로이드: 앱이 이미 켜져 있으면 https 링크를 받아도 이전 단지 화면에 머문다 (2026-11-03 사용자 보고).
+            //   intent 링크로 앱을 새로 띄운다 — launchFlags 0x10008000 = NEW_TASK | CLEAR_TASK. 앱이 없으면 웹으로.
+            location.href =
+              `intent://hogangnono.com/apt/${h}/0/0/review#Intent;scheme=https;package=com.hogangnono.hogangnono;` +
+              `launchFlags=0x10008000;S.browser_fallback_url=${encodeURIComponent(url)};end`;
           } else {
             location.href = url;
           }
@@ -12206,11 +12227,11 @@ const originalBase64 = event.target.result;
           __scheduleSchoolMkLayout();
           return;
         }
-        const bounds = window.map.getBounds();
+        const bounds = __padBounds(window.map.getBounds(), 0.3);
         if (selectedSigunguSet.size > 0) {
           if (!window.__middleSchoolMarkerPool) { await rebuildMiddleSchoolPool(); }
           window.__middleSchoolMarkerPool.forEach(({ marker, lat, lng }) => {
-            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+            __mkShow(marker, bounds.hasLatLng(new naver.maps.LatLng(lat, lng)));
           });
         } else {
           if (!window.__middleSchoolMarkerCache) window.__middleSchoolMarkerCache = new Map();
@@ -12224,8 +12245,8 @@ const originalBase64 = event.target.result;
             if (!window.__middleSchoolMarkerCache.has(key)) window.__middleSchoolMarkerCache.set(key, _buildMiddleSchoolMarkerEntry(school));
             toShow.push(window.__middleSchoolMarkerCache.get(key));
           }
-          toShow.forEach(({ marker }) => marker.setMap(window.map));
-          window.__middleSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+          toShow.forEach(({ marker }) => __mkShow(marker, true));
+          window.__middleSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) __mkShow(entry.marker, false); });
         }
         __scheduleSchoolMkLayout();
       }
@@ -12407,11 +12428,11 @@ const originalBase64 = event.target.result;
           __scheduleSchoolMkLayout();
           return;
         }
-        const bounds = window.map.getBounds();
+        const bounds = __padBounds(window.map.getBounds(), 0.3);
         if (selectedSigunguSet.size > 0) {
           if (!window.__highSchoolMarkerPool) { await rebuildHighSchoolPool(); }
           window.__highSchoolMarkerPool.forEach(({ marker, lat, lng }) => {
-            marker.setMap(bounds.hasLatLng(new naver.maps.LatLng(lat, lng)) ? window.map : null);
+            __mkShow(marker, bounds.hasLatLng(new naver.maps.LatLng(lat, lng)));
           });
         } else {
           if (!window.__highSchoolMarkerCache) window.__highSchoolMarkerCache = new Map();
@@ -12426,8 +12447,8 @@ const originalBase64 = event.target.result;
             if (!window.__highSchoolMarkerCache.has(key)) window.__highSchoolMarkerCache.set(key, _buildHighSchoolMarkerEntry(school));
             toShow.push(window.__highSchoolMarkerCache.get(key));
           }
-          toShow.forEach(({ marker }) => marker.setMap(window.map));
-          window.__highSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+          toShow.forEach(({ marker }) => __mkShow(marker, true));
+          window.__highSchoolMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) __mkShow(entry.marker, false); });
         }
         __scheduleSchoolMkLayout();
       }
@@ -12971,7 +12992,15 @@ const originalBase64 = event.target.result;
         return { x0: cx - lw / 2, x1: cx + lw / 2, y0: I.y1, y1: I.y1 + lh };
       }
 
+      // 같은 줌·같은 마커 묶음이면 다시 풀지 않는다 — 결과는 마커끼리의 상대 위치로만 정해져 지도를 옮겨도 같다.
+      //   예전엔 idle 마다 다시 풀어 계산이 무겁고(최대 150회 반복 + 격자 탐색), 반올림 1px 차로 마커가 떨렸다(2026-11-03).
+      //   이름표 폭도 넣는다 — 처음 붙는 순간엔 0 이라 어림값으로 풀기 때문에, 실제 폭이 잡히면 한 번 더 풀어야 한다.
+      //   표시는 마커마다 남긴다(e.decSig) — 보관함을 새로 만들면 좌표가 같아도 새 마커는 아직 안 풀린 상태다.
       function _declutterFacilityMarkers(entries) {
+        const sig = window.map.getZoom() + "|" +
+          entries.map((e) => `${e.lat},${e.lng},${(e.el.lastChild && e.el.lastChild.offsetWidth) || 0}`).sort().join(";");
+        if (entries.every((e) => e.decSig === sig)) return;
+        entries.forEach((e) => { e.decSig = sig; });
         const proj = window.map.getProjection && window.map.getProjection();
         const reset = (e) => {
           __facLabelSide(e.el.lastChild, "below");
@@ -13260,13 +13289,14 @@ const originalBase64 = event.target.result;
           window.__facilityMarkerCache?.forEach(({ marker }) => marker.setMap(null));
           return;
         }
-        const bounds = window.map.getBounds();
+        // 시설은 수가 적어 넉넉히(화면 크기의 반씩 더) — 겹침 풀기 이웃이 화면 가장자리에서 끊기지 않게
+        const bounds = __padBounds(window.map.getBounds(), 0.5);
         if (selectedSigunguSet.size > 0) {
           if (!window.__facilityMarkerPool) { await rebuildFacilityPool(); }
           const shown = [];
           window.__facilityMarkerPool.forEach((entry) => {
             const on = __facShow(entry.f) && bounds.hasLatLng(new naver.maps.LatLng(entry.lat, entry.lng));
-            entry.marker.setMap(on ? window.map : null);
+            __mkShow(entry.marker, on);
             if (on) shown.push(entry);
           });
           _declutterFacilityMarkers(shown);
@@ -13282,8 +13312,8 @@ const originalBase64 = event.target.result;
             if (!window.__facilityMarkerCache.has(key)) window.__facilityMarkerCache.set(key, _buildFacilityMarkerEntry(facility));
             toShow.push(window.__facilityMarkerCache.get(key));
           }
-          toShow.forEach(({ marker }) => marker.setMap(window.map));
-          window.__facilityMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) entry.marker.setMap(null); });
+          toShow.forEach(({ marker }) => __mkShow(marker, true));
+          window.__facilityMarkerCache.forEach((entry, key) => { if (!visibleKeys.has(key)) __mkShow(entry.marker, false); });
           _declutterFacilityMarkers(toShow);
         }
       }
