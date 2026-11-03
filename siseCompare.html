@@ -4,8 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>단지 비교</title>
+<script>
+// 실거래표만 보기(?trades=, 홍부 [실거래] 탭)는 자료부터 받기 시작한다(2026-11-03 사용자 "실거래 탭 로딩이 느리다") — 예전엔 글꼴 CSS·Chart.js 를
+// 다 받은 뒤에야 요청해 첫 열기가 0.2~0.6초(휴대폰 4G 흉내) 늦었다. loadData → fetchJson 이 같은 주소면 이 요청을 이어받는다.
+// 그 화면에 안 쓰는 Chart.js·명조 글꼴(Noto Serif KR, 에디토리얼 제목용)은 받지 않는다 — 단지 비교 본 화면은 예전 그대로 막는(blocking) 방식으로 넣는다.
+window.__preData = (() => {
+  const c = new URLSearchParams(location.search).get('trades');
+  if (!c) return null;
+  const base = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? 'http://127.0.0.1:7123' : 'https://sise-cloud.luciferhong.com';
+  const url = `${base}/pub/compare_data?complex_id=${c}`;
+  return { url, p: fetch(url) };
+})();
+if (!window.__preData) document.write('<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@700;900&display=swap">');
+</script>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@700;900&display=swap">
 <style>
 :root {
   --bg: #f4f5f7; --card: #fff; --ink: #1f2430; --sub: #6b7280; --line: #e3e6ea;
@@ -404,7 +416,7 @@ html.embed #hist { max-height: 320px; overflow: auto; }
 <div id="main"><div id="board"></div><aside id="hist"></aside></div>
 <div class="note">출처: 국토교통부 실거래가</div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>if (!window.__preData) document.write('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"><\/script>');</script>
 <script>
 // 페이지는 GitHub Pages, 데이터는 A1 서버의 공개 경로 /pub/compare_data(IP 당 분당 제한) — 2026-10-29 사용자 요청.
 // 로컬(localhost:8000 등)에서 열면 이 PC 의 시세 서버를 쓴다.
@@ -447,7 +459,7 @@ let SK, COLORS;
 function applySkin(k) {
   skin = k; SK = SKINS[k]; COLORS = SK.colors;
   document.documentElement.dataset.skin = k;
-  Chart.defaults.font.family = SK.font; Chart.defaults.color = SK.tick;
+  if (window.Chart) { Chart.defaults.font.family = SK.font; Chart.defaults.color = SK.tick; }   // 실거래표만 보기는 Chart.js 를 받지 않는다
   try { localStorage.setItem(SKIN_KEY, k); } catch (e) {}
 }
 applySkin(skin);
@@ -593,7 +605,9 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 const dataCache = new Map();
 function fetchJson(url, ms = 20000) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
-  return fetch(url, { signal: ac.signal }).then(r => {
+  const pre = window.__preData;   // 머리에서 미리 보낸 요청(실거래표만 보기) — 한 번만 쓴다
+  if (pre && pre.url === url) window.__preData = null;
+  return (pre && pre.url === url ? pre.p : fetch(url, { signal: ac.signal })).then(r => {
     if (r.status === 429) throw new Error('요청이 너무 잦습니다. 1분 뒤 다시 시도하세요.');
     if (!r.ok) throw new Error('서버 ' + r.status);
     return r.json();
@@ -928,12 +942,12 @@ const marksPlugin = {
     drawLegend();
   },
 };
-Chart.register(marksPlugin);
+if (window.Chart) Chart.register(marksPlugin);
 // 범례의 평형 글 — 건수는 빼고 구조를 한 글자로(계단식→계, 복도식→복, 복합식→합; 2026-10-29 사용자)
 const legUnit = it => (it.ul || `${it.ar}㎡`).replace(/ · [\d,]+건$/, '').replace(/계단식/g, '계').replace(/복도식/g, '복').replace(/복합식/g, '합');
 // 툴팁: 마우스에 가장 가까운 점의 달(일별 보기는 ±15일)에 있는 다른 단지 선의 점도 함께 보여 준다
 // (2026-10-29 사용자 "점에 마우스를 올리면 그 단지뿐 아니라 비교하는 단지 모두"). 개별 거래 점은 가까운 그 점만.
-Chart.Interaction.modes.sameMonth = (chart, e, options, useFinal) => {
+if (window.Chart) Chart.Interaction.modes.sameMonth = (chart, e, options, useFinal) => {
   const near = Chart.Interaction.modes.nearest(chart, e, { intersect: false, axis: 'xy' }, useFinal);
   if (!near.length) return [];
   const n0 = near[0], ds0 = chart.data.datasets[n0.datasetIndex];
