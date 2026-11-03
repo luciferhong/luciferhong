@@ -810,6 +810,7 @@ const marksPlugin = {
       // 기본 자리는 왼쪽 위. 표식·선·거래 점을 하나라도 가리면 네 귀퉁이 → 위·아래 줄의 중간 자리 순으로 안 가리는 곳을 찾고, 없으면 가장 적게 가리는 곳으로
       // (2026-11-02 사용자 "범례가 차트를 가린다" — 표식이 없는 차트에서 옮기지 않았고, 점 사이를 지나는 선은 세지 않았다)
       let x0 = ca.left + 6, y0 = ca.top + 6;
+      const y0s = y0;   // 위 줄 자리(y0 는 자리 찾기에서 바뀐다)
       const marks = SK.marks === 'bar' ? [] : (o.lines || []).filter(l => l.y != null).map(l => ({ px: x.getPixelForValue(l.x), py: y.getPixelForValue(l.y) })).filter(m => m.px >= ca.left && m.px <= ca.right);
       const covers = (bx, by) => marks.some(m => m.px >= bx - 6 && m.px <= bx + g.w + 6 && m.py >= by - 20 && m.py <= by + g.h + 20);
       const segs = [], dots = [];   // 픽셀 좌표. 점 하나뿐인 선도 잡히게 길이 0 선분으로 시작한다(값 없는 칸에선 선이 끊긴다)
@@ -846,6 +847,46 @@ const marksPlugin = {
           const sc = score(bx, by);
           if (sc < best) { best = sc; x0 = bx; y0 = by; }
           if (!sc) break;
+        }
+        // 선이 차트를 꽉 채워 빈 자리가 없으면 세로축을 위(또는 아래)로 늘려 범례 자리를 비운다(2026-11-03 사용자 "범례가 가리는 증상이 여전히").
+        // 자리마다 그 가로 구간의 최고(최저)값이 범례 아래(위)로 내려가게 하는 축 끝을 구해 가장 적게 늘리는 자리를 고른다. yBase = [가격선 아래 끝, 위 끝, 가격선이 쓰는 높이 비율]
+        if (best && o.yBase && (ch.$legTries || 0) < 3) {
+          const [lo0, hi0, P] = o.yBase, f = (g.h + 12) / (caH * P), vs = [];   // vs = 데이터 단위 선분 [ax, ay, bx, by]
+          ch.data.datasets.forEach((ds, i) => {
+            if (!ch.isDatasetVisible(i)) return;
+            let prev = null;
+            for (const pt of ds.data) {
+              if (!pt || pt.y == null) { prev = null; continue; }
+              vs.push(prev && ds.type === 'line' ? [prev.x, prev.y, pt.x, pt.y] : [pt.x, pt.y, pt.x, pt.y]);
+              prev = pt;
+            }
+          });
+          const span = (bx) => {   // 범례 가로 구간(둘레 3px 포함) 안 값의 [최저, 최고]
+            const xl = x.getValueForPixel(bx - 3), xr = x.getValueForPixel(bx + g.w + 3);
+            let mn = Infinity, mx = -Infinity;
+            for (const [ax, ay, bx2, by] of vs) {
+              if (bx2 < xl || ax > xr) continue;
+              for (const v of [Math.max(ax, xl), Math.min(bx2, xr)]) { const yv = bx2 === ax ? ay : ay + (by - ay) * (v - ax) / (bx2 - ax); mn = Math.min(mn, yv); mx = Math.max(mx, yv); }
+            }
+            return [mn, mx];
+          };
+          let pick = null;
+          if (f < 0.7) for (const [bx, by] of spots) {
+            const [mn, mx] = span(bx);
+            let lo = lo0, hi = hi0;
+            if (by === y0s) { if (mx > -Infinity) hi = Math.max(hi0, Math.ceil((mx - f * lo0) / (1 - f) / 5000) * 5000); }
+            else { if (o.vols) continue; if (mn < Infinity) lo = Math.min(lo0, Math.floor((mn - f * hi0) / (1 - f) / 5000) * 5000); if (lo < 0) continue; }
+            const cost = (hi - hi0) + (lo0 - lo);
+            if (!pick || cost < pick.cost) pick = { cost, lo, hi, bx, by };
+          }
+          if (pick) {
+            const lo = P < 1 ? pick.hi - (pick.hi - lo0) / P : pick.lo, sy = ch.options.scales.y;   // 거래량 막대를 켰으면 가격선 아래 끝(lo0)을 그대로 두고 막대 자리만큼 아래를 늘린다
+            x0 = pick.bx; y0 = pick.by;
+            if (sy.min !== lo || sy.max !== pick.hi) {
+              sy.min = lo; sy.max = pick.hi; ch.$legTries = (ch.$legTries || 0) + 1;
+              requestAnimationFrame(() => { if (ch.canvas) ch.update('none'); });
+            }
+          }
         }
       }
       legBox.push({ x1: x0, x2: x0 + g.w, y1: y0, y2: y0 + g.h });
@@ -1440,7 +1481,7 @@ function drawChart(p, el, ready, cfg) {
       plugins: {
         legend: { display: false },
         tooltip: { callbacks: { label: ctx => (ctx.dataset._tip ? ctx.dataset._tip(ctx.raw) : ''), title: () => '' } },
-        cmpMarks: { lines, bands, vols, legend: ready.map(r => ({ c: COLORS[r.i], name: withSgg(r.it, r.it.name || ''), unit: legUnit(r.it) })) },
+        cmpMarks: { lines, bands, vols, yBase: yLo != null ? [y2 ? y2._realLo : yLo, yHi, y2 ? 0.72 : 1] : null, legend: ready.map(r => ({ c: COLORS[r.i], name: withSgg(r.it, r.it.name || ''), unit: legUnit(r.it) })) },
       },
     },
   }));
