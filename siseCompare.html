@@ -1679,13 +1679,24 @@ function renderDrag(p) {
   const A = xToMi(dr.x1), B = xToMi(dr.x2), months = B - A, pts = [];
   const span = `${months >= 12 ? Math.floor(months / 12) + '년' : ''}${months % 12 ? ' ' + (months % 12) + '개월' : ''}`.trim() || '1개월 미만';
   const cntIn = map => { let n = 0; for (const [m, c] of map) if (m >= A && m <= B) n += c[1]; return n; };
+  // 끝점 값: 월평균 보기는 끈 자리의 달 평균(없으면 앞뒤 r개월 안 가까운 달), 일별 보기는 끈 경계에 가장 가까운 거래일의 그날 평균
+  // (2026-11-03 사용자 "일별이면 구간 범위에 가장 가까운 날짜") — 찾는 범위는 월평균과 같게 매매 3개월·전세 6개월
+  const day = state.cfg.view === 'day';
+  const endAt = (fn, list, x, mi, r) => {
+    if (!day) { const q = near(fn, mi, r); return q && { m: q.m, v: q.v, x: xOfMi(q.m) }; }
+    let b = null;
+    for (const pt of list) { const d = Math.abs(pt.x - x); if (d <= r / 12 && (!b || d < b.d)) b = { d, pt }; }
+    return b && { m: toMi(b.pt.date), v: b.pt.y, x: b.pt.x };
+  };
   const ms = ready.map(r => {
-    const c = COLORS[r.i], s1 = near(r.S.fS, A, 3), s2 = near(r.S.fS, B, 3), j1 = near(r.S.fJ, A, 6), j2 = near(r.S.fJ, B, 6);
-    if (s1) pts.push({ x: xOfMi(s1.m), y: s1.v, color: c });
-    if (s2) pts.push({ x: xOfMi(s2.m), y: s2.v, color: c });
+    const c = COLORS[r.i], s1 = endAt(r.S.fS, r.P.dayS, dr.x1, A, 3), s2 = endAt(r.S.fS, r.P.dayS, dr.x2, B, 3),
+      j1 = endAt(r.S.fJ, r.P.dayJ, dr.x1, A, 6), j2 = endAt(r.S.fJ, r.P.dayJ, dr.x2, B, 6);
+    if (s1) pts.push({ x: s1.x, y: s1.v, color: c });
+    if (s2) pts.push({ x: s2.x, y: s2.v, color: c });
     // 매매 연평균 수익률 = 전체 상승률 ÷ 연수(단순 평균, 복리 아님 — 2026-10-29 사용자 "복리 말고 단순 기간으로 나눠"),
-    // 연수 = 실제로 값을 잡은 두 달 사이 개월 ÷ 12
-    const g = s1 && s2 && s2.m > s1.m && s1.v > 0 ? (s2.v / s1.v - 1) * 100 / ((s2.m - s1.m) / 12) : null;
+    // 연수 = 실제로 값을 잡은 두 점 사이(월평균은 두 달 사이 개월 ÷ 12, 일별은 두 거래일 사이)
+    const yrs = s1 && s2 ? (day ? s2.x - s1.x : (s2.m - s1.m) / 12) : 0;
+    const g = yrs > 0 && s1.v > 0 ? (s2.v / s1.v - 1) * 100 / yrs : null;
     // 매매 회전율 = 구간 매매 거래량 ÷ 세대수 (2026-10-29 사용자 요청). 거래량이 그 평형(타입)만이라 분모도 그 평형 세대수
     // (네이버 평형 정보 types.hh). 평형 세대수를 모르면 단지 전체 세대수로 대신하고 "단지 기준" 표시.
     const nS = cntIn(r.P.S), types = (r.d.types || []);
