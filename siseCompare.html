@@ -609,7 +609,7 @@ window.cmpAdd = (cid, name, x, y) => {
   window.cmpHover(null);
   cid = String(cid);
   const p = panelAt(x, y);
-  if (p.items.some(it => String(it.cid) === cid)) return 'dup';
+  // 같은 단지도 다시 넣을 수 있다 — 평형이 다르면 따로 비교(2026-11-04 사용자). 새 줄은 fillUnits 가 아직 안 고른 평형으로 잡는다.
   let i = p.items.findIndex(it => !it.cid);
   if (i < 0) { if (p.items.length >= MAX_ITEMS) return 'full'; p.items.push({ cid: '', name: '', ar: null }); i = p.items.length - 1; }
   Object.assign(p.items[i], { cid, name: name || '', dong: '', ar: null, t: null, tn: '', ul: '', hidden: false });
@@ -1346,7 +1346,10 @@ function bindItem(p, i) {
       if (!opts.length) { sel.innerHTML = '<option>거래 없음</option>'; refresh(p); return; }
       const all = opts.flatMap(g => g.opts);
       if (it.ar == null || !all.some(o => o.ar === it.ar && (o.t || null) === (it.t || null))) {
-        const o = defaultAr(opts); it.ar = o.ar; it.t = o.t; it.tn = o.tn; save();
+        // 같은 묶음에 같은 단지가 이미 있으면 그 줄들이 고른 평형은 피한다 — 먼저 통째로 안 쓴 평형, 없으면 안 쓴 구조, 그래도 없으면 기본
+        const used = new Set(p.items.filter(x => x !== it && String(x.cid) === String(it.cid) && x.ar != null).map(optVal));
+        const free = opts.map(g => ({ ...g, opts: g.opts.filter(o => !used.has(optVal(o))) })).filter(g => g.opts.length);
+        const o = defaultAr(opts.filter(g => !g.opts.some(x => used.has(optVal(x))))) || defaultAr(free) || defaultAr(opts); it.ar = o.ar; it.t = o.t; it.tn = o.tn; save();
       }
       const cur = `${it.ar}|${it.t || ''}`;
       // 타입이 둘 이상인 전용만 묶음 제목(optgroup) 아래에 두고, 하나뿐이면 한 줄 그대로(2026-10-29 사용자 지정)
@@ -1669,7 +1672,8 @@ function renderCommute(p) {
   if (!its.length) { box.style.display = 'none'; return; }
   if (!APT) { loadApt().then(() => renderCommute(p)).catch(() => {}); box.style.display = 'none'; return; }
   const dep = cmtDepart(), fold = state.cfg.cmtFold;
-  const rows = its.map(({ it, i }) => ({ it, i, a: APT_BY_ID.get(String(it.cid)) })).filter(x => x.a && x.a.lat);
+  const seen = new Set();   // 같은 단지(평형만 다른 줄)는 길찾기가 같으니 한 줄만
+  const rows = its.filter(({ it }) => !seen.has(String(it.cid)) && seen.add(String(it.cid))).map(({ it, i }) => ({ it, i, a: APT_BY_ID.get(String(it.cid)) })).filter(x => x.a && x.a.lat);
   if (!rows.length) { box.style.display = 'none'; return; }
   const again = () => renderCommute(p);
   const km = rows.map(x => kmTo(x.a, CMT_DESTS[0])), kmMin = Math.min(...km);
@@ -1799,7 +1803,8 @@ function tlSync(p) {
   if (tl.p !== p || $('#tl').style.display === 'none') return;
   const its = tlItems(p);
   if (!its.length) { $('#tl').style.display = 'none'; return; }
-  tl.i = Math.max(0, its.findIndex(x => x.cid === tl.cid));
+  const k = its.indexOf(tl.it);   // 같은 단지 다른 평형 줄이 있을 수 있어 줄 자체로 찾는다
+  tl.i = Math.max(0, k >= 0 ? k : its.findIndex(x => x.cid === tl.cid));
   drawTradeList();
 }
 function openTradeList(p) {
@@ -1826,7 +1831,7 @@ window.addEventListener('resize', placeRsz);
 new ResizeObserver(placeRsz).observe(board);   // 요약 카드가 그려지거나 폭을 바꿔 묶음 길이가 달라질 때
 async function drawTradeList() {
   const box = $('#tl .tl'), items = tlItems(tl.p), it = items[tl.i], cfg = state.cfg;
-  tl.cid = it.cid;
+  tl.cid = it.cid; tl.it = it;
   box.innerHTML = '<div class="tl-load">불러오는 중…</div>';
   let d; try { d = await loadData(it.cid); } catch (e) { box.innerHTML = `<div class="tl-load">오류: ${esc(e.message)}</div>`; return; }
   const ars = [...new Set(d.trades.map(t => t[1]))].sort((a, b) => a - b);
@@ -1897,7 +1902,7 @@ async function drawTradeList() {
   }).join('');
   // 아실과 다르게(2026-10-29 사용자 "실거래표가 너무 아실과 똑같다") — 요약 칸 3개, 종류는 한 줄 선택 막대, 면적은 선택 상자,
   // 달은 띠 머리(건수·평균), 거래는 날짜 동그라미 + 억 단위 + 직전 대비 증감
-  box.innerHTML = `<div class="tl-h"><b>거래 내역</b>${items.length > 1 ? `<span class="tl-tabs">${items.map((x, j) => tab(j === tl.i, `data-i="${j}"`, `<span class="chip" style="display:inline-block;background:${COLORS[tl.p.items.indexOf(x)]}"></span> ${esc(x.name)}`)).join('')}</span>` : ` <span>${esc(it.name)}</span>`}
+  box.innerHTML = `<div class="tl-h"><b>거래 내역</b>${items.length > 1 ? `<span class="tl-tabs">${items.map((x, j) => tab(j === tl.i, `data-i="${j}"`, `<span class="chip" style="display:inline-block;background:${COLORS[tl.p.items.indexOf(x)]}"></span> ${esc(x.name)}${items.some(y => y !== x && y.cid === x.cid) ? ` ${x.ar}㎡` : ''}`)).join('')}</span>` : ` <span>${esc(it.name)}</span>`}
       <button class="tl-x" title="닫기">✕</button></div>
     <div class="tl-sum"><div><small>매매 최고</small><b class="s">${mS ? pr(mS[2]) : '—'}</b><span>${mS ? ymTxt(mS[0]) : ''}</span></div>
       <div><small>전세 최고</small><b class="j">${mJ ? pr(mJ[2]) : '—'}</b><span>${mJ ? ymTxt(mJ[0]) : ''}</span></div>
