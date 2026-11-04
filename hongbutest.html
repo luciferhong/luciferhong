@@ -1493,6 +1493,10 @@
       }
       :is(#gnPanel, #gnCmpPop) .gn-cmp-walk { background: #eef0f3; color: #555; font-weight: 600; }
       :is(#gnPanel, #gnCmpPop) .gn-cmp-mute { color: #aaa; }
+      /* 칸 = 네이버지도 길찾기 링크(단지비교와 같은 모양) */
+      :is(#gnPanel, #gnCmpPop) a.gn-cmp-go { display: block; color: inherit; text-decoration: none; border-radius: 4px; }
+      :is(#gnPanel, #gnCmpPop) a.gn-cmp-go:hover { background: rgba(45, 93, 167, 0.08); }
+      :is(#gnPanel, #gnCmpPop) a.gn-cmp-go:hover .gn-cmp-min { text-decoration: underline; }
       @media (max-width: 700px) {
         :is(#gnPanel, #gnCmpPop) .gn-cmp { align-self: stretch; width: auto; }
         :is(#gnPanel, #gnCmpPop) .gn-cmp-h { flex-wrap: wrap; }
@@ -26001,15 +26005,24 @@ const originalBase64 = event.target.result;
         // ── 업무지구 대중교통 비교표 (2026-10-28, distance_gangnam.html 과 같은 표) ──
         // 지점이 열, 7대 업무지구가 행. 경로는 업무지구 길찾기와 같은 공개 /route(summary=1, 최적 1개).
         // 출발 시각 기본값도 길찾기 패널과 같다(__wrDepartHM·__wrDefaultDate). 바꾼 시각은 이 표에만 쓴다.
+        // fw = 길찾기 팝업의 목적지 체크박스 id — 강남km 표는 체크한 곳만 줄로 넣는다(2026-11-04 사용자).
+        // 체크박스가 아직 안 만들어졌으면 팝업 기본값(처음 3곳)대로.
         const CMP_DESTS = [
-          { key: "gbd", label: "강남 GBD", sub: "강남역", lat: 37.497951, lng: 127.027636 },
-          { key: "cbd", label: "CBD", sub: "시청역", lat: 37.564719, lng: 126.977022 },
-          { key: "ybd", label: "여의도 YBD", sub: "여의도역", lat: 37.521624, lng: 126.924374 },
-          { key: "pg", label: "판교", sub: "판교역", lat: 37.394768, lng: 127.111699 },
-          { key: "mg", label: "마곡", sub: "마곡역", lat: 37.560143, lng: 126.825231 },
-          { key: "gv", label: "G밸리", sub: "가산디지털단지역", lat: 37.481339, lng: 126.882734 },
-          { key: "dmc", label: "DMC", sub: "DMC역", lat: 37.576528, lng: 126.898109 },
+          { key: "gbd", fw: "chk1", label: "강남 GBD", sub: "강남역", lat: 37.497951, lng: 127.027636 },
+          { key: "cbd", fw: "chk2", label: "CBD", sub: "시청역", lat: 37.564719, lng: 126.977022 },
+          { key: "ghm", fw: "chk9", label: "광화문", sub: "광화문역", lat: 37.5723, lng: 126.9791 },
+          { key: "ybd", fw: "chk3", label: "여의도 YBD", sub: "여의도역", lat: 37.521624, lng: 126.924374 },
+          { key: "pg", fw: "chk5", label: "판교", sub: "판교역", lat: 37.394768, lng: 127.111699 },
+          { key: "mg", fw: "chk6", label: "마곡", sub: "마곡역", lat: 37.560143, lng: 126.825231 },
+          { key: "gv", fw: "chk4", label: "G밸리", sub: "가산디지털단지역", lat: 37.481339, lng: 126.882734 },
+          { key: "gd", fw: "chk8", label: "구로디지털", sub: "구로디지털단지역", lat: 37.485266, lng: 126.900198 },
+          { key: "dmc", fw: "chk7", label: "DMC", sub: "DMC역", lat: 37.576528, lng: 126.898109 },
         ];
+        const CMP_FW_DEFAULT = ["chk1", "chk2", "chk3"];
+        function cmpDestOn(dest) {
+          const cb = document.getElementById(dest.fw);
+          return cb && cb.type === "checkbox" ? cb.checked : CMP_FW_DEFAULT.includes(dest.fw);
+        }
         const cmpCache = new Map(); // "lng,lat|목적지|출발" → {state:'wait'|'ok'|'close'|'fail', r?}
         const cmpQueue = [];
         let cmpRunning = 0;
@@ -26126,6 +26139,11 @@ const originalBase64 = event.target.result;
         }
         // 길찾기 가능 확인(파일 끝 로더의 /route?probe=1)은 비동기라 패널을 먼저 그린 뒤에 끝난다 — 결과가 바뀌면 다시 그린다
         window.addEventListener("hongbu-route-ok", () => { try { cmpRerenderAll(); } catch (_) {} });
+        // 길찾기 팝업의 목적지 체크를 바꾸면 강남km 표 줄도 바로 바꾼다
+        document.addEventListener("change", (e) => {
+          const id = e.target && e.target.id;
+          if (id && CMP_DESTS.some((d) => d.fw === id)) { try { cmpRender(); } catch (_) {} }
+        }, true);
         function cmpDeparture(box) {
           const z = (n) => String(n).padStart(2, "0");
           const dIn = box.querySelector(".gn-cmp-date");
@@ -26173,6 +26191,14 @@ const originalBase64 = event.target.result;
           });
           cmpPump();
           return hit;
+        }
+        // 네이버지도 대중교통 길찾기 주소 — 단지비교(siseCompare cmtMapUrl)와 같다. 폰은 앱, PC 는 새 탭.
+        // 웹 주소는 쉼표로 칸을 나누므로 이름의 쉼표는 띄어쓰기로('미륭,미성,삼호3차')
+        function cmpMapUrl(name, s, dest) {
+          const nm = (x) => encodeURIComponent(String(x || "").replace(/,/g, " "));
+          return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+            ? "nmap://route/public?slat=" + s.lat + "&slng=" + s.lng + "&sname=" + nm(name) + "&dlat=" + dest.lat + "&dlng=" + dest.lng + "&dname=" + nm(dest.sub) + "&appname=com.luciferhong.hongbutest"
+            : "https://map.naver.com/p/directions/" + s.lng + "," + s.lat + "," + nm(name) + "/" + dest.lng + "," + dest.lat + "," + nm(dest.sub) + "/-/transit";
         }
         // 경로 한 줄: (10분 이상 도보만) 🚶도보 N분 → 노선 뱃지 → … / 환승 N · 도보·대기 N분(10분 미만 도보 + 대기)
         function cmpRouteHtml(r) {
@@ -26225,7 +26251,9 @@ const originalBase64 = event.target.result;
             h += '<td class="' + (cols.length > 1 && d === sMin ? "best" : "") + '"><span class="gn-cmp-min" style="font-size:14px">' + d.toFixed(1) + "km</span></td>";
           });
           h += "</tr>";
+          const inPanel = !!box.closest("#gnPanel");
           for (const dest of CMP_DESTS) {
+            if (inPanel ? !cmpDestOn(dest) : dest.fw === "chk9" || dest.fw === "chk8") continue; // 강남km 표는 체크한 곳만, 모달 창은 예전 7곳
             const cells = cols.map(({ s }) => cmpRoute(s, dest, dep));
             const durs = cells.map((c) => (c.state === "ok" ? c.r.duration : c.state === "close" ? 0 : null));
             const valid = durs.filter((v) => v != null);
@@ -26238,6 +26266,12 @@ const originalBase64 = event.target.result;
               else if (c.state === "close") body = '<span class="gn-cmp-min">도보권</span>';
               else if (c.state === "fail") body = '<span class="gn-cmp-mute" title="' + escapeHtml(c.err) + '">조회 실패 (↻)</span>';
               else body = '<span class="gn-cmp-min' + (d > 60 ? " slow" : "") + '">' + d + "분</span>" + cmpRouteHtml(c.r);
+              // 칸을 누르면 네이버지도 대중교통 길찾기(단지비교와 같은 방식, 2026-11-04 사용자)
+              if (d != null) {
+                const { s, i } = cols[k];
+                body = '<a class="gn-cmp-go" href="' + escapeHtml(cmpMapUrl(s.custom ? "지점 " + (i + 1) : s.name, s, dest)) +
+                  '" target="_blank" rel="noopener" title="네이버지도에서 길찾기">' + body + "</a>";
+              }
               h += '<td class="' + (d != null && d === best ? "best" : "") + '">' + body + "</td>";
             });
             h += "</tr>";
@@ -26372,14 +26406,29 @@ const originalBase64 = event.target.result;
           if (cmpPop.style.left) cmpPopPlace(parseFloat(cmpPop.style.left), parseFloat(cmpPop.style.top));
         };
         // 표 몸통 높이 = 지도 아래 끝까지(카드·요약 줄 아래 남는 만큼)
-        function cmpFit() {
+        // 0.4초마다 부르는 쪽(placePanel)은 onlyChanged — 지도·창·표가 지난번 맞춘 뒤 그대로면 다시 재지 않는다.
+        // (2026-11-04 사용자 "표 사이즈가 무한 반복하면서 바뀐다" — 넓힌 상태·좁힌 상태에서 잰 결과가 서로 달라 번갈아 바뀌었다)
+        let cmpFitSig = "";
+        function cmpFitKey(p, box, mapEl) {
+          const mr = mapEl.getBoundingClientRect(), b = box.getBoundingClientRect();
+          const body = box.querySelector(".gn-cmp-b"), tbl = box.querySelector("table");
+          return [mr.left, mr.top, mr.width, mr.height, p.style.right, p.style.visibility, p.className,
+            JSON.stringify(cmpPanelPos), JSON.stringify(cmpPanelSize), b.left, b.top, b.width, b.height,
+            box.className, body ? body.className + body.style.cssText : "", tbl ? tbl.innerHTML.length : 0].join("|");
+        }
+        function cmpFit(onlyChanged) {
           const p = document.getElementById("gnPanel");
           const box = p?.querySelector(".gn-cmp");
           const mapEl = document.getElementById("map");
           if (!box || box.hidden || !mapEl) return;
+          if (onlyChanged && cmpFitSig === cmpFitKey(p, box, mapEl)) return;
+          cmpFitRun(box, mapEl);
+          cmpFitSig = cmpFitKey(p, box, mapEl);
+        }
+        function cmpFitRun(box, mapEl) {
           if (cmpPanelPos) cmpPanelPlace(box, cmpPanelPos.x, cmpPanelPos.y); // 지도가 줄었으면 지도 안으로 되돌린다(기억한 자리는 그대로)
           const body = box.querySelector(".gn-cmp-b");
-          const top = body.getBoundingClientRect().top;
+          let top = body.getBoundingClientRect().top;
           const bottom = mapEl.getBoundingClientRect().bottom;
           let mh = Math.max(120, bottom - top - 12);
           if (cmpPanelSize) {
@@ -26388,8 +26437,10 @@ const originalBase64 = event.target.result;
             const tbl = box.querySelector("table");
             box.dataset.fitW = "";
             cmpSize(box); // 폭을 먼저 정해야 줄바꿈된 내용 높이를 잴 수 있다
+            // 폭이 바뀌면 머리 줄 높이도 바뀌어 몸통 위치가 달라진다 — 폭을 정할 때마다 몸통 위치를 다시 잰다
+            const availNow = () => Math.max(60, bottom - body.getBoundingClientRect().top - 12);
             let need = tbl.offsetHeight;
-            const avail = Math.max(60, bottom - top - 12);
+            let avail = availNow();
             // 지점이 늘어 열이 좁아지면 줄이 늘어 지도 높이를 넘는다 — 스크롤 대신 들어갈 만큼만 창을 넓힌다
             // (2026-11-04 사용자 "지점2를 추가하면 세로 스크롤이 생긴다"). 지도 폭이 한계.
             if (need > avail) {
@@ -26398,17 +26449,18 @@ const originalBase64 = event.target.result;
               if (hi > lo) {
                 box.dataset.fitW = hi;
                 cmpSize(box);
-                if (tbl.offsetHeight <= avail) {
+                if (tbl.offsetHeight <= availNow()) {
                   while (hi - lo > 6) {
                     const mid = Math.floor((lo + hi) / 2);
                     box.dataset.fitW = mid;
                     cmpSize(box);
-                    if (tbl.offsetHeight <= avail) hi = mid; else lo = mid;
+                    if (tbl.offsetHeight <= availNow()) hi = mid; else lo = mid;
                   }
                   box.dataset.fitW = hi;
                   cmpSize(box);
                 }
                 need = tbl.offsetHeight;
+                avail = availNow();
                 // 넓어져 지도 오른쪽 밖으로 나가면 화면에서만 왼쪽으로 당긴다(기억한 자리는 그대로)
                 const br = box.getBoundingClientRect();
                 if (br.right > mr.right) {
@@ -26419,6 +26471,7 @@ const originalBase64 = event.target.result;
                 }
               }
             }
+            top = body.getBoundingClientRect().top;
             mh = Math.min(avail, Math.max(need, cmpPanelSize.h - (top - box.getBoundingClientRect().top) - 2));
             body.classList.toggle("gn-over", need > mh);
             body.style.height = mh + "px";
@@ -26730,7 +26783,7 @@ const originalBase64 = event.target.result;
           // 카카오맵 창(iframe #iframeOverlay 의 부모)이 닫히면 숨겼던 비교표를 되살린다(여는 곳은 openKakaoOverlay)
           const ko = document.getElementById("iframeOverlay")?.parentElement;
           if (p.classList.contains("gn-kakao-open") && !(ko && ko.style.display !== "none")) p.classList.remove("gn-kakao-open");
-          cmpFit(); // 지도 크기가 바뀌어도 비교표 높이를 맞춘다
+          cmpFit(true); // 지도 크기가 바뀌어도 비교표 높이를 맞춘다(바뀐 게 없으면 그대로)
         }
         function watchPlace(on) {
           clearInterval(__gnPlaceTimer);
