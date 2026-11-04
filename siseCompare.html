@@ -378,6 +378,13 @@ html.embed #hist { max-height: 320px; overflow: auto; }
 .cmt a.go:hover { background: rgba(15, 118, 110, .1); }
 .cmt a.go:hover .m { text-decoration: underline; }
 .cmt.fold table { display: none; }
+#palPop { position: fixed; z-index: 1000; background: var(--card); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 28px rgba(0,0,0,.22); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+#palPop button { display: flex; align-items: center; gap: 10px; justify-content: space-between; background: none; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; cursor: pointer; color: inherit; font: inherit; font-size: 13px; text-align: left; }
+#palPop button:hover { background: rgba(127,127,127,.12); }
+#palPop button.on { border-color: var(--line); font-weight: 700; }
+#palPop .pn { min-width: 5.5em; white-space: nowrap; }
+#palPop .sw { display: inline-flex; gap: 3px; }
+#palPop .sw i { width: 14px; height: 14px; border-radius: 3px; display: block; }
 </style>
 </head>
 <body>
@@ -406,6 +413,7 @@ html.embed #hist { max-height: 320px; overflow: auto; }
   <span class="grp">
     <button id="bAdd">+ 비교 묶음</button>
     <button id="bShot">전체 이미지 저장</button>
+    <button id="bPal" title="차트 선 색상표 고르기">🎨 팔레트</button>
   </span>
   <!-- 디자인 시안 고르기 — 에디토리얼 하나만 남겨 숨김(2026-10-29)
   <span class="grp"><label title="같은 기능, 다른 화면 모양">디자인 <select id="cSkin"></select></label></span>
@@ -446,7 +454,7 @@ const STORE = 'siseCompare_v1';
 // drag: table=단지를 열로 놓은 표 · cards=단지별 카드
 const SKINS = {
   // paper 격자: #ece4d4 → #f4eee4 (2026-10-29 사용자 "에디토리얼만 차트 안이 바탕과 달라 보인다" — 베이지 격자가 촘촘해 선 사이 미색이 하얗게 떠 보이는 착시, 픽셀은 같은 색)
-  paper: { name: 'A 에디토리얼', colors: ['#0f766e', '#c2410c', '#6b7a12', '#7e3a8f', '#1d4ed8', '#b45309', '#be185d', '#0e7490', '#57534e', '#9f1239'], marks: 'pin', drag: 'cards', grid: '#f4eee4', gridX: false, tick: '#857a6c', band: 'rgba(194,65,12,.07)', dragLine: '#2b2622', dotFill: '#fffdf8', manual: '#2b2622', font: '"Pretendard Variable", Pretendard, "Malgun Gothic", sans-serif' },
+  paper: { name: 'A 에디토리얼', colors: ['#0f766e', '#c2410c', '#6b7a12', '#7e3a8f', '#1d4ed8', '#db2777', '#ae7f0a', '#78716c', '#0c8dc7', '#1e293b'], marks: 'pin', drag: 'cards', grid: '#f4eee4', gridX: false, tick: '#857a6c', band: 'rgba(194,65,12,.07)', dragLine: '#2b2622', dotFill: '#fffdf8', manual: '#2b2622', font: '"Pretendard Variable", Pretendard, "Malgun Gothic", sans-serif' },
   // 시안은 A 에디토리얼 하나만 쓴다(2026-10-29 사용자 "에디토리얼만 남기고 나머지는 지우지 말고 주석으로") — 되살리려면 아래 세 줄 주석과 머리 막대 '디자인' 칸 주석을 푼다
   // dark: { name: 'B 다크 대시보드', colors: ['#38bdf8', '#f472b6', '#a3e635', '#fbbf24', '#a78bfa', '#fb923c', '#34d399', '#f87171', '#e5e7eb', '#94a3b8'], marks: 'flag', drag: 'table', grid: '#1c263b', tick: '#8b95a7', band: 'rgba(34,211,238,.10)', dragLine: '#22d3ee', dotFill: '#111827', manual: '#22d3ee', fill: true, font: '"Pretendard Variable", Pretendard, "Malgun Gothic", sans-serif' },
   // mini: { name: 'C 미니멀 카드', colors: ['#111827', '#f97316', '#06b6d4', '#8b5cf6', '#ef4444', '#10b981', '#eab308', '#ec4899', '#6b7280', '#3b82f6'], marks: 'dot', drag: 'cards', grid: '#f1f2f4', gridX: false, tick: '#9ca3af', band: 'rgba(17,24,39,.06)', dragLine: '#111827', dotFill: '#fff', manual: '#f97316', yRight: true, font: '"Pretendard Variable", Pretendard, "Malgun Gothic", sans-serif' },
@@ -455,9 +463,23 @@ const SKINS = {
 const SKIN_KEY = 'siseCompare_skin';
 let skin = new URLSearchParams(location.search).get('skin') || (() => { try { return localStorage.getItem(SKIN_KEY); } catch (e) { return null; } })() || 'paper';   // 기본 = A 에디토리얼(2026-10-29), 고른 시안은 SKIN_KEY 로 기억
 if (!SKINS[skin]) skin = 'paper';
+// 차트 선 색상표(2026-11-04 사용자 "테마는 그대로, 차트선 색만 고르게") — base 는 테마(시안) 자기 색.
+// 조건 둘: ① 모든 색이 미색 바탕(#fffdf8)과 명도 대비 3.5:1 이상(사용자 "밝은 색은 차트에서 잘 안 보인다" — 노랑·하늘·연분홍은 같은 색상에서 어둡게 내림)
+//          ② 앞 6색끼리 CIEDE2000 17 이상, 10색 전체 15 이상(처음 문제였던 신동아·써밋 두 주황이 6.9)
+const PALETTES = {
+  base: { name: '기본', colors: null },
+  tab: { name: '선명', colors: ['#4e79a7', '#ce6d0d', '#e15759', '#53974a', '#ac749c', '#4d938e', '#a18110', '#9c755f', '#c2185b', '#2f3b4c'] },
+  vivid: { name: '원색', colors: ['#2563eb', '#e11d48', '#159a46', '#9333ea', '#ea580c', '#0891b2', '#b67c04', '#7c2d12', '#4b5563', '#ec4396'] },
+  cb: { name: '색약 배려', colors: ['#0072b2', '#b37c00', '#00996f', '#d55e00', '#c5679b', '#6a3d9a', '#000000', '#924900', '#882255', '#878787'] },
+  muted: { name: '차분', colors: ['#332288', '#cc6677', '#117733', '#1d90ca', '#8a8a2e', '#aa4499', '#3b9485', '#7a4a1e', '#b06a2a', '#555555'] },
+};
+const PAL_KEY = 'siseCompare_palette';
+let palKey = (() => { try { return localStorage.getItem(PAL_KEY); } catch (e) { return null; } })() || 'base';
+if (!PALETTES[palKey]) palKey = 'base';
+const palColors = k => PALETTES[k].colors || SK.colors;
 let SK, COLORS;
 function applySkin(k) {
-  skin = k; SK = SKINS[k]; COLORS = SK.colors;
+  skin = k; SK = SKINS[k]; COLORS = palColors(palKey);
   document.documentElement.dataset.skin = k;
   if (window.Chart) { Chart.defaults.font.family = SK.font; Chart.defaults.color = SK.tick; }   // 실거래표만 보기는 Chart.js 를 받지 않는다
   try { localStorage.setItem(SKIN_KEY, k); } catch (e) {}
@@ -1930,6 +1952,28 @@ function bindCfg() {
   }
   $('#bAdd').onclick = () => { const np = newPanel(state.panels.length + 1); state.panels.push(np); activeId = np.id; save(); renderBoard(); };
   $('#bShot').onclick = () => shot(board, '단지비교');
+  // 팔레트 고르기 — 머리 막대는 overflow 가 있어 창을 body 직속 fixed 로 띄운다
+  const pb = $('#bPal');
+  if (pb) pb.onclick = ev => {
+    ev.stopPropagation();
+    let pop = $('#palPop');
+    if (pop) { pop.remove(); return; }
+    pop = document.createElement('div'); pop.id = 'palPop';
+    pop.innerHTML = Object.entries(PALETTES).map(([k, v]) => `<button data-k="${k}" class="${k === palKey ? 'on' : ''}"><span class="pn">${k === palKey ? '✓ ' : ''}${v.name}</span><span class="sw">${palColors(k).map(c => `<i style="background:${c}"></i>`).join('')}</span></button>`).join('');
+    document.body.appendChild(pop);
+    const r = pb.getBoundingClientRect();
+    pop.style.top = (r.bottom + 6) + 'px';
+    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+    pop.querySelectorAll('button').forEach(b => b.onclick = () => {
+      palKey = b.dataset.k; COLORS = palColors(palKey);
+      try { localStorage.setItem(PAL_KEY, palKey); } catch (e) {}
+      pop.remove(); renderBoard(); renderHist();   // 차트·범례·구간 요약 카드/표·출퇴근 표는 refresh 에서 COLORS 로 다시 그린다
+      if ($('#tl').style.display !== 'none') drawTradeList();   // 열린 거래 내역 창의 단지 칩
+    });
+    const close = e => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('mousedown', close); } };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+  };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') $('#palPop')?.remove(); });
   const sk = $('#cSkin');
   if (sk) {   // 디자인 칸을 주석으로 숨겨 없을 수 있다
   sk.innerHTML = Object.entries(SKINS).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join('');
