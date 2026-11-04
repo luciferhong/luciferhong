@@ -44,6 +44,8 @@
   #tbl tbody tr:hover { outline: 2px solid #2f4858; outline-offset: -2px; }
   #tbl .gu { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
   #tbl .rk { display: inline-block; min-width: 20px; border-radius: 9px; color: #fff; font-weight: bold; text-align: center; }
+  #tbl button.rk { font: inherit; font-weight: bold; padding: 0 4px; line-height: 1.35; border: 1.5px solid transparent; cursor: pointer; }
+  #tbl button.rk.off { background: #fff !important; color: #b6bac1; border-color: #d4d7dc; }
   #tbl .mid { color: #6a4c93; font-weight: bold; }
   #tbl table:not(.mt) tbody tr.off td:not(:first-child) { opacity: .4; }   /* 중학교 표는 체크 꺼져도 흐리게 하지 않는다 */
   #tbl input[type=checkbox], #sggPop input[type=checkbox] { cursor: pointer; margin: 0; vertical-align: middle; width: 18px; height: 18px; accent-color: #2f4858; }
@@ -291,25 +293,27 @@ function draw(keepView) {
   // 마커 — 표에서 체크 해제한 학교는 지도에서 뺀다
   const HIDE = store.get("sd:hide", {});
   top.forEach(t => t.show = !HIDE[t.code]);
+  const RKOFF = store.get("sd:rkoff", {});   // 지도 순위 배지 끈 초등 { schoolCode: 1 } (기본 모두 표시)
+  top.forEach(t => t.rk = !RKOFF[t.code]);
   const shown = top.filter(t => t.show);
   const bounds = new naver.maps.LatLngBounds(new naver.maps.LatLng(y0, x0), new naver.maps.LatLng(y1, x1));
   for (const t of shown) {
     const num = `${t.per == null ? "-" : Math.trunc(t.per)} / ${t.total}`;
-    MK.push({ kind: "e", t, rank: t.rank, up: t.up, pos: new naver.maps.LatLng(t.lat, t.lng), title: `${t.rank}위 ${t.name} — 학급당 / 전교생 ${num}`, ...markerSvg(t.name, num, ELI_COLOR) });
+    MK.push({ kind: "e", t, rank: t.rank, rk: t.rk, up: t.up, pos: new naver.maps.LatLng(t.lat, t.lng), title: `${t.rank}위 ${t.name} — 학급당 / 전교생 ${num}`, ...markerSvg(t.name, num, ELI_COLOR) });
   }
   // 중학교: 지역 경계 안 전부(성취도 순). 지도에는 체크한 것만 — 기본은 성취도 90% 이상
-  const MOV = store.get("sd:mid", {}), MUP = store.get("sd:midup", {});   // MUP = 중학교 하이라이트 { 학교 ID: 1 } (기본 없음)
+  const MOV = store.get("sd:mid", {}), MUP = store.get("sd:midup", {}), MRKOFF = store.get("sd:mrkoff", {});   // MUP = 중학교 하이라이트 { 학교 ID: 1 } (기본 없음)
   const midRows = [];
   for (const m of MIDS) {
     if (!(m.lng >= x0 && m.lng <= x1 && m.lat >= y0 && m.lat <= y1)) continue;
     const g = R.gus.find(g => g.rings.some(r => inRing(m.lng, m.lat, r))); if (!g) continue;
     midRows.push({ m, id: m.id, name: m.name.replace(/학교$/, ""), ach: m.ach, achT: m.achT, spc: parseFloat(m.spcT) || 0, spcT: m.spcT,
-      gu: guName(g), guFill: fillOf[g.cd], loc: guName(g), sp: MSP.s[m.id] || null, lat: m.lat, lng: m.lng, up: MUP[m.id] ? 2 : 0, show: MOV[m.id] == null ? m.ach >= 90 : !!MOV[m.id] });
+      gu: guName(g), guFill: fillOf[g.cd], loc: guName(g), sp: MSP.s[m.id] || null, lat: m.lat, lng: m.lng, up: MUP[m.id] ? 2 : 0, rk: !MRKOFF[m.id], show: MOV[m.id] == null ? m.ach >= 90 : !!MOV[m.id] });
   }
   midRows.sort((a, b) => b.ach - a.ach || b.spc - a.spc).forEach((x, i) => x.rank = i + 1);
   for (const x of midRows.filter(x => x.show)) {
     const m = x.m, a = String(m.achT).replace("%", ""), b = String(m.spcT).replace("%", "");
-    MK.push({ kind: "m", up: x.up, pos: new naver.maps.LatLng(m.lat, m.lng), title: `${m.name} — 학업성취도 / 특목고 ${a} / ${b}`,
+    MK.push({ kind: "m", rank: x.rank, rk: x.rk, up: x.up, pos: new naver.maps.LatLng(m.lat, m.lng), title: `${m.name} — 학업성취도 / 특목고 ${a} / ${b}`,
       ...markerSvg(m.name, `${a} / ${b}`, MID_COLOR, [+a >= 90 ? "#b8332a" : null, +b >= 4 ? "#2c5d8f" : null]) });
   }
   MK.forEach(m => {
@@ -321,7 +325,7 @@ function draw(keepView) {
 
   // 제목·범례
   $("ttl").textContent = `${R.nm} 초등학교 전교생 많은 ${top.length}곳`;
-  $("sub").innerHTML = `숫자 = 학급당 / 전교생 · 순위 색 10위 단위 · 학교 평균 전교생 ${Math.round(AVG_TOT)} (초등 ${all.length}곳)`;
+  $("sub").innerHTML = `숫자 = 학급당 / 전교생 · 표의 순위 번호를 눌러 지도 순위 표시 켜기/끄기 · 학교 평균 전교생 ${Math.round(AVG_TOT)} (초등 ${all.length}곳)`;
   document.title = `학군 장표 — ${R.nm}`;
   if (!keepView) map.fitBounds(bounds, { top: 80, right: 30, bottom: 30, left: 30 });
   TOP = top;
@@ -362,9 +366,9 @@ function declutter() {
     const lead = Math.hypot(ox[i], oy[i]) > 6 ? `<svg style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none" width="1" height="1">
         <line x1="${ax}" y1="${ay}" x2="${m.W / 2}" y2="${m.H / 2}" stroke="${lc}" stroke-width="1.2"/>
         <circle cx="${ax}" cy="${ay}" r="3.5" fill="${lc}" stroke="#fff" stroke-width="1.2"/></svg>` : "";
-    const badge = m.kind === "e" ? `<div style="position:absolute;left:3px;top:-2px;min-width:24px;height:24px;padding:0 4px;box-sizing:border-box;border-radius:12px;background:${RANK_BG(m.rank)};border:2px solid #fff;color:#fff;font:bold 14px/20px ${FONT};text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.3)">${m.rank}</div>` : "";
+    const badge = m.rk ? `<div style="position:absolute;left:3px;top:-2px;min-width:24px;height:24px;padding:0 4px;box-sizing:border-box;border-radius:12px;background:${m.kind === "m" ? MID_COLOR : ELI_COLOR};border:2px solid #fff;color:#fff;font:bold 14px/20px ${FONT};text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.3)">${m.rank}</div>` : "";
     // 별은 마커 왼쪽에 겹쳐 붙인다(사용자 지시: 겹쳐도 됨). 마커·순위 배지보다 먼저 그려 숫자를 가리지 않게 한다
-    const star = m.up ? `<div style="position:absolute;left:${m.kind === "e" ? -28 : -32}px;top:-17px;font:46px/1 ${FONT};color:#f2b01e;-webkit-text-stroke:2px #8a5a00;text-shadow:0 1px 3px rgba(0,0,0,.45);pointer-events:none">${m.up === 2 ? "★" : "☆"}</div>` : "";
+    const star = m.up ? `<div style="position:absolute;left:-28px;top:-17px;font:46px/1 ${FONT};color:#f2b01e;-webkit-text-stroke:2px #8a5a00;text-shadow:0 1px 3px rgba(0,0,0,.45);pointer-events:none">${m.up === 2 ? "★" : "☆"}</div>` : "";
     m.marker.setIcon({
       content: `<div style="position:relative;width:${m.W}px;height:${m.H}px">${lead}${star}<div style="position:relative;filter:${GLOW[m.up] || SHADOW}">${m.svg}</div>${badge}</div>`,
       anchor: new naver.maps.Point(ax, ay),
@@ -400,6 +404,8 @@ function drawTable(rows, midRows) {
   all.onclick = e => { e.stopPropagation(); setHide(rows.map(t => t.code), all.checked); };
   tbl.querySelector("th.ck").onclick = e => { if (e.target === e.currentTarget) all.click(); };
   tbl.querySelector("tbody").onclick = e => {
+    const rb = e.target.closest("button.rk");
+    if (rb) { const x = TROWS[+rb.closest("tr").dataset.r - 1], o = store.get("sd:rkoff", {}); if (x.rk) o[x.code] = 1; else delete o[x.code]; store.set("sd:rkoff", o); return draw(true); }
     const hb = e.target.closest("td.hl button");
     if (hb) { const x = TROWS[+hb.closest("tr").dataset.r - 1]; toggleUp(x); gpop.classList.remove("on"); return; }
     const c0 = e.target.closest("td");   // 체크박스 둘레 칸을 눌러도 체크
@@ -420,6 +426,7 @@ function drawTable(rows, midRows) {
   mt.querySelector("tbody").onclick = e => {
     const tr = e.target.closest("tr"); if (!tr) return;
     const x = TMID[+tr.dataset.r - 1], c0 = e.target.closest("td");
+    if (e.target.closest("button.rk")) { const o = store.get("sd:mrkoff", {}); if (x.rk) o[x.id] = 1; else delete o[x.id]; store.set("sd:mrkoff", o); return draw(true); }
     if (e.target.closest("td.hl button")) { const o = store.get("sd:midup", {}); if (x.up) delete o[x.id]; else o[x.id] = 1; store.set("sd:midup", o); return draw(true); }
     if (e.target.matches("input.ck")) return setMid([x.id], e.target.checked);
     if (c0 && c0.cellIndex === 0) return setMid([x.id], !x.show);
@@ -453,7 +460,7 @@ function drawTable(rows, midRows) {
 function midBody() {
   const b = tbl.querySelector("table.mt tbody"); if (!b) return;
   b.innerHTML = TMID.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up2" : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td>
-    <td class="n"><span class="rk" style="background:${MID_COLOR}">${x.rank}</span></td><td><span class="gu" style="background:${x.guFill}"></span>${x.loc}</td><td>${x.up ? `<b style="color:#e0a82e">★</b> ` : ""}<b>${x.name}</b></td>
+    <td class="n"><button class="rk${x.rk ? "" : " off"}" style="background:${MID_COLOR}" title="눌러서 지도 순위 표시 켜기/끄기">${x.rank}</button></td><td><span class="gu" style="background:${x.guFill}"></span>${x.loc}</td><td>${x.up ? `<b style="color:#e0a82e">★</b> ` : ""}<b>${x.name}</b></td>
     <td class="n" style="${x.ach >= 90 ? "color:#b8332a;font-weight:bold" : ""}">${x.achT || "-"}</td><td class="n" style="${x.spc >= 4 ? "color:#2c5d8f;font-weight:bold" : ""}">${x.spcT || "-"}</td>
     ${x.sp ? `<td class="n">${x.sp[0].toLocaleString()}</td><td class="n"${x.sp[1] ? ' style="font-weight:bold"' : ""}>${x.sp[1]}</td><td class="n"${x.sp[2] ? ' style="font-weight:bold"' : ""}>${x.sp[2]}</td>` : `<td class="n">-</td><td class="n">-</td><td class="n">-</td>`}
     <td class="hl"><button class="${x.up ? "on" : ""}" title="눌러서 켜기/끄기">★</button></td></tr>`).join("")
@@ -461,7 +468,7 @@ function midBody() {
 }
 function tbody() {
   const r = [...TROWS].sort((a, b) => (a[TKEY] < b[TKEY] ? -1 : a[TKEY] > b[TKEY] ? 1 : 0) * (TASC ? 1 : -1));
-  tbl.querySelector("tbody").innerHTML = r.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up" + x.up : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td><td class="n"><span class="rk" style="background:${RANK_BG(x.rank)}">${x.rank}</span></td>
+  tbl.querySelector("tbody").innerHTML = r.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up" + x.up : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td><td class="n"><button class="rk${x.rk ? "" : " off"}" style="background:${ELI_COLOR}" title="눌러서 지도 순위 표시 켜기/끄기">${x.rank}</button></td>
     <td><span class="gu" style="background:${x.guFill}"></span>${x.loc}</td><td>${x.up ? `<b style="color:#e0a82e">${x.up === 2 ? "★" : "☆"}</b> ` : ""}<b>${x.name}</b></td>
     <td class="n">${x.total.toLocaleString()}</td><td class="n">${x.per == null ? "-" : x.per.toFixed(1)}</td>
     ${GRD ? x.gr.map((v, i) => `<td class="n gc${i === 3 ? " g4" : ""}">${v.toLocaleString()}</td>`).join("") : ""}<td class="n" style="color:${x.ex > 0 ? "#b8332a" : "#2c5d8f"}">${x.ex > 0 ? "+" : ""}${x.ex}</td>
@@ -511,7 +518,7 @@ function showGrades(t, cx, cy) {
       <td style="width:130px"><div class="bar" style="width:${(v / mx * 100).toFixed(1)}%;background:${i < 3 ? "#9fb3c4" : ELI_COLOR}"></div></td>
       <td class="n"><b>${v}</b></td><td class="n">${dTxt}</td><td class="n">${c[i] || "-"}</td><td class="n">${per}</td></tr>`;
   }).join("");
-  gpop.innerHTML = `<div class="t"><span class="rk" style="display:inline-block;min-width:20px;border-radius:9px;color:#fff;text-align:center;font-size:12px;background:${RANK_BG(t.rank)}">${t.rank}</span>
+  gpop.innerHTML = `<div class="t"><span class="rk" style="display:inline-block;min-width:20px;border-radius:9px;color:#fff;text-align:center;font-size:12px;background:${ELI_COLOR}">${t.rank}</span>
       ${t.up ? `<span style="color:#e0a82e">${t.up === 2 ? "★" : "☆"}</span>` : ""}${t.name}<button class="x" title="닫기">✕</button></div>
     <div class="hlb">하이라이트 <button class="${t.up ? "on" : ""}" title="눌러서 켜기/끄기">${t.up === 1 ? "☆" : "★"} ${t.up ? "켜짐" : "꺼짐"}</button>
       ${t.man != null ? `<span style="color:#b8332a;font-size:12px">손으로 지정함 (자동: ${["없음", "☆", "★"][t.auto]})</span>` : ""}</div>
