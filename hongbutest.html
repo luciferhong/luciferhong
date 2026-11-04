@@ -29462,7 +29462,10 @@ const originalBase64 = event.target.result;
 #cmpDock .cd-btn{border:1px solid #cbbda5;background:#fff;color:#2b2622;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer;margin:0}
 #cmpDock .cd-btn:hover{transform:none;background:#f7efe2}
 #cmpDock iframe{flex:1 1 auto;min-height:0;width:100%;border:0;background:#fffdf8}
-#cmpDock .cd-rsz{position:absolute;left:-4px;top:0;bottom:0;width:8px;cursor:ew-resize}
+#cmpDock .cd-rsz{position:absolute;left:-4px;top:0;bottom:0;width:8px;cursor:ew-resize;touch-action:none;z-index:1}
+@media (pointer:coarse){#cmpDock .cd-rsz{left:-16px;width:30px}
+  #cmpDock .cd-rsz::after{content:"";position:absolute;left:11px;top:50%;width:8px;height:48px;margin-top:-24px;border-radius:4px;
+    background:#a8987f;box-shadow:0 1px 4px rgba(0,0,0,.25)}}
 #cmpDock.drop-ok{box-shadow:-6px 0 18px rgba(0,0,0,.18),inset 0 0 0 3px #0f766e}
 #cmpDock.drop-no{box-shadow:-6px 0 18px rgba(0,0,0,.18),inset 0 0 0 3px #c2410c}
 #cmpDock.busy iframe{pointer-events:none}
@@ -29474,8 +29477,15 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
   background:rgba(43,38,34,.92);color:#fff;font-size:13px;pointer-events:none;display:none}
 `;
 
-        const savedW = () => { try { return Math.max(W_MIN, +localStorage.getItem(W_KEY) || W_DEF); } catch (e) { return W_DEF; } };
-        const fitW = (w) => Math.round(Math.min(Math.max(W_MIN, w), innerWidth * 0.75));
+        const savedW = () => { try { return +localStorage.getItem(W_KEY) || W_DEF; } catch (e) { return W_DEF; } };   // 최소는 fitW 가 화면 폭에 맞춰 건다
+        // 좁은 화면(폰에서 숨은 'PC 화면', 2026-11-04 사용자 "모바일에서 단지비교창 사이즈 조절"): 예전엔 최소 420 > 최대(폭×0.75)라
+        //   폭이 늘 폭×0.75 로 고정돼 조절이 안 됐다. 좁으면 최소를 폭의 35%, 최대를 지도 24px 만 남기는 데까지 연다.
+        const fitW = (w) => {
+          const narrow = innerWidth < 900;
+          const mn = narrow ? Math.min(W_MIN, Math.round(innerWidth * 0.35)) : W_MIN;
+          const mx = narrow ? innerWidth - 24 : innerWidth * 0.75;
+          return Math.round(Math.min(Math.max(mn, w), mx));
+        };
         // 위 끝 = 지도 위 끝(툴바 아래). 툴바 줄 수가 바뀌어도 맞도록 열 때·창 크기·스크롤 때 다시 잰다.
         function place() {
           if (!C.open) return;
@@ -29502,16 +29512,21 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           el.querySelector(".cd-x").onclick = () => window.__cmpClose();
           el.querySelector(".cd-new").onclick = () => window.open("siseCompare.html", "_blank");
           // 왼쪽 끝을 끌어 폭 조절 — 끄는 동안 iframe 이 마우스를 먹지 않게 busy
-          el.querySelector(".cd-rsz").addEventListener("mousedown", (e) => {
-            e.preventDefault();
+          //   pointer 이벤트라 손가락도 된다(2026-11-04 — 예전 mousedown 만이라 폰에선 안 잡혔다). 터치는 손잡이를 넓히고 막대를 보인다(CSS).
+          const rsz = el.querySelector(".cd-rsz");
+          rsz.addEventListener("pointerdown", (e) => {
+            if (e.pointerType === "mouse" && e.button !== 0) return;
+            e.preventDefault(); e.stopPropagation();
             el.classList.add("busy");
-            const mv = (ev) => { el.style.width = fitW(innerWidth - ev.clientX) + "px"; };
+            try { rsz.setPointerCapture(e.pointerId); } catch (_) {}
+            const dx = innerWidth - e.clientX - el.getBoundingClientRect().width;   // 잡은 지점과 패널 끝의 차이(손가락 손잡이가 넓어서)
+            const mv = (ev) => { el.style.width = fitW(innerWidth - ev.clientX - dx) + "px"; };
             const up = () => {
-              document.removeEventListener("mousemove", mv); document.removeEventListener("mouseup", up);
+              rsz.removeEventListener("pointermove", mv); rsz.removeEventListener("pointerup", up); rsz.removeEventListener("pointercancel", up);
               el.classList.remove("busy");
               try { localStorage.setItem(W_KEY, parseInt(el.style.width)); } catch (_) {}
             };
-            document.addEventListener("mousemove", mv); document.addEventListener("mouseup", up);
+            rsz.addEventListener("pointermove", mv); rsz.addEventListener("pointerup", up); rsz.addEventListener("pointercancel", up);
           });
           const tt = document.createElement("div"); tt.id = "cmpToast"; document.body.appendChild(tt);
           C.el = el; C.frame = fr;
