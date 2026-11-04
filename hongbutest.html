@@ -31,8 +31,9 @@
       window.__hasToken = function () {
         try {
           var q = new URLSearchParams(location.search).get("token");
-          if (q) return q !== "off";
-          return !!localStorage.getItem("hongbuSiseToken");
+          if (q === "off") return false;
+          // 2026-11-04 서버 확인(/route?probe=1)을 통과한 기기만 — 확인과 표시 저장은 파일 끝 로더가 한다
+          return localStorage.getItem("hongbuRouteOk") === "1";
         } catch (e) {
           return false;
         }
@@ -1406,8 +1407,34 @@
       }
       #gnCmpPop[hidden] { display: none; }
       #gnCmpPop .gn-cmp { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35); }
-      #gnCmpPop .gn-cmp-h { cursor: move; user-select: none; touch-action: none; } /* 머리 줄을 끌어 창을 옮긴다 */
-      #gnCmpPop .gn-cmp-h :is(input, select, button) { cursor: pointer; }
+      :is(#gnPanel, #gnCmpPop) .gn-cmp-h { cursor: move; user-select: none; touch-action: none; } /* 머리 줄을 끌어 창을 옮긴다 */
+      :is(#gnPanel, #gnCmpPop) .gn-cmp-h :is(input, select, button) { cursor: pointer; }
+      #gnPanel .gn-cmp { position: relative; } /* 크기 조절 손잡이(.gn-rz) 기준 */
+      #gnPanel .gn-cmp.gn-moved { position: absolute; } /* 강남km 비교창을 옮긴 뒤 — left·top 은 cmpPanelPlace 가 정한다 */
+      /* 크기를 정한 강남km 비교창(gn-wrap) — 좁히면 칸 안에서 줄을 바꾼다(스크롤 없음, 2026-11-04 사용자). 노선 뱃지 하나는 끊지 않는다 */
+      #gnPanel .gn-cmp.gn-wrap td { white-space: normal; }
+      #gnPanel .gn-cmp.gn-wrap .gn-cmp-line { white-space: nowrap; }
+      #gnPanel .gn-cmp.gn-wrap .gn-cmp-b { overflow: hidden; }
+      #gnPanel .gn-cmp.gn-wrap .gn-cmp-b.gn-over { overflow-y: auto; } /* 지도 자체가 내용보다 낮을 때만 */
+      /* 최소 폭 재기용 — 지점 열을 줄바꿈 최대로 그린다(cmpSize) */
+      #gnPanel .gn-cmp table.measure-min { table-layout: auto; width: min-content !important; }
+      #gnPanel .gn-cmp table.measure-min td { white-space: normal; }
+      /* 크기 조절 손잡이 — 네 변·네 모서리(2026-11-04 사용자 "상하좌우"). 손가락은 넓게 */
+      #gnPanel .gn-rz { position: absolute; z-index: 3; touch-action: none; }
+      #gnPanel .gn-rz[data-d="n"], #gnPanel .gn-rz[data-d="s"] { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+      #gnPanel .gn-rz[data-d="e"], #gnPanel .gn-rz[data-d="w"] { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+      #gnPanel .gn-rz[data-d="n"] { top: 0; } #gnPanel .gn-rz[data-d="s"] { bottom: 0; }
+      #gnPanel .gn-rz[data-d="e"] { right: 0; } #gnPanel .gn-rz[data-d="w"] { left: 0; }
+      #gnPanel .gn-rz[data-d="nw"] { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+      #gnPanel .gn-rz[data-d="ne"] { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+      #gnPanel .gn-rz[data-d="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+      #gnPanel .gn-rz[data-d="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+      @media (pointer: coarse) {
+        #gnPanel .gn-rz[data-d="n"], #gnPanel .gn-rz[data-d="s"] { height: 12px; }
+        #gnPanel .gn-rz[data-d="e"], #gnPanel .gn-rz[data-d="w"] { width: 12px; }
+        #gnPanel .gn-rz:is([data-d="nw"], [data-d="ne"], [data-d="sw"], [data-d="se"]) { width: 20px; height: 20px; }
+      }
+      #gnPanel .gn-cmp.fold .gn-rz { display: none; } /* 접혀 있으면 크기 조절 없음 */
       #gnCmpPop .gn-cmp-b { max-height: calc(100vh - 80px); }
       :is(#gnPanel, #gnCmpPop) .gn-cmp-h {
         /* 머리 줄은 표 폭을 넓히지 않는다(width 0 + min-width 100%) — 표가 좁으면(지점 1개 등) 줄바꿈 */
@@ -25548,8 +25575,15 @@ const originalBase64 = event.target.result;
               if (!b) return;
               const k = b.dataset.ms;
               if (k === "clear") return clearAll();
-              if (k === "gangnam") return window.__gnToggle?.(); // 강남거리 모드는 켜고 끄는 단추
-              if (k === "compare") return window.__cmpToggle?.(); // 단지 비교 패널(__cmpInit)
+              // 강남km·단지비교는 함께 켜지 않는다 — 하나를 켜면 다른 하나는 끈다(2026-11-04 사용자 지정)
+              if (k === "gangnam") {
+                if (!window.__gnOn && window.__cmpIsOpen?.()) window.__cmpToggle?.();
+                return window.__gnToggle?.(); // 강남거리 모드는 켜고 끄는 단추
+              }
+              if (k === "compare") {
+                if (!window.__cmpIsOpen?.() && window.__gnOn) window.__gnToggle?.();
+                return window.__cmpToggle?.(); // 단지 비교 패널(__cmpInit)
+              }
               if (S.mode === k) return stop(); // 켜진 도구를 다시 누르면 취소
               start(k);
             });
@@ -25902,6 +25936,7 @@ const originalBase64 = event.target.result;
           p.innerHTML = h;
           stop(p, STOP_EVS);
           cmpSetup(p.querySelector(".gn-cmp"), cmpRender, window.innerWidth <= 700); // 폰은 지도를 덮지 않게 접힌 채로
+          cmpPanelDrag(p.querySelector(".gn-cmp"));
           p.querySelectorAll(".gn-card").forEach((card) => {
             const i = +card.dataset.i;
             const inp = card.querySelector(".gn-in");
@@ -25978,6 +26013,12 @@ const originalBase64 = event.target.result;
         const cmpCache = new Map(); // "lng,lat|목적지|출발" → {state:'wait'|'ok'|'close'|'fail', r?}
         const cmpQueue = [];
         let cmpRunning = 0;
+        // 강남km 비교창을 옮긴 자리(지도 왼쪽 위 기준 px, null = 원래 자리) — 다시 열어도 그 자리
+        let cmpPanelPos = null;
+        try { cmpPanelPos = JSON.parse(localStorage.getItem("gnCmpPos") || "null"); } catch (e) {}
+        // 강남km 비교창 크기(테두리 포함 px {w,h}, null = 내용에 맞춤) — 가장자리를 끌어 정한다(2026-11-04 사용자 지정)
+        let cmpPanelSize = null;
+        try { cmpPanelSize = JSON.parse(localStorage.getItem("gnCmpSize") || "null"); } catch (e) {}
         function cmpPump() {
           while (cmpRunning < 4 && cmpQueue.length) {
             const job = cmpQueue.shift();
@@ -26168,6 +26209,30 @@ const originalBase64 = event.target.result;
             }
           }
           body.style.width = "";
+          // 강남km 창 크기를 정해 두었으면 그 폭 — 지점 열이 남는 폭을 나눠 갖고, 좁으면 칸 안에서 줄을 바꾼다.
+          // 스크롤은 없다(2026-11-04 사용자). 줄바꿈을 최대로 해도 안 들어가는 폭(최소 폭)보다는 안 줄어든다.
+          const wrap = !!(cmpPanelSize && box.closest("#gnPanel") && ths.length > 1);
+          box.classList.toggle("gn-wrap", wrap);
+          if (wrap) {
+            const firstW = parseFloat(ths[0].style.width) || ths[0].offsetWidth;
+            const saved = ths.map((th) => th.style.width);
+            tbl.classList.add("measure-min");
+            ths.forEach((th) => (th.style.width = ""));
+            const colMin = Math.max(0, ...ths.slice(1).map((th) => th.offsetWidth)) + 1;
+            tbl.classList.remove("measure-min");
+            ths.forEach((th, k) => (th.style.width = saved[k]));
+            const n = ths.length - 1;
+            const minInner = Math.max(firstW + colMin * n, ctl ? ctl.offsetWidth + 20 : 0);
+            box.dataset.minW = minInner + 2; // 좌우 테두리 포함 — cmpPanelResize 가 쓴다
+            // fitW = 줄이 늘어 지도 높이를 넘을 때 cmpFit 이 잠깐 넓힌 폭(기억하는 크기는 그대로)
+            const inner = Math.max(minInner, cmpPanelSize.w - 2, +box.dataset.fitW || 0);
+            const colW = Math.floor((inner - firstW) / n);
+            ths.slice(1).forEach((th) => (th.style.width = colW + "px"));
+            tbl.style.width = firstW + colW * n + "px";
+            body.style.width = inner + "px";
+            return;
+          }
+          body.classList.remove("gn-over");
           const sbw = body.offsetWidth - body.clientWidth;
           body.style.width = tbl.offsetWidth + sbw + "px";
         }
@@ -26243,11 +26308,168 @@ const originalBase64 = event.target.result;
           const box = p?.querySelector(".gn-cmp");
           const mapEl = document.getElementById("map");
           if (!box || box.hidden || !mapEl) return;
+          if (cmpPanelPos) cmpPanelPlace(box, cmpPanelPos.x, cmpPanelPos.y); // 지도가 줄었으면 지도 안으로 되돌린다(기억한 자리는 그대로)
           const body = box.querySelector(".gn-cmp-b");
           const top = body.getBoundingClientRect().top;
           const bottom = mapEl.getBoundingClientRect().bottom;
-          body.style.maxHeight = Math.max(120, bottom - top - 12) + "px";
+          let mh = Math.max(120, bottom - top - 12);
+          if (cmpPanelSize) {
+            // 정한 높이(머리 줄·테두리 뺀 몸통) — 단 내용보다 낮게는 안 줄어든다(스크롤 없음).
+            // 지도 아래 끝은 넘지 않는다 — 지도 자체가 내용보다 낮을 때만 세로 스크롤(gn-over)
+            const tbl = box.querySelector("table");
+            box.dataset.fitW = "";
+            cmpSize(box); // 폭을 먼저 정해야 줄바꿈된 내용 높이를 잴 수 있다
+            let need = tbl.offsetHeight;
+            const avail = Math.max(60, bottom - top - 12);
+            // 지점이 늘어 열이 좁아지면 줄이 늘어 지도 높이를 넘는다 — 스크롤 대신 들어갈 만큼만 창을 넓힌다
+            // (2026-11-04 사용자 "지점2를 추가하면 세로 스크롤이 생긴다"). 지도 폭이 한계.
+            if (need > avail) {
+              const mr = mapEl.getBoundingClientRect();
+              let lo = parseFloat(body.style.width) || 0, hi = Math.floor(mr.width - 2);
+              if (hi > lo) {
+                box.dataset.fitW = hi;
+                cmpSize(box);
+                if (tbl.offsetHeight <= avail) {
+                  while (hi - lo > 6) {
+                    const mid = Math.floor((lo + hi) / 2);
+                    box.dataset.fitW = mid;
+                    cmpSize(box);
+                    if (tbl.offsetHeight <= avail) hi = mid; else lo = mid;
+                  }
+                  box.dataset.fitW = hi;
+                  cmpSize(box);
+                }
+                need = tbl.offsetHeight;
+                // 넓어져 지도 오른쪽 밖으로 나가면 화면에서만 왼쪽으로 당긴다(기억한 자리는 그대로)
+                const br = box.getBoundingClientRect();
+                if (br.right > mr.right) {
+                  const pr = document.getElementById("gnPanel").getBoundingClientRect();
+                  box.classList.add("gn-moved");
+                  box.style.left = Math.max(mr.left, mr.right - br.width) - pr.left + "px";
+                  box.style.top = br.top - pr.top + "px";
+                }
+              }
+            }
+            mh = Math.min(avail, Math.max(need, cmpPanelSize.h - (top - box.getBoundingClientRect().top) - 2));
+            body.classList.toggle("gn-over", need > mh);
+            body.style.height = mh + "px";
+          } else body.style.height = "";
+          body.style.maxHeight = mh + "px";
           cmpSize(box); // 높이가 바뀌어 세로 스크롤바가 생기거나 없어지면 폭도 다시
+        }
+        // 강남km 비교창 자리 — x·y 는 지도 왼쪽 위 기준. 머리 줄이 지도 밖으로 나가 다시 못 잡는 일이 없게 가둔다
+        // (좌우는 80px 남기고, 위아래는 머리 줄 전체). 가둔 자리를 돌려준다.
+        function cmpPanelPlace(box, x, y) {
+          const mapEl = document.getElementById("map"), p = document.getElementById("gnPanel");
+          const head = box.querySelector(".gn-cmp-h");
+          if (!mapEl || !p || !head) return null;
+          const mr = mapEl.getBoundingClientRect(), pr = p.getBoundingClientRect();
+          x = Math.max(80 - box.offsetWidth, Math.min(mr.width - 80, x));
+          y = Math.max(0, Math.min(mr.height - head.offsetHeight, y));
+          box.classList.add("gn-moved");
+          box.style.left = x + mr.left - pr.left + "px";
+          box.style.top = y + mr.top - pr.top + "px";
+          return { x, y };
+        }
+        // 머리 줄을 끌어 강남km 비교창을 옮긴다(2026-11-04 사용자 지정). 날짜·시각·단추는 제외, 손가락도 된다.
+        // 머리 줄을 두 번 누르면 원래 자리(오른쪽 위)로 돌아간다.
+        function cmpPanelDrag(box) {
+          const head = box.querySelector(".gn-cmp-h");
+          let d = null;
+          head.addEventListener("pointerdown", (e) => {
+            if (e.button !== 0 || e.target.closest("input, select, button")) return;
+            const br = box.getBoundingClientRect(), mr = document.getElementById("map").getBoundingClientRect();
+            d = { id: e.pointerId, dx: e.clientX - (br.left - mr.left), dy: e.clientY - (br.top - mr.top), moved: false };
+            head.setPointerCapture(e.pointerId);
+          });
+          head.addEventListener("pointermove", (e) => {
+            if (!d || e.pointerId !== d.id) return;
+            const pos = cmpPanelPlace(box, e.clientX - d.dx, e.clientY - d.dy);
+            if (!pos) return;
+            cmpPanelPos = pos;
+            d.moved = true;
+            cmpFit(); // 옮긴 높이에 맞춰 표 몸통 높이를 다시
+          });
+          const end = (e) => {
+            if (!d || e.pointerId !== d.id) return;
+            if (d.moved) try { localStorage.setItem("gnCmpPos", JSON.stringify(cmpPanelPos)); } catch (er) {}
+            d = null;
+          };
+          head.addEventListener("pointerup", end);
+          head.addEventListener("pointercancel", end);
+          head.addEventListener("dblclick", (e) => {
+            if (e.target.closest("input, select, button")) return;
+            cmpPanelPos = cmpPanelSize = null; // 자리·크기 모두 처음대로
+            try { localStorage.removeItem("gnCmpPos"); localStorage.removeItem("gnCmpSize"); } catch (er) {}
+            box.classList.remove("gn-moved");
+            box.style.left = box.style.top = "";
+            cmpRender(); // 열 폭을 내용에 맞게 다시 잰다
+          });
+          cmpPanelResize(box);
+        }
+        // 네 변·네 모서리를 끌어 강남km 비교창 크기를 바꾼다(2026-11-04 사용자 "창 사이즈 조절, 상하좌우").
+        // 왼쪽·위를 끌면 창 자리도 함께 옮겨지므로 처음 끌 때 지금 자리에 고정(gn-moved)한다.
+        // 크기는 지도 안으로 제한(폭 260px·높이 120px 이상), 다시 열어도 유지 — 머리 줄 두 번 누르면 처음대로.
+        function cmpPanelResize(box) {
+          ["n", "s", "e", "w", "nw", "ne", "sw", "se"].forEach((dir) => {
+            const h = document.createElement("div");
+            h.className = "gn-rz";
+            h.dataset.d = dir;
+            box.appendChild(h);
+            let r = null;
+            h.addEventListener("pointerdown", (e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              const br = box.getBoundingClientRect(), mr = document.getElementById("map").getBoundingClientRect();
+              r = { id: e.pointerId, cx: e.clientX, cy: e.clientY, x: br.left - mr.left, y: br.top - mr.top, w: br.width, h: br.height, mw: mr.width, mh: mr.height };
+              h.setPointerCapture(e.pointerId);
+            });
+            h.addEventListener("pointermove", (e) => {
+              if (!r || e.pointerId !== r.id) return;
+              const dx = e.clientX - r.cx, dy = e.clientY - r.cy;
+              let { x, y, w, h: hh } = r;
+              if (dir.includes("e")) w = r.w + dx;
+              if (dir.includes("w")) w = r.w - dx;
+              if (dir.includes("s")) hh = r.h + dy;
+              if (dir.includes("n")) hh = r.h - dy;
+              // 최소 폭(줄바꿈을 다 해도 안 들어가는 폭)보다는 안 줄어든다 — cmpSize 가 잰 값
+              const minW = Math.max(260, +box.dataset.minW || 0);
+              w = Math.round(Math.max(minW, Math.min(r.mw, w)));
+              hh = Math.round(Math.max(120, Math.min(r.mh, hh)));
+              const prev = { size: cmpPanelSize, pos: cmpPanelPos };
+              const apply = (s) => {
+                cmpPanelSize = s;
+                // 실제 크기(내용 때문에 정한 값보다 클 수 있다)로 오른쪽·아래 변을 고정
+                cmpPanelPos = cmpPanelPlace(box, x, y) || cmpPanelPos;
+                cmpRender(); // 폭이 바뀌면 열을 다시 나눠야 하므로 표부터 다시
+                cmpPanelSize = { w: Math.max(s.w, +box.dataset.minW || 0), h: s.h }; // 기억하는 폭도 최소 폭 이상
+                const br = box.getBoundingClientRect();
+                if (dir.includes("w")) x = r.x + r.w - br.width;
+                if (dir.includes("n")) y = r.y + r.h - br.height;
+                if (dir.includes("w") || dir.includes("n")) { cmpPanelPos = cmpPanelPlace(box, x, y) || cmpPanelPos; cmpFit(); }
+              };
+              if (dir.includes("w")) x = r.x + r.w - w; // 오른쪽 변은 그대로
+              if (dir.includes("n")) y = r.y + r.h - hh; // 아래 변은 그대로
+              apply({ w, h: hh });
+              // 좁혀서 줄이 늘어 지도 안에 다 안 들어가면(스크롤이 생기면) 좁히지 않는다
+              if (box.querySelector(".gn-cmp-b.gn-over") && prev.size && w < prev.size.w) {
+                ({ x, y } = prev.pos || { x, y });
+                apply(prev.size);
+                return;
+              }
+              r.moved = true;
+            });
+            const end = (e) => {
+              if (!r || e.pointerId !== r.id) return;
+              if (r.moved) try {
+                localStorage.setItem("gnCmpSize", JSON.stringify(cmpPanelSize));
+                localStorage.setItem("gnCmpPos", JSON.stringify(cmpPanelPos));
+              } catch (er) {}
+              r = null;
+            };
+            h.addEventListener("pointerup", end);
+            h.addEventListener("pointercancel", end);
+          });
         }
 
         // ── 검색 ── 메인 검색창과 같은 규칙·모양(2026-10-29 사용자 "강남모드 검색창도 메인과 통일"):
@@ -36956,12 +37178,13 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           if (t) {
             if (t === "off") localStorage.removeItem("hongbuSiseToken");
             else localStorage.setItem("hongbuSiseToken", t);
+            localStorage.removeItem("hongbuRouteOk"); // 값이 바뀌었으니 길찾기 가능 여부를 다시 확인
             u.searchParams.delete("token");
             history.replaceState(null, "", u.toString());
           }
           const tok = localStorage.getItem("hongbuSiseToken");
-          if (!tok) return;
-          
+          if (!tok) return localStorage.removeItem("hongbuRouteOk");
+
           const base =
             location.hostname === "localhost" || location.hostname === "127.0.0.1"
               ? "http://localhost:7123"
@@ -36969,6 +37192,13 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           const s = document.createElement("script");
           s.src = base + "/hongbuSise.js?token=" + encodeURIComponent(tok);
           document.body.appendChild(s);
+          // 길찾기(대중교통 비교·지도에 그리기)를 쓸 수 있는지 — 401 이면 숨기고, 연결 실패면 지난 결과를 그대로 둔다
+          fetch(s.src.replace("/hongbuSise.js?", "/route?probe=1&"))
+            .then((r) => {
+              if (r.ok) localStorage.setItem("hongbuRouteOk", "1");
+              else if (r.status === 401) localStorage.removeItem("hongbuRouteOk");
+            })
+            .catch(() => {});
         } catch (e) {}
       })();
     </script>
