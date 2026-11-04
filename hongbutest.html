@@ -9043,19 +9043,45 @@
       // ○○대학교사범대학부속·부설 → ○○대사대부(2026-10-28 사용자: "사범대학부속중은 사대부중으로" — 중앙대학교사범대학부속중
       //   → 중앙대사대부중, 서울대학교사범대학부설중 → 서울대사대부중). 마커 글자만, 마우스를 올리면 정식 이름(title).
       const __shortSchoolFemale = (s) => s.replace(/(대학교|대)사범대학부[속설]/, "대사대부").replace(/여자(중|고)$/, "여$1");
-      function shortSchoolName(name, kind) {
-        return __shortSchoolFemale(__shortSchoolSido(name, kind));
+      // 시·군 이름도 뗀다(2026-11-04 사용자: "수원금호초처럼 앞에 수원 붙은 건 불필요" → 금호초, schoolPage.html 과 같은 규칙).
+      //   시도별 시·군 이름('시'·'군' 뗀 것, sig_wgs84_30m.geojson 기준). 구 이름은 '중'(중구)처럼 짧아 오인이 많아 넣지 않는다.
+      //   남는 식별자가 두 글자 미만이면 그대로(부천남초·수원북중 — '남초'·'북중'만으론 어느 학교인지 모른다).
+      //   초등학교는 법정동 코드 앞 2자리(sido2)가 그 시·군의 시도와 다르면 떼지 않는다(광주광역시 하남중앙초 ≠ 경기 하남).
+      const __SCHOOL_CITY_SIDO = {};
+      [["26", "기장"], ["27", "군위"], ["28", "강화 옹진"], ["31", "울주"],
+        ["41", "가평 고양 과천 광명 구리 군포 김포 남양주 동두천 부천 성남 수원 시흥 안산 안성 안양 양주 양평 여주 연천 오산 용인 의왕 의정부 이천 파주 평택 포천 하남 화성"],
+        ["43", "괴산 단양 보은 영동 옥천 음성 제천 증평 진천 청주 충주"],
+        ["44", "계룡 공주 금산 논산 당진 보령 부여 서산 서천 아산 예산 천안 청양 태안 홍성"],
+        ["46", "강진 고흥 곡성 광양 구례 나주 담양 목포 무안 보성 순천 신안 여수 영광 영암 완도 장성 장흥 진도 함평 해남 화순"],
+        ["47", "경산 경주 고령 구미 김천 문경 봉화 상주 성주 안동 영덕 영양 영주 영천 예천 울릉 울진 의성 청도 청송 칠곡 포항"],
+        ["48", "거제 거창 고성 김해 남해 밀양 사천 산청 양산 의령 진주 창녕 창원 통영 하동 함안 함양 합천"],
+        ["50", "서귀포"],
+        ["51", "강릉 고성 동해 삼척 속초 양구 양양 영월 원주 인제 정선 철원 춘천 태백 평창 홍천 화천 횡성"],
+        ["52", "고창 군산 김제 남원 무주 부안 순창 완주 익산 임실 장수 전주 정읍 진안"],
+      ].forEach(([sd, names]) => names.split(" ").forEach((c) => {
+        (__SCHOOL_CITY_SIDO[c] ||= []).push(sd);
+        if (sd === "51") __SCHOOL_CITY_SIDO[c].push("42");   // 강원·전북 옛 코드
+        if (sd === "52") __SCHOOL_CITY_SIDO[c].push("45");
+      }));
+      const __SCHOOL_CITY = Object.keys(__SCHOOL_CITY_SIDO).sort((a, b) => b.length - a.length);
+      function shortSchoolName(name, kind, sido2) {
+        return __shortSchoolFemale(__shortSchoolSido(name, kind, sido2));
       }
-      function __shortSchoolSido(name, kind) {
+      function __shortSchoolSido(name, kind, sido2) {
         const n = String(name || "").trim();   // 원본에 끝 공백이 붙은 이름이 있다('세종중 ')
-        const p = __SCHOOL_SIDO.find((s) => n.startsWith(s) && n.length > s.length);
+        let p = __SCHOOL_SIDO.find((s) => n.startsWith(s) && n.length > s.length), isCity = false;
+        if (!p) {
+          p = __SCHOOL_CITY.find((s) => n.startsWith(s) && n.length > s.length && (!sido2 || __SCHOOL_CITY_SIDO[s].includes(sido2)));
+          isCity = !!p;
+        }
         if (!p || n.startsWith("부산진")) return n;
-        if (n.includes("대학교사범대학")) return n.replace("대학교사범대학", "대사범대학");
+        if (n.includes("대학교사범대학")) return isCity ? n : n.replace("대학교사범대학", "대사범대학");
         const rest = n.slice(p.length);
         let core;   // 종류 글자 앞까지가 식별자(서초초 → '서초', 분교장 꼬리는 처음 나오는 종류 글자까지)
         if (rest.endsWith(kind)) core = rest.slice(0, -1);
         else { const i = rest.indexOf(kind, 1); core = i > 0 ? rest.slice(0, i) : rest; }
         if (core === "" || core === "여자" || core === "여") return n;
+        if (isCity && (core.replace(/여자?$/, "").length < 2 || rest.startsWith("교대"))) return n;   // 춘천교대부설초는 그대로
         return rest;
       }
       window.shortSchoolName = shortSchoolName;
@@ -9418,7 +9444,7 @@
         const perClass = Number.isFinite(rawPerClass) ? Math.floor(rawPerClass) : "";
         const total = school.totalStudentCount ?? "";
         const numText = perClass !== "" || total !== "" ? `${perClass !== "" ? perClass : "-"} / ${total !== "" ? total : "-"}` : "";
-        const name = shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초");
+        const name = shortSchoolName((school.schoolName || "").replace(/등학교/g, ""), "초", String(school.cortarNo || "").slice(0, 2));
         const mk = _buildSchoolMarkerSvg(name, numText);
         const markerElement = document.createElement("div");
         markerElement.style = `position:relative;width:${mk.W}px;height:${mk.H}px;cursor:pointer;`;

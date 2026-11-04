@@ -56,10 +56,12 @@
   #tbl td.hl button { border: 1px solid #e5e7eb; background: #fff; border-radius: 4px; padding: 0 5px; margin: 0 1px; font-size: 15px; line-height: 20px; color: #c9ccd1; cursor: pointer; }
   #tbl td.hl button:hover { border-color: #e0a82e; color: #e0a82e; }
   #tbl td.hl button.on { background: #f8e7b5; border-color: #e0a82e; color: #c88a00; }
-  #tbl td.hl i { font-style: normal; color: #b8332a; font-size: 12px; margin-left: 2px; }
+  #tbl th button.hlclr { margin-left: 3px; padding: 0 4px; font-size: 11px; line-height: 15px; border: 1px solid #d1d5db; background: #fff; border-radius: 3px; color: #b8332a; cursor: pointer; }
+  #tbl th button.hlclr:disabled { color: #ccc; cursor: default; }
   #tbl .mh { padding: 10px 10px 4px; font-weight: bold; border-top: 2px solid #e5e7eb; margin-top: 6px; }
   #tbl .mh span { font-weight: normal; color: #666; font-size: 12px; margin-left: 8px; }
   #tbl table.mt th { cursor: default; }
+  #tbl table.mt th[data-mk], #tbl table.mt th:nth-child(2) { cursor: pointer; }
   #tbl.fold .bd { display: none; }
   /* 학년별 학생 수 팝업 — 띄운 창은 맨 위 */
   /* 시군구 여러 개 고르기 — 띄운 창은 맨 위 */
@@ -100,8 +102,8 @@
   <div class="lg">
     <h1 id="ttl"></h1>
     <div class="sub" id="sub"></div>
-    <b style="color:#e0a82e;font-size:16px">★</b> 하이라이트 자동표시: 전교생 <input id="critTot" type="number" min="0" step="50" style="width:54px">명↑ · 학급당 <input id="critPer" type="number" min="0" step="0.5" style="width:44px">명↑ (표·학교 팝업에서 켜기/끄기)<br>
-    <span class="sw" style="background:#6a4c93"></span>중학교(기본 성취도 90%↑ · 표에서 골라 지도 표시)
+    <b style="color:#e0a82e;font-size:16px">★</b> 하이라이트 (표·학교 팝업에서 별을 눌러 켜기/끄기)<br>
+    <span class="sw" style="background:#6a4c93"></span>중학교(표에서 골라 지도 표시)
   </div>
 </div>
 <div id="map"></div>
@@ -113,8 +115,6 @@ const FONT = "Malgun Gothic, Apple SD Gothic Neo, sans-serif";
 const ELI_COLOR = "#2f4858", MID_COLOR = "#6a4c93";
 const RANK_BG = r => r <= 10 ? "#c8553d" : r <= 20 ? "#3d6f8e" : r <= 30 ? "#6b8f71" : "#8a7a5c";
 const GU_FILL = ["#d6b38a", "#9fbf9a", "#e0cc8e", "#94b4d1", "#c9a3b8", "#b8c48f", "#a7b8d8", "#d9a88f", "#a9c7c0", "#cfb7d9"];
-// 하이라이트 기본 조건(2026-11-04 사용자 지시 — 고학년 학생 수는 보지 않는다). 범례 입력칸에서 사용자가 바꾸고 sd:crit 에 저장한다.
-let { tot: TOT_MIN, per: PER_MIN } = Object.assign({ tot: 800, per: 22 }, (() => { try { return JSON.parse(localStorage.getItem("sd:crit")) || {}; } catch (e) { return {}; } })());
 const SIDO = { 11: "서울특별시", 26: "부산광역시", 27: "대구광역시", 28: "인천광역시", 29: "광주광역시", 30: "대전광역시", 31: "울산광역시", 36: "세종특별자치시",
   41: "경기도", 43: "충청북도", 44: "충청남도", 46: "전라남도", 47: "경상북도", 48: "경상남도", 50: "제주특별자치도", 51: "강원특별자치도", 52: "전북특별자치도" };
 
@@ -124,6 +124,44 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ? 
 const cv = document.createElement("canvas").getContext("2d");
 const textW = (t, f) => { cv.font = f; return cv.measureText(t).width; };
 const km = (a, b, c, d) => Math.hypot((a - c) * 111, (b - d) * 88.4);
+
+// 홍부 shortSchoolName 과 같은 마커 이름 규칙(마커 글자에만 — 표·제목은 정식 이름).
+//   앞의 시도 이름을 떼고(떼면 식별자가 없을 때·부산진은 유지), ○○대학교사범대학부속·부설 → ○○대사대부, 끝 여자중·여자고 → 여중·여고. kind = '초' | '중'
+const SCHOOL_SIDO = ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종", "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"];
+// 시도뿐 아니라 고른 시도의 시·군 이름도 뗀다(2026-11-04 사용자: "수원금호초처럼 앞에 수원 붙은 건 불필요" → 금호초).
+//   CITY_PFX = 고른 시도의 시·군 이름에서 '시'·'군'을 뗀 것(수원·성남·가평…). 구 이름은 '중'(중구)처럼 짧아 오인이 많아 넣지 않는다.
+let CITY_PFX = [];
+// 경계 데이터에 구 이름만 있는 시(덕양구·처인구·원미구 …) — 시군구 코드 앞 4자리로 시 이름을 보충
+const CITY_BY_CD4 = { 4128: "고양", 4146: "용인", 4119: "부천", 4311: "청주", 4413: "천안", 4511: "전주", 5211: "전주", 4711: "포항", 4812: "창원" };
+function setCityPrefixes(sido) {
+  const s = new Set();
+  for (const g of SIG) {
+    if (g.cd.slice(0, 2) !== sido) continue;
+    if (CITY_BY_CD4[g.cd.slice(0, 4)]) s.add(CITY_BY_CD4[g.cd.slice(0, 4)]);
+    const m = g.nm.match(/^(\S+?)(시|군)(?=\s|$|\S+구$)/);
+    if (m && m[1].length >= 2) s.add(m[1]);
+  }
+  CITY_PFX = [...s].sort((a, b) => b.length - a.length);
+}
+function shortSchoolName(name, kind) {
+  const n = String(name || "").trim();
+  let out = n;
+  const p = SCHOOL_SIDO.concat(CITY_PFX).find(s => n.startsWith(s) && n.length > s.length);
+  if (p && !n.startsWith("부산진")) {
+    if (n.includes("대학교사범대학")) out = n.replace("대학교사범대학", "대사범대학");
+    else {
+      const rest = n.slice(p.length);
+      let core;
+      if (rest.endsWith(kind)) core = rest.slice(0, -1);
+      else { const i = rest.indexOf(kind, 1); core = i > 0 ? rest.slice(0, i) : rest; }
+      // 시 이름을 뗄 때는 남는 식별자가 두 글자 이상일 때만(부천남초·수원북중·부천동여자중은 그대로 — '남초'·'북중'은 어느 학교인지 모른다)
+      const bare = core.replace(/여자?$/, "");
+      const okCity = !CITY_PFX.includes(p) || bare.length >= 2;
+      if (!(core === "" || core === "여자" || core === "여") && okCity) out = rest;
+    }
+  }
+  return out.replace(/(대학교|대)사범대학부[속설]/, "대사대부").replace(/여자(중|고)$/, "여$1");
+}
 
 // 홍부 _buildSchoolMarkerSvg 와 같은 건물 모양. hl = [앞 숫자 강조색, 뒤 숫자 강조색]
 function markerSvg(name, numText, color, hl) {
@@ -200,11 +238,14 @@ function regionsOf(sido) {
 }
 // 시군구는 체크박스로 여러 개 고른다. SEL = 고른 시군구(구) 코드들
 let SGG_LIST = [], SEL = new Set();
-function fillSgg(selKey) {
+// autoFirst: 저장된 선택이 없을 때 첫 항목을 고를지(처음 열 때만). 시도를 바꿀 때는 아무것도 고르지 않는다
+//   (2026-11-04 사용자: 경기도로 바꾸면 가평군이 저절로 체크돼 다른 시를 골라도 같이 남았다)
+function fillSgg(selKey, autoFirst) {
   SGG_LIST = regionsOf($("selSido").value);
+  setCityPrefixes($("selSido").value);
   const ok = new Set(SGG_LIST.flatMap(r => r.gus.map(g => g.cd)));
   SEL = new Set((selKey || "").split(",").filter(c => ok.has(c)));
-  if (!SEL.size && SGG_LIST.length) SGG_LIST[0].gus.forEach(g => SEL.add(g.cd));
+  if (autoFirst && !SEL.size && SGG_LIST.length) SGG_LIST[0].gus.forEach(g => SEL.add(g.cd));
   renderSgg();
 }
 function curRegion() {
@@ -278,44 +319,42 @@ function draw(keepView) {
     // 참고값(표·팝업 표시용, 하이라이트와 무관): ex = 4~6학년 − 1~3학년×지역 평균 고/저 비율, cg = 학년당 학급 증가
     const ex = Math.round(hi - lo * AHL);
     const cc = o.cls, cg = (cc[3] + cc[4] + cc[5] - cc[0] - cc[1] - cc[2]) / 3;
-    // 기본 하이라이트(2026-11-04 사용자 확정): 전교생 TOT_MIN 명 이상 + 학급당 PER_MIN 명 이상. 고학년 학생 수는 보지 않는다.
-    const big = (o.s.totalStudentCount || 0) >= TOT_MIN && (o.s.studentCountPerClassroom || 0) >= PER_MIN;
     // 하이라이트는 한 가지(★ = 2)로 통일 — 2026-11-04 사용자 지시
-    const auto = big ? 2 : 0;
-    const code = o.s.schoolCode || o.s.markerId, man = OVR[code];
-    const up = man == null ? auto : man ? 2 : 0;
+    // 자동 하이라이트는 없앴다(2026-11-04 사용자 지시 — 헷갈림). 손으로 켠 학교만 ★
+    const code = o.s.schoolCode || o.s.markerId;
+    const up = OVR[code] ? 2 : 0;
     const c = MIDS.filter(m => m.ach >= 90).map(m => [km(o.s.latitude, o.s.longitude, m.lat, m.lng), m]).filter(p => p[0] <= 1).sort((a, b) => a[0] - b[0])[0];
     const emd = EMD[String(o.s.cortarNo).slice(0, 8)] || "";
     return { rank: i + 1, name: o.s.schoolName.replace(/등학교$/, ""), total: o.s.totalStudentCount || 0, per: o.s.studentCountPerClassroom,
       lat: o.s.latitude, lng: o.s.longitude, gu: guName(o.g), guFill: fillOf[o.g.cd], loc: `${guName(o.g)} ${emd}`.trim(), up, r43, rhl,
-      mid: c ? c[1] : null, dist: c ? c[0] : 0, gr: o.gr, cls: o.cls, ex, cg, code, auto, man, sgg: String(o.s.cortarNo || "").slice(0, 5) };
+      mid: c ? c[1] : null, dist: c ? c[0] : 0, gr: o.gr, cls: o.cls, ex, cg, code, sgg: String(o.s.cortarNo || "").slice(0, 5) };
   });
 
   // 마커 — 표에서 체크 해제한 학교는 지도에서 뺀다
-  const HIDE = store.get("sd:hide", {});
+  const HIDE = store.get("sd:hide2", {});   // 2026-11-04 키 교체로 한 번 전체 표시로 초기화
   top.forEach(t => t.show = !HIDE[t.code]);
-  const RKOFF = store.get("sd:rkoff", {});   // 지도 순위 배지 끈 초등 { schoolCode: 1 } (기본 모두 표시)
-  top.forEach(t => t.rk = !RKOFF[t.code]);
+  const RKON = store.get("sd:rkon", {});   // 지도 순위 배지 켠 초등 { schoolCode: 1 } (기본 모두 숨김 — 2026-11-04)
+  top.forEach(t => t.rk = !!RKON[t.code]);
   const shown = top.filter(t => t.show);
   const bounds = new naver.maps.LatLngBounds(new naver.maps.LatLng(y0, x0), new naver.maps.LatLng(y1, x1));
   for (const t of shown) {
     const num = `${t.per == null ? "-" : Math.trunc(t.per)} / ${t.total}`;
-    MK.push({ kind: "e", t, rank: t.rank, rk: t.rk, up: t.up, pos: new naver.maps.LatLng(t.lat, t.lng), title: `${t.rank}위 ${t.name} — 학급당 / 전교생 ${num}`, ...markerSvg(t.name, num, ELI_COLOR) });
+    MK.push({ kind: "e", t, row: t, rank: t.rank, rk: t.rk, up: t.up, pos: new naver.maps.LatLng(t.lat, t.lng), title: `${t.rank}위 ${t.name} — 학급당 / 전교생 ${num}`, ...markerSvg(shortSchoolName(t.name, "초"), num, ELI_COLOR) });
   }
-  // 중학교: 지역 경계 안 전부(성취도 순). 지도에는 체크한 것만 — 기본은 성취도 90% 이상
-  const MOV = store.get("sd:mid", {}), MUP = store.get("sd:midup", {}), MRKOFF = store.get("sd:mrkoff", {});   // MUP = 중학교 하이라이트 { 학교 ID: 1 } (기본 없음)
+  // 중학교: 지역 경계 안 전부(성취도 순). 지도에는 체크한 것만 — 기본은 전부(2026-11-04)
+  const MOV = store.get("sd:mid2", {}), MUP = store.get("sd:midup", {}), MRKON = store.get("sd:mrkon", {});   // MUP = 중학교 하이라이트 { 학교 ID: 1 } (기본 없음)
   const midRows = [];
   for (const m of MIDS) {
     if (!(m.lng >= x0 && m.lng <= x1 && m.lat >= y0 && m.lat <= y1)) continue;
     const g = R.gus.find(g => g.rings.some(r => inRing(m.lng, m.lat, r))); if (!g) continue;
     midRows.push({ m, id: m.id, name: m.name.replace(/학교$/, ""), ach: m.ach, achT: m.achT, spc: parseFloat(m.spcT) || 0, spcT: m.spcT,
-      gu: guName(g), guFill: fillOf[g.cd], loc: guName(g), sp: MSP.s[m.id] || null, lat: m.lat, lng: m.lng, up: MUP[m.id] ? 2 : 0, rk: !MRKOFF[m.id], show: MOV[m.id] == null ? m.ach >= 90 : !!MOV[m.id] });
+      gu: guName(g), guFill: fillOf[g.cd], loc: guName(g), sp: MSP.s[m.id] || null, lat: m.lat, lng: m.lng, up: MUP[m.id] ? 2 : 0, rk: !!MRKON[m.id], show: MOV[m.id] == null ? true : !!MOV[m.id] });
   }
   midRows.sort((a, b) => b.ach - a.ach || b.spc - a.spc).forEach((x, i) => x.rank = i + 1);
   for (const x of midRows.filter(x => x.show)) {
     const m = x.m, a = String(m.achT).replace("%", ""), b = String(m.spcT).replace("%", "");
-    MK.push({ kind: "m", rank: x.rank, rk: x.rk, up: x.up, pos: new naver.maps.LatLng(m.lat, m.lng), title: `${m.name} — 학업성취도 / 특목고 ${a} / ${b}`,
-      ...markerSvg(m.name, `${a} / ${b}`, MID_COLOR, [+a >= 90 ? "#b8332a" : null, +b >= 4 ? "#2c5d8f" : null]) });
+    MK.push({ kind: "m", row: x, rank: x.rank, rk: x.rk, up: x.up, pos: new naver.maps.LatLng(m.lat, m.lng), title: `${m.name} — 학업성취도 / 특목고 ${a} / ${b}`,
+      ...markerSvg(shortSchoolName(m.name.replace(/학교$/, ""), "중"), `${a} / ${b}`, MID_COLOR, [+a >= 90 ? "#b8332a" : null, +b >= 4 ? "#2c5d8f" : null]) });
   }
   MK.forEach(m => {
     m.marker = keep(new naver.maps.Marker({ position: m.pos, map, zIndex: m.kind === "m" ? 90 : 100, title: m.title, cursor: m.kind === "e" ? "pointer" : "default" }));
@@ -367,7 +406,7 @@ function declutter() {
     const lead = Math.hypot(ox[i], oy[i]) > 6 ? `<svg style="position:absolute;left:0;top:0;overflow:visible;pointer-events:none" width="1" height="1">
         <line x1="${ax}" y1="${ay}" x2="${m.W / 2}" y2="${m.H / 2}" stroke="${lc}" stroke-width="1.2"/>
         <circle cx="${ax}" cy="${ay}" r="3.5" fill="${lc}" stroke="#fff" stroke-width="1.2"/></svg>` : "";
-    const badge = m.rk ? `<div style="position:absolute;left:3px;top:-2px;min-width:24px;height:24px;padding:0 4px;box-sizing:border-box;border-radius:12px;background:${m.kind === "m" ? MID_COLOR : ELI_COLOR};border:2px solid #fff;color:#fff;font:bold 14px/20px ${FONT};text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.3)">${m.rank}</div>` : "";
+    const badge = m.rk ? `<div style="position:absolute;left:3px;top:-2px;min-width:24px;height:24px;padding:0 4px;box-sizing:border-box;border-radius:12px;background:${m.kind === "m" ? MID_COLOR : ELI_COLOR};border:2px solid #fff;color:#fff;font:bold 14px/20px ${FONT};text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.3)">${(m.row && m.row.dr) || m.rank}</div>` : "";
     // 별은 마커 왼쪽에 겹쳐 붙인다(사용자 지시: 겹쳐도 됨). 마커·순위 배지보다 먼저 그려 숫자를 가리지 않게 한다
     const star = m.up ? `<div style="position:absolute;left:-28px;top:-17px;font:46px/1 ${FONT};color:#f2b01e;-webkit-text-stroke:2px #8a5a00;text-shadow:0 1px 3px rgba(0,0,0,.45);pointer-events:none">${m.up === 2 ? "★" : "☆"}</div>` : "";
     m.marker.setIcon({
@@ -390,29 +429,35 @@ function drawTable(rows, midRows) {
   const sc = [...tbl.querySelectorAll(".bd")].map(b => b.scrollTop), fold = tbl.classList.contains("fold");
   tbl.innerHTML = `<div class="hd">전교생 많은 초등학교 ${rows.length}<label><input type="checkbox" id="chkGrd"${GRD ? " checked" : ""}>학년별 학생 수</label><span class="fs"><button data-fs="-1" title="글자 작게">가−</button><button data-fs="1" title="글자 크게">가+</button></span><button class="fold">${fold ? "펴기" : "접기"}</button></div><div class="bd be"><table><thead><tr>
     <th class="ck"><input type="checkbox" title="전체 선택/해제"></th><th data-k="rank"><input type="checkbox" class="rkall" title="지도 순위 표시 전체 켜기/끄기">순위</th><th data-k="loc">위치</th><th data-k="name">학교명</th><th data-k="total">전교생</th><th data-k="per">학급당</th>
-    ${GRD ? [1, 2, 3, 4, 5, 6].map(i => `<th data-k="g${i}" class="gc">${i}학년</th>`).join("") : ""}<th data-k="ex" title="4~6학년 − 1~3학년×지역 평균 비율 = 지역 흐름보다 많은 고학년 학생 수 (참고용, 하이라이트와 무관)">고학년 초과</th><th data-k="up" title="별을 눌러 하이라이트 켜기/끄기">하이라이트</th>
+    ${GRD ? [1, 2, 3, 4, 5, 6].map(i => `<th data-k="g${i}" class="gc">${i}학년</th>`).join("") : ""}<th data-k="ex" title="4~6학년 − 1~3학년×지역 평균 비율 = 지역 흐름보다 많은 고학년 학생 수 (참고용, 하이라이트와 무관)">고학년 초과</th><th data-k="up" title="별을 눌러 하이라이트 켜기/끄기">하이라이트<button class="hlclr" title="하이라이트 모두 끄기">✕</button></th>
     </tr></thead><tbody></tbody></table></div>
-    <div class="rz" data-k="e" title="위아래로 끌어 높이 조절"></div><div class="bd bm"><div class="mh">중학교 ${TMID.length}<span>학업성취도 순 · 체크 = 지도 표시(기본 90%↑)</span></div>
-    <table class="mt"><thead><tr><th class="ck"><input type="checkbox" title="전체 선택/해제"></th><th><input type="checkbox" class="rkall" title="지도 순위 표시 전체 켜기/끄기">순위</th><th>위치</th><th>학교명</th><th>학업성취도</th><th>특목고</th><th title="학교알리미 ${MSP.year || ""} 졸업생 진로">졸업자</th><th>과학고</th><th>외고국제고</th><th title="별을 눌러 하이라이트 켜기/끄기">하이라이트</th></tr></thead><tbody></tbody></table></div><div class="rz" data-k="m" title="위아래로 끌어 높이 조절"></div>`;
+    <div class="rz" data-k="e" title="위아래로 끌어 높이 조절"></div><div class="bd bm"><div class="mh">중학교 ${TMID.length}<span>학업성취도 순 · 체크 = 지도 표시</span></div>
+    <table class="mt"><thead><tr><th class="ck"><input type="checkbox" title="전체 선택/해제"></th><th><input type="checkbox" class="rkall" title="지도 순위 표시 전체 켜기/끄기">순위</th><th>위치</th><th>학교명</th><th data-mk="ach">학업성취도</th><th data-mk="spc">특목고</th><th title="학교알리미 ${MSP.year || ""} 졸업생 진로">졸업자</th><th data-mk="sci">과학고</th><th data-mk="fl">외고국제고</th><th data-mk="sum" title="과학고 + 외고국제고">합계</th><th title="별을 눌러 하이라이트 켜기/끄기">하이라이트<button class="hlclr" title="하이라이트 모두 끄기">✕</button></th></tr></thead><tbody></tbody></table></div><div class="rz" data-k="m" title="위아래로 끌어 높이 조절"></div>`;
   tbl.querySelector("thead").onclick = e => {
     const k = e.target.dataset.k; if (!k) return;
     if (k === TKEY) TASC = !TASC; else { TKEY = k; TASC = k === "rank" || k === "loc" || k === "name"; }
     tbody();
   };
-  const setHide = (codes, on) => { const h = store.get("sd:hide", {}); codes.forEach(c => on ? delete h[c] : h[c] = 1); store.set("sd:hide", h); draw(true); };
+  const setHide = (codes, on) => { const h = store.get("sd:hide2", {}); codes.forEach(c => on ? delete h[c] : h[c] = 1); store.set("sd:hide2", h); draw(true); };
   const all = tbl.querySelector("th.ck input");
   all.checked = rows.every(t => t.show); all.indeterminate = !all.checked && rows.some(t => t.show);
   all.onclick = e => { e.stopPropagation(); setHide(rows.map(t => t.code), all.checked); };
   tbl.querySelector("th.ck").onclick = e => { if (e.target === e.currentTarget) all.click(); };
-  // 순위 머리 체크 = 지도 순위 배지 전체 켜기/끄기 (초등 sd:rkoff · 중학교 sd:mrkoff)
+  // 순위 머리 체크 = 지도 순위 배지 전체 켜기/끄기 (초등 sd:rkon · 중학교 sd:mrkon — 켠 것만 저장)
   const rkAll = (inp, list, key, id) => {
     inp.checked = list.length > 0 && list.every(x => x.rk); inp.indeterminate = !inp.checked && list.some(x => x.rk);
-    inp.onclick = e => { e.stopPropagation(); const o = store.get(key, {}); list.forEach(x => inp.checked ? delete o[x[id]] : o[x[id]] = 1); store.set(key, o); draw(true); };
+    inp.onclick = e => { e.stopPropagation(); const o = store.get(key, {}); list.forEach(x => inp.checked ? o[x[id]] = 1 : delete o[x[id]]); store.set(key, o); draw(true); };
   };
-  rkAll(tbl.querySelector("table:not(.mt) input.rkall"), rows, "sd:rkoff", "code");
+  rkAll(tbl.querySelector("table:not(.mt) input.rkall"), rows, "sd:rkon", "code");
+  // 하이라이트 머리의 ✕ = 이 표의 하이라이트 모두 끄기 (초등 sd:up · 중학교 sd:midup)
+  const hlClr = (btn, list, off) => {
+    btn.disabled = !list.some(x => x.up);
+    btn.onclick = ev => { ev.stopPropagation(); if (!confirm(`하이라이트 ${list.filter(x => x.up).length}개를 모두 끌까요?`)) return; off(); draw(true); gpop.classList.remove("on"); };
+  };
+  hlClr(tbl.querySelector("table:not(.mt) button.hlclr"), rows, () => { const o = store.get("sd:up", {}); rows.forEach(t => delete o[t.code]); store.set("sd:up", o); });
   tbl.querySelector("tbody").onclick = e => {
     const rb = e.target.closest("button.rk");
-    if (rb) { const x = TROWS[+rb.closest("tr").dataset.r - 1], o = store.get("sd:rkoff", {}); if (x.rk) o[x.code] = 1; else delete o[x.code]; store.set("sd:rkoff", o); return draw(true); }
+    if (rb) { const x = TROWS[+rb.closest("tr").dataset.r - 1], o = store.get("sd:rkon", {}); if (x.rk) delete o[x.code]; else o[x.code] = 1; store.set("sd:rkon", o); return draw(true); }
     const hb = e.target.closest("td.hl button");
     if (hb) { const x = TROWS[+hb.closest("tr").dataset.r - 1]; toggleUp(x); gpop.classList.remove("on"); return; }
     const c0 = e.target.closest("td");   // 체크박스 둘레 칸을 눌러도 체크
@@ -425,16 +470,24 @@ function drawTable(rows, midRows) {
     showGrades(x, tb.left - 330, rc.top + rc.height / 2);
   };
   // 중학교 표
-  const setMid = (ids, on) => { const o = store.get("sd:mid", {}); ids.forEach(id => o[id] = on ? 1 : 0); store.set("sd:mid", o); draw(true); };
+  const setMid = (ids, on) => { const o = store.get("sd:mid2", {}); ids.forEach(id => o[id] = on ? 1 : 0); store.set("sd:mid2", o); draw(true); };
   const mt = tbl.querySelector("table.mt"), mall = mt.querySelector("th.ck input");
   mall.checked = TMID.length > 0 && TMID.every(x => x.show); mall.indeterminate = !mall.checked && TMID.some(x => x.show);
   mall.onclick = () => setMid(TMID.map(x => x.id), mall.checked);
   mt.querySelector("th.ck").onclick = e => { if (e.target === e.currentTarget) mall.click(); };
-  rkAll(mt.querySelector("input.rkall"), TMID, "sd:mrkoff", "id");
+  rkAll(mt.querySelector("input.rkall"), TMID, "sd:mrkon", "id");
+  hlClr(mt.querySelector("button.hlclr"), TMID, () => { const o = store.get("sd:midup", {}); TMID.forEach(x => delete o[x.id]); store.set("sd:midup", o); });
+  // 중학교 표 정렬: 머리를 누르면 큰 순 → 다시 누르면 작은 순. 순위 머리를 누르면 원래 순서(학업성취도 순)
+  mt.querySelector("thead").onclick = e => {
+    const th = e.target.closest("th"); if (!th || e.target.matches("input")) return;
+    const k = th.dataset.mk || (th.cellIndex === 1 ? "rank" : null); if (!k) return;
+    if (k === MKEY) MASC = !MASC; else { MKEY = k; MASC = k === "rank"; }
+    midBody();
+  };
   mt.querySelector("tbody").onclick = e => {
     const tr = e.target.closest("tr"); if (!tr) return;
     const x = TMID[+tr.dataset.r - 1], c0 = e.target.closest("td");
-    if (e.target.closest("button.rk")) { const o = store.get("sd:mrkoff", {}); if (x.rk) o[x.id] = 1; else delete o[x.id]; store.set("sd:mrkoff", o); return draw(true); }
+    if (e.target.closest("button.rk")) { const o = store.get("sd:mrkon", {}); if (x.rk) delete o[x.id]; else o[x.id] = 1; store.set("sd:mrkon", o); return draw(true); }
     if (e.target.closest("td.hl button")) { const o = store.get("sd:midup", {}); if (x.up) delete o[x.id]; else o[x.id] = 1; store.set("sd:midup", o); return draw(true); }
     if (e.target.matches("input.ck")) return setMid([x.id], e.target.checked);
     if (c0 && c0.cellIndex === 0) return setMid([x.id], !x.show);
@@ -465,22 +518,37 @@ function drawTable(rows, midRows) {
   tbody();
   tbl.querySelectorAll(".bd").forEach((b, i) => b.scrollTop = sc[i] || 0);
 }
+let MKEY = "rank", MASC = true;   // 중학교 표 정렬 열
+const midVal = (x, k) => k === "rank" ? x.rank : k === "ach" ? x.ach : k === "spc" ? x.spc
+  : !x.sp ? -1 : k === "sci" ? x.sp[1] : k === "fl" ? x.sp[2] : x.sp[1] + x.sp[2];   // 진로 자료 없는 학교는 맨 아래(큰 순일 때)
 function midBody() {
   const b = tbl.querySelector("table.mt tbody"); if (!b) return;
-  b.innerHTML = TMID.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up2" : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td>
-    <td class="n"><button class="rk${x.rk ? "" : " off"}" style="background:${MID_COLOR}" title="눌러서 지도 순위 표시 켜기/끄기">${x.rank}</button></td><td><span class="gu" style="background:${x.guFill}"></span>${x.loc}</td><td>${x.up ? `<b style="color:#e0a82e">★</b> ` : ""}<b>${x.name}</b></td>
+  // 같은 값이면 원래 순위대로
+  const rows = [...TMID].sort((p, q) => (midVal(p, MKEY) - midVal(q, MKEY)) * (MASC ? 1 : -1) || p.rank - q.rank);
+  // 순위 번호는 정렬한 순서대로 1부터 다시(표·지도 배지 모두 — 2026-11-04 사용자). data-r 은 원래 순위(행 찾기용)
+  rows.forEach((x, i) => x.dr = i + 1);
+  if (MK.length) declutter();
+  tbl.querySelectorAll("table.mt th").forEach(th => {
+    const k = th.dataset.mk || (th.cellIndex === 1 ? "rank" : null); if (!k) return;
+    const t = th.lastChild; if (t && t.nodeType === 3) t.nodeValue = t.nodeValue.replace(/ [▲▼]$/, "") + (k === MKEY && k !== "rank" ? (MASC ? " ▲" : " ▼") : "");
+  });
+  b.innerHTML = rows.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up2" : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td>
+    <td class="n"><button class="rk${x.rk ? "" : " off"}" style="background:${MID_COLOR}" title="눌러서 지도 순위 표시 켜기/끄기">${x.dr}</button></td><td><span class="gu" style="background:${x.guFill}"></span>${x.loc}</td><td>${x.up ? `<b style="color:#e0a82e">★</b> ` : ""}<b>${x.name}</b></td>
     <td class="n" style="${x.ach >= 90 ? "color:#b8332a;font-weight:bold" : ""}">${x.achT || "-"}</td><td class="n" style="${x.spc >= 4 ? "color:#2c5d8f;font-weight:bold" : ""}">${x.spcT || "-"}</td>
-    ${x.sp ? `<td class="n">${x.sp[0].toLocaleString()}</td><td class="n"${x.sp[1] ? ' style="font-weight:bold"' : ""}>${x.sp[1]}</td><td class="n"${x.sp[2] ? ' style="font-weight:bold"' : ""}>${x.sp[2]}</td>` : `<td class="n">-</td><td class="n">-</td><td class="n">-</td>`}
+    ${x.sp ? `<td class="n">${x.sp[0].toLocaleString()}</td><td class="n"${x.sp[1] ? ' style="font-weight:bold"' : ""}>${x.sp[1]}</td><td class="n"${x.sp[2] ? ' style="font-weight:bold"' : ""}>${x.sp[2]}</td><td class="n"${x.sp[1] + x.sp[2] ? ' style="font-weight:bold;color:#2c5d8f"' : ""}>${x.sp[1] + x.sp[2]}</td>` : `<td class="n">-</td><td class="n">-</td><td class="n">-</td><td class="n">-</td>`}
     <td class="hl"><button class="${x.up ? "on" : ""}" title="눌러서 켜기/끄기">★</button></td></tr>`).join("")
     || `<tr><td colspan="10" style="color:#888">이 지역 안에 중학교 자료가 없습니다</td></tr>`;
 }
 function tbody() {
-  const r = [...TROWS].sort((a, b) => (a[TKEY] < b[TKEY] ? -1 : a[TKEY] > b[TKEY] ? 1 : 0) * (TASC ? 1 : -1));
-  tbl.querySelector("tbody").innerHTML = r.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up" + x.up : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td><td class="n"><button class="rk${x.rk ? "" : " off"}" style="background:${ELI_COLOR}" title="눌러서 지도 순위 표시 켜기/끄기">${x.rank}</button></td>
+  const r = [...TROWS].sort((a, b) => (a[TKEY] < b[TKEY] ? -1 : a[TKEY] > b[TKEY] ? 1 : 0) * (TASC ? 1 : -1) || a.rank - b.rank);
+  // 순위 번호는 정렬한 순서대로 1부터 다시(표·지도 배지·팝업 — 2026-11-04 사용자). TROWS 는 사본이라 원본(TSRC, 원래 순위 순)에도 적는다
+  r.forEach((x, i) => { x.dr = i + 1; if (TSRC[x.rank - 1]) TSRC[x.rank - 1].dr = i + 1; });
+  if (MK.length) declutter();
+  tbl.querySelector("tbody").innerHTML = r.map(x => `<tr data-r="${x.rank}" class="${x.up ? "up" + x.up : ""}${x.show ? "" : " off"}"><td><input type="checkbox" class="ck"${x.show ? " checked" : ""}></td><td class="n"><button class="rk${x.rk ? "" : " off"}" style="background:${ELI_COLOR}" title="눌러서 지도 순위 표시 켜기/끄기">${x.dr}</button></td>
     <td><span class="gu" style="background:${x.guFill}"></span>${x.loc}</td><td>${x.up ? `<b style="color:#e0a82e">${x.up === 2 ? "★" : "☆"}</b> ` : ""}<b>${x.name}</b></td>
     <td class="n">${x.total.toLocaleString()}</td><td class="n">${x.per == null ? "-" : x.per.toFixed(1)}</td>
-    ${GRD ? x.gr.map((v, i) => `<td class="n gc${i === 3 ? " g4" : ""}">${v.toLocaleString()}</td>`).join("") : ""}<td class="n" style="color:${x.ex > 0 ? "#b8332a" : "#2c5d8f"}">${x.ex > 0 ? "+" : ""}${x.ex}</td>
-    <td class="hl"><button class="${x.up ? "on" : ""}" title="눌러서 켜기/끄기${x.man != null ? " · 손으로 지정함(자동: " + ["없음", "☆", "★"][x.auto] + ")" : ""}">${x.up === 1 ? "☆" : "★"}</button>${x.man != null ? `<i title="손으로 지정함">✎</i>` : ""}</td></tr>`).join("");
+    ${GRD ? x.gr.map((v, i) => `<td class="n gc${i === 3 ? " g4" : ""}">${v.toLocaleString()}${x.cls && x.cls[i] ? `<span style="color:#888;font-size:.85em">(${x.cls[i]}반)</span>` : ""}</td>`).join("") : ""}<td class="n" style="color:${x.ex > 0 ? "#b8332a" : "#2c5d8f"}">${x.ex > 0 ? "+" : ""}${x.ex}</td>
+    <td class="hl"><button class="${x.up ? "on" : ""}" title="눌러서 켜기/끄기">★</button></td></tr>`).join("");
   // 정렬 화살표만 바꾼다(머리 안의 체크박스가 지워지지 않게 마지막 글자 마디만 고침)
   tbl.querySelectorAll("th[data-k]").forEach(th => { const t = th.lastChild; if (t && t.nodeType === 3) t.nodeValue = t.nodeValue.replace(/ [▲▼]$/, "") + (th.dataset.k === TKEY ? (TASC ? " ▲" : " ▼") : ""); });
 }
@@ -494,30 +562,20 @@ async function loadAdm(R) {
   ADM = parts.flat().filter(a => a[2].length && inside(a[2]));
 }
 $("btnMin").onclick = () => $("note").classList.toggle("min");
-// 기본 하이라이트 기준 입력칸 — 바꾸면 저장하고 다시 그린다(손으로 켜고 끈 학교는 그대로)
-$("critTot").value = TOT_MIN; $("critPer").value = PER_MIN;
-const onCrit = () => {
-  const t = parseFloat($("critTot").value), p = parseFloat($("critPer").value);
-  if (!(t >= 0) || !(p >= 0)) return;
-  TOT_MIN = t; PER_MIN = p; store.set("sd:crit", { tot: t, per: p });
-  if (REGION) draw(true);
-};
-$("critTot").addEventListener("change", onCrit); $("critPer").addEventListener("change", onCrit);
 
 // ── 초등학교 누르면 학년별 학생 수 ──
 let AVG = { A43: 1, AHL: 1, TOT: 0 }, TOP = [];
 const gpop = document.createElement("div");
 gpop.id = "gpop";
 document.body.appendChild(gpop);
-// 하이라이트 지정 — 자동 판정과 같아지면 손 지정 기록을 지운다
+// 하이라이트 지정 — 켠 학교만 sd:up 에 2 로 남긴다
 function setUp(t, v) {
   const o = store.get("sd:up", {});
-  if (v === t.auto) delete o[t.code]; else o[t.code] = v;
+  if (v) o[t.code] = 2; else delete o[t.code];
   store.set("sd:up", o);
   draw(true);
 }
-// 켜기/끄기 한 가지 — 켤 때는 자동 판정 별(없으면 ★)
-const toggleUp = t => setUp(t, t.up ? 0 : t.auto || 2);
+const toggleUp = t => setUp(t, t.up ? 0 : 2);
 function showGrades(t, cx, cy) {
   const g = t.gr, c = t.cls, mx = Math.max(...g, 1);
   const rows = g.map((v, i) => {
@@ -527,16 +585,13 @@ function showGrades(t, cx, cy) {
       <td style="width:130px"><div class="bar" style="width:${(v / mx * 100).toFixed(1)}%;background:${i < 3 ? "#9fb3c4" : ELI_COLOR}"></div></td>
       <td class="n"><b>${v}</b></td><td class="n">${dTxt}</td><td class="n">${c[i] || "-"}</td><td class="n">${per}</td></tr>`;
   }).join("");
-  gpop.innerHTML = `<div class="t"><span class="rk" style="display:inline-block;min-width:20px;border-radius:9px;color:#fff;text-align:center;font-size:12px;background:${ELI_COLOR}">${t.rank}</span>
+  gpop.innerHTML = `<div class="t"><span class="rk" style="display:inline-block;min-width:20px;border-radius:9px;color:#fff;text-align:center;font-size:12px;background:${ELI_COLOR}">${t.dr || t.rank}</span>
       ${t.up ? `<span style="color:#e0a82e">${t.up === 2 ? "★" : "☆"}</span>` : ""}${t.name}<button class="x" title="닫기">✕</button></div>
-    <div class="hlb">하이라이트 <button class="${t.up ? "on" : ""}" title="눌러서 켜기/끄기">${t.up === 1 ? "☆" : "★"} ${t.up ? "켜짐" : "꺼짐"}</button>
-      ${t.man != null ? `<span style="color:#b8332a;font-size:12px">손으로 지정함 (자동: ${["없음", "☆", "★"][t.auto]})</span>` : ""}</div>
+    <div class="hlb">하이라이트 <button class="${t.up ? "on" : ""}" title="눌러서 켜기/끄기">${t.up === 1 ? "☆" : "★"} ${t.up ? "켜짐" : "꺼짐"}</button></div>
     <div class="s">${t.loc} · 전교생 ${t.total.toLocaleString()} · 학급당 ${t.per == null ? "-" : t.per.toFixed(1)}</div>
     <table><thead><tr><th>학년</th><th></th><th>학생</th><th>앞 학년 대비</th><th>학급</th><th>학급당</th></tr></thead><tbody>${rows}</tbody></table>
     <div class="s" style="margin:6px 0 0">4/3학년 <b>${t.r43.toFixed(2)}</b> (지역 ${AVG.A43.toFixed(2)}) · 고/저학년 <b>${t.rhl.toFixed(2)}</b> (지역 ${AVG.AHL.toFixed(2)})<br>
-      지역 흐름보다 고학년 <b style="color:${t.ex > 0 ? "#b8332a" : "#2c5d8f"}">${t.ex > 0 ? "+" : ""}${t.ex}명</b> · 학년당 학급 <b>${t.cg > 0 ? "+" : ""}${t.cg.toFixed(1)}반</b><br>
-      기본 하이라이트: 전교생 ${t.total.toLocaleString()} / ${TOT_MIN}명 · 학급당 ${t.per == null ? "-" : t.per.toFixed(1)} / ${PER_MIN}명
-      ${t.auto ? ` <b style="color:#c88a00">— 충족, 기본 ★</b>` : ` <b style="color:#2c5d8f">— ${t.total < TOT_MIN ? TOT_MIN + "명 미만" : "학급당 " + PER_MIN + "명 미만"}, 기본 없음</b>`}</div>`;
+      지역 흐름보다 고학년 <b style="color:${t.ex > 0 ? "#b8332a" : "#2c5d8f"}">${t.ex > 0 ? "+" : ""}${t.ex}명</b> · 학년당 학급 <b>${t.cg > 0 ? "+" : ""}${t.cg.toFixed(1)}반</b></div>`;
   gpop.querySelector("button.x").onclick = () => closeGrades();
   gpop.querySelectorAll(".hlb button").forEach(b => b.onclick = () => {
     const { left, top } = gpop.getBoundingClientRect();
@@ -623,8 +678,8 @@ Promise.all([
   // 처음 여는 사람은 서울 강남구. 옛 키 sd:last 에는 예전 기본값(수원)이 저장돼 있어 sd:last2 로 바꿨다(2026-11-04)
   const last = store.get("sd:last2", { sido: "11", key: "11680", N: 20 });
   $("selSido").value = last.sido; $("topN").value = last.N;
-  fillSgg(last.key);
-  $("selSido").onchange = () => { fillSgg(); draw(); };
+  fillSgg(last.key, true);
+  $("selSido").onchange = () => { fillSgg(); setTimeout(() => $("sggPop").classList.add("on"), 0); };   // 고를 목록을 바로 펼친다
   $("selSgg").onclick = e => { e.stopPropagation(); $("sggPop").classList.toggle("on"); };
   $("sggPop").onclick = e => e.stopPropagation();
   document.addEventListener("click", () => $("sggPop").classList.remove("on"));
