@@ -15,6 +15,7 @@
   #note h1 { font-size: 16px; margin: 2px 0; }
   #note .sub { color: #555; }
   #note.min .lg { display: none; }
+  #note label.nobg { white-space: nowrap; cursor: pointer; }
   #tbl { position: fixed; right: 10px; top: 10px; z-index: 20; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3);
     font: 13px "Malgun Gothic", sans-serif; max-height: calc(100% - 20px); display: flex; flex-direction: column; }
   #tbl .hd { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #e5e7eb; font-weight: bold; }
@@ -96,8 +97,9 @@
 <div id="note">
   <div class="ctl">
     <select id="selSido"></select><span id="sggBox"><button id="selSgg" type="button" title="시군구 여러 개 고르기"></button><div id="sggPop"></div></span>
-    상위 <input id="topN" type="number" min="5" max="60" step="5" value="20" style="width:46px">곳
+    상위 <input id="topN" type="number" min="1" step="5" value="" placeholder="전체" style="width:46px">곳
     <button id="btnMin" title="범례 접기/펴기">범례</button>
+    <label class="nobg" title="체크하면 고른 시군구 바깥을 흰 막으로 지우기"><input type="checkbox" id="chkNoBg">배경지우기</label>
   </div>
   <div class="lg">
     <h1 id="ttl"></h1>
@@ -213,6 +215,8 @@ const map = new naver.maps.Map("map", { zoom: 12, center: new naver.maps.LatLng(
 let SIG = [], ELI = [], MIDS = [], EMD = {}, MSP = { s: {} };   // MSP = 중학교 [졸업자, 과학고, 외고국제고] (학교알리미)
 let OV = [], MK = [], REGION = null, ADM = [];
 const keep = o => (OV.push(o), o);
+let MASK = null, NOBG = !!store.get("sd:nobg3", false);   // MASK = 고른 지역 바깥 흰 막, NOBG = 배경지우기 체크
+const maskOp = () => NOBG ? 0.82 : 0;   // 배경지우기 체크 = 바깥 흰 막(바깥 흐림), 해제 = 흰 막 없음(바깥 지도도 정상)
 
 // ── 지역 고르기 ──
 // 시군구 목록: "수원시 영통구" 처럼 구가 있는 시는 '수원시 전체' + 각 구
@@ -276,8 +280,9 @@ function draw(keepView) {
   const R = curRegion(); if (!R) return;
   const key = R.key;
   const OVR = store.get("sd:up", {});   // 손으로 고친 별: { schoolCode: 0|1|2 }
-  const N = Math.max(5, Math.min(60, +$("topN").value || 20));
-  store.set("sd:last2", { sido: $("selSido").value, key, N });
+  // 상위 N: 기본 빈칸 = 전부, 사용자가 넣은 값이면 그 수만큼(2026-11-05 사용자, 처음 기본 20·상한 60)
+  const nRaw = String($("topN").value || "").trim(), N = +nRaw > 0 ? Math.floor(+nRaw) : Infinity;
+  store.set("sd:last2", { sido: $("selSido").value, key, n: nRaw });
   OV.forEach(o => o.setMap(null)); OV = []; MK = [];
   if (!keepView) { gpop.classList.remove("on"); clearZone(); }   // 지역이 바뀌면 배정범위·팝업도 지운다
   REGION = R;
@@ -288,7 +293,7 @@ function draw(keepView) {
   // 경계: 바깥은 흰 막(지역을 구멍으로), 구별 배경색·이름
   let x0 = 999, y0 = 999, x1 = -999, y1 = -999;
   R.gus.forEach(g => g.rings.forEach(r => r.forEach(([x, y]) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); })));
-  keep(new naver.maps.Polygon({ map, clickable: false, zIndex: 0, strokeOpacity: 0, fillColor: "#ffffff", fillOpacity: 0.82,
+  MASK = keep(new naver.maps.Polygon({ map, clickable: false, zIndex: 0, strokeOpacity: 0, fillColor: "#ffffff", fillOpacity: maskOp(),
     paths: [[new naver.maps.LatLng(y1 + 3, x0 - 3), new naver.maps.LatLng(y1 + 3, x1 + 3), new naver.maps.LatLng(y0 - 3, x1 + 3), new naver.maps.LatLng(y0 - 3, x0 - 3)],
       ...R.gus.flatMap(g => g.rings.map(r => toPath(r).reverse()))] }));
   for (const g of R.gus) {
@@ -562,6 +567,9 @@ async function loadAdm(R) {
   ADM = parts.flat().filter(a => a[2].length && inside(a[2]));
 }
 $("btnMin").onclick = () => { $("note").classList.toggle("min"); pinGrades(); };
+// 배경지우기(2026-11-05 사용자) — 체크 = 고른 시군구 바깥 흰 막(0.82), 해제 = 흰 막 없음(0). localStorage sd:nobg3
+$("chkNoBg").checked = NOBG;
+$("chkNoBg").onchange = e => { NOBG = e.target.checked; store.set("sd:nobg3", NOBG); if (MASK) MASK.setOptions({ fillOpacity: maskOp() }); };
 
 // ── 초등학교 누르면 학년별 학생 수 ──
 let AVG = { A43: 1, AHL: 1, TOT: 0 }, TOP = [];
@@ -685,8 +693,8 @@ Promise.all([
   const sidos = [...new Set(SIG.map(g => g.cd.slice(0, 2)))].sort();
   $("selSido").innerHTML = sidos.map(s => `<option value="${s}">${SIDO[s] || s}</option>`).join("");
   // 처음 여는 사람은 서울 강남구. 옛 키 sd:last 에는 예전 기본값(수원)이 저장돼 있어 sd:last2 로 바꿨다(2026-11-04)
-  const last = store.get("sd:last2", { sido: "11", key: "11680", N: 20 });
-  $("selSido").value = last.sido; $("topN").value = last.N;
+  const last = store.get("sd:last2", { sido: "11", key: "11680" });
+  $("selSido").value = last.sido; $("topN").value = last.n || "";   // 옛 저장값 N(20)은 무시 — 기본 빈칸
   fillSgg(last.key, true);
   $("selSido").onchange = () => { fillSgg(); setTimeout(() => $("sggPop").classList.add("on"), 0); };   // 고를 목록을 바로 펼친다
   $("selSgg").onclick = e => { e.stopPropagation(); $("sggPop").classList.toggle("on"); };
