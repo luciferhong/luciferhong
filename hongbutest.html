@@ -26033,7 +26033,9 @@ const originalBase64 = event.target.result;
             '<span class="gn-cmp-ctl"><input type="date" class="gn-cmp-date" title="출발 날짜"><select class="gn-cmp-hh" title="출발 시"></select>' +
             '<select class="gn-cmp-mm" title="출발 분"></select>' +
             '<button type="button" class="gn-cmp-re" title="실패한 칸 다시 조회">↻</button>' +
-            (endBtn === "fold" ? '<button type="button" class="gn-cmp-fold">접기</button>' : '<button type="button" class="gn-cmp-close" title="닫기">✕</button>') +
+            // 캡처 단추는 '접기' 오른쪽(모달 창은 '✕' 가 맨 끝이라 그 왼쪽) — 2026-11-04 사용자 지정
+            (endBtn === "fold" ? '<button type="button" class="gn-cmp-fold">접기</button><button type="button" class="gn-cmp-cap" title="표를 이미지로 클립보드에 복사">📷</button>'
+              : '<button type="button" class="gn-cmp-cap" title="표를 이미지로 클립보드에 복사">📷</button><button type="button" class="gn-cmp-close" title="닫기">✕</button>') +
             '</span></div><div class="gn-cmp-b"><table></table></div></div>';
         }
         function cmpSetup(box, rerender, folded) {
@@ -26045,12 +26047,77 @@ const originalBase64 = event.target.result;
             for (const [k, v] of cmpCache) if (v.state === "fail") cmpCache.delete(k);
             rerender();
           });
+          const cap = box.querySelector(".gn-cmp-cap");
+          if (cap) cap.addEventListener("click", () => cmpCapture(box, cap));
           const fold = box.querySelector(".gn-cmp-fold");
           if (fold) {
             const setFold = (f) => { box.classList.toggle("fold", f); fold.textContent = f ? "펴기" : "접기"; };
             fold.addEventListener("click", () => { setFold(!box.classList.contains("fold")); rerender(); }); // 펼 때 열 폭을 다시 잰다
             setFold(!!folded);
           }
+        }
+        // 📷 캡처 — 제목 줄(.gn-cmp-h)을 뺀 표 전체(스크롤에 가려진 줄 포함)를 PNG 로 클립보드에 넣는다(2026-11-04 사용자 지정).
+        // html2canvas 는 처음 누를 때만 불러온다. 클립보드에는 Promise 를 그대로 넘긴다 — 사파리는 클릭 직후 동기 호출만 허용한다.
+        let cmpH2cP = null;
+        function cmpLoadH2c() {
+          if (window.html2canvas) return Promise.resolve(window.html2canvas);
+          return (cmpH2cP ||= new Promise((ok, no) => {
+            const s = document.createElement("script");
+            s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+            s.onload = () => ok(window.html2canvas);
+            s.onerror = () => { cmpH2cP = null; no(new Error("캡처 도구를 불러오지 못했습니다")); };
+            document.head.appendChild(s);
+          }));
+        }
+        function cmpCapture(box, btn) {
+          const body = box.querySelector(".gn-cmp-b");
+          if (!body || box.classList.contains("fold")) { alert("표를 펼친 뒤 캡처하세요."); return; }
+          const mark = "gnCap" + Date.now();
+          body.dataset.cap = mark;
+          const label = btn.textContent;
+          btn.textContent = "⏳";
+          btn.disabled = true;
+          const blobP = cmpLoadH2c()
+            .then((h2c) => h2c(body, {
+              backgroundColor: "#ffffff",
+              scale: Math.max(2, window.devicePixelRatio || 1),
+              useCORS: true,
+              logging: false,
+              onclone: (doc) => {
+                // 복제본에서만 스크롤·높이 제한을 풀어 가려진 줄까지 다 찍는다(머리 줄 sticky 도 해제)
+                let el = doc.querySelector('[data-cap="' + mark + '"]');
+                if (!el) return;
+                el.style.overflow = "visible";
+                el.style.maxHeight = "none";
+                el.style.height = "auto";
+                el.querySelectorAll("thead th").forEach((th) => { th.style.position = "static"; });
+                for (let p = el.parentElement; p && p !== doc.body; p = p.parentElement) {
+                  p.style.overflow = "visible";
+                  p.style.maxHeight = "none";
+                  p.style.height = "auto";
+                }
+              },
+            }))
+            .then((cv) => new Promise((ok, no) => cv.toBlob((b) => (b ? ok(b) : no(new Error("이미지 생성 실패"))), "image/png")));
+          blobP.catch(() => {}); // 실패는 아래 done 에서 한 번만 알린다
+          let done;
+          try {
+            done = navigator.clipboard.write([new ClipboardItem({ "image/png": blobP })]);
+          } catch (e) {
+            done = Promise.reject(e);
+          }
+          done
+            .then(() => { btn.textContent = "✔"; })
+            .catch((e) => {
+              console.warn("[cmpCapture]", e);
+              btn.textContent = label;
+              alert("클립보드 복사에 실패했습니다. 브라우저가 지원하지 않을 수 있습니다.");
+            })
+            .finally(() => {
+              delete body.dataset.cap;
+              btn.disabled = false;
+              setTimeout(() => { if (btn.textContent === "✔") btn.textContent = label; }, 1500);
+            });
         }
         // 조회 결과가 들어오면 표 두 곳(강남km 패널·모달 창)을 다 다시 그린다
         function cmpRerenderAll() {

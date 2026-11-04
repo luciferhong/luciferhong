@@ -698,6 +698,36 @@
     }
     .cmp-walk { background: #eef0f3; color: #555; font-weight: 600; }
     .cmp-muted { color: #aaa; }
+    /* 창 옮기기·크기 조절(2026-11-04 사용자 "홍부와 똑같게") — 머리 줄을 끌어 옮기고, 네 변·네 모서리로 크기를 바꾼다 */
+    #cmpHead { cursor: move; user-select: none; touch-action: none; }
+    #cmpHead :is(input, select, button) { cursor: pointer; }
+    /* 크기를 정한 창(wrap) — 좁히면 칸 안에서 줄을 바꾼다(스크롤 없음). 노선 뱃지 하나는 끊지 않는다 */
+    #cmpPanel.wrap #cmpTable td { white-space: normal; }
+    #cmpPanel.wrap .cmp-line { white-space: nowrap; }
+    #cmpPanel.wrap #cmpBody { overflow: hidden; }
+    #cmpPanel.wrap #cmpBody.over { overflow-y: auto; } /* 지도 자체가 내용보다 낮을 때만 */
+    /* 최소 폭 재기용 — 지점 열을 줄바꿈 최대로 그린다(sizeTable) */
+    #cmpTable.measure-min { table-layout: auto; width: min-content !important; }
+    #cmpTable.measure-min td { white-space: normal; }
+    .cmp-rz { position: absolute; z-index: 3; touch-action: none; }
+    .cmp-rz[data-d="n"], .cmp-rz[data-d="s"] { left: 10px; right: 10px; height: 6px; cursor: ns-resize; }
+    .cmp-rz[data-d="e"], .cmp-rz[data-d="w"] { top: 10px; bottom: 10px; width: 6px; cursor: ew-resize; }
+    .cmp-rz[data-d="n"] { top: 0; } .cmp-rz[data-d="s"] { bottom: 0; }
+    .cmp-rz[data-d="e"] { right: 0; } .cmp-rz[data-d="w"] { left: 0; }
+    .cmp-rz[data-d="nw"] { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+    .cmp-rz[data-d="ne"] { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+    .cmp-rz[data-d="sw"] { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+    .cmp-rz[data-d="se"] { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+    @media (pointer: coarse) {
+      .cmp-rz[data-d="n"], .cmp-rz[data-d="s"] { height: 12px; }
+      .cmp-rz[data-d="e"], .cmp-rz[data-d="w"] { width: 12px; }
+      .cmp-rz:is([data-d="nw"], [data-d="ne"], [data-d="sw"], [data-d="se"]) { width: 20px; height: 20px; }
+    }
+    #cmpPanel.collapsed .cmp-rz { display: none; } /* 접혀 있으면 크기 조절 없음 */
+    @media (max-width: 768px) {
+      .cmp-rz { display: none; } /* 폰은 지도 아래 흐름 배치 — 옮기기·크기 조절 없음 */
+      #cmpHead { cursor: auto; touch-action: auto; }
+    }
     @media (max-width: 768px) {
       /* 폰: 지도 아래에 흐름대로 놓고 가로 스크롤 */
       #cmpPanel {
@@ -830,6 +860,7 @@
     <select id="cmpMin" title="출발 분"></select>
     <button id="cmpReload" title="이 시각으로 다시 조회">↻</button>
     <button id="cmpFold" title="접기/펴기">접기</button>
+<button id="cmpCap" title="표를 이미지로 클립보드에 복사">📷</button>
   </div>
   <div id="cmpBody"><table id="cmpTable"></table></div>
 </div>
@@ -2004,6 +2035,56 @@ function setupCompare() {
     render(); // 펼 때 열 폭을 다시 잰다
   });
 
+  // 📷 캡처 — 제목 줄(#cmpHead)을 뺀 표 전체(스크롤에 가려진 줄 포함)를 PNG 로 클립보드에 넣는다(2026-11-04, 홍부 강남km 과 같은 동작).
+  // html2canvas 는 처음 누를 때만 불러온다. 클립보드에는 Promise 를 그대로 넘긴다 — 사파리는 클릭 직후 동기 호출만 허용한다.
+  let h2cP = null;
+  const loadH2c = () => window.html2canvas ? Promise.resolve(window.html2canvas) : (h2cP ||= new Promise((ok, no) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    s.onload = () => ok(window.html2canvas);
+    s.onerror = () => { h2cP = null; no(new Error('캡처 도구를 불러오지 못했습니다')); };
+    document.head.appendChild(s);
+  }));
+  document.getElementById('cmpCap').addEventListener('click', e => {
+    const btn = e.currentTarget, body = document.getElementById('cmpBody');
+    if (panel.classList.contains('collapsed')) { alert('표를 펼친 뒤 캡처하세요.'); return; }
+    const label = btn.textContent;
+    btn.textContent = '⏳';
+    btn.disabled = true;
+    const blobP = loadH2c()
+      .then(h2c => h2c(body, {
+        backgroundColor: '#ffffff',
+        scale: Math.max(2, window.devicePixelRatio || 1),
+        useCORS: true,
+        logging: false,
+        onclone: doc => {
+          // 복제본에서만 스크롤·높이 제한을 풀어 가려진 줄까지 다 찍는다(머리 줄 sticky 도 해제)
+          const el = doc.getElementById('cmpBody');
+          if (!el) return;
+          for (let p = el; p && p !== doc.body; p = p.parentElement) {
+            p.style.overflow = 'visible'; p.style.maxHeight = 'none'; p.style.height = 'auto';
+          }
+          el.querySelectorAll('thead th').forEach(th => { th.style.position = 'static'; });
+        },
+      }))
+      .then(cv => new Promise((ok, no) => cv.toBlob(b => (b ? ok(b) : no(new Error('이미지 생성 실패'))), 'image/png')));
+    blobP.catch(() => {}); // 실패는 아래에서 한 번만 알린다
+    let done;
+    try { done = navigator.clipboard.write([new ClipboardItem({ 'image/png': blobP })]); }
+    catch (err) { done = Promise.reject(err); }
+    done
+      .then(() => { btn.textContent = '✔'; })
+      .catch(err => {
+        console.warn('[cmpCapture]', err);
+        btn.textContent = label;
+        alert('클립보드 복사에 실패했습니다. 브라우저가 지원하지 않을 수 있습니다.');
+      })
+      .finally(() => {
+        btn.disabled = false;
+        setTimeout(() => { if (btn.textContent === '✔') btn.textContent = label; }, 1500);
+      });
+  });
+
   // ── 경로 조회 (동시 4개, 결과는 지점좌표·목적지·출발시각별로 기억) ──
   const routeCache = new Map(); // key → {state:'wait'|'ok'|'close'|'fail', r?}
   const queue = [];
@@ -2120,19 +2201,198 @@ function setupCompare() {
     place();
   }
 
-  // 지도 오른쪽 위에 붙인다(폰은 CSS 가 흐름 배치로 바꾼다)
-  function place() {
-    if (panel.style.display === 'none' || window.matchMedia('(max-width: 768px)').matches) return;
-    const r = document.getElementById('map').getBoundingClientRect();
-    panel.style.top = (r.top + 8) + 'px';
-    panel.style.right = (document.documentElement.clientWidth - r.right + 8) + 'px';
-    panel.style.maxHeight = (r.height - 16) + 'px';
-    const body = document.getElementById('cmpBody');
-    body.style.maxHeight = (r.height - 16 - document.getElementById('cmpHead').offsetHeight) + 'px';
-    // 몸통 폭 = 표 폭 + 세로 스크롤바 폭 — 스크롤바가 안쪽 폭을 먹어 가로 스크롤이 생기지 않게
+  // ── 창 옮기기·크기 조절 (2026-11-04 사용자 "홍부와 똑같게" — 홍부 강남km 비교창 cmpPanelPlace·cmpPanelDrag·cmpPanelResize·cmpFit 이식) ──
+  // 자리 {x,y} 는 지도 왼쪽 위 기준, 크기 {w,h} 는 테두리 포함 px. 다시 열어도 유지 — 머리 줄 두 번 누르면 처음(오른쪽 위·내용 크기)대로.
+  const POS_KEY = 'distanceCmpPos_v1', SIZE_KEY = 'distanceCmpSize_v1';
+  let pPos = null, pSize = null;
+  try { pPos = JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch (e) {}
+  try { pSize = JSON.parse(localStorage.getItem(SIZE_KEY) || 'null'); } catch (e) {}
+  const head = document.getElementById('cmpHead');
+  const body = document.getElementById('cmpBody');
+  const mapRect = () => document.getElementById('map').getBoundingClientRect();
+  const isPhone = () => window.matchMedia('(max-width: 768px)').matches;
+
+  // 머리 줄이 지도 밖으로 나가 다시 못 잡는 일이 없게 가둔다(좌우는 80px 남기고, 위아래는 머리 줄 전체). 가둔 자리를 돌려준다.
+  function placeAt(x, y) {
+    const mr = mapRect();
+    x = Math.max(80 - panel.offsetWidth, Math.min(mr.width - 80, x));
+    y = Math.max(0, Math.min(mr.height - head.offsetHeight, y));
+    panel.style.right = 'auto';
+    panel.style.left = (mr.left + x) + 'px';
+    panel.style.top = (mr.top + y) + 'px';
+    return { x, y };
+  }
+
+  // 표 폭 — 크기를 정해 두었으면 그 폭(지점 열이 남는 폭을 나눠 갖고 좁으면 칸 안에서 줄바꿈, 최소 폭 아래로는 안 줄어든다).
+  // fitW = 줄이 늘어 지도 높이를 넘을 때 place 가 잠깐 넓힌 폭(기억하는 크기는 그대로)
+  function sizeTable(fitW) {
+    const ths = [...table.querySelectorAll('thead th')];
     body.style.width = '';
+    const wrap = !!(pSize && ths.length > 1);
+    panel.classList.toggle('wrap', wrap);
+    if (wrap) {
+      const firstW = parseFloat(ths[0].style.width) || ths[0].offsetWidth;
+      const saved = ths.map(th => th.style.width);
+      table.classList.add('measure-min');
+      ths.forEach(th => (th.style.width = ''));
+      const colMin = Math.max(0, ...ths.slice(1).map(th => th.offsetWidth)) + 1;
+      table.classList.remove('measure-min');
+      ths.forEach((th, k) => (th.style.width = saved[k]));
+      const n = ths.length - 1;
+      const minInner = firstW + colMin * n;
+      panel.dataset.minW = minInner + 2; // 좌우 테두리 포함 — 크기 조절이 쓴다
+      const inner = Math.max(minInner, pSize.w - 2, fitW || 0);
+      const colW = Math.floor((inner - firstW) / n);
+      ths.slice(1).forEach(th => (th.style.width = colW + 'px'));
+      table.style.width = firstW + colW * n + 'px';
+      body.style.width = inner + 'px';
+      return;
+    }
+    body.classList.remove('over');
+    // 몸통 폭 = 표 폭 + 세로 스크롤바 폭 — 스크롤바가 안쪽 폭을 먹어 가로 스크롤이 생기지 않게
     body.style.width = (table.offsetWidth + body.offsetWidth - body.clientWidth) + 'px';
   }
+
+  // 자리(기억한 자리, 없으면 지도 오른쪽 위)와 크기를 맞춘다(폰은 CSS 가 흐름 배치로 바꾼다)
+  function place() {
+    if (panel.style.display === 'none' || isPhone()) return;
+    const mr = mapRect();
+    if (pPos) placeAt(pPos.x, pPos.y); // 지도가 줄었으면 지도 안으로 되돌린다(기억한 자리는 그대로)
+    else {
+      panel.style.left = '';
+      panel.style.top = (mr.top + 8) + 'px';
+      panel.style.right = (document.documentElement.clientWidth - mr.right + 8) + 'px';
+    }
+    panel.style.maxHeight = '';
+    const top = body.getBoundingClientRect().top;
+    const avail = Math.max(60, mr.bottom - top - 8);
+    if (!pSize) {
+      body.style.height = '';
+      body.style.maxHeight = avail + 'px';
+      sizeTable(0);
+      return;
+    }
+    // 정한 높이 — 단 내용보다 낮게는 안 줄어든다(스크롤 없음). 지도 아래 끝은 넘지 않는다.
+    body.style.maxHeight = '';
+    sizeTable(0); // 폭을 먼저 정해야 줄바꿈된 내용 높이를 잴 수 있다
+    let need = table.offsetHeight;
+    // 줄이 늘어 지도 높이를 넘으면 스크롤 대신 들어갈 만큼만 창을 넓힌다. 지도 폭이 한계.
+    if (need > avail) {
+      let lo = parseFloat(body.style.width) || 0, hi = Math.floor(mr.width - 2);
+      if (hi > lo) {
+        sizeTable(hi);
+        if (table.offsetHeight <= avail) {
+          while (hi - lo > 6) {
+            const mid = Math.floor((lo + hi) / 2);
+            sizeTable(mid);
+            if (table.offsetHeight <= avail) hi = mid; else lo = mid;
+          }
+          sizeTable(hi);
+        }
+        need = table.offsetHeight;
+        // 넓어져 지도 오른쪽 밖으로 나가면 화면에서만 왼쪽으로 당긴다(기억한 자리는 그대로)
+        const br = panel.getBoundingClientRect();
+        if (br.right > mr.right) {
+          panel.style.right = 'auto';
+          panel.style.left = Math.max(mr.left, mr.right - br.width) + 'px';
+        }
+      }
+    }
+    const mh = Math.min(avail, Math.max(need, pSize.h - (top - panel.getBoundingClientRect().top) - 2));
+    body.classList.toggle('over', need > mh);
+    body.style.height = mh + 'px';
+    body.style.maxHeight = mh + 'px';
+  }
+
+  // 머리 줄을 끌어 옮긴다(날짜·시각·단추는 제외, 손가락도 된다). 머리 줄을 두 번 누르면 자리·크기 모두 처음대로.
+  {
+    let d = null;
+    head.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || isPhone() || e.target.closest('input, select, button')) return;
+      const br = panel.getBoundingClientRect(), mr = mapRect();
+      d = { id: e.pointerId, dx: e.clientX - (br.left - mr.left), dy: e.clientY - (br.top - mr.top), moved: false };
+      head.setPointerCapture(e.pointerId);
+    });
+    head.addEventListener('pointermove', e => {
+      if (!d || e.pointerId !== d.id) return;
+      pPos = placeAt(e.clientX - d.dx, e.clientY - d.dy);
+      d.moved = true;
+      place(); // 옮긴 높이에 맞춰 표 몸통 높이를 다시
+    });
+    const end = e => {
+      if (!d || e.pointerId !== d.id) return;
+      if (d.moved) try { localStorage.setItem(POS_KEY, JSON.stringify(pPos)); } catch (er) {}
+      d = null;
+    };
+    head.addEventListener('pointerup', end);
+    head.addEventListener('pointercancel', end);
+    head.addEventListener('dblclick', e => {
+      if (isPhone() || e.target.closest('input, select, button')) return;
+      pPos = pSize = null;
+      try { localStorage.removeItem(POS_KEY); localStorage.removeItem(SIZE_KEY); } catch (er) {}
+      panel.style.left = '';
+      render(); // 열 폭을 내용에 맞게 다시 잰다
+    });
+  }
+
+  // 네 변·네 모서리를 끌어 크기를 바꾼다. 왼쪽·위를 끌면 오른쪽·아래 변은 그대로.
+  // 크기는 지도 안으로 제한(폭 260px·높이 120px 이상), 좁혀서 지도 안에 다 안 들어가면(스크롤이 생기면) 좁히지 않는다.
+  ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'].forEach(dir => {
+    const hd = document.createElement('div');
+    hd.className = 'cmp-rz';
+    hd.dataset.d = dir;
+    panel.appendChild(hd);
+    let r = null;
+    hd.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || isPhone()) return;
+      e.preventDefault();
+      const br = panel.getBoundingClientRect(), mr = mapRect();
+      r = { id: e.pointerId, cx: e.clientX, cy: e.clientY, x: br.left - mr.left, y: br.top - mr.top, w: br.width, h: br.height, mw: mr.width, mh: mr.height };
+      hd.setPointerCapture(e.pointerId);
+    });
+    hd.addEventListener('pointermove', e => {
+      if (!r || e.pointerId !== r.id) return;
+      const dx = e.clientX - r.cx, dy = e.clientY - r.cy;
+      let { x, y, w, h } = r;
+      if (dir.includes('e')) w = r.w + dx;
+      if (dir.includes('w')) w = r.w - dx;
+      if (dir.includes('s')) h = r.h + dy;
+      if (dir.includes('n')) h = r.h - dy;
+      const minW = Math.max(260, +panel.dataset.minW || 0);
+      w = Math.round(Math.max(minW, Math.min(r.mw, w)));
+      h = Math.round(Math.max(120, Math.min(r.mh, h)));
+      const prev = { size: pSize, pos: pPos };
+      const apply = s => {
+        pSize = s;
+        pPos = placeAt(x, y);
+        render(); // 폭이 바뀌면 열을 다시 나눠야 하므로 표부터 다시
+        pSize = { w: Math.max(s.w, +panel.dataset.minW || 0), h: s.h }; // 기억하는 폭도 최소 폭 이상
+        const br = panel.getBoundingClientRect();
+        if (dir.includes('w')) x = r.x + r.w - br.width;
+        if (dir.includes('n')) y = r.y + r.h - br.height;
+        if (dir.includes('w') || dir.includes('n')) { pPos = placeAt(x, y); place(); }
+      };
+      if (dir.includes('w')) x = r.x + r.w - w;
+      if (dir.includes('n')) y = r.y + r.h - h;
+      apply({ w, h });
+      if (body.classList.contains('over') && prev.size && w < prev.size.w) {
+        ({ x, y } = prev.pos || { x, y });
+        apply(prev.size);
+        return;
+      }
+      r.moved = true;
+    });
+    const end = e => {
+      if (!r || e.pointerId !== r.id) return;
+      if (r.moved) try {
+        localStorage.setItem(SIZE_KEY, JSON.stringify(pSize));
+        localStorage.setItem(POS_KEY, JSON.stringify(pPos));
+      } catch (er) {}
+      r = null;
+    };
+    hd.addEventListener('pointerup', end);
+    hd.addEventListener('pointercancel', end);
+  });
   window.addEventListener('resize', place);
   if (window.ResizeObserver) new ResizeObserver(place).observe(document.getElementById('map'));
 
