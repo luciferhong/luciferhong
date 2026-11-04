@@ -440,12 +440,23 @@ const SISE_TOKEN = (() => {
     if (t) {
       if (t === 'off') localStorage.removeItem('hongbuSiseToken');
       else localStorage.setItem('hongbuSiseToken', t);
+      localStorage.removeItem('hongbuRouteOk');   // 값이 바뀌었으니 길찾기 가능 여부를 다시 확인
       u.searchParams.delete('token');
       history.replaceState(null, '', u.toString());
     }
     return localStorage.getItem('hongbuSiseToken') || '';
   } catch (e) { return ''; }
 })();
+// 대중교통 비교표는 서버 확인(/route?probe=1)을 통과한 기기만(2026-11-04, 홍부와 같은 저장 키 hongbuRouteOk).
+// 401 이면 숨기고, 연결 실패면 지난 결과를 그대로 둔다. 결과가 바뀌면 비교표를 다시 그린다.
+const cmtRouteOk = () => { try { return localStorage.getItem('hongbuRouteOk') === '1'; } catch (e) { return false; } };
+if (SISE_TOKEN) fetch(`${SERVER}/route?probe=1&token=${encodeURIComponent(SISE_TOKEN)}`).then(r => {
+  const was = cmtRouteOk();
+  if (r.ok) localStorage.setItem('hongbuRouteOk', '1');
+  else if (r.status === 401) localStorage.removeItem('hongbuRouteOk');
+  if (was !== cmtRouteOk()) try { state.panels.forEach(renderCommute); } catch (e) {}
+}).catch(() => {});
+else try { localStorage.removeItem('hongbuRouteOk'); } catch (e) {}
 const APT_JSON_URL = 'https://luciferhong.github.io/luciferhong/apt.json';
 const APT_EMD_URL = 'https://luciferhong.github.io/luciferhong/aptEmd.json';
 const STORE = 'siseCompare_v1';
@@ -1653,7 +1664,7 @@ const cmtMapUrl = (a, d) => {
 };
 function renderCommute(p) {
   const el = panelEl(p), box = el && el.querySelector('.cmt'); if (!box) return;
-  if (!SISE_TOKEN) { box.style.display = 'none'; return; }
+  if (!SISE_TOKEN || !cmtRouteOk()) { box.style.display = 'none'; return; }
   const its = p.items.map((it, i) => ({ it, i })).filter(x => x.it.cid && !x.it.hidden);
   if (!its.length) { box.style.display = 'none'; return; }
   if (!APT) { loadApt().then(() => renderCommute(p)).catch(() => {}); box.style.display = 'none'; return; }

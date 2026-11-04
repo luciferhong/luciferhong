@@ -15,13 +15,29 @@
         if (t) {
           if (t === 'off') localStorage.removeItem('hongbuSiseToken');
           else localStorage.setItem('hongbuSiseToken', t);
+          localStorage.removeItem('hongbuRouteOk'); // 값이 바뀌었으니 길찾기 가능 여부를 다시 확인
           u.searchParams.delete('token');
           history.replaceState(null, '', u.toString());
         }
         return localStorage.getItem('hongbuSiseToken') || '';
       } catch (e) { return ''; }
     })();
-    if (!window.__siseToken) document.documentElement.classList.add('no-route');
+    // 2026-11-04 서버 확인(/route?probe=1)을 통과한 기기만 비교표를 쓴다(홍부와 같은 저장 키 hongbuRouteOk).
+    // 401 이면 숨기고, 연결 실패면 지난 결과를 그대로 둔다. 처음 통과하면 그 자리에서 비교표를 켠다.
+    window.__routeOk = function () { try { return localStorage.getItem('hongbuRouteOk') === '1'; } catch (e) { return false; } };
+    if (window.__siseToken) {
+      var h0 = location.hostname;
+      fetch(((h0 === 'localhost' || h0 === '127.0.0.1') ? 'http://localhost:7123' : 'https://sise-cloud.luciferhong.com') +
+        '/route?probe=1&token=' + encodeURIComponent(window.__siseToken)).then(function (r) {
+        var was = window.__routeOk();
+        if (r.ok) localStorage.setItem('hongbuRouteOk', '1');
+        else if (r.status === 401) localStorage.removeItem('hongbuRouteOk');
+        if (window.__routeOk()) document.documentElement.classList.remove('no-route');
+        else document.documentElement.classList.add('no-route');
+        if (!was && window.__routeOk() && typeof setupCompare === 'function') setupCompare();
+      }).catch(function () {});
+    } else try { localStorage.removeItem('hongbuRouteOk'); } catch (e) {}
+    if (!window.__siseToken || !window.__routeOk()) document.documentElement.classList.add('no-route');
   </script>
   <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
   <style>
@@ -1935,8 +1951,10 @@ const CMP_HOLIDAYS = new Set([
   '2027-12-25', '2027-12-27',
 ]);
 
+let cmpSetupDone = false;
 function setupCompare() {
-  if (!window.__siseToken) return;
+  if (!window.__siseToken || !window.__routeOk() || cmpSetupDone) return;
+  cmpSetupDone = true;
   const panel = document.getElementById('cmpPanel');
   const table = document.getElementById('cmpTable');
   const dateIn = document.getElementById('cmpDate');
