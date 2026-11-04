@@ -561,7 +561,7 @@ async function loadAdm(R) {
   const inside = (rings) => { const c = rings.map(ringCentroid).sort((a, b) => b[2] - a[2])[0]; return R.gus.some(g => g.rings.some(r => inRing(c[0], c[1], r))); };
   ADM = parts.flat().filter(a => a[2].length && inside(a[2]));
 }
-$("btnMin").onclick = () => $("note").classList.toggle("min");
+$("btnMin").onclick = () => { $("note").classList.toggle("min"); pinGrades(); };
 
 // ── 초등학교 누르면 학년별 학생 수 ──
 let AVG = { A43: 1, AHL: 1, TOT: 0 }, TOP = [];
@@ -594,16 +594,13 @@ function showGrades(t, cx, cy) {
       지역 흐름보다 고학년 <b style="color:${t.ex > 0 ? "#b8332a" : "#2c5d8f"}">${t.ex > 0 ? "+" : ""}${t.ex}명</b> · 학년당 학급 <b>${t.cg > 0 ? "+" : ""}${t.cg.toFixed(1)}반</b></div>`;
   gpop.querySelector("button.x").onclick = () => closeGrades();
   gpop.querySelectorAll(".hlb button").forEach(b => b.onclick = () => {
-    const { left, top } = gpop.getBoundingClientRect();
     toggleUp(t);
     const nt = TOP.find(x => x.code === t.code);
-    if (nt) { showGrades(nt, 0, 0); gpop.style.left = left + "px"; gpop.style.top = top + "px"; }
+    if (nt) showGrades(nt, 0, 0);
   });
   gpop.classList.add("on");
-  const w = gpop.offsetWidth, h = gpop.offsetHeight;
-  gpop.style.left = Math.max(8, Math.min(innerWidth - w - 8, cx + 14)) + "px";
-  gpop.style.top = Math.max(8, Math.min(innerHeight - h - 8, cy - h / 2)) + "px";
-  showZone(t);   // 배정범위를 그리고 창을 범위 바깥으로 옮긴다
+  pinGrades();
+  showZone(t);   // 배정범위를 그린다
 }
 // ── 초등 배정범위(홍부와 같은 schoolZones/<시군구5>.json — { schoolCode: [[[위도, 경도], ...], ...] }) ──
 // 학교를 누르면(마커·표 줄) 그 학교 범위를 초록으로 그리고, 팝업을 닫거나 지도 빈 곳을 누르면 지운다.
@@ -626,7 +623,19 @@ async function showZone(t) {
 // 학생 수 창이 배정범위를 가리지 않게 범위 바깥(오른쪽 → 왼쪽 → 위 → 아래)으로 옮긴다. 표(#tbl)와도 겹치지 않게.
 // 표 줄을 누르면 지도가 움직이므로(morph) 움직임이 끝난 뒤(idle) 한 번 더 맞춘다.
 let ZRINGS = [], ZPLACE = false;
+// 2026-11-04 사용자 지시: 학생 수 창은 초등학교 표(#tbl) 왼쪽에 위 끝을 맞춰 고정한다(표가 없으면 범례 아래). 아래 placeOutside 는 쓰지 않는다.
+function pinGrades() {
+  if (!gpop.classList.contains("on")) return;
+  let left, top;
+  const r = tbl.getBoundingClientRect();   // position:fixed 라 offsetParent 는 항상 null — 크기로 보이는지 판단
+  if (tbl.isConnected && r.width > 0) { left = Math.max(8, r.left - gpop.offsetWidth - 8); top = Math.round(r.top); }
+  else { const nr = $("note").getBoundingClientRect(); left = nr.left; top = Math.round(nr.bottom + 8); }
+  gpop.style.left = Math.round(left) + "px"; gpop.style.top = top + "px";
+  gpop.style.maxHeight = Math.max(120, innerHeight - top - 8) + "px"; gpop.style.overflow = "auto";
+}
+addEventListener("resize", pinGrades);
 function placeOutside() {
+  pinGrades(); return;
   if (!ZRINGS.length || !gpop.classList.contains("on")) return;
   const proj = map.getProjection(); if (!proj) return;
   const mr = $("map").getBoundingClientRect();
