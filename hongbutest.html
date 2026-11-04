@@ -31383,11 +31383,15 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
       const FLOAT_BTN_KEY_V2 = "hongbuMapBtnPos_v2";
       // ⚠ **두 덩어리로 나눈다**(2026-09-23 사용자 지정): 현재 위치 ↔ 위치 추적 중지는 한 짝(추적을 켜면 바로 아래에 뜬다),
       //   사진 메모는 따로 움직인다. 각 덩어리의 자리는 지도 크기 대비 비율로 따로 저장한다.
+      // 2026-11-04 사용자 "사이드 메뉴도 포토메모 단추처럼 끌어서 놓게": 왼쪽 측정 카드(#msCard)를 셋째 덩어리로.
+      //   카드는 CSS 로 세로 가운데(top:50% + translateY(-50%))라 원래 자리를 따로 잰다(__floatBtnBaseOf) —
+      //   옮긴 적 없으면 CSS 가운데 그대로 두고, 옮기면 transform 을 끄고 left/top 으로 놓는다.
       const FLOAT_BTN_GROUPS = [{ key: "loc", ids: ["mapLocateBtn", "mapStopBtn"] },
-                                { key: "photo", ids: ["mapPhotoBtn"] }];
+                                { key: "photo", ids: ["mapPhotoBtn"] },
+                                { key: "ms", ids: ["msCard"] }];
       let __floatBtnBase = null;                       // id → {left, top} (CSS 원래 자리)
       // null 이면 CSS 기본자리 그대로. 값이 있으면 {ax:"left"|"right", dx, ay:"top"|"bottom", dy} (px)
-      let __floatBtnOff = { loc: null, photo: null };
+      let __floatBtnOff = { loc: null, photo: null, ms: null };
       let __floatBtnV2Pending = null;                  // v2 → v3 변환 대기(base 가 준비된 뒤 처리)
       let __floatBtnDragged = false;                   // 드래그로 끝났으면 클릭 동작을 막는다
       window.__floatBtnDragged = false;                // 단추 동작 코드에서 보는 값(등록 순서와 무관하게 막기 위해)
@@ -31401,6 +31405,12 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
       // ⚠ 추적 중지 단추는 평소 `display:none` 이라 offsetLeft/Top 이 0 이다(그대로 쓰면 옮긴 뒤 좌상단에 나타난다).
       //   CSS 에 적힌 값을 읽는 getComputedStyle 로 원래 자리를 잡는다.
       function __floatBtnBaseOf(el) {
+        // 측정 카드: 숨겨져 있으면(사이드 메뉴 끔) 잴 수 없다 → null(보일 때 다시 잰다). 보이는 위 끝 = top 50% − 높이/2
+        if (el.id === "msCard") {
+          if (!el.offsetHeight) return null;
+          const p = el.offsetParent;
+          return { left: 8, top: Math.round((p ? p.clientHeight : el.offsetTop * 2) / 2 - el.offsetHeight / 2) };
+        }
         const cs = getComputedStyle(el);
         const l = parseFloat(cs.left), t = parseFloat(cs.top);
         return { left: Number.isFinite(l) ? l : el.offsetLeft, top: Number.isFinite(t) ? t : el.offsetTop };
@@ -31449,6 +31459,11 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         if (!mapEl || !box || !els.length) return;
         const W = mapEl.offsetWidth, H = mapEl.offsetHeight;
         const off = __floatBtnOff[g.key];
+        // 측정 카드를 옮긴 적 없으면 CSS 세로 가운데에 맡긴다(지도 높이가 바뀌어도 가운데 유지)
+        if (g.key === "ms") {
+          if (!off || typeof off.dx !== "number") { els.forEach((el) => { el.style.left = el.style.top = el.style.transform = ""; }); return; }
+          els.forEach((el) => { el.style.transform = "none"; });
+        }
         let dx = 0, dy = 0;
         if (off && typeof off.dx === "number") {
           dx = off.ax === "right" ? W - off.dx - box.maxR : off.dx - box.minL;
@@ -31477,6 +31492,10 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         };
       }
       function __floatBtnApply() { FLOAT_BTN_GROUPS.forEach(__floatBtnApplyGroup); }
+      // '사이드 메뉴 보기' 를 꺼 둔 채 열면 카드 자리를 못 잰다 — 다시 켜질 때 재고 저장된 자리로 놓는다
+      document.addEventListener("change", (e) => {
+        if (e.target?.id === "toggleSideMenu" && e.target.checked) requestAnimationFrame(() => { try { __initFloatBtnDrag(); } catch (_) {} });
+      });
 
       function __initFloatBtnDrag() {
         if (!__isTouchDevice()) return;          // 모바일 전용
@@ -31506,7 +31525,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             new ResizeObserver(() => { try { __floatBtnApply(); } catch (e) {} }).observe(mapEl);
           } catch (e) {}
         }
-        all.forEach((el) => { if (!__floatBtnBase[el.id]) __floatBtnBase[el.id] = __floatBtnBaseOf(el); });
+        all.forEach((el) => { if (!__floatBtnBase[el.id]) { const b = __floatBtnBaseOf(el); if (b) __floatBtnBase[el.id] = b; } });
         if (__floatBtnV2Pending) {
           const mapEl = document.getElementById("map");
           FLOAT_BTN_GROUPS.forEach((g) => {
