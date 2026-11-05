@@ -636,7 +636,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 
 // ── 데이터 ───────────────────────────────────────────
 const dataCache = new Map();
-function fetchJson(url, ms = 20000) {
+function fetchJson1(url, ms) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
   const pre = window.__preData;   // 머리에서 미리 보낸 요청(실거래표만 보기) — 한 번만 쓴다
   if (pre && pre.url === url) window.__preData = null;
@@ -645,6 +645,15 @@ function fetchJson(url, ms = 20000) {
     if (!r.ok) throw new Error('서버 ' + r.status);
     return r.json();
   }).finally(() => clearTimeout(t));
+}
+// 응답이 느려 시간이 지나거나(abort)·미리 보낸 요청이 끊기면 한 번 더 시도한다(제한 시간 넉넉히 40초)
+async function fetchJson(url, ms = 40000) {
+  try { return await fetchJson1(url, ms); }
+  catch (e) {
+    if (e && /^요청이 너무|^서버 /.test(e.message || '')) throw e;
+    try { return await fetchJson1(url, ms); }
+    catch (e2) { throw new Error('서버 응답이 늦습니다. 잠시 뒤 다시 시도하세요.'); }
+  }
 }
 function loadData(cid) {
   if (!dataCache.has(cid)) {
