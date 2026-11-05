@@ -14,7 +14,6 @@
   #note select, #note input, #note button { font: inherit; padding: 1px 4px; }
   #note h1 { font-size: 16px; margin: 2px 0; }
   #note .sub { color: #555; }
-  #note.min .lg { display: none; }
   #note label.nobg { white-space: nowrap; cursor: pointer; }
   #tbl { position: fixed; right: 10px; top: 10px; z-index: 20; background: #fff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.3);
     font: 13px "Malgun Gothic", sans-serif; max-height: calc(100% - 20px); display: flex; flex-direction: column; }
@@ -96,12 +95,16 @@
   #gpop tr.jump td { background: #fdf3d8; }
   /* 모바일(2026-11-05 사용자): 표가 화면을 다 덮어 지도가 안 보였다 → 표를 아래쪽 시트로, 위쪽은 지도·조절줄이 보이게 */
   #tbl .rz { touch-action: none; }
+  /* 표 가로 길이 조절(2026-11-05 사용자): 왼쪽 가장자리를 끈다. 줄이면 각 표(.bd)에 가로 스크롤. 더블클릭 = 원래 폭 */
+  #tbl .cw { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 5; touch-action: none; }
+  #tbl .cw:hover, #tbl .cw.on { background: rgba(47,72,88,.25); }
   @media (max-width: 760px) {
     #note { left: 6px; right: 6px; top: 6px; max-width: none; padding: 6px 8px; font-size: 12px; }
     #note h1 { font-size: 14px; }
     #note .ctl { gap: 4px; margin-bottom: 2px; }
     #selSgg { max-width: 150px; }
-    #tbl { left: 0; right: 0; top: auto; bottom: 0; border-radius: 12px 12px 0 0; max-height: 46vh; box-shadow: 0 -2px 8px rgba(0,0,0,.3); }
+    #tbl .cw { display: none; }
+    #tbl { width: auto !important; left: 0; right: 0; top: auto; bottom: 0; border-radius: 12px 12px 0 0; max-height: 46vh; box-shadow: 0 -2px 8px rgba(0,0,0,.3); }
     #tbl .hd { flex-wrap: wrap; gap: 4px 8px; padding: 4px 8px; font-size: 12px; }
     #tbl .rz { height: 14px; }
     #tbl .rz::after { top: 5px; }
@@ -116,14 +119,7 @@
   <div class="ctl">
     <select id="selSido"></select><span id="sggBox"><button id="selSgg" type="button" title="시군구 여러 개 고르기"></button><div id="sggPop"></div></span>
     상위 <input id="topN" type="number" min="1" step="5" value="" placeholder="전체" style="width:46px">곳
-    <button id="btnMin" title="범례 접기/펴기">범례</button>
     <label class="nobg" title="체크하면 고른 시군구 바깥을 흰 막으로 지우기"><input type="checkbox" id="chkNoBg">배경지우기</label>
-  </div>
-  <div class="lg">
-    <h1 id="ttl"></h1>
-    <div class="sub" id="sub"></div>
-    <b style="color:#e0a82e;font-size:16px">★</b> 하이라이트 (표·학교 팝업에서 별을 눌러 켜기/끄기)<br>
-    <span class="sw" style="background:#6a4c93"></span>중학교(표에서 골라 지도 표시)
   </div>
 </div>
 <div id="map"></div>
@@ -387,8 +383,6 @@ function draw(keepView) {
   // 초등→중학교 점선은 그리지 않는다(실제 배정이 확실하지 않음)
 
   // 제목·범례
-  $("ttl").textContent = `${R.nm} 초등학교 전교생 많은 ${top.length}곳`;
-  $("sub").innerHTML = `숫자 = 학급당 / 전교생 · 표의 순위 번호를 눌러 지도 순위 표시 켜기/끄기 · 학교 평균 전교생 ${Math.round(AVG_TOT)} (초등 ${all.length}곳)`;
   document.title = `학군 장표 — ${R.nm}`;
   if (!keepView) map.fitBounds(bounds, { top: 80, right: 30, bottom: 30, left: 30 });
   TOP = top;
@@ -445,7 +439,6 @@ const tbl = document.createElement("div");
 tbl.id = "tbl";
 document.body.appendChild(tbl);
 const MOB = matchMedia("(max-width: 760px)");
-if (MOB.matches) $("note").classList.add("min");   // 모바일은 범례를 접은 채로 시작
 let TFS = store.get("sd:tblfs", MOB.matches ? 12 : 13), TKEY = "rank", TASC = true, TROWS = [], TSRC = [], TMID = [], GRD = store.get("sd:grades", false);   // GRD = 학년별 학생 수 칸 보이기
 function drawTable(rows, midRows) {
   TSRC = rows; if (midRows) TMID = midRows;
@@ -530,6 +523,17 @@ function drawTable(rows, midRows) {
     else if (TH[k]) b.style.height = TH[k] + "px";
     else b.style.maxHeight = k === "e" ? "55vh" : "30vh";
   });
+  // 가로 길이 조절 손잡이(표를 다시 그릴 때마다 innerHTML 이 지워지므로 여기서 다시 붙인다)
+  const cw = document.createElement("div"); cw.className = "cw"; cw.title = "좌우로 끌어 가로 길이 조절 (더블클릭 = 원래대로)"; tbl.appendChild(cw);
+  const TW = store.get("sd:tblw", 0);
+  if (TW && !MOB.matches) tbl.style.width = Math.min(TW, innerWidth - 20) + "px";
+  cw.ondblclick = () => { tbl.style.width = ""; store.set("sd:tblw", 0); pinGrades(); };
+  cw.onpointerdown = e => {
+    e.preventDefault(); cw.classList.add("on"); cw.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, w0 = tbl.getBoundingClientRect().width;
+    cw.onpointermove = ev => { tbl.style.width = Math.max(220, Math.min(innerWidth - 20, w0 + x0 - ev.clientX)) + "px"; pinGrades(); };
+    cw.onpointerup = () => { cw.classList.remove("on"); cw.onpointermove = cw.onpointerup = null; store.set("sd:tblw", parseInt(tbl.style.width) || 0); };
+  };
   tbl.querySelectorAll(".rz").forEach(z => z.onpointerdown = e => {
     e.preventDefault();
     const b = z.previousElementSibling, y0 = e.clientY, h0 = b.getBoundingClientRect().height;
@@ -588,7 +592,6 @@ async function loadAdm(R) {
   const inside = (rings) => { const c = rings.map(ringCentroid).sort((a, b) => b[2] - a[2])[0]; return R.gus.some(g => g.rings.some(r => inRing(c[0], c[1], r))); };
   ADM = parts.flat().filter(a => a[2].length && inside(a[2]));
 }
-$("btnMin").onclick = () => { $("note").classList.toggle("min"); pinGrades(); };
 // 배경지우기(2026-11-05 사용자) — 체크 = 고른 시군구 바깥 흰 막(0.82), 해제 = 흰 막 없음(0). localStorage sd:nobg3
 $("chkNoBg").checked = NOBG;
 $("chkNoBg").onchange = e => { NOBG = e.target.checked; store.set("sd:nobg3", NOBG); if (MASK) MASK.setOptions({ fillOpacity: maskOp() }); };
