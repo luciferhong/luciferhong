@@ -7620,6 +7620,15 @@
         return window.__aptEmdP;
       };
 
+      // ===== 단지 → 지도 마커 이름 고정표 (Pages aptShort.json, 44KB) — 규칙으로 줄이면 '…' 로 잘리던 1,612곳의 아실 표기 (2026-11-06) =====
+      window.__aptShort = null;
+      window.__loadAptShort = function () {
+        if (!window.__aptShortP) window.__aptShortP = fetch(new URL("aptShort.json", location.href).href)
+          .then((r) => (r.ok ? r.json() : {})).catch(() => ({}))
+          .then((d) => (window.__aptShort = d || {}));
+        return window.__aptShortP;
+      };
+
       // ===== 아파트 검색 기능 초기화 =====
       function initApartmentSearch() {
         const searchInput = document.getElementById("apartmentSearchInput");
@@ -8065,8 +8074,171 @@
 		`;
 
         /* ✅ 전체 마커에 호버 이벤트 (nameElement와 detailsElement 모두 확장) */
-        const shortName = apartment.name.length > 7 ? apartment.name.slice(0, 6) + "..." : apartment.name;
-        nameElement.textContent = shortName; /* 초기: 줄인 이름 */
+        /* 마커 이름은 아실 방식으로 줄인다(2026-11-05 사용자 지시 — 아이파크1·삼천리1차·현대처럼):
+           ① 앞 지역명(이 단지의 시군구·시도명) ② 괄호 설명 통째로 ③ '아파트' ④ '시티'(길 때) ⑤ 번호 뒤 '단지'
+           ('차'·'지구'는 남김) ⑥ 그래도 길면 본 이름 끝을 자르되 끝 번호는 남김. 전체 이름은 마우스를 올리면 펼친다. */
+        /* 앞의 역 이름(매탄권선역리버파크 → 리버파크)은 그 단지를 가리키지 못하므로 뗀다. 역세권·'…역1단지'는 제외.
+           떼고 남는 게 2자 이하이거나 센트럴·하이츠 같은 흔한 말뿐이면(이안의왕역센트럴·디오빌역삼) 떼지 않는다.
+           8자 이내 이름에도 적용 — 같은 동네 이웃(수원역센트럴타운 / 센트럴어반)과 표기 기준을 맞춘다 */
+        const __snStn = function (s) {
+          const rest = s.replace(/^[^\s(]{2,5}?역\s*(?!세권|\d)(?=[^\s]{2,})/, ""); /* 역 이름은 5자까지 — 그보다 길면 브랜드가 섞인 것(힐스테이트광교중앙역퍼스트) */
+          const core = rest.replace(/\([^)]*\)/g, "").trim();
+          const tooLong = __snW(s) > 7; /* 여백이 남게 들어가는 이름(매교역팰루시드)은 역 이름·부제를 떼지 않는다 — 꽉 차거나 넘칠 때만 */
+          const r1 = tooLong && rest !== s && core.length >= 3 && !/^(센트럴|하이츠|타운|파크|리버|캐슬|힐|빌|마을|아파트|더|시티)\d*$/.test(core) ? rest : s;
+          /* 끝의 '파크원'은 브랜드가 아니라 덧붙은 말 — 한양수자인파크원 → 한양수자인 (남는 게 센트럴 같은 흔한 말이면 유지) */
+          const GEN = /^(센트럴|하이츠|타운|파크|리버|캐슬|힐|빌|마을|아파트|더|시티)\d*$/;
+          const r2a = r1.replace(/(?<=.{3,})(?:파크원|에듀포레)$/, ""); /* 호매실금호어울림에듀포레 → …금호어울림 (아실 표기) */
+          const r2 = tooLong && r2a !== r1 && !GEN.test(r2a) ? r2a : r1;
+          /* 이 단지의 법정동 이름(호매실스위첸 → 스위첸, 힐스테이트호매실 → 힐스테이트)은 길이와 상관없이 뗀다 — 아실이 그렇게 한다.
+             남는 게 3자 미만·숫자로 시작·흔한 말이면 유지 (금곡LG·호매실13단지). aptEmd.json 을 받은 뒤부터 적용 */
+          const emd = String((window.__aptEmd || {})[String(apartment.id)] || "");
+          const stem = emd.replace(/(동|읍|면|리|가)$/, "");
+          if (stem.length >= 2) {
+            const pre = r2.startsWith(stem) ? r2.slice(stem.length) : null;
+            const suf = r2.endsWith(stem) ? r2.slice(0, r2.length - stem.length) : null;
+            for (const c of [pre, suf]) {
+              if (c == null) continue;
+              const cc = c.replace(/\([^)]*\)/g, "").trim();
+              if (cc.length >= 3 && !/^\d/.test(cc) && !GEN.test(cc)) return c;
+            }
+          }
+          /* 이 단지의 동이 아니어도 다른 단지가 쓰는 동 이름(3자 이상)으로 시작하면 지명이다 — 호매실더센트라고(법정동은 금곡동) → 더센트라고 */
+          if (window.__aptEmd) {
+            let set = window.__aptStemSet;
+            if (!set) {
+              set = window.__aptStemSet = new Set();
+              for (const k in window.__aptEmd) { const st = String(window.__aptEmd[k]).replace(/(동|읍|면|리|가)$/, ""); if (st.length >= 3 && st.length <= 5) set.add(st); }
+            }
+            for (let n = 5; n >= 3; n--) {
+              if (r2.length - n < 3 || !set.has(r2.slice(0, n))) continue;
+              const c = r2.slice(n);
+              const cc = c.replace(/\([^)]*\)/g, "").trim();
+              if (cc.length >= 3 && !/^\d/.test(cc) && !GEN.test(cc)) return c;
+            }
+          }
+          return r2;
+        };
+        /* 마커 폭은 글자 수가 아니라 화면 폭 — 한글 1, 영문·숫자 0.6, 괄호·점 0.4 로 잰다. 상자 폭(≈8자)을 꽉 채우는 이름(한글 8자)은 보정 대상 */
+        const __snW = function (str) {
+          let w = 0;
+          for (const ch of String(str)) w += /[A-Za-z0-9]/.test(ch) ? 0.6 : /[()\-.,·\s]/.test(ch) ? 0.4 : ch === "…" ? 0.8 : 1;
+          return w;
+        };
+        const __snCut = function (str, budget) {
+          let out = "";
+          for (const ch of String(str)) { if (__snW(out + ch) > budget) break; out += ch; }
+          return out;
+        };
+        const __snBase = function (LIM) { /* LIM = 이 이름에 쓸 수 있는 폭(블럭 번호 자리 제외) */
+          const orig = String(apartment.name || "");
+          let s = __snStn(orig);
+          const regs = [];
+          const sg = String(apartment.sigunguNm || "").split(/\s+/)[0].replace(/(특별자치시|특별시|광역시|시|군|구)$/, "");
+          if (sg.length >= 2) regs.push(sg);
+          const sd = String(apartment.sidoNm || "").replace(/(특별자치도|특별자치시|특별시|광역시|도)$/, "");
+          if (sd.length >= 2) regs.push(sd);
+          if (regs.length) s = s.replace(new RegExp("^(?:" + regs.join("|") + ")\\s*(?=.{2,})"), "");
+          s = s.replace(/e편한세상/gi, "e편한"); /* 브랜드 약칭 — 아실 방식(더 필요하면 여기에 추가) */
+          s = s.replace(/\s*\([^)]*\)/g, "").replace(/\s*아파트\s*$/, "").replace(/\s*아파트(?=\d)/, "");
+          /* 'OO N단지 + 시공사/건설사 이름'(신원당1단지동문·옥빛12단지신덕가든)은 번호 뒤를 뗀다 — 신원당1단지, 옥빛12단지(2026-11-06 사용자 지시).
+             폭이 되면 '단지'를 남기고, 안 되면 아래에서 번호만 남긴다 */
+          let __kd = false;
+          if (__snW(s) > LIM) {
+            const m = s.match(/^(.*?\d+)\s*단지\s*([^\d\s].{1,})$/);
+            if (m && !/^(차|지구|아파트)/.test(m[2])) { s = m[1] + "단지"; __kd = true; }
+          }
+          /* 브랜드 뒤에 붙은 설명어는 뗀다(2026-11-06 사용자 예시): 교동하늘채스카이파크→교동하늘채, 강릉호반베르디움오션→호반베르디움,
+             경포대신도브래뉴로얄카운티→신도브래뉴. 브랜드 앞 지명은 남은 이름이 짧으면(폭 6 이하) 두고 길면 뗀다
+             (교동하늘채·영진코아루 / 입암강변코아루→강변코아루, 유천유승한내들→유승한내들). 힐스테이트는 따로 처리하므로 제외 */
+          if (__snW(s) > LIM) {
+            const B = window.__snBrands || (window.__snBrands = ["호반베르디움", "코오롱하늘채", "하늘채", "신도브래뉴", "유승한내들", "한내들", "코아루", "더테라스", "푸르지오", "래미안", "아이파크", "롯데캐슬", "더샵", "자이", "e편한", "위브", "포레나", "센트레빌", "아너스빌", "어울림", "스위첸", "이안", "우미린", "스타힐스", "스타클래스", "모아미래도", "해링턴", "예가", "굿모닝힐", "유보라", "사랑으로", "리슈빌", "아이유쉘", "써밋", "휴먼빌", "트리븐", "리버티", "호반", "베르디움", "더플래티넘", "SK뷰", "e-편한", "수자인", "꿈에그린", "한라비발디", "비발디", "두산", "대림", "신동아파밀리에", "파밀리에", "라온프라이빗", "라온", "골드클래스", "트레지움", "엘크루", "더힐", "쌍용", "아파트"].sort((x, y) => y.length - x.length));
+            for (const b of B) {
+              const i = s.indexOf(b);
+              if (i < 0) continue;
+              const tail = s.slice(i + b.length);
+              const nm = (tail.match(/(\d+\s*(?:차|단지|지구)?)$/) || ["", ""])[1];
+              const desc = nm ? tail.slice(0, tail.length - nm.length) : tail;
+              if (desc.length >= 2 && !/^\s*\d/.test(desc)) {
+                let head = s.slice(0, i);
+                let cut = head + b + nm;
+                if (head && __snW(head + b) > 6) {
+                  const stem = String((window.__aptEmd || {})[String(apartment.id)] || "").replace(/(동|읍|면|리|가)$/, "");
+                  const set = window.__aptStemSet;
+                  for (let n = Math.min(5, head.length); n >= 2 && head; n--) {
+                    const p = head.slice(0, n);
+                    if (p === stem || (set && n >= 3 && set.has(p)) || (stem && p.startsWith(stem))) { head = head.slice(n); break; }
+                  }
+                  if (head === s.slice(0, i) && __snW(b) >= 5) head = ""; /* 어느 동 이름도 아닌 지명(경포대)은 브랜드가 충분히 길면(신도브래뉴) 통째로 뗀다 */
+                  cut = head + b + nm;
+                }
+                s = cut;
+              }
+              break;
+            }
+          }
+          if (s.length > 5) s = s.replace(/시티(?=\d|$)/, "");
+          if (__snW(s) > LIM) s = s.replace(/(?<=.{3,})더\s*센트(?:럴|라)(?=\d|$)/, ""); /* 호반베르디움더센트럴 → 호반베르디움 (아실 표기) */
+          if (__snW(s) > LIM) s = s.replace(/(?<=.{3,})센트럴타운(?=\d|$)/, ""); /* 모아미래도센트럴타운1단지 → 모아미래도1 (사용자 지정) */
+          if (__snW(s) > LIM + 2) s = s.replace(/타운(?=\d|$)/, ""); /* 모아미래도센트럴타운1단지 → 모아미래도센트럴1 (낱말 중간에서 잘리는 것보다 낫다) */
+          if (!__kd || __snW(s) > LIM) s = s.replace(/(\d+)\s*단지$/, "$1");
+          s = s.replace(/\s+/g, " ").trim();
+          if (!s) return orig;
+          /* 아직 길면 이 단지의 법정동 이름(곡반정동 → 곡반정현대아이파크의 '곡반정')을 뗀다 */
+          if (__snW(s) > LIM) {
+            const emd = String((window.__aptEmd || {})[String(apartment.id)] || "");
+            const stem = emd.replace(/(동|읍|면|리|가)$/, "");
+            if (stem.length >= 2 && s.startsWith(stem) && s.length - stem.length >= 2) s = s.slice(stem.length);
+            else if (stem.length >= 2 && s.endsWith(stem) && s.length - stem.length >= 3) s = s.slice(0, s.length - stem.length); /* 힐스테이트호매실 → 힐스테이트 */
+          }
+          /* 아직 길면 이름 가운데 낀 이 단지의 시군구명을 뗀다(힐스테이트수원파크포레 → 힐스테이트파크포레),
+             그래도 길면 브랜드를 약칭으로 줄인다 — 힐스테이트 → 힐스(사용자 지정, 2026-11-06) */
+          if (__snW(s) > LIM && sg.length >= 2) {
+            const i = s.indexOf(sg, 1);
+            if (i > 0 && s.length - sg.length >= 3 && s[i + sg.length] !== "역") s =s.slice(0, i) + s.slice(i + sg.length);
+          }
+          if (__snW(s) > LIM) s = s.replace(/힐스테이트/, "힐스");
+          /* 아직 길면 앞의 마을·신도시·지구·뉴타운·시범 지명(과 그 뒤 'N단지')을 떼어 브랜드가 보이게 한다(최대 2번) */
+          for (let i = 0; i < 2 && __snW(s) > LIM; i++) {
+            const t2 = s.replace(/^.*?(?:신도시|신시가지|뉴타운|마을|지구|시범단지|시범|국제도시|기업도시|혁신도시)(?:\d+단지)?(?=.{3,})/, "");
+            if (t2 === s) break;
+            s = t2;
+          }
+          if (__snW(s) <= LIM) return s;
+          const t = s.match(/^(.*?)(\d+(?:차|지구)?)$/);
+          if (t && t[1]) {
+            const room = LIM - __snW(t[2]);
+            return room >= 2 ? __snCut(t[1], room) + t[2] : __snCut(s, LIM - 0.8) + "…";
+          }
+          return __snCut(s, LIM - 0.8) + "…";
+        };
+        /* 끝의 숫자 괄호(현대(1240) 등)는 구분 정보라 줄인 이름 + 괄호가 마커 폭(8자)에 들어가면 남긴다 */
+        const __snCalc = function () {
+          const nm = String(apartment.name || "");
+          const fixed = window.__aptShort && window.__aptShort[String(apartment.id)]; /* 고정표(아실 표기)가 있으면 규칙보다 우선 */
+          if (fixed) return fixed;
+          const LW = 7; /* 쓸 수 있는 폭 — 상자(≈8자)에 좌우 여백이 남는 정도. 여백 없이 꽉 차는 이름부터 보정한다(2026-11-06) */
+          if (__snW(nm) <= LW) return __snStn(nm); /* 전제: 여백이 남게 들어가면 줄이지 않는다 */
+          /* 괄호 안의 지구·블럭 번호는 이름 끝에 붙여 남긴다(아실 방식) — 킨텍스원시티(1블럭)→…1, 힐스테이트태전(5지구C4블럭)→…5, (C1블럭)→C1 */
+          let blk = "";
+          const pb = nm.match(/\(([^)]*)\)\s*$/);
+          if (pb) {
+            const g = pb[1].match(/(\d+)\s*지구/);
+            const k = pb[1].match(/([A-Za-z]*\d+)\s*(?:블럭|블록|BL)/i);
+            blk = g && k ? g[1] + k[1] : g ? g[1] : k ? k[1] : ""; /* 5지구C4블럭 → 5C4 (같은 지구의 블럭끼리 겹치지 않게) */
+          }
+          const b = __snBase(LW - __snW(blk)) + blk;
+          const pm = nm.match(/\((\d{2,})\)\s*$/);
+          return pm && !blk && !/…$/.test(b) && __snW(b + "(" + pm[1] + ")") <= LW ? b + "(" + pm[1] + ")" : b;
+        };
+        /* 법정동 이름은 aptEmd.json 을 받은 뒤부터 적용 — 받으면 이미 그려진 이름표도 다시 줄인다 */
+        nameElement.__refresh = function () { if (!markerElement.classList.contains("expanded")) nameElement.textContent = __snCalc(); };
+        if ((!window.__aptEmd || !window.__aptShort) && !window.__aptEmdRefreshHook) {
+          window.__aptEmdRefreshHook = true;
+          Promise.all([window.__loadAptEmd?.(), window.__loadAptShort?.()]).then(() => {
+            document.querySelectorAll(".apartment-name-marker").forEach((e) => e.__refresh && e.__refresh());
+          });
+        }
+        nameElement.textContent = __snCalc(); /* 초기: 줄인 이름 */
 
         const handleMouseEnter = () => {
           markerElement.classList.add("expanded");
@@ -8074,7 +8246,7 @@
         };
         const handleMouseLeave = () => {
           markerElement.classList.remove("expanded");
-          nameElement.textContent = shortName; /* 호버 해제: 줄인 이름 */
+          nameElement.textContent = __snCalc(); /* 호버 해제: 줄인 이름 */
         };
 
         markerElement.addEventListener("mouseenter", handleMouseEnter);
