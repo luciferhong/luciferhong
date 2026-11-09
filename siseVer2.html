@@ -453,12 +453,20 @@ buttonContainer {
 <span style="margin-left:8px; white-space:nowrap; display:inline-flex; align-items:center; gap:4px;">
   <label for="markerScaleSlider" style="font-size:13px;">🔍</label>
   <button id="markerScaleMinus" style="width:20px; height:20px; padding:0; font-size:14px; line-height:1; cursor:pointer;">−</button>
-  <input type="range" id="markerScaleSlider" min="0.5" max="1.5" step="0.05" value="1.0"
+  <input type="range" id="markerScaleSlider" min="0.5" max="1.5" step="0.05" value="0.9"
     style="width:80px; cursor:pointer; vertical-align:middle;">
   <button id="markerScalePlus" style="width:20px; height:20px; padding:0; font-size:14px; line-height:1; cursor:pointer;">+</button>
-  <span id="markerScaleLabel" style="font-size:12px; color:#555; min-width:28px;">1.0x</span>
+  <span id="markerScaleLabel" style="font-size:12px; color:#555; min-width:28px;">0.90x</span>
 </span>
 
+<span style="margin-left:6px; white-space:nowrap; display:inline-flex; align-items:center; gap:4px;" title="가격표(행/차트) 크기만 따로 조절">
+  <label style="font-size:12px;">💲</label>
+  <button id="chartScaleMinus" style="width:20px; height:20px; padding:0; font-size:14px; line-height:1; cursor:pointer;">−</button>
+  <input type="range" id="chartScaleSlider" min="0.5" max="2" step="0.05" value="1.2" style="width:80px; cursor:pointer; vertical-align:middle;">
+  <button id="chartScalePlus" style="width:20px; height:20px; padding:0; font-size:14px; line-height:1; cursor:pointer;">+</button>
+  <span id="chartScaleLabel" style="font-size:12px; color:#555; min-width:28px;">1.20x</span>
+</span>
+<button id="chartRowModeBtn" title="평형별 시세를 마커 아래 가로차트로 표시 / 옆 세로차트로 표시" style="font-size:11px;padding:4px 8px;cursor:pointer;margin-left:6px;">▤ 가로차트</button>
 <button id="markerAdjustBtn" title="마커 겹침 자동 위치조정" style="font-size:11px;padding:4px 8px;cursor:pointer;margin-left:6px;">라벨 위치조정</button>
 <button id="markerResetBtn" title="마커 위치 초기화" style="font-size:11px;padding:4px 8px;cursor:pointer;">라벨 위치초기화</button>
 
@@ -560,12 +568,15 @@ window.__loadAptShort = function () {
 				document.getElementById("siseImportBtn").addEventListener("click", () => {
 					const input = document.createElement('input');
 					input.type = 'file';
-					input.accept = 'application/json';
+					input.accept = '.json,application/json';
+					input.style.display = 'none';
+					document.body.appendChild(input); /* 일부 모바일 브라우저는 문서에 없는 입력창의 선택 이벤트를 놓친다 */
 					input.onchange = function (event) {
 						const file = event.target.files[0];
 						if (file) {
 							importFromJSONToHongSise(file);
 						}
+						setTimeout(() => input.remove(), 0);
 					};
 					input.click();
 				});
@@ -3064,6 +3075,17 @@ function getFromIndexedDB(id, type) {
 
 
 // ✅ 기본 마커 생성 (시세지도 체크 해제 시)
+window.__SISE_GRADE_COLOR = { "상": "#f8bfc8", "중": "#ffd400", "하": "#9bd68f" };
+window.__getSiseGrade = function (id) {
+  try { return (JSON.parse(localStorage.getItem("siseGrade") || "{}"))[String(id)] || ""; } catch (e) { return ""; }
+};
+window.__setSiseGrade = function (id, g) {
+  try {
+    const m = JSON.parse(localStorage.getItem("siseGrade") || "{}");
+    if (g) m[String(id)] = g; else delete m[String(id)];
+    localStorage.setItem("siseGrade", JSON.stringify(m));
+  } catch (e) {}
+};
 function renderSiseMapMarker(apartment) {
     let yearValue = apartment.year.slice(0,4);
     let bgColor = "#f9daae"; // 기본 배경색
@@ -3338,6 +3360,21 @@ function renderSiseMapMarker(apartment) {
             line-height:1; pointer-events:none; z-index:10;
         `;
         markerElement.appendChild(badge);
+    })();
+
+/* 상·중·하 등급 배지(마커 클릭 창에서 지정, 이 브라우저에 저장) */
+    (function() {
+        const g = window.__getSiseGrade(apartment.id);
+        if (!g) return;
+        markerElement.style.position = "relative";
+        const gb = document.createElement("span");
+        gb.className = "sise-grade-badge";
+        gb.textContent = g;
+        gb.style.cssText = `position:absolute; top:-14px; left:-31px; width:29px; height:29px; box-sizing:border-box;
+            background:${window.__SISE_GRADE_COLOR[g]}; color:#000; font-size:17px; font-weight:bold;
+            border:1.5px solid #555; border-radius:4px; display:flex; align-items:center; justify-content:center;
+            line-height:1; padding:0 0 1px 0; pointer-events:none; z-index:11;`;
+        markerElement.appendChild(gb);
     })();
 
 const chartContainer = document.createElement("div");
@@ -4122,6 +4159,38 @@ async function showColorPickerModal(apartmentId,apartmentName,  defaultColor, de
 
 addApartmentTitle(modal, apartmentName); // ✅ 제일 위
 makeModalDraggable(modal);               // ✅ 그 아래 Drag me
+
+	/* 상·중·하 등급 선택 — 누르면 바로 저장, 마커는 창을 닫을 때 다시 그려져 배지가 나타난다 */
+	(function () {
+		const row = document.createElement("div");
+		row.style.cssText = "display:flex; gap:6px; align-items:center; margin:6px 0;";
+		const lab = document.createElement("span");
+		lab.textContent = "등급";
+		lab.style.cssText = "font-size:13px; font-weight:bold;";
+		row.appendChild(lab);
+		const btns = [];
+		const paint = () => {
+			const cur = window.__getSiseGrade(apartmentId);
+			btns.forEach(b => {
+				const on = b.dataset.g === cur;
+				b.style.outline = on ? "3px solid #1a56db" : "none";
+				b.style.opacity = (cur && !on) ? "0.45" : "1";
+			});
+		};
+		["상", "중", "하"].forEach(g => {
+			const b = document.createElement("button");
+			b.type = "button"; b.textContent = g; b.dataset.g = g;
+			b.style.cssText = `width:36px; height:30px; padding:0 0 2px 0; line-height:1; display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:bold; cursor:pointer; border:1px solid #555; border-radius:4px; background:${window.__SISE_GRADE_COLOR[g]};`;
+			b.onclick = () => { window.__setSiseGrade(apartmentId, window.__getSiseGrade(apartmentId) === g ? "" : g); paint(); };
+			btns.push(b); row.appendChild(b);
+		});
+		const hint = document.createElement("span");
+		hint.textContent = "(다시 누르면 해제)";
+		hint.style.cssText = "font-size:11px; color:#777;";
+		row.appendChild(hint);
+		modal.appendChild(row);
+		paint();
+	})();
 
 
 	const tableContainer = document.createElement("div");
@@ -5272,12 +5341,17 @@ function importFromJSONToHongSise(file) {
   const reader = new FileReader();
 
   reader.onload = function (event) {
-    const data = JSON.parse(event.target.result);
+    let data;
+    try { data = JSON.parse(event.target.result); }
+    catch (err) { alert("❌ 복원 파일을 읽지 못했습니다(JSON 형식 오류)"); return; }
+    /* 옛 형식(시세 항목 배열)이면 apartments 저장소로 넣는다 */
+    if (Array.isArray(data)) data = { apartments: data };
     const request = indexedDB.open("hongSise", HONGSISE_DB_VERSION);
     request.onupgradeneeded = __hongSiseUpgrade;
 
     request.onerror = function (e) {
       console.error("❌ hongSise DB 열기 실패", e);
+      alert("❌ 시세지도 DB 연결 실패");
     };
 
     request.onsuccess = function (e) {
@@ -5291,16 +5365,16 @@ function importFromJSONToHongSise(file) {
         console.error("❌ 트랜잭션 오류", e);
         errorOccurred = true;
       };
+      tx.onabort = () => { alert("❌ 복원 중 오류로 취소되었습니다. (콘솔 확인)"); };
 
       tx.oncomplete = () => {
+        db.close();
         if (!errorOccurred) {
+          /* 먼저 옛 시세·마커를 비우고, 모든 마커를 새 데이터로 다시 그린다(화면 안 마커도 포함) */
+          priceCache = {};
+          prevSiseMapState = "초기화";
+          if (window.map) updateMarkers(window.map.getBounds(), true);
           alert("✅ hongSise DB 데이터 가져오기 완료");
-
-          if (window.map) {
-            priceCache = {};
-            prevSiseMapState = "초기화";
-            updateMarkers(window.map.getBounds());
-          }
         }
       };
 
@@ -5579,6 +5653,14 @@ function getColorForPrice(price, settings) {
     // 해당 조건 없을 경우 기본값
     return "#cccccc";
 }
+/* 가격표(행·세로차트) 크기만 따로 조절 — 마커 크기(markerScale)와 별개 */
+window.__chartScale = 1.2; /* 기본값 1.2 (2026-11-09 사용자) */
+window.__applyChartScale = function (c) {
+  /* 가격표는 마커 상자(outerWrapper) 안에 있어 마커 배율을 따라가므로, 나눠서 상쇄한다 → 가격표 크기는 💲 값만으로 정해진다 */
+  const sc = window.__chartScale / (typeof markerScale === "number" && markerScale > 0 ? markerScale : 1);
+  if (window.__chartRowMode) { c.style.transformOrigin = "50% 0"; c.style.transform = `translateX(-50%) scale(${sc})`; }
+  else { c.style.transformOrigin = "0 100%"; c.style.transform = `scale(${sc})`; }
+};
 function renderPriceChart(container, data, marker = null) {
 const fromP = parseFloat(document.getElementById("filterPyeongFrom").value);
 const toP = parseFloat(document.getElementById("filterPyeongTo").value);
@@ -5619,9 +5701,25 @@ const filteredData = data.filter(row => {
 });
 
 
+    const rowMode = !!window.__chartRowMode;
+    /* 행 표시: 마커 바로 아래에 마커 폭으로 평형별 한 줄씩(84) 35.0/10.4) / 기본: 마커 오른쪽 세로 차트 */
+    if (rowMode) {
+      /* 마커+행 전체를 검은 테두리 한 칸으로 묶는다(행 사이도 검은 선) */
+      container.style.left = "50%"; container.style.top = "100%"; container.style.bottom = "auto";
+      container.style.width = "max-content"; container.style.minWidth = "100%"; container.style.marginTop = "5px";
+      container.style.background = ""; container.style.padding = "";
+      container.style.boxSizing = "border-box"; container.style.borderRadius = "";
+    } else {
+      container.style.left = "100%"; container.style.top = ""; container.style.bottom = "0";
+      container.style.width = ""; container.style.minWidth = ""; container.style.marginTop = "0px";
+      container.style.background = ""; container.style.padding = ""; container.style.borderRadius = "";
+    }
+    const __mk = container.previousElementSibling;
+    if (__mk) __mk.style.boxShadow = "2px 2px 5px rgba(0,0,0,0.3)";
     const wrapper = document.createElement("div");
     wrapper.style.display = "flex";
     wrapper.style.gap = "1px";
+    if (rowMode) { wrapper.style.flexDirection = "column"; wrapper.style.gap = "3px"; }
 
     const fallbackColors = ['#000000', '#454648', '#474C4F', '#FF0000', '#FF6600', '#FFFF00',
                             '#92D050', '#00B050', '#00B0F0', '#0070C0', '#000099', '#7030A0',
@@ -5667,6 +5765,22 @@ const filteredData = data.filter(row => {
     if (isNaN(d.매매)) {
         console.warn(`⚠️ 매매가 NaN: 평형=${d.평형}, 원본=${d.매매}`);
         return; // 매매가 없는 경우는 건너뜀
+    }
+
+    if (rowMode) {
+      const fmt = (disp, v) => {
+        if (v === undefined || v === null || isNaN(v)) return "-";
+        if (disp && String(disp).trim() !== "") return String(disp).replace(/(\d+\.?\d*)/g, m => parseFloat(m).toFixed(1));
+        return (typeof v === "number" ? v : parseFloat(v)).toFixed(1);
+      };
+      const { bg: rbg, text: rtx } = getColorByPrice(d.매매);
+      const row = document.createElement("div");
+      let txt = `${d.평형}) ${fmt(d.매매Display, d.매매)}/${fmt(d.전세Display, d.전세)}`;
+      if (d.기타 !== undefined && d.기타 !== null && d.기타 !== "") txt += `/${d.기타}`;
+      row.textContent = txt;
+      row.style.cssText = `background:${rbg};color:${rtx};font-size:11px;font-weight:bold;text-align:center;white-space:nowrap;padding:1px 3px;line-height:14px;border-radius:3px;box-shadow:1px 2px 3px rgba(0,0,0,0.3);`;
+      wrapper.appendChild(row);
+      return;
     }
 
     const card = document.createElement("div");
@@ -5772,6 +5886,12 @@ const filteredData = data.filter(row => {
 
     container.innerHTML = "";
     container.appendChild(wrapper);
+    if (rowMode) {
+      const has = wrapper.children.length > 0;
+      container.style.display = has ? "" : "none";
+      if (has && __mk) __mk.style.boxShadow = "2px 2px 5px rgba(0,0,0,0.3)";
+    } else container.style.display = "";
+    window.__applyChartScale(container);
 
 //console.log(filteredData);
 }
@@ -6570,7 +6690,7 @@ async function loadApartmentsDetail() {
 }
 
 let priceCache = {}; // apartmentId → parsed price rows
-let markerScale = 1.0;
+let markerScale = 0.9; /* 기본값 0.9 (2026-11-09 사용자) */
 
 async function loadPriceCacheForIds(ids) {
   if (!ids || ids.length === 0) return;
@@ -6637,6 +6757,8 @@ function _applyMarkerScale() {
   const slider = document.getElementById("markerScaleSlider");
   markerScale = parseFloat(slider.value);
   document.getElementById("markerScaleLabel").textContent = markerScale.toFixed(2) + "x";
+  document.querySelectorAll(".priceChartContainer").forEach(window.__applyChartScale);
+  if (window.__saveModeScale) window.__saveModeScale();
   const allMarkers = [
     ...Object.values(apartmentMarkers),
     ...schoolMarkers,
@@ -7412,9 +7534,22 @@ function adjustMarkerOverlap() {
       const w = rect.width || 40;
       const h = rect.height || 20;
       // 앵커 오프셋 반영: 실제 요소 중심 = 좌상단 + w/2 = (앵커 - anchorX) + w/2
-      const cx = pos.x - anchorX + w / 2;
-      const cy = pos.y - anchorY + h / 2;
-      items.push({ el, x: cx, y: cy, w, h, dx: 0, dy: 0, priority });
+      let cx = pos.x - anchorX + w / 2;
+      let cy = pos.y - anchorY + h / 2;
+      /* 마커 밖으로 나온 것들(가격표 행/세로차트, 상·중·하 배지)까지 합친 영역으로 겹침을 계산한다 — 다른 마커를 가리지 않게 */
+      let ux0 = 0, ux1 = w, uy0 = 0, uy1 = h;
+      const extras = el.querySelectorAll ? el.querySelectorAll(".priceChartContainer, .sise-grade-badge") : [];
+      extras.forEach(ex => {
+        if (ex.style.display === "none") return;
+        const pr = ex.getBoundingClientRect();
+        if (!(pr.width > 0 && pr.height > 0)) return;
+        ux0 = Math.min(ux0, pr.left - rect.left); ux1 = Math.max(ux1, pr.right - rect.left);
+        uy0 = Math.min(uy0, pr.top - rect.top); uy1 = Math.max(uy1, pr.bottom - rect.top);
+      });
+      cx += (ux0 + ux1) / 2 - w / 2;
+      cy += (uy0 + uy1) / 2 - h / 2;
+      const bw = ux1 - ux0, bh = uy1 - uy0;
+      items.push({ el, x: cx, y: cy, w: bw, h: bh, dx: 0, dy: 0, priority });
     });
   });
 
@@ -7469,6 +7604,58 @@ function adjustMarkerOverlap() {
 }
 
 document.getElementById('markerAdjustBtn')?.addEventListener('click', adjustMarkerOverlap);
+
+/* 가격표 크기 슬라이더 */
+(function () {
+  const sl = document.getElementById("chartScaleSlider");
+  if (!sl) return;
+  const lab = document.getElementById("chartScaleLabel");
+  sl.value = window.__chartScale; lab.textContent = window.__chartScale.toFixed(2) + "x";
+  const apply = () => {
+    window.__chartScale = parseFloat(sl.value);
+    lab.textContent = window.__chartScale.toFixed(2) + "x";
+    if (window.__saveModeScale) window.__saveModeScale();
+    document.querySelectorAll(".priceChartContainer").forEach(window.__applyChartScale);
+  };
+  sl.addEventListener("input", apply);
+  const step = d => { sl.value = Math.min(2, Math.max(0.5, parseFloat(sl.value) + d)).toFixed(2); apply(); };
+  document.getElementById("chartScaleMinus").addEventListener("click", () => step(-0.05));
+  document.getElementById("chartScalePlus").addEventListener("click", () => step(0.05));
+})();
+
+/* 시세 표시 방식 토글: 옆 세로 차트 ↔ 마커 아래 행 (설정은 이 브라우저에 기억) */
+(function () {
+  const btn = document.getElementById("chartRowModeBtn");
+  if (!btn) return;
+  try { const m = localStorage.getItem("siseChartRowMode"); window.__chartRowMode = m !== "0"; /* 저장값이 없으면 가로차트가 기본 */ } catch (e) { window.__chartRowMode = true; }
+  const paint = () => {
+    btn.textContent = window.__chartRowMode ? "▥ 세로차트" : "▤ 가로차트";
+    btn.style.background = window.__chartRowMode ? "#ffe9a8" : "";
+  };
+  /* 표시 방식별 기본 배율: 가로차트 = 마커 0.9 · 가격표 1.2 / 세로차트 = 1.0 · 1.0. 바꾼 값은 방식별로 따로 기억 */
+  const DEF = { row: { m: 0.9, c: 1.2 }, col: { m: 1.0, c: 1.0 } };
+  const key = () => "siseScale_" + (window.__chartRowMode ? "row" : "col");
+  window.__saveModeScale = function () {
+    try { localStorage.setItem(key(), JSON.stringify({ m: markerScale, c: window.__chartScale })); } catch (e) {}
+  };
+  function loadModeScale() {
+    let v = DEF[window.__chartRowMode ? "row" : "col"];
+    try { const o = JSON.parse(localStorage.getItem(key()) || "null"); if (o && o.m >= 0.5 && o.m <= 1.5 && o.c >= 0.5 && o.c <= 2) v = o; } catch (e) {}
+    const ms = document.getElementById("markerScaleSlider"), cs = document.getElementById("chartScaleSlider");
+    window.__chartScale = v.c;
+    if (cs) { cs.value = v.c; document.getElementById("chartScaleLabel").textContent = v.c.toFixed(2) + "x"; }
+    if (ms) { ms.value = v.m; const sv = window.__saveModeScale; window.__saveModeScale = null; _applyMarkerScale(); window.__saveModeScale = sv; }
+  }
+  loadModeScale();
+  paint();
+  btn.addEventListener("click", () => {
+    window.__chartRowMode = !window.__chartRowMode;
+    try { localStorage.setItem("siseChartRowMode", window.__chartRowMode ? "1" : "0"); } catch (e) {}
+    loadModeScale();
+    paint();
+    if (window.map) updateMarkers(window.map.getBounds(), true);
+  });
+})();
 document.getElementById('markerResetBtn')?.addEventListener('click', resetMarkerOverlapTransforms);
 
 naver.maps.Event.addListener(window.map, 'idle', () => {
