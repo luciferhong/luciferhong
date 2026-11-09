@@ -404,6 +404,9 @@ buttonContainer {
     <label style="margin-left:4px;"><input type="checkbox" id="toggleSchoolZoneKeep">초등배정 남기기</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleMiddleSchools">중</label>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleFacilities">환경</label>
+    <label style="margin-left:4px;"><input type="checkbox" id="toggleEmdB">법정동</label>
+    <label style="margin-left:4px;"><input type="checkbox" id="toggleAdmB">행정동</label>
+    <button type="button" id="areaSelBtn" title="누르고 지도를 끌어 네모로 단지를 고르면 평형별 가격대 표를 보여줍니다 (Shift+끌기도 가능, Esc 취소)" style="margin-left:4px;padding:1px 6px;">▭ 영역선택</button>
     <label style="margin-left:4px;"><input type="checkbox" id="toggleStarbucks">스벅</label>
     <label style="margin-left:4px;">아파트경계
         <select id="parcelBoundaryMode" style="font-size:11px; padding:1px 2px;">
@@ -7684,6 +7687,316 @@ naver.maps.Event.addListener(window.map, 'idle', () => {
 
 
 
+<script>
+/* ===== 법정동·행정동 경계 — 홍부(hongbutest)와 같은 격자 상자(bnd/<layer>/<i_j>.json)를 화면 칸만 받아 선으로 그린다 ===== */
+(function () {
+  const LAYERS = {
+    emd: { cb: "toggleEmdB", color: "#d32f2f", dash: null, name: p => String(p.A2 || ""), key: p => String(p.A1 || p.A2 || ""), code: p => String(p.A1 || "").replace(/\D/g, "").slice(0, 8), pop: "emd_population_stats.json", minZoom: 13 },
+    adm: { cb: "toggleAdmB", color: "#1565c0", dash: null, name: p => String(p.adm_nm || "").trim().split(/\s+/).pop(), key: p => String(p.adm_cd2 || p.adm_cd || p.adm_nm || ""), code: p => String(p.adm_cd2 || p.adm_cd || "").replace(/\D/g, "").slice(0, 10), pop: "adm_population_stats.json", minZoom: 13 },
+  };
+  const S = {};
+  for (const k in LAYERS) S[k] = { idx: null, idxP: null, got: new Set(), pend: new Map(), feats: new Map(), shown: new Set() };
+
+  function index(k) {
+    const s = S[k];
+    if (s.idx) return Promise.resolve(s.idx);
+    if (!s.idxP) s.idxP = fetch("bnd/" + k + "_index.json").then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))).then(d => (s.idx = d)).catch(e => { s.idxP = null; throw e; });
+    return s.idxP;
+  }
+  async function load(k, bounds) {
+    const s = S[k], idx = await index(k), size = idx.size || 0.05;
+    const sw = bounds.getSW(), ne = bounds.getNE();
+    const px = (ne.lng() - sw.lng()) * 0.3, py = (ne.lat() - sw.lat()) * 0.3;
+    const homes = new Set();
+    for (let i = Math.floor((sw.lng() - px) / size); i <= Math.floor((ne.lng() + px) / size); i++)
+      for (let j = Math.floor((sw.lat() - py) / size); j <= Math.floor((ne.lat() + py) / size); j++)
+        for (const h of idx.cells[i + "_" + j] || []) homes.add(h);
+    const waits = [];
+    for (const h of homes) {
+      if (s.got.has(h)) continue;
+      let p = s.pend.get(h);
+      if (!p) {
+        p = fetch("bnd/" + k + "/" + h + ".json").then(r => r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)))
+          .then(items => { s.got.add(h); for (const o of items || []) { const key = LAYERS[k].key(o.p || {}); if (key && !s.feats.has(key)) s.feats.set(key, { p: o.p || {}, b: o.b, g: o.g, polys: null, label: null }); } })
+          .catch(e => console.warn("[경계] " + k + "/" + h + " 실패:", e)).finally(() => s.pend.delete(h));
+        s.pend.set(h, p);
+      }
+      waits.push(p);
+    }
+    if (waits.length) await Promise.all(waits);
+  }
+  /* ---- 홍부와 같은 라벨: 도형 안 가장 넓은 지점(polylabel)에 이름 + 인구/세대당, 글자 크기는 내접원에 맞춰 8~18px ---- */
+  function pd(x, y, polygon) {
+    let inside = false, md = Infinity;
+    for (const ring of polygon) for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const ax = ring[i][0], ay = ring[i][1], bx = ring[j][0], by = ring[j][1];
+      if ((ay > y) !== (by > y) && x < ((bx - ax) * (y - ay)) / (by - ay) + ax) inside = !inside;
+      const dx = bx - ax, dy = by - ay; let t = dx || dy ? ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy) : 0;
+      t = Math.max(0, Math.min(1, t));
+      const px = ax + t * dx, py = ay + t * dy, d = (x - px) * (x - px) + (y - py) * (y - py);
+      if (d < md) md = d;
+    }
+    return inside ? Math.sqrt(md) : -Math.sqrt(md);
+  }
+  function polylabel(polygon) {
+    const outer = polygon[0]; let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const p of outer) { if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1]; }
+    const cs = Math.min(x1 - x0, y1 - y0); if (!isFinite(cs) || cs === 0) return [outer[0][0], outer[0][1], 0];
+    const mk = (x, y, h) => { const d = pd(x, y, polygon); return { x, y, h, d, m: d + h * Math.SQRT2 }; };
+    let h = cs / 2, cells = [];
+    for (let x = x0; x < x1; x += cs) for (let y = y0; y < y1; y += cs) cells.push(mk(x + h, y + h, h));
+    let best = mk((x0 + x1) / 2, (y0 + y1) / 2, 0); const fp = mk(outer[0][0], outer[0][1], 0); if (fp.d > best.d) best = fp;
+    cells.sort((a, b) => b.m - a.m);
+    while (cells.length) {
+      const c = cells.shift();
+      if (c.d > best.d) best = c;
+      if (c.m - best.d <= 1e-5) continue;
+      const h2 = c.h / 2;
+      for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        const n = mk(c.x + dx * h2, c.y + dy * h2, h2); let i = 0; while (i < cells.length && cells[i].m > n.m) i++; cells.splice(i, 0, n);
+      }
+    }
+    return [best.x, best.y, best.d];
+  }
+  function labelInfo(g) {
+    let best = null, ba = -1;
+    for (const poly of g) { const r = poly[0]; let a = 0; for (let i = 0; i < r.length; i++) { const q = r[(i + 1) % r.length]; a += r[i][0] * q[1] - q[0] * r[i][1]; } a = Math.abs(a / 2); if (a > ba) { ba = a; best = poly; } }
+    const pl = polylabel(best), d = Math.max(pl[2], 0);
+    return { pos: [pl[0], pl[1]], box: [pl[0] - d, pl[1] - d, pl[0] + d, pl[1] + d] };
+  }
+  const _cv = document.createElement("canvas").getContext("2d");
+  function fitFont(box, text) {
+    const proj = window.map.getProjection();
+    const a = proj.fromCoordToOffset(new naver.maps.LatLng(box[1], box[0])), b = proj.fromCoordToOffset(new naver.maps.LatLng(box[3], box[2]));
+    const aw = Math.abs(b.x - a.x) - 8, ah = Math.abs(b.y - a.y) - 8;
+    if (aw < 10 || ah < 10) return 0;
+    let lo = 8, hi = 18, best = 0;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; _cv.font = `800 ${mid}px sans-serif`; if (_cv.measureText(text).width <= aw && mid * 1.15 <= ah) { best = mid; lo = mid + 1; } else hi = mid - 1; }
+    return best;
+  }
+  const POP = {};
+  function loadPop(k) {
+    if (POP[k] !== undefined) return;
+    POP[k] = null;
+    fetch(LAYERS[k].pop).then(r => r.json()).then(d => { POP[k] = (d && d.items) || {}; schedule(); }).catch(e => { POP[k] = {}; });
+  }
+  function sub(k, f) {
+    const m = POP[k]; if (!m) return "";
+    const it = m[LAYERS[k].code(f.p)]; if (!it) return "";
+    const pop = Number(it.totalPopulation), pph = Number(it.personsPerHousehold);
+    return `인구 ${Number.isFinite(pop) ? pop.toLocaleString("ko-KR") : "-"} / 세대당 ${Number.isFinite(pph) ? pph.toFixed(2).replace(/\.00$/, "") : "-"}`;
+  }
+  function labelHtml(k, f, fs) {
+    const L = LAYERS[k], esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const halo = "-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff,0 0 3px #fff";
+    const st = `font-family:'Malgun Gothic',sans-serif;font-weight:bold;color:${L.color};text-shadow:${halo};`;
+    const sb = sub(k, f);
+    return `<div style="transform:translate(-50%,-50%);white-space:nowrap;text-align:center;pointer-events:none;line-height:1.3;${st}"><div style="font-size:${fs}px">${esc(L.name(f.p))}</div>${sb ? `<div style="font-size:${Math.max(8, Math.round(fs * 0.78))}px">${esc(sb)}</div>` : ""}</div>`;
+  }
+  function build(k, f) {
+    const L = LAYERS[k];
+    f.polys = f.g.map(poly => new naver.maps.Polygon({
+      map: null, clickable: false, zIndex: 5,
+      paths: poly.map(ring => ring.map(c => new naver.maps.LatLng(c[1], c[0]))),
+      strokeColor: L.color, strokeWeight: 1.5, strokeOpacity: 0.9, strokeStyle: "solid",
+      fillColor: L.color, fillOpacity: 0,
+    }));
+  }
+  function setLabel(k, f, map, z) {
+    if (z < 15 || !LAYERS[k].name(f.p)) { if (f.label) f.label.setMap(null); return; }
+    if (!f.li) f.li = labelInfo(f.g);
+    const fs = fitFont(f.li.box, LAYERS[k].name(f.p));
+    if (fs <= 0) { if (f.label) f.label.setMap(null); return; }
+    const html = labelHtml(k, f, fs);
+    if (!f.label) f.label = new naver.maps.Marker({ map: null, clickable: false, zIndex: 6, position: new naver.maps.LatLng(f.li.pos[1], f.li.pos[0]), icon: { content: html, anchor: new naver.maps.Point(0, 0) } });
+    else if (f.html !== html) f.label.setIcon({ content: html, anchor: new naver.maps.Point(0, 0) });
+    f.html = html; f.label.setMap(map);
+  }
+  function clearAll(k) {
+    const s = S[k];
+    for (const key of s.shown) { const f = s.feats.get(key); if (f) { (f.polys || []).forEach(p => p.setMap(null)); if (f.label) f.label.setMap(null); } }
+    s.shown.clear();
+  }
+  let gen = { emd: 0, adm: 0 };
+  async function refresh(k) {
+    const map = window.map, s = S[k], L = LAYERS[k];
+    const on = document.getElementById(L.cb);
+    if (!map || !on || !on.checked || map.getZoom() < L.minZoom) { clearAll(k); return; }
+    loadPop(k);
+    const my = ++gen[k];
+    const b = map.getBounds();
+    try { await load(k, b); } catch (e) { console.warn("[경계]", e); return; }
+    if (my !== gen[k] || !on.checked) return;
+    const sw = b.getSW(), ne = b.getNE(), z = map.getZoom();
+    const x0 = sw.lng(), x1 = ne.lng(), y0 = sw.lat(), y1 = ne.lat();
+    const now = new Set();
+    for (const [key, f] of s.feats) {
+      if (f.b[2] < x0 || f.b[0] > x1 || f.b[3] < y0 || f.b[1] > y1) continue;
+      now.add(key);
+      if (!f.polys) build(k, f);
+      if (!s.shown.has(key)) f.polys.forEach(p => p.setMap(map));
+      setLabel(k, f, map, z);
+    }
+    for (const key of s.shown) if (!now.has(key)) { const f = s.feats.get(key); (f.polys || []).forEach(p => p.setMap(null)); if (f.label) f.label.setMap(null); }
+    s.shown = now;
+  }
+  let timer = null;
+  function schedule() { clearTimeout(timer); timer = setTimeout(() => { refresh("emd"); refresh("adm"); }, 250); }
+  function init() {
+    if (!window.map || typeof naver === "undefined") return setTimeout(init, 500);
+    naver.maps.Event.addListener(window.map, "idle", schedule);
+    for (const k in LAYERS) {
+      const cb = document.getElementById(LAYERS[k].cb);
+      if (cb) cb.addEventListener("change", () => { try { localStorage.setItem("sise_" + LAYERS[k].cb, cb.checked ? "1" : "0"); } catch (e) {} refresh(k); });
+      try { if (cb && localStorage.getItem("sise_" + LAYERS[k].cb) === "1") { cb.checked = true; } } catch (e) {}
+    }
+    schedule();
+  }
+  init();
+})();
+</script>
+<script>
+/* ===== 영역 선택 → 평형별 가격대 표 =====
+   '▭ 영역선택' 단추를 켜거나 Shift 를 누른 채 지도를 끌면 지도는 움직이지 않고 네모가 그려진다.
+   놓으면 네모 안에 보이는 단지들의 평형별 가격대(단지 수·매매·전세 최저/중앙/최고)와 단지별 표를 띄운다. */
+(function () {
+  let mode = false, drag = null, box = null;
+  const mapEl = () => document.getElementById("map");
+  const btn = () => document.getElementById("areaSelBtn");
+  function setMode(on) {
+    mode = on;
+    const b = btn(); if (b) { b.style.background = on ? "#ffe9a8" : ""; b.textContent = on ? "▭ 영역선택 중…" : "▭ 영역선택"; }
+    const m = mapEl(); if (m) m.style.cursor = on ? "crosshair" : "";
+  }
+  function active(e) { return mode || e.shiftKey; }
+  function stopEv(e) { if (active(e) && !(e.target && e.target.closest && e.target.closest("#areaSelModal"))) { e.stopPropagation(); if (e.cancelable) e.preventDefault(); return true; } return false; }
+  function pt(e) { const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e; return { x: t.clientX, y: t.clientY }; }
+
+  function start(e) {
+    if (e.type === "mousedown" && e.button !== 0) return;
+    if (!stopEv(e)) return;
+    if (drag) return;
+    const r = mapEl().getBoundingClientRect(), p = pt(e);
+    drag = { x0: p.x, y0: p.y, r };
+    box = document.createElement("div");
+    box.style.cssText = "position:fixed;z-index:100000;border:2px dashed #e53935;background:rgba(229,57,53,0.12);pointer-events:none;";
+    document.body.appendChild(box);
+    move(e);
+  }
+  function move(e) {
+    if (!drag) return;
+    const p = pt(e), r = drag.r;
+    const x1 = Math.min(Math.max(p.x, r.left), r.right), y1 = Math.min(Math.max(p.y, r.top), r.bottom);
+    drag.x1 = x1; drag.y1 = y1;
+    box.style.left = Math.min(drag.x0, x1) + "px"; box.style.top = Math.min(drag.y0, y1) + "px";
+    box.style.width = Math.abs(x1 - drag.x0) + "px"; box.style.height = Math.abs(y1 - drag.y0) + "px";
+    if (e.cancelable) e.preventDefault();
+  }
+  function end(e) {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (box) { box.remove(); box = null; }
+    if (d.x1 === undefined || Math.abs(d.x1 - d.x0) < 8 || Math.abs(d.y1 - d.y0) < 8) return;
+    showResult(d);
+  }
+  /* 화면 좌표 → 위·경도(메르카토르는 화면과 선형이라 지도 영역 네 모서리로 보간) */
+  const mer = lat => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+  const unmer = y => (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
+  function toCoord(d) {
+    const b = window.map.getBounds(), sw = b.getSW(), ne = b.getNE(), r = d.r;
+    const lngAt = x => sw.lng() + (ne.lng() - sw.lng()) * ((x - r.left) / r.width);
+    const yS = mer(sw.lat()), yN = mer(ne.lat());
+    const latAt = y => unmer(yN - (yN - yS) * ((y - r.top) / r.height));
+    const xa = Math.min(d.x0, d.x1), xb = Math.max(d.x0, d.x1), ya = Math.min(d.y0, d.y1), yb = Math.max(d.y0, d.y1);
+    return { w: lngAt(xa), e: lngAt(xb), n: latAt(ya), s: latAt(yb) };
+  }
+  const num = v => (typeof v === "number" && !isNaN(v)) ? v : NaN;
+  const fmt = v => isNaN(v) ? "-" : v.toFixed(1);
+  const med = a => { if (!a.length) return NaN; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+  /* 신축/준신축/구축 기준(준공연도) — 모달에서 바꾸면 저장 */
+  function loadTh() { try { const t = JSON.parse(localStorage.getItem("siseAreaSelYear")); if (t && t.a > t.b && t.b > 1900) return t; } catch (e) {} const y = new Date().getFullYear(); return { a: y - 10, b: y - 20 }; }
+  const rg = a => { a = a.filter(v => !isNaN(v)); if (!a.length) return ""; const lo = Math.min(...a), hi = Math.max(...a), f = v => String(Math.round(v * 10) / 10); return lo === hi ? f(lo) : f(lo) + "~" + f(hi); };
+  /* 연식이 더 오래된 구간의 최고가가 더 새 구간의 최저가보다 높으면(연식 역전) 그 숫자를 노랗게 칠한다 */
+  const f1 = v => String(Math.round(v * 10) / 10);
+  function rgHtml(vals, newerMins) {
+    const a = vals.filter(v => !isNaN(v)); if (!a.length) return "";
+    const lo = Math.min(...a), hi = Math.max(...a);
+    const bad = newerMins.some(m => !isNaN(m) && hi > m);
+    const hl = t => `<span style="background:#ffff00;padding:0 2px">${t}</span>`;
+    if (lo === hi) return bad ? hl(f1(hi)) : f1(hi);
+    return f1(lo) + "~" + (bad ? hl(f1(hi)) : f1(hi));
+  }
+  const minOf = a => { a = a.filter(v => !isNaN(v)); return a.length ? Math.min(...a) : NaN; };
+  const BAND = [["신축", "#0070c0", "#000"], ["준신축", "#ff0000", "#000"], ["구축", "#ffff00", "#000"]];
+
+  /* 전용면적 3그룹으로 묶는다(그 밖의 평형은 표에서 뺀다) */
+  const PYG = ["전용 55~64", "전용 65~78", "전용 79~85"];
+  const pyGroup = v => isNaN(v) ? "" : v >= 55 && v < 65 ? PYG[0] : v >= 65 && v < 79 ? PYG[1] : v >= 79 && v < 86 ? PYG[2] : "";
+
+  async function showResult(d) {
+    const c = toCoord(d);
+    const shown = (typeof apartmentMarkers === "object" && apartmentMarkers) || {};
+    const apts = apartmentData.filter(a => a.lng >= c.w && a.lng <= c.e && a.lat >= c.s && a.lat <= c.n && (String(a.id) in shown));
+    const need = apts.map(a => String(a.id)).filter(id => !(id in priceCache));
+    if (need.length) { try { await loadPriceCacheForIds(need); } catch (e) {} }
+    const nowY = new Date().getFullYear();
+    const items = []; /* {py, band(연식 년수), s, j} */
+    let withPrice = 0;
+    for (const a of apts) {
+      const list = priceCache[String(a.id)] || []; if (!list.length) continue; withPrice++;
+      let y = NaN; try { y = Number(_siseExtractBuiltYear(a)); } catch (e) {} if (!y) y = parseInt(String(a.year || "").slice(0, 4), 10);
+      const age = y || 0; /* 준공연도 */
+      for (const r of list) { const gp = pyGroup(parseFloat(r.평형)); if (gp) items.push({ py: gp, age, s: num(r.매매), j: num(r.전세) }); }
+    }
+    const old = document.getElementById("areaSelModal"); if (old) old.remove();
+    const m = document.createElement("div");
+    m.id = "areaSelModal";
+    m.style.cssText = "position:fixed;z-index:1000050;left:50%;top:50%;transform:translate(-50%,-50%);background:#fff;border:1px solid #888;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.35);padding:14px 16px;max-width:94vw;max-height:88vh;overflow:auto;font-family:'Malgun Gothic',sans-serif;";
+    document.body.appendChild(m);
+    function draw() {
+      const th = loadTh();
+      const bandOf = yr => !yr ? -1 : yr >= th.a ? 0 : yr >= th.b ? 1 : 2;
+      const keys = PYG.filter(k => items.some(x => x.py === k));
+      const cell = "border:2px solid #000;padding:7px 10px;text-align:center;font-size:15px;min-width:92px;";
+      let h = `<div style="font-weight:bold;font-size:14px;margin-bottom:4px">영역 안 단지 ${apts.length}곳 (시세 있는 ${withPrice}곳) — 평형별 가격대 <span style="font-weight:normal;font-size:12px;color:#666">(억, 단지 간 최저~최고)</span></div>`;
+      h += `<div style="font-size:12px;color:#555;margin-bottom:8px">신축 <input id="asA" type="number" min="1901" max="2100" value="${th.a}" style="width:58px">년 이후 준공 · 준신축 <input id="asB" type="number" min="1901" max="2100" value="${th.b}" style="width:58px">년 이후 준공 · 그 이전은 구축</div>`;
+      if (!keys.length) h += `<div style="padding:16px;color:#777">시세가 있는 단지가 없습니다. 줌 14 이상에서 마커가 보이는 영역을 선택하세요.</div>`;
+      for (const k of keys) {
+        const g = [[], [], []];
+        for (const x of items) if (x.py === k) { const b = bandOf(x.age); if (b >= 0) g[b].push(x); }
+        h += `<table class="asT" style="border-collapse:collapse;margin:0 0 10px 0;background:#fff"><tr><td style="${cell}font-weight:bold">${esc(k)}</td>` + BAND.map(b => `<td style="${cell}font-weight:bold;background:${b[1]};color:${b[2]}">${b[0]}</td>`).join("") + `</tr>`;
+        const mS = g.map(a => minOf(a.map(x => x.s))), mJ = g.map(a => minOf(a.map(x => x.j)));
+        h += `<tr><td style="${cell}">매매</td>` + g.map((a, i) => `<td style="${cell}">${rgHtml(a.map(x => x.s), mS.slice(0, i))}</td>`).join("") + `</tr>`;
+        h += `<tr><td style="${cell}">전세</td>` + g.map((a, i) => `<td style="${cell}">${rgHtml(a.map(x => x.j), mJ.slice(0, i))}</td>`).join("") + `</tr></table>`;
+      }
+      h += `<div style="margin-top:6px;text-align:right"><button id="areaSelCopy" style="padding:4px 10px">표 복사</button> <button id="areaSelClose" style="padding:4px 10px">닫기</button></div>`;
+      m.innerHTML = h;
+      m.querySelector("#areaSelClose").onclick = () => m.remove();
+      m.querySelector("#areaSelCopy").onclick = () => {
+        const tsv = [...m.querySelectorAll("table.asT")].map(t => [...t.rows].map(r => [...r.cells].map(x => x.textContent).join("\t")).join("\n")).join("\n\n");
+        (navigator.clipboard ? navigator.clipboard.writeText(tsv) : Promise.reject()).then(() => { m.querySelector("#areaSelCopy").textContent = "복사됨"; }).catch(() => {});
+      };
+      const onTh = () => { const a = parseInt(m.querySelector("#asA").value, 10), b = parseInt(m.querySelector("#asB").value, 10); if (a > b && b > 1900) { try { localStorage.setItem("siseAreaSelYear", JSON.stringify({ a, b })); } catch (e) {} draw(); } };
+      m.querySelector("#asA").onchange = onTh; m.querySelector("#asB").onchange = onTh;
+    }
+    draw();
+  }
+
+  function init() {
+    const m = mapEl(), b = btn();
+    if (!m || !b) return setTimeout(init, 500);
+    b.addEventListener("click", () => setMode(!mode));
+    /* 캡처 단계에서 가로채 네이버 지도가 끌기로 받지 못하게 한다 */
+    ["pointerdown", "mousedown", "touchstart"].forEach(t => m.addEventListener(t, e => { if (t === "pointerdown" || !drag) start(e); else stopEv(e); }, { capture: true, passive: false }));
+    ["pointermove", "mousemove", "touchmove"].forEach(t => window.addEventListener(t, e => { if (drag) { move(e); e.stopPropagation(); } }, { capture: true, passive: false }));
+    ["pointerup", "mouseup", "touchend", "touchcancel"].forEach(t => window.addEventListener(t, e => { if (drag) { end(e); e.stopPropagation(); } }, { capture: true }));
+    document.addEventListener("keydown", e => { if (e.key === "Escape") { if (drag) { drag = null; if (box) { box.remove(); box = null; } } else if (mode) setMode(false); } });
+  }
+  init();
+})();
+</script>
 </body>
 </html>
 
