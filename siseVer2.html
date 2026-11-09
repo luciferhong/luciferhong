@@ -1241,7 +1241,36 @@ function buildSigunguCheckboxes() {
 	_updateSigunguDisplay();
 }
 
+/* 마지막으로 고른 시도·시군구를 기억했다가 다음에 열 때 복원한다(2026-11-09) */
+let _regionRestored = false;
+function _saveRegion() {
+	if (!_regionRestored) return;
+	try {
+		const sel = getSidoSel();
+		localStorage.setItem('siseRegionSel', JSON.stringify({ sido: sel ? sel.value : '', sigungu: [...selectedSigunguSet] }));
+	} catch (e) {}
+}
+function _restoreRegion() {
+	_regionRestored = true;
+	let sv = null;
+	try { sv = JSON.parse(localStorage.getItem('siseRegionSel') || 'null'); } catch (e) {}
+	if (!sv || !sv.sido || !_bySidoCache.has(String(sv.sido))) return;
+	const sel = getSidoSel(); if (!sel) return;
+	sel.value = String(sv.sido);
+	buildSigunguCheckboxes();
+	const sf = getSigunguFilterDiv();
+	const codes = (sv.sigungu || []).map(String).filter(c => _bySidoCache.get(String(sv.sido)).sigungu.has(c));
+	if (sf && codes.length) {
+		codes.forEach(c => { selectedSigunguSet.add(c); const cb = sf.querySelector(`input[value="${c}"]`); if (cb) cb.checked = true; });
+		const allCb = sf.querySelector('input[value="__ALL__"]'); if (allCb) allCb.checked = false;
+		_updateSigunguDisplay();
+	}
+	/* 지도 위치는 그대로 두고 마커만 다시 거른다 */
+	try { if (window.map && window.map.getBounds) updateMarkers(window.map.getBounds(), true); } catch (e) {}
+}
+
 function _updateSigunguDisplay() {
+	_saveRegion();
 	const txt = document.getElementById('sigunguDisplayText');
 	if (!txt) return;
 	if (selectedSigunguSet.size === 0) {
@@ -1281,6 +1310,7 @@ function buildRegionFiltersFromApartments() {
 		.sort((a, b) => a.label.localeCompare(b.label, 'ko'));
 	fillOptions(sidoSel, sidoItems);
 	buildSigunguCheckboxes();
+	if (!_regionRestored) _restoreRegion();
 }
 
 function applyRegionFilterUpdate() {
