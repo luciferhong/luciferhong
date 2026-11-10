@@ -37,31 +37,39 @@ html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
 #grip{position:fixed;z-index:11;width:8px;cursor:ew-resize;border-radius:4px;background:transparent}
 #grip:hover,#grip.on{background:rgba(26,60,255,.35)}
 .empty{padding:14px 4px;color:#888;font-size:12px}
+#perPop{display:none;position:fixed;z-index:10070;background:#fff;border:1px solid #bbb;border-radius:8px;padding:10px;box-shadow:0 4px 14px rgba(0,0,0,.25);font-size:13px}
+#perPop .pt{font-weight:bold;margin-bottom:6px}
+#perPop .pr{display:flex;align-items:center;gap:3px}
+#perPop select{font-size:13px;padding:3px 2px;border:1px solid #bbb;border-radius:4px;background:#fff}
+#perPop .pb{display:flex;gap:6px;margin-top:8px}
+#perPop .pb button{flex:1;padding:5px 0;border:1px solid #bbb;border-radius:5px;background:#f6f6f6;cursor:pointer}
+#perPop .pb button.pri{background:#1565c0;color:#fff;border-color:#1565c0}
 </style></head><body>
 <div id="map"></div>
 <div id="pal"></div>
+<div id="perPop"></div>
 <div id="grip" title="끌어서 패널 너비 조절"></div>
 <div id="panel">
   <h3>시기별 TOP10 지도</h3>
   <div class="sel"><select id="selSido"></select><select id="selSgg"></select></div>
-  <div class="sel"><select id="selBand"><option value="55-64">전용 55~64</option><option value="79-85">전용 79~85</option><option value="all">전체면적</option></select></div>
+  <div class="sel"><select id="selBand"><option value="55-64">전용 55~64</option><option value="79-85">전용 79~85</option><option value="all">전체면적</option></select><select id="selTop"><option value="10">TOP 10</option><option value="20">TOP 20</option></select></div>
+  <div class="sel"><select id="selDtype" title="동 구분"><option value="emd">법정동</option><option value="adm">행정동</option></select><select id="selDong" title="읍면동 세분류"><option value="">읍면동 전체</option></select></div>
   <label class="nm"><input type="checkbox" id="chkName"> 이름 표시</label>
   <div class="adj"><button id="btnAdj">라벨 위치조정</button><button id="btnRst">라벨 위치초기화</button></div>
   <div class="adj"><button id="btnColRst">색상 초기화</button></div>
   <div class="lg" id="legend"></div>
-  <div class="sub">매매 · 단지별 최고가 · 거래일 기준 기간 · 아래 버튼으로 기간 켜기/끄기 · '직접선택'은 연도를 골라 봅니다</div>
+  <div class="sub">매매 · 단지별 최고가 · 거래일 기준 기간 · 기간 버튼을 누르면 시작·끝 년월을 고를 수 있습니다</div>
   <div class="tabs" id="tabs"></div><div id="list"></div>
 </div>
 <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
 <script>
 /* 데이터: top10_data.json (python _tools/_build_top10_data.py 로 생성·갱신). 시도·시군구를 고르면 그 지역 TOP10 을 그린다. */
 var COLORS=['#7b61a8','#2f7d32','#d9480f','#1565c0'];
-var LABELS=['2000년대','2010년대','2020년~'];
 var ALL=null, DATA=[], on=[], groups=[];
 var map=new naver.maps.Map('map',{center:new naver.maps.LatLng(36.5,127.8),zoom:7});
 var iw=new naver.maps.InfoWindow({borderWidth:1,anchorSize:new naver.maps.Size(10,10)});
 var T=document.getElementById('tabs'),L=document.getElementById('list');
-var selSido=document.getElementById('selSido'),selSgg=document.getElementById('selSgg');
+var DET=null,selDtype=document.getElementById('selDtype'),selDong=document.getElementById('selDong'),selTop=document.getElementById('selTop'),selSido=document.getElementById('selSido'),selSgg=document.getElementById('selSgg');
 var LS='top10map.sel';
 /* 왼쪽 패널 너비 조절: 오른쪽 가장자리를 끌면 늘이고 줄인다(너비는 저장) */
 var panel=document.getElementById('panel'),grip=document.getElementById('grip');
@@ -234,30 +242,39 @@ function clearAll(){
     m.mk.setMap(null);m.lb.setMap(null);if(m.arrow)m.arrow.setMap(null);if(m.tie)m.tie.setMap(null);if(m.dot)m.dot.setMap(null)})});
   groups=[];on=[];DATA=[];T.innerHTML='';L.innerHTML='';iw.close();
 }
-var curYear=0;
-function itemsFor(code,key){
-  var arr=(ALL.s[code]||{})[key]||[],rg0=ALL.regions[code]||{name:''};
-  return arr.map(function(a,k){var ap=ALL.apts[a[0]]||['','',0,0,''],all=/\(전체\)$/.test(rg0.name);
-    return {rank:k+1,name:ap[0],dong:(all&&ap[5]?ap[5]+' ':'')+ap[1],lat:ap[2],lng:ap[3],year:ap[4],price:a[1],won:wonStr(a[1]),date:a[2],floor:a[3],area:a[4]}});
+/* 기간 3개 — 단추를 눌러 시작·끝 년월을 고른다(단추에는 00.05~09.12 처럼 보인다). 선택은 이 브라우저에 기억 */
+var NOW=new Date(),THIS_YM=NOW.getFullYear()*100+NOW.getMonth()+1;
+var PER_DEF=[{f:200001,t:200912},{f:201001,t:201912},{f:202001,t:202912}];
+var PER=(function(){var p=lsGet().per;return(p&&p.length===3)?p:PER_DEF})();
+function ymTxt(v){return String(Math.floor(v/100)).slice(2)+'.'+('0'+v%100).slice(-2)}
+function perLabel(p){return ymTxt(p.f)+'~'+ymTxt(p.t)}
+function dLabel(ap,all){return (all&&ap[5]?ap[5]+' ':'')+(ap[selDtype.value==='adm'?7:6]||ap[1]||'')}
+function itemsFor(p,code){
+  var dn=selDong.value,D=DET.d,all=/\(전체\)$/.test((ALL.regions[code]||{name:''}).name),out=[];
+  Object.keys(D.m).forEach(function(cid){
+    var ap=D.apts[cid];if(!ap)return;
+    var dl=dLabel(ap,all);if(dn&&dl!==dn)return;
+    var b=null,a=D.m[cid];
+    for(var k=0;k<a.length;k++){var e=a[k];if(e[0]<p.f)continue;if(e[0]>p.t)break;if(!b||e[1]>b[1])b=e}
+    if(b)out.push({ap:ap,e:b,dl:dl});
+  });
+  out.sort(function(x,y){return y.e[1]-x.e[1]});
+  return out.slice(0,+selTop.value||10).map(function(o,k){var ap=o.ap,e=o.e;
+    return {rank:k+1,name:ap[0],dong:o.dl,lat:ap[2],lng:ap[3],year:ap[4],price:e[1],won:wonStr(e[1]),date:Math.floor(e[0]/100)+'.'+('0'+e[0]%100).slice(-2),floor:e[2],area:e[3]}});
 }
 function wonStr(m){var e=Math.floor(m/10000),r=m%10000;return e&&r?e+'억'+r.toLocaleString('en-US')+'만':e?e+'억':r.toLocaleString('en-US')+'만'}
 function build(code,keepOn){
   var prevOn=on.slice();
   clearAll();
   var rg=ALL.regions[code];if(!rg)return;
-  if(!curYear){var sy=+(lsGet().year||0);curYear=(sy>=2000&&sy<=ALL.thisYear)?sy:ALL.thisYear}
-  var labs=LABELS.concat([curYear+'년']);
-  DATA=labs.map(function(lb,i){return {label:lb,items:itemsFor(code,i<3?'p'+i:'y'+curYear)}});
+  DATA=PER.map(function(p){return {label:perLabel(p),items:itemsFor(p,code)}});
   // 지역·면적을 열 때마다 2020~ 만 켠다(연도만 바꿀 때는 켜 둔 상태 유지)
   on=DATA.map(function(d,i){return keepOn&&prevOn.length?prevOn[i]:i===2});
   groups=DATA.map(function(){return []});
   var wraps=[];var total=0;dongCol={};curCode=code;buildLegend();var sv=dongSaved();
   DATA.forEach(function(d,i){
     total+=d.items.length;
-    var bt=document.createElement('button');bt.id='tg'+i;bt.textContent=i===3?'직접선택':d.label;bt.onclick=function(){on[i]=!on[i];render()};var grp=null;if(i===3){grp=document.createElement('div');grp.className='grp';grp.appendChild(bt);T.appendChild(grp)}else T.appendChild(bt);
-    if(i===3){var ys=document.createElement('select');ys.id='selYear';ys.title='연도 선택';ys.style.cssText='flex:none';
-      for(var y=ALL.thisYear;y>=2000;y--){var op=document.createElement('option');op.value=y;op.textContent=y+'년';ys.appendChild(op)}
-      ys.value=curYear;ys.onchange=function(){curYear=+ys.value;var o=lsGet();o.year=curYear;lsSet(o);build(curCode,true)};grp.appendChild(ys)}
+    var bt=document.createElement('button');bt.id='tg'+i;bt.textContent=d.label;bt.onclick=function(){openPer(i,bt)};T.appendChild(bt);
     var h=document.createElement('div');h.id='hd'+i;h.className='hd';h.style.borderLeft='5px solid '+COLORS[i%4];h.textContent=d.label;var wr=document.createElement('div');wraps[i]=wr;wr.appendChild(h);
     d.items.forEach(function(it){
       var pos=new naver.maps.LatLng(it.lat,it.lng);
@@ -295,6 +312,22 @@ function openPal(el,key,nm){
 }
 document.addEventListener('mousedown',function(e){if(pal.style.display==='block'&&!pal.contains(e.target)&&e.target.className!=='sw')pal.style.display='none'});
 
+var perPop=document.getElementById('perPop');
+function openPer(i,bt){
+  var p=PER[i],y0=2000,y1=2029;
+  function ys(id,v){var s='<select id="'+id+'">';for(var y=y1;y>=y0;y--)s+='<option value="'+y+'"'+(y===v?' selected':'')+'>'+String(y).slice(2)+'년</option>';return s+'</select>'}
+  function ms(id,v){var s='<select id="'+id+'">';for(var m=1;m<=12;m++)s+='<option value="'+m+'"'+(m===v?' selected':'')+'>'+m+'월</option>';return s+'</select>'}
+  perPop.innerHTML='<div class="pt">기간 '+(i+1)+'</div><div class="pr">'+ys('pfy',Math.floor(p.f/100))+ms('pfm',p.f%100)+' ~ '+ys('pty',Math.floor(p.t/100))+ms('ptm',p.t%100)+'</div><div class="pb"><button class="pri" id="pok">적용</button><button id="ptg">'+(on[i]?'끄기':'켜기')+'</button></div>';
+  var r=bt.getBoundingClientRect();perPop.style.display='block';
+  perPop.style.left=Math.max(4,Math.min(r.left,innerWidth-perPop.offsetWidth-6))+'px';perPop.style.top=(r.bottom+4)+'px';
+  document.getElementById('pok').onclick=function(){
+    var f=(+document.getElementById('pfy').value)*100+(+document.getElementById('pfm').value),t=(+document.getElementById('pty').value)*100+(+document.getElementById('ptm').value);
+    if(f>t){var x=f;f=t;t=x}
+    PER[i]={f:f,t:t};var o=lsGet();o.per=PER;lsSet(o);perPop.style.display='none';on[i]=true;build(curCode,true)};
+  document.getElementById('ptg').onclick=function(){on[i]=!on[i];perPop.style.display='none';render()};
+}
+document.addEventListener('mousedown',function(e){if(perPop.style.display==='block'&&!perPop.contains(e.target)&&!(e.target.closest&&e.target.closest('#T,.tabs')))perPop.style.display='none'});
+
 /* 시도 → 시군구 선택 */
 function fillSido(){
   var set={};Object.keys(ALL.regions).forEach(function(c){set[ALL.regions[c].sido]=1});
@@ -317,7 +350,29 @@ document.getElementById('btnColRst').onclick=function(){
 };
 document.getElementById('btnRst').onclick=function(){adjusted=false;layoutLabels()};
 selSido.onchange=function(){fillSgg();selSgg.onchange()};
-selSgg.onchange=function(){var o=lsGet();o.sido=selSido.value;o.sgg=selSgg.value;lsSet(o);build(selSgg.value)};
+selSgg.onchange=function(){var o=lsGet();o.sido=selSido.value;o.sgg=selSgg.value;lsSet(o);showRegion(selSgg.value)};
+
+/* 읍면동 세분류: 지역 파일(단지·월별 최고가)을 받아 두고, 기간·동·TOP 은 모두 이 화면에서 계산한다. */
+function fillDong(){
+  var all=/\(전체\)$/.test((ALL.regions[curCode]||{name:''}).name),set={};
+  Object.keys(DET.d.apts).forEach(function(c){var l=dLabel(DET.d.apts[c],all);if(l)set[l]=1});
+  selDong.innerHTML='<option value="">읍면동 전체</option>'+Object.keys(set).sort().map(function(l){return '<option>'+l+'</option>'}).join('');
+}
+var regCache={},reqSeq=0;
+function loadRegion(b,code){
+  var k=b+'|'+code;if(regCache[k])return Promise.resolve(regCache[k]);
+  return fetch('https://sise-cloud.luciferhong.com/pub/top10?band='+b+'&code='+code).then(function(r){return r.json()}).then(function(d){regCache[k]=d;return d});
+}
+function showRegion(code,keepOn){
+  var seq=++reqSeq,b=selBand.value;
+  loadRegion(b,code).then(function(d){
+    if(seq!==reqSeq)return;
+    DET={k:b+'|'+code,d:d};curCode=code;fillDong();build(code,keepOn);
+  }).catch(function(e){L.innerHTML='<div class="empty">집계 데이터를 읽지 못했습니다. 잠시 후 다시 시도해 주세요. ('+e.message+')</div>'});
+}
+selDtype.value=lsGet().dtype||'emd';
+selDtype.onchange=function(){var o=lsGet();o.dtype=selDtype.value;lsSet(o);if(DET){fillDong();build(curCode,true)}};
+selDong.onchange=function(){build(curCode,true)};
 
 var bandCache={};
 function loadBand(b){
@@ -325,6 +380,8 @@ function loadBand(b){
   return fetch('https://sise-cloud.luciferhong.com/pub/top10?band='+b).then(function(r){return r.json()}).then(function(j){bandCache[b]=j;return j});
 }
 var selBand=document.getElementById('selBand');
+selTop.value=lsGet().top||'10';
+selTop.onchange=function(){var o=lsGet();o.top=selTop.value;lsSet(o);if(ALL)build(curCode,true)};
 selBand.value=lsGet().band||'79-85';
 function applyBand(first){
   loadBand(selBand.value).then(function(j){
@@ -333,7 +390,7 @@ function applyBand(first){
     // 마지막으로 본 지역을 복원(없으면 수원시 권선구, 그것도 없으면 첫 지역)
     var code=keep||(ALL.regions['4111300000']?'4111300000':Object.keys(ALL.regions)[0]);
     selSido.value=ALL.regions[code].sido;fillSgg();selSgg.value=code;
-    build(code);
+    showRegion(code);
   }).catch(function(e){L.innerHTML='<div class="empty">집계 데이터를 읽지 못했습니다. 잠시 후 다시 시도해 주세요. ('+e.message+')</div>'});
 }
 selBand.onchange=function(){var o=lsGet();o.band=selBand.value;lsSet(o);applyBand()};
