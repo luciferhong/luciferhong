@@ -14,15 +14,15 @@ html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
 .tabs button.on{color:#fff;border-color:transparent}
 .hd{font-weight:bold;font-size:13px;padding:6px 8px;margin-top:8px;background:#f4f4f4}
 .row{display:flex;gap:6px;align-items:center;padding:5px 2px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px}
-.row:hover{background:#f3f7ff}
+.row:hover{filter:brightness(.95)}
 .row .n{flex:none;width:20px;height:20px;border-radius:50%;color:#fff;text-align:center;line-height:20px;font-size:11px;font-weight:bold}
 .row .t{flex:1;min-width:0}.row .t b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .t span{color:#888;font-size:11px}.row .p{flex:none;font-weight:bold;color:#1a3cff}
 .mk{width:28px;height:28px;border-radius:50%;color:#fff;font-weight:bold;font-size:13px;text-align:center;line-height:28px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}
 .iw{padding:8px 10px;font-size:12px;line-height:1.5;min-width:170px}
 .nm{display:block;font-size:12px;margin-bottom:8px;cursor:pointer;user-select:none}
-.mk-wrap{position:relative;width:28px;height:28px}
-.mk-lb{position:absolute;left:31px;top:5px;white-space:nowrap;font-size:11px;font-weight:bold;line-height:18px;padding:0 4px;border-radius:4px;background:rgba(255,255,255,.92);box-shadow:0 1px 3px rgba(0,0,0,.35);pointer-events:none}
+.mk-lb{white-space:nowrap;font-size:11px;font-weight:bold;line-height:18px;height:18px;padding:0 4px;border-radius:4px;color:#222;border:1px solid rgba(0,0,0,.25);box-shadow:0 1px 3px rgba(0,0,0,.35);pointer-events:none}
+.adj{display:flex;gap:4px;margin-bottom:8px}.adj button{flex:1;padding:5px 0;border:1px solid #ccc;background:#f6f6f6;border-radius:6px;cursor:pointer;font-size:12px}
 .empty{padding:14px 4px;color:#888;font-size:12px}
 </style></head><body>
 <div id="map"></div>
@@ -30,6 +30,7 @@ html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
   <h3>시기별 TOP10 지도</h3>
   <div class="sel"><select id="selSido"></select><select id="selSgg"></select></div>
   <label class="nm"><input type="checkbox" id="chkName"> 이름 표시</label>
+  <div class="adj"><button id="btnAdj">라벨 위치조정</button><button id="btnRst">라벨 위치초기화</button></div>
   <div class="sub">84㎡(전용 80~87) 매매 · 단지별 최고가 · 거래일 기준 기간 · 아래 버튼으로 기간 켜기/끄기</div>
   <div class="tabs" id="tabs"></div><div id="list"></div>
 </div>
@@ -45,10 +46,12 @@ var selSido=document.getElementById('selSido'),selSgg=document.getElementById('s
 var LS='top10map.sel';
 var chkName=document.getElementById('chkName');
 function mkHtml(m){
-  return '<div class="mk-wrap"><div class="mk" style="background:'+COLORS[m.gi%3]+'">'+m.rank+'</div>'+
-    (chkName.checked?'<span class="mk-lb" style="color:'+COLORS[m.gi%3]+'">'+m.name+'</span>':'')+'</div>';
+  return '<div class="mk" style="background:'+COLORS[m.gi%3]+'">'+m.rank+'</div>';
 }
-function setIconOf(m,ax,ay){m.mk.setIcon({content:mkHtml(m),anchor:new naver.maps.Point(ax,ay)})}
+/* 동별 배경색(목록·이름표 공통): 지역 안의 동을 순서대로 파스텔 색에 배정 */
+var PAL=['#ffe0e0','#e0f0ff','#e3f6d8','#fff2c2','#ecdcff','#d6f5f0','#ffe3c8','#e8e8e8','#fcd9ec','#dbe4ff','#f1f7c6','#d9efe0'];
+var dongCol={};
+function dongBg(d){return dongCol[d]||'#fff'}
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'{}')}catch(e){return {}}}
 function lsSet(o){try{localStorage.setItem(LS,JSON.stringify(o))}catch(e){}}
 
@@ -61,56 +64,70 @@ function render(){
     document.getElementById('tg'+i).style.background=on[i]?COLORS[i%3]:'';
     document.getElementById('hd'+i).style.display=on[i]?'block':'none'});
   iw.close();if(any)map.fitBounds(b,{top:60,right:60,bottom:60,left:340});
-  spread();
+  layoutLabels();
 }
 
-/* 겹치지 않게: 줌마다 화면 픽셀 좌표에서 마커끼리 서로 밀어낸다(동그라미 지름 28 + 여백).
-   원래 위치와 멀어진 마커는 가는 선과 작은 점으로 실제 위치를 보여 준다. */
-var MIN=32,BASE=14;
-function spread(){
+/* 숫자 마커는 실제 위치에 고정한다. 이름표만 별도 마커로 두고, '라벨 위치조정'을 누르면
+   이름표끼리·숫자와 겹치지 않도록 이름표만 옮긴다(초기화하면 숫자 오른쪽 기본 위치로). */
+var adjusted=false;
+function lbSize(m){return {w:m.name.length*11+14,h:20}}
+function setLabel(m,ox,oy){ // ox,oy = 이름표 왼쪽 위 모서리의 마커 좌표 기준 화면 오프셋
+  m.ox=ox;m.oy=oy;
+  m.lb.setIcon({content:'<div class="mk-lb" style="background:'+dongBg(m.dong)+'">'+m.name+'</div>',anchor:new naver.maps.Point(-ox,-oy)});
+}
+function layoutLabels(){
   var proj=map.getProjection();if(!proj)return;
-  var list=[];
-  // 이름을 보일 때는 이름표가 오른쪽으로 길어서, 가로 차이를 덜 쳐 주어 위아래로 갈라지게 한다
-  var sx=chkName.checked?0.3:1;
+  var vis=[];
   groups.forEach(function(g,i){g.forEach(function(m){
-    if(m.line){m.line.setMap(null);m.line=null}
-    if(m.dot){m.dot.setMap(null);m.dot=null}
-    if(!on[i])return;
-    var o=proj.fromCoordToOffset(m.pos);
-    m.o=o;m.dx=0;m.dy=0;list.push(m);
+    var show=chkName.checked&&on[i];
+    m.lb.setMap(show?map:null);
+    if(show)vis.push(m);
   })});
-  // 같은 좌표(거리 0)는 순번대로 서로 다른 방향으로 갈라 놓는다
-  list.forEach(function(a,k){a.dx=Math.cos(k*2.4)*0.5;a.dy=Math.sin(k*2.4)*0.5});
-  for(var it=0;it<120;it++){
-    var moved=false;
-    for(var x=0;x<list.length;x++)for(var y=x+1;y<list.length;y++){
-      var a=list[x],b=list[y];
-      var vx=((b.o.x+b.dx)-(a.o.x+a.dx))*sx,vy=(b.o.y+b.dy)-(a.o.y+a.dy);
-      var d=Math.sqrt(vx*vx+vy*vy);
-      if(d>=MIN)continue;
-      if(d<0.01){vx=sx;vy=0;d=1}
-      var push=(MIN-d)/2+0.2;vx/=d;vy/=d;
-      a.dx-=vx*push/sx;a.dy-=vy*push;b.dx+=vx*push/sx;b.dy+=vy*push;moved=true;
-    }
-    list.forEach(function(m){m.dx*=0.985;m.dy*=0.985});
-    if(!moved)break;
+  groups.forEach(function(g){g.forEach(function(m){if(m.arrow){m.arrow.setMap(null);m.arrow=null}})});
+  vis.forEach(function(m){setLabel(m,17,-9)});
+  if(!adjusted)return;
+  var pts=vis.map(function(m){return proj.fromCoordToOffset(m.pos)});
+  // 숫자 원(지름 28)은 고정 장애물 — 이름표가 덮지 않게 한다
+  var placed=[];
+  function hit(r){
+    for(var k=0;k<placed.length;k++){var q=placed[k];
+      if(r.x<q.x+q.w&&r.x+r.w>q.x&&r.y<q.y+q.h&&r.y+r.h>q.y)return true}
+    return false;
   }
-  list.forEach(function(m){
-    setIconOf(m,BASE-m.dx,BASE-m.dy);
-    var far=Math.sqrt(m.dx*m.dx+m.dy*m.dy);
-    if(far>BASE){
-      var to=proj.fromOffsetToCoord(new naver.maps.Point(m.o.x+m.dx,m.o.y+m.dy));
-      m.line=new naver.maps.Polyline({map:map,path:[m.pos,to],strokeColor:COLORS[m.gi%3],strokeWeight:2,strokeOpacity:.8,zIndex:1});
-      m.dot=new naver.maps.Marker({position:m.pos,map:map,zIndex:2,clickable:false,icon:{content:'<div style="width:8px;height:8px;border-radius:50%;background:'+COLORS[m.gi%3]+';border:1px solid #fff"></div>',anchor:new naver.maps.Point(5,5)}});
+  var circles=pts.map(function(p){return {x:p.x-15,y:p.y-15,w:30,h:30}});
+  placed=circles.slice();
+  var order=vis.map(function(_,k){return k}).sort(function(a,b){return vis[a].rank-vis[b].rank||vis[a].gi-vis[b].gi});
+  order.forEach(function(k){
+    var m=vis[k],p=pts[k],sz=lbSize(m);
+    var cand=[];
+    for(var ring=0;ring<14;ring++){
+      var dy=ring*22;
+      cand.push([17,-9-dy],[17,-9+dy],[-17-sz.w,-9-dy],[-17-sz.w,-9+dy],[-sz.w/2,-34-dy],[-sz.w/2,18+dy]);
+    }
+    var pick=cand[0];
+    for(var c=0;c<cand.length;c++){
+      var r={x:p.x+cand[c][0],y:p.y+cand[c][1],w:sz.w,h:sz.h};
+      if(!hit(r)){pick=cand[c];break}
+    }
+    placed.push({x:p.x+pick[0],y:p.y+pick[1],w:sz.w,h:sz.h});
+    setLabel(m,pick[0],pick[1]);
+    // 기본 자리(숫자 오른쪽)에 못 두고 떨어진 이름표는 숫자 쪽으로 화살표를 이어 준다
+    if(pick!==cand[0]){
+      var cx=p.x+pick[0]+sz.w/2,cy=p.y+pick[1]+sz.h/2;
+      var from=proj.fromOffsetToCoord(new naver.maps.Point(cx,cy));
+      m.arrow=new naver.maps.Polyline({map:map,path:[from,m.pos],strokeColor:'#444',strokeWeight:1.5,strokeOpacity:.85,zIndex:5,
+        endIcon:naver.maps.PointingIcon.OPEN_ARROW,endIconSize:10});
     }
   });
 }
-naver.maps.Event.addListener(map,'zoom_changed',function(){setTimeout(spread,0)});
+naver.maps.Event.addListener(map,'zoom_changed',function(){setTimeout(layoutLabels,0)});
+naver.maps.Event.addListener(map,'click',function(){iw.close()});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')iw.close()});
 
 /* 지역을 바꿀 때: 이전 마커·선·목록을 모두 지우고 새로 만든다 */
 function clearAll(){
   groups.forEach(function(g){g.forEach(function(m){
-    m.mk.setMap(null);if(m.line)m.line.setMap(null);if(m.dot)m.dot.setMap(null)})});
+    m.mk.setMap(null);m.lb.setMap(null);if(m.arrow)m.arrow.setMap(null)})});
   groups=[];on=[];DATA=[];T.innerHTML='';L.innerHTML='';iw.close();
 }
 function build(code){
@@ -118,7 +135,7 @@ function build(code){
   var rg=ALL.regions[code];if(!rg)return;
   DATA=ALL.labels.map(function(lb,i){return {label:lb,items:rg.p[i]||[]}});
   on=DATA.map(function(){return true});groups=DATA.map(function(){return []});
-  var total=0;
+  var total=0;dongCol={};var dn=[];DATA.forEach(function(d){d.items.forEach(function(it){if(dn.indexOf(it.dong)<0)dn.push(it.dong)})});dn.sort().forEach(function(d,k){dongCol[d]=PAL[k%PAL.length]});
   DATA.forEach(function(d,i){
     total+=d.items.length;
     var bt=document.createElement('button');bt.id='tg'+i;bt.textContent=d.label;bt.onclick=function(){on[i]=!on[i];render()};T.appendChild(bt);
@@ -126,13 +143,14 @@ function build(code){
     d.items.forEach(function(it){
       var pos=new naver.maps.LatLng(it.lat,it.lng);
       var mk=new naver.maps.Marker({position:pos,map:map,zIndex:100-it.rank+i});
+      var lb=new naver.maps.Marker({position:pos,map:null,zIndex:50,clickable:false});
       function open(){iw.setContent('<div class="iw"><b>['+d.label+'] '+it.rank+'위 '+it.name+'</b><br>'+it.won+' <span style="color:#888">('+it.date+' · '+it.floor+'층)</span><br>'+it.dong+(it.year?' · '+it.year+'년 입주':'')+'</div>');iw.open(map,mk)}
-      naver.maps.Event.addListener(mk,'click',open);
-      var r=document.createElement('div');r.className='row';
+      naver.maps.Event.addListener(mk,'click',function(){if(iw.getMap()&&iw.getPosition&&iw.__mk===mk){iw.close();iw.__mk=null}else{open();iw.__mk=mk}});
+      var r=document.createElement('div');r.className='row';r.style.background=dongBg(it.dong);
       r.innerHTML='<div class="n" style="background:'+COLORS[i%3]+'">'+it.rank+'</div><div class="t"><b>'+it.name+'</b><span>'+it.dong+' · '+it.date+' · '+it.floor+'층</span></div><div class="p">'+it.won+'</div>';
       r.onclick=function(){map.panTo(pos);open()};L.appendChild(r);
-      var gm={mk:mk,pos:pos,row:r,gi:i,rank:it.rank,name:it.name,line:null,dot:null};
-      setIconOf(gm,14,14);
+      var gm={mk:mk,lb:lb,pos:pos,row:r,gi:i,rank:it.rank,name:it.name,dong:it.dong,ox:17,oy:-9,arrow:null};
+      mk.setIcon({content:mkHtml(gm),anchor:new naver.maps.Point(14,14)});
       groups[i].push(gm);
     });
   });
@@ -152,7 +170,9 @@ function fillSgg(){
   selSgg.innerHTML=list.map(function(c){return '<option value="'+c+'">'+ALL.regions[c].name.replace(s+' ','')+'</option>'}).join('');
 }
 chkName.checked=!!lsGet().name;
-chkName.onchange=function(){var o=lsGet();o.name=chkName.checked;lsSet(o);spread()};
+chkName.onchange=function(){var o=lsGet();o.name=chkName.checked;lsSet(o);layoutLabels()};
+document.getElementById('btnAdj').onclick=function(){adjusted=true;layoutLabels()};
+document.getElementById('btnRst').onclick=function(){adjusted=false;layoutLabels()};
 selSido.onchange=function(){fillSgg();selSgg.onchange()};
 selSgg.onchange=function(){var o=lsGet();o.sido=selSido.value;o.sgg=selSgg.value;lsSet(o);build(selSgg.value)};
 
