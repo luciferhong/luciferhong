@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>시기별 TOP10 지도</title>
+<style>
+html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
+#map{position:fixed;top:0;left:0;width:100vw;height:100vh}
+#panel{position:absolute;top:10px;left:10px;z-index:10;width:300px;max-height:calc(100% - 20px);overflow:auto;background:#fff;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.3);padding:10px}
+#panel h3{margin:0 0 6px;font-size:15px}
+#panel .sub{font-size:11px;color:#777;margin-bottom:8px}
+.sel{display:flex;gap:4px;margin-bottom:8px}
+.sel select{flex:1;min-width:0;padding:5px 4px;border:1px solid #ccc;border-radius:6px;font-size:12px;background:#fff}
+.tabs{display:flex;gap:4px;margin-bottom:8px}
+.tabs button{flex:1;padding:6px 0;border:1px solid #ccc;background:#f6f6f6;border-radius:6px;cursor:pointer;font-size:12px}
+.tabs button.on{color:#fff;border-color:transparent}
+.hd{font-weight:bold;font-size:13px;padding:6px 8px;margin-top:8px;background:#f4f4f4}
+.row{display:flex;gap:6px;align-items:center;padding:5px 2px;border-bottom:1px solid #eee;cursor:pointer;font-size:12px}
+.row:hover{background:#f3f7ff}
+.row .n{flex:none;width:20px;height:20px;border-radius:50%;color:#fff;text-align:center;line-height:20px;font-size:11px;font-weight:bold}
+.row .t{flex:1;min-width:0}.row .t b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .t span{color:#888;font-size:11px}.row .p{flex:none;font-weight:bold;color:#1a3cff}
+.mk{width:28px;height:28px;border-radius:50%;color:#fff;font-weight:bold;font-size:13px;text-align:center;line-height:28px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+.iw{padding:8px 10px;font-size:12px;line-height:1.5;min-width:170px}
+.nm{display:block;font-size:12px;margin-bottom:8px;cursor:pointer;user-select:none}
+.mk-wrap{position:relative;width:28px;height:28px}
+.mk-lb{position:absolute;left:31px;top:5px;white-space:nowrap;font-size:11px;font-weight:bold;line-height:18px;padding:0 4px;border-radius:4px;background:rgba(255,255,255,.92);box-shadow:0 1px 3px rgba(0,0,0,.35);pointer-events:none}
+.empty{padding:14px 4px;color:#888;font-size:12px}
+</style></head><body>
+<div id="map"></div>
+<div id="panel">
+  <h3>시기별 TOP10 지도</h3>
+  <div class="sel"><select id="selSido"></select><select id="selSgg"></select></div>
+  <label class="nm"><input type="checkbox" id="chkName"> 이름 표시</label>
+  <div class="sub">84㎡(전용 80~87) 매매 · 단지별 최고가 · 거래일 기준 기간 · 아래 버튼으로 기간 켜기/끄기</div>
+  <div class="tabs" id="tabs"></div><div id="list"></div>
+</div>
+<script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
+<script>
+/* 데이터: top10_data.json (python _tools/_build_top10_data.py 로 생성·갱신). 시도·시군구를 고르면 그 지역 TOP10 을 그린다. */
+var COLORS=['#7b61a8','#2f7d32','#d9480f'];
+var ALL=null, DATA=[], on=[], groups=[];
+var map=new naver.maps.Map('map',{center:new naver.maps.LatLng(36.5,127.8),zoom:7});
+var iw=new naver.maps.InfoWindow({borderWidth:1,anchorSize:new naver.maps.Size(10,10)});
+var T=document.getElementById('tabs'),L=document.getElementById('list');
+var selSido=document.getElementById('selSido'),selSgg=document.getElementById('selSgg');
+var LS='top10map.sel';
+var chkName=document.getElementById('chkName');
+function mkHtml(m){
+  return '<div class="mk-wrap"><div class="mk" style="background:'+COLORS[m.gi%3]+'">'+m.rank+'</div>'+
+    (chkName.checked?'<span class="mk-lb" style="color:'+COLORS[m.gi%3]+'">'+m.name+'</span>':'')+'</div>';
+}
+function setIconOf(m,ax,ay){m.mk.setIcon({content:mkHtml(m),anchor:new naver.maps.Point(ax,ay)})}
+function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'{}')}catch(e){return {}}}
+function lsSet(o){try{localStorage.setItem(LS,JSON.stringify(o))}catch(e){}}
+
+function render(){
+  var b=new naver.maps.LatLngBounds(),any=false;
+  groups.forEach(function(g,i){g.forEach(function(m){m.mk.setMap(on[i]?map:null);m.row.style.display=on[i]?'flex':'none'});
+    if(on[i])g.forEach(function(m){b.extend(m.pos);any=true});
+    document.getElementById('hd'+i).style.opacity=on[i]?1:.35;
+    document.getElementById('tg'+i).className=on[i]?'on':'';
+    document.getElementById('tg'+i).style.background=on[i]?COLORS[i%3]:'';
+    document.getElementById('hd'+i).style.display=on[i]?'block':'none'});
+  iw.close();if(any)map.fitBounds(b,{top:60,right:60,bottom:60,left:340});
+  spread();
+}
+
+/* 겹치지 않게: 줌마다 화면 픽셀 좌표에서 마커끼리 서로 밀어낸다(동그라미 지름 28 + 여백).
+   원래 위치와 멀어진 마커는 가는 선과 작은 점으로 실제 위치를 보여 준다. */
+var MIN=32,BASE=14;
+function spread(){
+  var proj=map.getProjection();if(!proj)return;
+  var list=[];
+  // 이름을 보일 때는 이름표가 오른쪽으로 길어서, 가로 차이를 덜 쳐 주어 위아래로 갈라지게 한다
+  var sx=chkName.checked?0.3:1;
+  groups.forEach(function(g,i){g.forEach(function(m){
+    if(m.line){m.line.setMap(null);m.line=null}
+    if(m.dot){m.dot.setMap(null);m.dot=null}
+    if(!on[i])return;
+    var o=proj.fromCoordToOffset(m.pos);
+    m.o=o;m.dx=0;m.dy=0;list.push(m);
+  })});
+  // 같은 좌표(거리 0)는 순번대로 서로 다른 방향으로 갈라 놓는다
+  list.forEach(function(a,k){a.dx=Math.cos(k*2.4)*0.5;a.dy=Math.sin(k*2.4)*0.5});
+  for(var it=0;it<120;it++){
+    var moved=false;
+    for(var x=0;x<list.length;x++)for(var y=x+1;y<list.length;y++){
+      var a=list[x],b=list[y];
+      var vx=((b.o.x+b.dx)-(a.o.x+a.dx))*sx,vy=(b.o.y+b.dy)-(a.o.y+a.dy);
+      var d=Math.sqrt(vx*vx+vy*vy);
+      if(d>=MIN)continue;
+      if(d<0.01){vx=sx;vy=0;d=1}
+      var push=(MIN-d)/2+0.2;vx/=d;vy/=d;
+      a.dx-=vx*push/sx;a.dy-=vy*push;b.dx+=vx*push/sx;b.dy+=vy*push;moved=true;
+    }
+    list.forEach(function(m){m.dx*=0.985;m.dy*=0.985});
+    if(!moved)break;
+  }
+  list.forEach(function(m){
+    setIconOf(m,BASE-m.dx,BASE-m.dy);
+    var far=Math.sqrt(m.dx*m.dx+m.dy*m.dy);
+    if(far>BASE){
+      var to=proj.fromOffsetToCoord(new naver.maps.Point(m.o.x+m.dx,m.o.y+m.dy));
+      m.line=new naver.maps.Polyline({map:map,path:[m.pos,to],strokeColor:COLORS[m.gi%3],strokeWeight:2,strokeOpacity:.8,zIndex:1});
+      m.dot=new naver.maps.Marker({position:m.pos,map:map,zIndex:2,clickable:false,icon:{content:'<div style="width:8px;height:8px;border-radius:50%;background:'+COLORS[m.gi%3]+';border:1px solid #fff"></div>',anchor:new naver.maps.Point(5,5)}});
+    }
+  });
+}
+naver.maps.Event.addListener(map,'zoom_changed',function(){setTimeout(spread,0)});
+
+/* 지역을 바꿀 때: 이전 마커·선·목록을 모두 지우고 새로 만든다 */
+function clearAll(){
+  groups.forEach(function(g){g.forEach(function(m){
+    m.mk.setMap(null);if(m.line)m.line.setMap(null);if(m.dot)m.dot.setMap(null)})});
+  groups=[];on=[];DATA=[];T.innerHTML='';L.innerHTML='';iw.close();
+}
+function build(code){
+  clearAll();
+  var rg=ALL.regions[code];if(!rg)return;
+  DATA=ALL.labels.map(function(lb,i){return {label:lb,items:rg.p[i]||[]}});
+  on=DATA.map(function(){return true});groups=DATA.map(function(){return []});
+  var total=0;
+  DATA.forEach(function(d,i){
+    total+=d.items.length;
+    var bt=document.createElement('button');bt.id='tg'+i;bt.textContent=d.label;bt.onclick=function(){on[i]=!on[i];render()};T.appendChild(bt);
+    var h=document.createElement('div');h.id='hd'+i;h.className='hd';h.style.borderLeft='5px solid '+COLORS[i%3];h.textContent=d.label;L.appendChild(h);
+    d.items.forEach(function(it){
+      var pos=new naver.maps.LatLng(it.lat,it.lng);
+      var mk=new naver.maps.Marker({position:pos,map:map,zIndex:100-it.rank+i});
+      function open(){iw.setContent('<div class="iw"><b>['+d.label+'] '+it.rank+'위 '+it.name+'</b><br>'+it.won+' <span style="color:#888">('+it.date+' · '+it.floor+'층)</span><br>'+it.dong+(it.year?' · '+it.year+'년 입주':'')+'</div>');iw.open(map,mk)}
+      naver.maps.Event.addListener(mk,'click',open);
+      var r=document.createElement('div');r.className='row';
+      r.innerHTML='<div class="n" style="background:'+COLORS[i%3]+'">'+it.rank+'</div><div class="t"><b>'+it.name+'</b><span>'+it.dong+' · '+it.date+' · '+it.floor+'층</span></div><div class="p">'+it.won+'</div>';
+      r.onclick=function(){map.panTo(pos);open()};L.appendChild(r);
+      var gm={mk:mk,pos:pos,row:r,gi:i,rank:it.rank,name:it.name,line:null,dot:null};
+      setIconOf(gm,14,14);
+      groups[i].push(gm);
+    });
+  });
+  if(!total){L.innerHTML='<div class="empty">이 지역에는 84㎡ 매매 거래 자료가 없습니다.</div>';return}
+  render();
+}
+
+/* 시도 → 시군구 선택 */
+function fillSido(){
+  var set={};Object.keys(ALL.regions).forEach(function(c){set[ALL.regions[c].sido]=1});
+  var names=Object.keys(set).sort();
+  selSido.innerHTML=names.map(function(s){return '<option>'+s+'</option>'}).join('');
+}
+function fillSgg(){
+  var s=selSido.value,list=Object.keys(ALL.regions).filter(function(c){return ALL.regions[c].sido===s});
+  list.sort(function(a,b){return ALL.regions[a].name<ALL.regions[b].name?-1:1});
+  selSgg.innerHTML=list.map(function(c){return '<option value="'+c+'">'+ALL.regions[c].name.replace(s+' ','')+'</option>'}).join('');
+}
+chkName.checked=!!lsGet().name;
+chkName.onchange=function(){var o=lsGet();o.name=chkName.checked;lsSet(o);spread()};
+selSido.onchange=function(){fillSgg();selSgg.onchange()};
+selSgg.onchange=function(){var o=lsGet();o.sido=selSido.value;o.sgg=selSgg.value;lsSet(o);build(selSgg.value)};
+
+fetch('top10_data.json').then(function(r){return r.json()}).then(function(j){
+  ALL=j;fillSido();
+  var sv=lsGet();
+  // 마지막으로 본 지역을 복원(없으면 수원시 권선구, 그것도 없으면 첫 지역)
+  var code=sv.sgg&&ALL.regions[sv.sgg]?sv.sgg:(ALL.regions['4111300000']?'4111300000':Object.keys(ALL.regions)[0]);
+  selSido.value=ALL.regions[code].sido;fillSgg();selSgg.value=code;
+  build(code);
+}).catch(function(e){L.innerHTML='<div class="empty">top10_data.json 을 읽지 못했습니다. 로컬 서버(localhost:8000)로 여세요. ('+e.message+')</div>'});
+</script></body></html>
