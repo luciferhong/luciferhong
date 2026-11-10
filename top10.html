@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>시기별 TOP10 지도</title>
+<title>기간별 TOP10 지도</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231e3a8a'/%3E%3Ctext x='32' y='28' font-family='Arial,sans-serif' font-size='27' font-weight='900' text-anchor='middle' textLength='56' lengthAdjust='spacingAndGlyphs' fill='%23facc15'%3ETOP%3C/text%3E%3Ctext x='32' y='60' font-family='Arial,sans-serif' font-size='34' font-weight='900' text-anchor='middle' textLength='52' lengthAdjust='spacingAndGlyphs' fill='%23fff'%3E10%3C/text%3E%3C/svg%3E">
 <style>
 html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
 #map{position:fixed;top:0;left:0;width:100vw;height:100vh}
@@ -50,13 +51,13 @@ html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
 <div id="perPop"></div>
 <div id="grip" title="끌어서 패널 너비 조절"></div>
 <div id="panel">
-  <h3>시기별 TOP10 지도</h3>
+  <h3>기간별 TOP10 지도</h3>
   <div class="sel"><select id="selSido"></select><select id="selSgg"></select></div>
-  <div class="sel"><select id="selBand"><option value="55-64">전용 55~64</option><option value="79-85">전용 79~85</option><option value="all">전체면적</option></select><select id="selTop"><option value="10">TOP 10</option><option value="20">TOP 20</option></select></div>
+  <div class="sel"><select id="selBand"><option value="55-64">전용 55~64</option><option value="79-85">전용 79~85</option><option value="all">전체면적</option></select><select id="selPm"><option value="max">기간 최고가</option><option value="top3">상위 3건 평균</option></select><select id="selTop"><option value="10">TOP 10</option><option value="20">TOP 20</option></select></div>
   <div class="sel"><select id="selDtype" title="동 구분"><option value="emd">법정동</option><option value="adm">행정동</option></select><select id="selDong" title="읍면동 세분류"><option value="">읍면동 전체</option></select></div>
   <label class="nm"><input type="checkbox" id="chkName"> 이름 표시</label>
   <div class="adj"><button id="btnAdj">라벨 위치조정</button><button id="btnRst">라벨 위치초기화</button></div>
-  <div class="adj"><button id="btnColRst">색상 초기화</button></div>
+  <div class="adj"><button id="btnColRst">색상 초기화</button> <button id="btnPerRst">기간 초기화</button></div>
   <div class="lg" id="legend"></div>
   <div class="sub">매매 · 단지별 최고가 · 거래일 기준 기간 · 기간 버튼을 누르면 시작·끝 년월을 고를 수 있습니다</div>
   <div class="tabs" id="tabs"></div><div id="list"></div>
@@ -247,20 +248,29 @@ var NOW=new Date(),THIS_YM=NOW.getFullYear()*100+NOW.getMonth()+1;
 var PER_DEF=[{f:200001,t:200912},{f:201001,t:201912},{f:202001,t:202912}];
 var PER=(function(){var p=lsGet().per;return(p&&p.length===3)?p:PER_DEF})();
 function ymTxt(v){return String(Math.floor(v/100)).slice(2)+'.'+('0'+v%100).slice(-2)}
-function perLabel(p){return ymTxt(p.f)+'~'+ymTxt(p.t)}
+var BNAME={'55-64':'59형','79-85':'84형','all':'전체면적'};
+function perLabel(p){return (p.b?BNAME[p.b]+' ':'')+ymTxt(p.f)+'~'+ymTxt(p.t)}
 function dLabel(ap,all){return (all&&ap[5]?ap[5]+' ':'')+(ap[selDtype.value==='adm'?7:6]||ap[1]||'')}
 function itemsFor(p,code){
-  var dn=selDong.value,D=DET.d,all=/\(전체\)$/.test((ALL.regions[code]||{name:''}).name),out=[];
+  var dn=selDong.value,D=regCache[(p.b||selBand.value)+'|'+code]||DET.d,all=/\(전체\)$/.test((ALL.regions[code]||{name:''}).name),out=[];
   Object.keys(D.m).forEach(function(cid){
     var ap=D.apts[cid];if(!ap)return;
     var dl=dLabel(ap,all);if(dn&&dl!==dn)return;
-    var b=null,a=D.m[cid];
-    for(var k=0;k<a.length;k++){var e=a[k];if(e[0]<p.f)continue;if(e[0]>p.t)break;if(!b||e[1]>b[1])b=e}
-    if(b)out.push({ap:ap,e:b,dl:dl});
+    var b=null,a=D.m[cid],ps=[];
+    for(var k=0;k<a.length;k++){var e=a[k];if(e[0]<p.f)continue;if(e[0]>p.t)break;if(!b||e[1]>b[1])b=e;
+      ps.push(e[1]);if(e[4])ps.push(e[4]);if(e[5])ps.push(e[5])}
+    if(!b)return;
+    var v=b[1],n=1;
+    if(selPm.value==='top3'){ps.sort(function(x,y){return y-x});ps=ps.slice(0,3);n=ps.length;v=Math.round(ps.reduce(function(s,x){return s+x},0)/n)}
+    out.push({ap:ap,e:b,dl:dl,v:v,n:n});
   });
-  out.sort(function(x,y){return y.e[1]-x.e[1]});
+  out.sort(function(x,y){return y.v-x.v});
+  var t3=selPm.value==='top3';
   return out.slice(0,+selTop.value||10).map(function(o,k){var ap=o.ap,e=o.e;
-    return {rank:k+1,name:ap[0],dong:o.dl,lat:ap[2],lng:ap[3],year:ap[4],price:e[1],won:wonStr(e[1]),date:Math.floor(e[0]/100)+'.'+('0'+e[0]%100).slice(-2),floor:e[2],area:e[3]}});
+    var date=Math.floor(e[0]/100)+'.'+('0'+e[0]%100).slice(-2),det=date+' · '+e[2]+'층'+(e[3]?' · '+e[3]+'㎡':'');
+    return {rank:k+1,name:ap[0],dong:o.dl,lat:ap[2],lng:ap[3],year:ap[4],price:o.v,won:wonStr(o.v),date:date,floor:e[2],area:e[3],
+      det:t3?'최고 '+wonStr(e[1])+' ('+det+')'+(o.n<3?' · '+o.n+'건':''):det,
+      pre:t3?'상위 3건 평균 ':''}});
 }
 function wonStr(m){var e=Math.floor(m/10000),r=m%10000;return e&&r?e+'억'+r.toLocaleString('en-US')+'만':e?e+'억':r.toLocaleString('en-US')+'만'}
 function build(code,keepOn){
@@ -280,10 +290,10 @@ function build(code,keepOn){
       var pos=new naver.maps.LatLng(it.lat,it.lng);
       var mk=new naver.maps.Marker({position:pos,map:map,zIndex:100-it.rank+i});
       var lb=new naver.maps.Marker({position:pos,map:null,zIndex:50,clickable:false});
-      function open(){iw.setContent('<div class="iw"><b>['+d.label+'] '+it.rank+'위 '+it.name+'</b><br>'+it.won+' <span style="color:#888">('+it.date+' · '+it.floor+'층'+(it.area?' · 전용 '+it.area+'㎡':'')+')</span><br>'+it.dong+(it.year?' · '+it.year+'년 입주':'')+'</div>');iw.open(map,mk)}
+      function open(){iw.setContent('<div class="iw"><b>['+d.label+'] '+it.rank+'위 '+it.name+'</b><br>'+it.pre+it.won+' <span style="color:#888">('+it.det+')</span><br>'+it.dong+(it.year?' · '+it.year+'년 입주':'')+'</div>');iw.open(map,mk)}
       naver.maps.Event.addListener(mk,'click',function(){if(iw.getMap()&&iw.getPosition&&iw.__mk===mk){iw.close();iw.__mk=null}else{open();iw.__mk=mk}});
       var r=document.createElement('div');r.className='row';var key=i+'|'+it.name;dongCol[key]=sv[code+'|'+key]||'#ffffff';r.style.background=dongBg(key);
-      r.innerHTML='<span class="sw" title="배경색 고르기" style="background:'+dongBg(key)+'"></span><div class="n" style="background:'+COLORS[i%4]+'">'+it.rank+'</div><div class="t"><b>'+it.name+'</b><span>'+it.dong+' · '+it.date+' · '+it.floor+'층'+(it.area?' · '+it.area+'㎡':'')+'</span></div><span class="lv"></span><div class="p">'+it.won+'</div>';
+      r.innerHTML='<span class="sw" title="배경색 고르기" style="background:'+dongBg(key)+'"></span><div class="n" style="background:'+COLORS[i%4]+'">'+it.rank+'</div><div class="t"><b>'+it.name+'</b><span>'+it.dong+' · '+it.det+'</span></div><span class="lv"></span><div class="p">'+it.won+'</div>';
       r.onclick=function(e){if(e.target.className==='sw'){e.stopPropagation();openPal(e.target,key,it.name);return}map.panTo(pos);open()};wr.appendChild(r);
       var gm={mk:mk,lb:lb,pos:pos,row:r,gi:i,rank:it.rank,name:it.name,pk:it.lat+','+it.lng,sx:0,key:key,ox:17,oy:-9,arrow:null};
       mk.setIcon({content:mkHtml(gm),anchor:new naver.maps.Point(14,14)});
@@ -317,13 +327,14 @@ function openPer(i,bt){
   var p=PER[i],y0=2000,y1=2029;
   function ys(id,v){var s='<select id="'+id+'">';for(var y=y1;y>=y0;y--)s+='<option value="'+y+'"'+(y===v?' selected':'')+'>'+String(y).slice(2)+'년</option>';return s+'</select>'}
   function ms(id,v){var s='<select id="'+id+'">';for(var m=1;m<=12;m++)s+='<option value="'+m+'"'+(m===v?' selected':'')+'>'+m+'월</option>';return s+'</select>'}
-  perPop.innerHTML='<div class="pt">기간 '+(i+1)+'</div><div class="pr">'+ys('pfy',Math.floor(p.f/100))+ms('pfm',p.f%100)+' ~ '+ys('pty',Math.floor(p.t/100))+ms('ptm',p.t%100)+'</div><div class="pb"><button class="pri" id="pok">적용</button><button id="ptg">'+(on[i]?'끄기':'켜기')+'</button></div>';
+  perPop.innerHTML='<div class="pt">기간 '+(i+1)+'</div><div class="pr">'+ys('pfy',Math.floor(p.f/100))+ms('pfm',p.f%100)+' ~ '+ys('pty',Math.floor(p.t/100))+ms('ptm',p.t%100)+'</div><div class="pr"><select id="pbd"><option value="">전용면적: 위 선택을 따름</option>'+Object.keys(BNAME).map(function(k){return '<option value="'+k+'"'+(p.b===k?' selected':'')+'>전용면적: '+BNAME[k]+(k==='all'?'':' ('+k.replace('-','~')+'㎡)')+'</option>'}).join('')+'</select></div><div class="pb"><button class="pri" id="pok">적용</button><button id="ptg">'+(on[i]?'끄기':'켜기')+'</button></div>';
   var r=bt.getBoundingClientRect();perPop.style.display='block';
   perPop.style.left=Math.max(4,Math.min(r.left,innerWidth-perPop.offsetWidth-6))+'px';perPop.style.top=(r.bottom+4)+'px';
   document.getElementById('pok').onclick=function(){
     var f=(+document.getElementById('pfy').value)*100+(+document.getElementById('pfm').value),t=(+document.getElementById('pty').value)*100+(+document.getElementById('ptm').value);
     if(f>t){var x=f;f=t;t=x}
-    PER[i]={f:f,t:t};var o=lsGet();o.per=PER;lsSet(o);perPop.style.display='none';on[i]=true;build(curCode,true)};
+    PER[i]={f:f,t:t,b:document.getElementById('pbd').value};var o=lsGet();o.per=PER;lsSet(o);perPop.style.display='none';
+    showRegion(curCode,true,i)};
   document.getElementById('ptg').onclick=function(){on[i]=!on[i];perPop.style.display='none';render()};
 }
 document.addEventListener('mousedown',function(e){if(perPop.style.display==='block'&&!perPop.contains(e.target)&&!(e.target.closest&&e.target.closest('#T,.tabs')))perPop.style.display='none'});
@@ -342,6 +353,11 @@ function fillSgg(){
 chkName.checked=!!lsGet().name;
 chkName.onchange=function(){var o=lsGet();o.name=chkName.checked;lsSet(o);layoutLabels()};
 document.getElementById('btnAdj').onclick=function(){adjusted=true;layoutLabels()};
+document.getElementById('btnPerRst').onclick=function(){
+  PER=PER_DEF.map(function(p){return {f:p.f,t:p.t,b:''}});
+  var o=lsGet();o.per=PER;lsSet(o);perPop.style.display='none';
+  if(DET)showRegion(curCode,true);
+};
 document.getElementById('btnColRst').onclick=function(){
   if(!confirm('이 지역의 배경색을 모두 흰색으로 되돌릴까요?'))return;
   var sv=dongSaved();Object.keys(sv).forEach(function(k){if(k.indexOf(curCode+'|')===0)delete sv[k]});
@@ -363,11 +379,15 @@ function loadRegion(b,code){
   var k=b+'|'+code;if(regCache[k])return Promise.resolve(regCache[k]);
   return fetch('https://sise-cloud.luciferhong.com/pub/top10?band='+b+'&code='+code).then(function(r){return r.json()}).then(function(d){regCache[k]=d;return d});
 }
-function showRegion(code,keepOn){
-  var seq=++reqSeq,b=selBand.value;
-  loadRegion(b,code).then(function(d){
+function showRegion(code,keepOn,turnOn){
+  var seq=++reqSeq,b=selBand.value,need={};need[b]=1;PER.forEach(function(p){if(p.b)need[p.b]=1});
+  Promise.all(Object.keys(need).map(function(x){
+    return loadRegion(x,code).catch(function(e){if(x===b)throw e;regCache[x+'|'+code]={apts:{},m:{}}}) // 그 면적에 자료가 없는 지역은 빈 목록
+  })).then(function(){
     if(seq!==reqSeq)return;
+    var d=regCache[b+'|'+code];
     DET={k:b+'|'+code,d:d};curCode=code;fillDong();build(code,keepOn);
+    if(turnOn!=null&&!on[turnOn]){on[turnOn]=true;render()}
   }).catch(function(e){L.innerHTML='<div class="empty">집계 데이터를 읽지 못했습니다. 잠시 후 다시 시도해 주세요. ('+e.message+')</div>'});
 }
 selDtype.value=lsGet().dtype||'emd';
@@ -380,6 +400,9 @@ function loadBand(b){
   return fetch('https://sise-cloud.luciferhong.com/pub/top10?band='+b).then(function(r){return r.json()}).then(function(j){bandCache[b]=j;return j});
 }
 var selBand=document.getElementById('selBand');
+var selPm=document.getElementById('selPm');
+selPm.value=lsGet().pm||'max';
+selPm.onchange=function(){var o=lsGet();o.pm=selPm.value;lsSet(o);if(DET)build(curCode,true)};
 selTop.value=lsGet().top||'10';
 selTop.onchange=function(){var o=lsGet();o.top=selTop.value;lsSet(o);if(ALL)build(curCode,true)};
 selBand.value=lsGet().band||'79-85';
