@@ -23,9 +23,15 @@ html,body{margin:0;height:100%;font-family:'Malgun Gothic',sans-serif}
 .nm{display:block;font-size:12px;margin-bottom:8px;cursor:pointer;user-select:none}
 .mk-lb{white-space:nowrap;font-size:11px;font-weight:bold;line-height:18px;height:18px;padding:0 4px;border-radius:4px;color:#222;border:1px solid rgba(0,0,0,.25);box-shadow:0 1px 3px rgba(0,0,0,.35);pointer-events:none}
 .adj{display:flex;gap:4px;margin-bottom:8px}.adj button{flex:1;padding:5px 0;border:1px solid #ccc;background:#f6f6f6;border-radius:6px;cursor:pointer;font-size:12px}
+.row .sw{flex:none;width:14px;height:14px;border:1px solid #888;border-radius:3px;cursor:pointer}
+#pal{position:fixed;z-index:20000;display:none;background:#fff;border:1px solid #bbb;border-radius:8px;box-shadow:0 3px 12px rgba(0,0,0,.3);padding:8px;width:176px}
+#pal .pt{font-size:11px;color:#555;margin-bottom:6px}
+#pal .pc{display:inline-block;width:22px;height:22px;margin:2px;border:1px solid #888;border-radius:4px;cursor:pointer;vertical-align:top}
+#pal .pc:hover{outline:2px solid #1a3cff}
 .empty{padding:14px 4px;color:#888;font-size:12px}
 </style></head><body>
 <div id="map"></div>
+<div id="pal"></div>
 <div id="panel">
   <h3>시기별 TOP10 지도</h3>
   <div class="sel"><select id="selSido"></select><select id="selSgg"></select></div>
@@ -50,7 +56,9 @@ function mkHtml(m){
 }
 /* 동별 배경색(목록·이름표 공통): 지역 안의 동을 순서대로 파스텔 색에 배정 */
 var PAL=['#ffe0e0','#e0f0ff','#e3f6d8','#fff2c2','#ecdcff','#d6f5f0','#ffe3c8','#e8e8e8','#fcd9ec','#dbe4ff','#f1f7c6','#d9efe0'];
-var dongCol={};
+var dongCol={},curCode='',LSD='top10map.dong';
+var PICK=['#ffffff','#ffb3b3','#ffd8a8','#fff2a8','#c8f0b0','#a8e6d8','#b3d9ff','#c9c2ff','#f3b8e6','#e0e0e0','#ffe0e0','#e0f0ff','#e3f6d8','#fff2c2','#ecdcff','#ffe3c8'];
+function dongSaved(){try{return JSON.parse(localStorage.getItem(LSD)||'{}')}catch(e){return {}}}
 function dongBg(d){return dongCol[d]||'#fff'}
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'{}')}catch(e){return {}}}
 function lsSet(o){try{localStorage.setItem(LS,JSON.stringify(o))}catch(e){}}
@@ -135,7 +143,7 @@ function build(code){
   var rg=ALL.regions[code];if(!rg)return;
   DATA=ALL.labels.map(function(lb,i){return {label:lb,items:rg.p[i]||[]}});
   on=DATA.map(function(){return true});groups=DATA.map(function(){return []});
-  var total=0;dongCol={};var dn=[];DATA.forEach(function(d){d.items.forEach(function(it){if(dn.indexOf(it.dong)<0)dn.push(it.dong)})});dn.sort().forEach(function(d,k){dongCol[d]=PAL[k%PAL.length]});
+  var total=0;dongCol={};var dn=[];DATA.forEach(function(d){d.items.forEach(function(it){if(dn.indexOf(it.dong)<0)dn.push(it.dong)})});curCode=code;var sv=dongSaved();dn.sort().forEach(function(d,k){dongCol[d]=sv[code+'|'+d]||PAL[k%PAL.length]});
   DATA.forEach(function(d,i){
     total+=d.items.length;
     var bt=document.createElement('button');bt.id='tg'+i;bt.textContent=d.label;bt.onclick=function(){on[i]=!on[i];render()};T.appendChild(bt);
@@ -147,8 +155,8 @@ function build(code){
       function open(){iw.setContent('<div class="iw"><b>['+d.label+'] '+it.rank+'위 '+it.name+'</b><br>'+it.won+' <span style="color:#888">('+it.date+' · '+it.floor+'층)</span><br>'+it.dong+(it.year?' · '+it.year+'년 입주':'')+'</div>');iw.open(map,mk)}
       naver.maps.Event.addListener(mk,'click',function(){if(iw.getMap()&&iw.getPosition&&iw.__mk===mk){iw.close();iw.__mk=null}else{open();iw.__mk=mk}});
       var r=document.createElement('div');r.className='row';r.style.background=dongBg(it.dong);
-      r.innerHTML='<div class="n" style="background:'+COLORS[i%3]+'">'+it.rank+'</div><div class="t"><b>'+it.name+'</b><span>'+it.dong+' · '+it.date+' · '+it.floor+'층</span></div><div class="p">'+it.won+'</div>';
-      r.onclick=function(){map.panTo(pos);open()};L.appendChild(r);
+      r.innerHTML='<span class="sw" title="'+it.dong+' 색 고르기" style="background:'+dongBg(it.dong)+'"></span><div class="n" style="background:'+COLORS[i%3]+'">'+it.rank+'</div><div class="t"><b>'+it.name+'</b><span>'+it.dong+' · '+it.date+' · '+it.floor+'층</span></div><div class="p">'+it.won+'</div>';
+      r.onclick=function(e){if(e.target.className==='sw'){e.stopPropagation();openPal(e.target,it.dong);return}map.panTo(pos);open()};L.appendChild(r);
       var gm={mk:mk,lb:lb,pos:pos,row:r,gi:i,rank:it.rank,name:it.name,dong:it.dong,ox:17,oy:-9,arrow:null};
       mk.setIcon({content:mkHtml(gm),anchor:new naver.maps.Point(14,14)});
       groups[i].push(gm);
@@ -157,6 +165,22 @@ function build(code){
   if(!total){L.innerHTML='<div class="empty">이 지역에는 84㎡ 매매 거래 자료가 없습니다.</div>';return}
   render();
 }
+
+/* 동별 배경색 고르기: 목록의 색 네모를 누르면 팔레트가 뜨고, 고른 색은 그 동 전체(목록·이름표)에 적용·저장 */
+var pal=document.getElementById('pal');
+function openPal(el,dong){
+  pal.innerHTML='<div class="pt">'+dong+' 배경색</div>'+PICK.map(function(c){return '<span class="pc" data-c="'+c+'" style="background:'+c+'"></span>'}).join('');
+  var r=el.getBoundingClientRect();
+  pal.style.display='block';
+  pal.style.left=Math.min(r.left,innerWidth-190)+'px';
+  pal.style.top=Math.min(r.bottom+4,innerHeight-pal.offsetHeight-6)+'px';
+  pal.onclick=function(e){var c=e.target.getAttribute('data-c');if(!c)return;
+    dongCol[dong]=c;var sv=dongSaved();sv[curCode+'|'+dong]=c;try{localStorage.setItem(LSD,JSON.stringify(sv))}catch(x){}
+    groups.forEach(function(g){g.forEach(function(m){if(m.dong!==dong)return;
+      m.row.style.background=c;m.row.querySelector('.sw').style.background=c;setLabel(m,m.ox,m.oy)})});
+    pal.style.display='none'};
+}
+document.addEventListener('mousedown',function(e){if(pal.style.display==='block'&&!pal.contains(e.target)&&e.target.className!=='sw')pal.style.display='none'});
 
 /* 시도 → 시군구 선택 */
 function fillSido(){
