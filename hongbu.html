@@ -3886,14 +3886,6 @@
             <label title="줌 15 이하에서도 칸 정리(조회수 1등만) 없이 필터를 통과한 단지를 모두 표시합니다. 밀집 지역에선 이름표가 겹치고 느려질 수 있습니다"><input type="checkbox" id="toggleAllComplexes" />ZOOM 레벨 상관없이 전체 단지 표기</label>
           </div>
         </div>
-        <!-- ── 교통 (2026-10-01 사용자 요청: "지하철 노선을 레이어로 옮기고 아파트와 학교 사이로")
-             ⚠ 단추를 새로 만들지 않고 [도구] 에 있던 그 요소를 옮겼다 — 핸들러가 id 로 걸려 있다.
-             ⚠ 배지는 체크박스만 세므로 이 단추는 세지 않는다. '레이어 전부 끄기' 도 건드리지 않는다
-               (노선 선택은 자기 창에서 따로 관리한다). -->
-        <div class="tb-sec">
-          <div class="tb-sec-t">교통</div>
-          <button id="metroLinesBtn" type="button" title="지하철 노선 표시(metroHong 이식)" class="tb-item">🚆 지하철 노선</button>
-        </div>
         <div class="tb-sec">
           <div class="tb-sec-t">학교</div>
           <!-- 초등학교 묶음 (2026-09-23 사용자 요청: 고등학교 묶음과 같은 방식) -->
@@ -12764,8 +12756,46 @@ const originalBase64 = event.target.result;
         const __metroShortName = (n) => String(n || "").replace(/호선$/, "").replace(/^(수도권 전철|서울 지하철)\s*/, "");   // 글자 16px(22→13→16), 좌우 여백 6px, 최소 가로 3글자 // ?metro=파일명 으로 미리보기 파일 지정 가능 // OSM 선형 판(_tools/_build_metro_osm.py). 없으면 아래 load 에서 원본으로 폴백
         const DATA_URL_FALLBACK = "data-metro-line-1.0.0.json";
         const LS_KEY = "hongbuMetroLines_v1";
-        const btn = document.getElementById("metroLinesBtn");
-        if (!btn) return;
+        // 2026-11-11 사용자: 레이어의 [교통 → 지하철 노선] 을 없애고 지도 왼쪽 측정 카드(#msCard)의 [지하철] 로 옮겼다.
+        // btn 은 화면에 붙지 않는 빈 껍데기(상태 글자·색 갱신이 가리키는 곳일 뿐), 실제 단추는 카드의 data-ms="metro".
+        const btn = document.createElement("button");
+        // 카드 [지하철] 단추: 켜져 있으면(노선 선택됨) 누르면 전부 끈다(창도 닫음, 고른 노선은 기억). 꺼져 있으면 기억한 노선을 되살리고 창을 연다.
+        window.__metroToggle = async () => {
+          if (selected.size > 0) {
+            try { localStorage.setItem("hongbuMetroLast", JSON.stringify([...selected])); } catch (e) {}
+            selected.clear(); save();
+            hide();
+            if (panel) { panel.remove(); panel = null; Object.keys(checks).forEach((k) => delete checks[k]); Object.keys(expChecks).forEach((k) => delete expChecks[k]); }
+            try { await load(); redraw(); } catch (e) {}
+            return;
+          }
+          try { await load(); } catch (e) { alert("지하철 노선 데이터를 불러오지 못했습니다."); return; }
+          try { (JSON.parse(localStorage.getItem("hongbuMetroLast") || "[]") || []).forEach((x) => selected.add(x)); } catch (e) {}
+          if (selected.size) { save(); redraw(); }
+          if (panel) { panel.remove(); panel = null; Object.keys(checks).forEach((k) => delete checks[k]); Object.keys(expChecks).forEach((k) => delete expChecks[k]); }
+          buildPanel(); panel.style.display = "block"; place();
+        };
+        window.__metroIsOn = () => selected.size > 0;
+        // 지하철이 켜져 있으면 카드 [지하철] 단추 오른쪽에 작은 설정(⚙) 단추 — 노선 창을 연다/닫는다. 카드가 overflow:hidden 이라 카드 밖에 fixed 로 따로 둔다.
+        function gearSync() {
+          let g = document.getElementById("metroGear");
+          const b = document.querySelector('#msCard [data-ms="metro"]');
+          if (!b || !b.offsetParent || selected.size === 0) { if (g) g.style.display = "none"; return; }
+          if (!g) {
+            g = document.createElement("button");
+            g.id = "metroGear"; g.type = "button"; g.title = "지하철 노선 설정"; g.textContent = "⚙";
+            g.style.cssText = "position:fixed;z-index:10001;width:24px;height:24px;padding:0;margin:0;border:1px solid rgba(0,0,0,.18);border-radius:50%;background:#fff;color:#374151;font-size:14px;line-height:22px;text-align:center;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25);transform:none";
+            ["pointerdown", "mousedown", "touchstart", "dblclick", "contextmenu"].forEach((ev) => g.addEventListener(ev, (e) => e.stopPropagation()));
+            g.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+            document.body.appendChild(g);
+          }
+          const r = b.getBoundingClientRect();
+          g.style.display = "block";
+          g.style.left = Math.round(r.right + 5) + "px";
+          g.style.top = Math.round(r.top + (r.height - 24) / 2) + "px";
+        }
+        setInterval(gearSync, 500);
+        window.addEventListener("resize", gearSync);
         setTimeout(() => { try { if (!__expV) save(); } catch (e) {} }, 0);   // 새 판수 표시 남기기
         let panel = null, data = null, loading = null;
         const layers = {}; // lineId -> {polylines, stations, color}
@@ -12909,6 +12939,8 @@ const originalBase64 = event.target.result;
             if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) return;   // 드래그였다
             const mapEl = document.getElementById("map");
             if (!mapEl || !mapEl.contains(ev.target)) return;
+            // 2026-11-11 사용자: 왼쪽 카드(#msCard) 단추를 눌렀는데 단추 뒤에 깔린 노선이 눌려 그 노선만 남았다 → 카드 안 클릭은 지도 클릭이 아니다
+            if (ev.target.closest && ev.target.closest("#msCard")) return;
             window.__metroHoverPt = { x: ev.clientX, y: ev.clientY };
             // ⚠ **역명 블록을 눌렀으면 그 블록이 말해 주는 노선을 그대로 쓴다.**
             //   좌표로만 찾으면 환승역에서 블록이 위아래로 쌓여 선에서 25~50px 떨어지므로
@@ -12997,7 +13029,7 @@ const originalBase64 = event.target.result;
                 // ⚠ 테두리는 블록 **바깥**으로 3px 번져 나가는데 블록을 세로로 쌓으면 다음 블록이 그 위에 그려져
                 //   윗블록 테두리 아래쪽이 잘려 보인다(2026-09-22 사용자 보고, 이수 4호선). 아래 여백 3px 로 자리를 비운다.
                 const expRing = isExp ? "box-shadow:0 0 0 3px #ff2424,2px 2px 4px rgba(0,0,0,.35);margin-bottom:3px;" : "";
-                const block = `<div data-metro-line="${lineName}" title="${lineName} · ${name}${isExp ? " · 급행 정차" : ""}" style="${expRing}background:${c};min-width:${STA_FONT * STA_MIN_CHARS}px;text-align:center;padding:2px ${STA_PAD_X}px;border:2px solid #fff;border-radius:6px;font-size:${STA_FONT}px;line-height:${STA_FONT + 4}px;font-weight:bold;color:#fff;white-space:nowrap;${isExp ? "" : "box-shadow:2px 2px 4px rgba(0,0,0,.35);"}text-shadow:0 1px 2px rgba(0,0,0,.45);pointer-events:auto;cursor:default">${name}</div>`;
+                const block = `<div data-metro-line="${lineName}"${isExp ? ' title="급행 정차"' : ""} style="${expRing}background:${c};min-width:${STA_FONT * STA_MIN_CHARS}px;text-align:center;padding:2px ${STA_PAD_X}px;border:2px solid #fff;border-radius:6px;font-size:${STA_FONT}px;line-height:${STA_FONT + 4}px;font-weight:bold;color:#fff;white-space:nowrap;${isExp ? "" : "box-shadow:2px 2px 4px rgba(0,0,0,.35);"}text-shadow:0 1px 2px rgba(0,0,0,.45);pointer-events:auto;cursor:default">${name}</div>`;
                 // 이 역이 그 노선의 종점이면 **그 블록 오른쪽에** 노선명 배지를 붙인다(2026-09-22 사용자 요청 — 마커 아래가 아니라 옆)
                 if (!isEnd) return block;
                 // ⚠ 배지는 **흐름에서 빼서**(position:absolute) 붙인다. 인라인으로 두면 그 줄만 넓어지고,
@@ -13009,13 +13041,68 @@ const originalBase64 = event.target.result;
             if (!blocks) return;   // 역명 표기 OFF + 종점 아님 → 마커 없음
             stationMarkers.push(new naver.maps.Marker({
               position: new naver.maps.LatLng(e.lat, e.lng), map: window.map, clickable: false, zIndex: 4,
-              icon: { content: `<div title="${name} (${e.lines.join(", ")})" style="transform:translate(-50%,-50%);display:inline-flex;flex-direction:column;align-items:center;gap:1px;pointer-events:auto">${blocks}</div>`, anchor: new naver.maps.Point(0, 0) },
+              icon: { content: `<div data-mtn="${name}" data-mtl="${e.lines.join(", ")}" data-mtc="${e.colors.join(",")}" data-mtla="${e.lat}" data-mtlo="${e.lng}" style="transform:translate(-50%,-50%);display:inline-flex;flex-direction:column;align-items:center;gap:1px;pointer-events:auto">${blocks}</div>`, anchor: new naver.maps.Point(0, 0) },
             }));
           }));
           window.__metroLinesReady = selected.size > 0;
           updateBtn();
           applyMode();
         }
+        // ── 역 소요시간 말풍선 (2026-11-11 사용자) ────────────────────────────
+        // 역 이름표에 마우스를 올리면(모바일은 누르면) 강남·여의도·시청까지 걸리는 시간. 미리 계산한 metroTime.json(평일 08시 출발,
+        // 네이버 대중교통 최적경로) 을 처음 올릴 때 한 번 받아 쓴다 — 실시간 조회 없음. 만드는 법 _tools/_build_metro_time.py.
+        // 같은 이름 역이 여러 곳(양평 등)이라 이름 아래 좌표 목록에서 가장 가까운 것을 고른다.
+        let mtData = null, mtLoading = null, mtTip = null, mtX = 0, mtY = 0, mtCur = null;
+        const mtFmt = (m, tr) => m < 0 ? "-" : m === 0 ? "바로 앞" : (m >= 60 ? Math.floor(m / 60) + "시간 " + (m % 60 ? m % 60 + "분" : "") : m + "분") + (tr > 0 ? " <span style=\"color:#6b7280\">(환승 " + tr + ")</span>" : "");
+        function mtPos() {
+          if (!mtTip || mtTip.style.display === "none") return;
+          let x = mtX + 14, y = mtY + 14;
+          if (x + mtTip.offsetWidth > innerWidth - 6) x = Math.max(6, mtX - mtTip.offsetWidth - 14);
+          if (y + mtTip.offsetHeight > innerHeight - 6) y = Math.max(6, mtY - mtTip.offsetHeight - 14);
+          mtTip.style.left = x + "px"; mtTip.style.top = y + "px";
+        }
+        function mtHide() { mtCur = null; if (mtTip) mtTip.style.display = "none"; }
+        async function mtShow(el) {
+          mtCur = el;
+          if (!mtData) {
+            if (!mtLoading) mtLoading = fetch("metroTime.json?v=2").then((r) => r.json()).catch(() => ({ s: {}, dest: [] }));
+            mtData = await mtLoading;
+            if (mtCur !== el) return;
+          }
+          const name = el.getAttribute("data-mtn"), arr = mtData.s && mtData.s[name];
+          if (!arr || !arr.length) return;
+          const la = Number(el.getAttribute("data-mtla")), lo = Number(el.getAttribute("data-mtlo"));
+          const r = arr.map((a) => [Math.hypot((a[0] - la) * 111000, (a[1] - lo) * 88000), a]).sort((p, q) => p[0] - q[0])[0][1];
+          if (!mtTip) {
+            mtTip = document.createElement("div");
+            mtTip.style.cssText = "position:fixed;z-index:10070;width:236px;background:#fff;border-radius:12px;overflow:hidden;font:12px/1.4 'Malgun Gothic',sans-serif;color:#111;box-shadow:0 6px 22px rgba(15,23,42,.28),0 0 0 1px rgba(15,23,42,.08);pointer-events:none;display:none";
+            document.body.appendChild(mtTip);
+          }
+          // 디자인(2026-11-11 사용자 "너무 밋밋"): 머리띠(역 이름 + 노선 배지) · 목적지별 큰 숫자 + 길이 막대 · 바닥 안내.
+          // 시간 색: 30분 이하 초록 · 50분 이하 주황 · 그 이상 빨강. 막대 길이는 90분을 가득 찬 것으로.
+          const lines = (el.getAttribute("data-mtl") || "").split(", "), cols = (el.getAttribute("data-mtc") || "").split(",");
+          const chips = lines.map((ln, i) => "<span style=\"display:inline-block;background:" + (cols[i] || "#64748b") + ";color:#fff;font-size:10px;font-weight:700;line-height:1;padding:3px 6px;border-radius:9px;margin:0 3px 3px 0\">" + ln + "</span>").join("");
+          const rows = mtData.dest.map((d, i) => {
+            const m = r[2 + i * 2], tr = r[3 + i * 2];
+            const c = m < 0 ? "#94a3b8" : m <= 30 ? "#16a34a" : m <= 50 ? "#d97706" : "#dc2626";
+            const big = m < 0 ? "-" : m === 0 ? "바로 앞" : m >= 60 ? Math.floor(m / 60) + "<small style=\"font-size:11px;font-weight:600\">시간</small> " + (m % 60 ? m % 60 + "<small style=\"font-size:11px;font-weight:600\">분</small>" : "") : m + "<small style=\"font-size:11px;font-weight:600\">분</small>";
+            const pill = m <= 0 ? "" : tr > 0 ? "<span style=\"background:#eef2ff;color:#4f46e5;font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;margin-left:6px\">환승 " + tr + "</span>"
+              : "";
+            const w = m <= 0 ? 4 : Math.max(6, Math.min(100, Math.round(m / 90 * 100)));
+            return "<div style=\"padding:6px 14px 2px\"><div style=\"display:flex;align-items:baseline\"><span style=\"width:44px;color:#475569;font-weight:700\">" + d + "</span>"
+              + "<span style=\"font-size:18px;font-weight:800;color:" + c + ";letter-spacing:-.5px\">" + big + "</span>" + pill + "</div>"
+              + "<div style=\"height:4px;border-radius:2px;background:#eef1f5;margin:4px 0 2px 44px\"><div style=\"height:4px;border-radius:2px;width:" + w + "%;background:" + c + "\"></div></div></div>";
+          }).join("");
+          mtTip.innerHTML = "<div style=\"padding:10px 14px 6px;background:linear-gradient(180deg,#f8fafc,#fff);border-bottom:1px solid #eef1f5\">"
+            + "<div style=\"font-size:15px;font-weight:800;color:#0f172a;margin-bottom:5px\">" + name + (name.endsWith("역") ? "" : "역") + "</div><div>" + chips + "</div></div>"
+            + "<div style=\"padding:4px 0 6px\">" + rows + "</div>"
+            + "<div style=\"padding:6px 14px 8px;background:#f8fafc;color:#94a3b8;font-size:10.5px;border-top:1px solid #eef1f5\">평일 오전 8시 출발 · 지하철+도보 최적경로</div>";
+          mtTip.style.display = "block"; mtPos();
+        }
+        document.addEventListener("mouseover", (e) => { const el = e.target.closest && e.target.closest("#map [data-mtn]"); if (el) { mtX = e.clientX; mtY = e.clientY; mtShow(el); } });
+        document.addEventListener("mouseout", (e) => { const el = e.target.closest && e.target.closest("#map [data-mtn]"); if (el && !(e.relatedTarget && el.contains(e.relatedTarget))) mtHide(); });
+        document.addEventListener("pointermove", (e) => { mtX = e.clientX; mtY = e.clientY; mtPos(); }, true);
+        document.addEventListener("pointerdown", (e) => { mtX = e.clientX; mtY = e.clientY; if (!(e.target.closest && e.target.closest("#map [data-mtn]"))) mtHide(); }, true);
         // 지도 표시 모드는 노선 선택과 무관하게 적용(2026-09-22 사용자 요청: 노선 없이 '배경+지하철선만' 도 동작)
         function applyMode() {
           window.__metroLinesOn = mapMode !== "normal";
@@ -13125,7 +13212,7 @@ const originalBase64 = event.target.result;
           let r = btn.getBoundingClientRect();
           if (!r.width) {
             // 2026-10-01: 이 단추가 [레이어] 패널의 '교통' 구획으로 옮겨져 기준도 [레이어] 단추가 먼저다
-            const anchor = document.getElementById("tbLayersBtn") || document.getElementById("tbToolsBtn");
+            const anchor = document.querySelector('#msCard [data-ms="metro"]') || document.getElementById("tbLayersBtn") || document.getElementById("tbToolsBtn");
             if (anchor) r = anchor.getBoundingClientRect();
           }
           /* 세로는 **되는 데까지 길게** (2026-10-01 사용자 요청: "스크롤 없이 최대한 길게").
@@ -13136,15 +13223,31 @@ const originalBase64 = event.target.result;
                ③ 내용이 화면 전체보다 크면 위끝 4px 에서 멈춘다 — 그때만 스크롤이 난다.
              ⚠ 재기 전에 max-height 를 풀어야 실제 내용 높이가 나온다. */
           const GAP = 4, BOTTOM = 12, TOP_MIN = 4;
+          // 2026-11-11 사용자: 카드 [지하철] 을 누르면 단추 뒤의 7호선 줄이 눌려 7호선만 켜졌다 → 창을 단추 **오른쪽 옆**에 둬 단추 위를 덮지 않게 하고,
+          //   열린 직후 0.5초는 창이 클릭을 받지 않게 한다(뒤따르는 click 이 창 줄에 닿는 것 방지).
+          const cardB = document.querySelector('#msCard [data-ms="metro"]');
+          const cr = cardB && cardB.offsetParent ? cardB.getBoundingClientRect() : null;
           panel.style.maxHeight = "none";
           const need = panel.scrollHeight;
-          const want = Math.round(r.bottom + GAP);
+          const want = cr ? Math.round(cr.top) : Math.round(r.bottom + GAP);
+          if (!panel.__shownAt || Date.now() - panel.__shownAt > 800) {
+            panel.__shownAt = Date.now();
+            panel.style.pointerEvents = "none";
+            setTimeout(() => { if (panel) panel.style.pointerEvents = ""; }, 800);
+          }
           const room = window.innerHeight - BOTTOM - want;
           const top = need > room
             ? Math.max(TOP_MIN, Math.round(window.innerHeight - BOTTOM - need))
             : want;
           panel.style.top = top + "px";
           panel.style.maxHeight = Math.round(window.innerHeight - BOTTOM - top) + "px";
+          if (cr) {
+            // 좁은 화면(폰)에서는 창이 오른쪽으로 밀리다 단추 위를 덮었다 → 단추 오른쪽에 고정하고 폭을 남는 만큼으로 줄인다
+            const left = Math.min(cr.right + 40, Math.max(cr.right + 6, window.innerWidth - 200));
+            const mw = Math.max(120, window.innerWidth - left - 6);
+            panel.style.maxWidth = mw + "px"; panel.style.minWidth = Math.min(190, mw) + "px"; panel.style.overflowX = "auto";
+            panel.style.left = Math.round(left) + "px";
+          } else
           panel.style.left = Math.max(4, Math.min(r.left, window.innerWidth - panel.offsetWidth - 8)) + "px";
         }
         function hide() { if (panel) panel.style.display = "none"; }
@@ -13161,7 +13264,9 @@ const originalBase64 = event.target.result;
           // 2026-09-22 사용자 요청: 표시 중이면 파란 배경, 표시 안 하면 흰 배경
           const on = selected.size > 0;
           const el = document.getElementById("metroLinesBtn") || btn;   // 툴바가 재생성돼도 현재 요소에 적용
-          el.textContent = on ? `🚆 지하철 노선 (${selected.size})` : "🚆 지하철 노선";
+          try { window.__msSyncCard?.(); } catch (e) {}   // 측정 카드의 [지하철] 켜짐 표시
+          gearSync();
+          return;   // 옛 [지하철 노선] 단추(레이어)는 없앴다 — 아래는 그 단추 꾸밈이라 더는 필요 없다
           /* ⚠ 꺼졌을 때는 인라인을 **지운다** — `.tb-item` 규칙(연한 #e2e8f0 테두리·#334155 글자)을
              그대로 쓰게. 예전에는 여기서 `#bbbbbb`·`#333333` 을 박아 둬서 도구 목록에서
              이것만 테두리가 진하고 글자가 검었다 (2026-09-30 사용자 지적).
@@ -13179,13 +13284,13 @@ const originalBase64 = event.target.result;
           }
         }
         btn.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
-        document.addEventListener("click", (e) => { if (panel && panel.style.display !== "none" && !panel.contains(e.target) && e.target !== btn) hide(); });
+        document.addEventListener("click", (e) => { if (panel && panel.style.display !== "none" && !panel.contains(e.target) && e.target !== btn && !(e.target.closest && e.target.closest('#msCard [data-ms="metro"],#metroGear'))) hide(); });
         // 지도 위를 누르면 네이버 지도가 click 을 document 까지 올려보내지 않아 위로는 안 닫혔다(2026-10-04 사용자 지적)
         // → 캡처 단계 pointerdown 으로 창 바깥 누름을 먼저 받는다. 여는 단추는 제외(그 click 이 토글한다).
         document.addEventListener("pointerdown", (e) => {
           if (!panel || panel.style.display === "none" || panel.contains(e.target)) return;
           const cur = document.getElementById("metroLinesBtn") || btn;
-          if (cur.contains(e.target)) return;
+          if (cur.contains(e.target) || (e.target.closest && e.target.closest('#msCard [data-ms="metro"],#metroGear'))) return;
           hide();
         }, true);
         window.addEventListener("resize", () => { if (panel && panel.style.display !== "none") place(); });
@@ -25805,8 +25910,10 @@ const originalBase64 = event.target.result;
           gangnam: '<b class="ms-km">km</b>',
           // 단지비교 = 오른쪽 단지 비교 패널 켜기/끄기(2026-10-29 사용자 "강남 km 아래에 단지비교, 기능 메뉴에서는 제거")
           school: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 9.5 12 5l9.5 4.5L12 14z"/><path d="M6.5 11.8V16c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5v-4.2"/><path d="M21.5 9.5V15"/></svg>',
+          supply: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5h17"/><path d="M5.5 20.5V9.5h6v11M11.5 20.5V5h7v15.5"/><path d="M8.5 13h0M8.5 16.5h0M15 9h0M15 12.5h0M15 16h0"/></svg>',
           top10: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5h17"/><path d="M5 20.5v-6h4.2v6M9.8 20.5V8.5H14v12M14.6 20.5v-8.5h4.2v8.5"/></svg>',
           commute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h13M13.5 4.5 17 8l-3.5 3.5"/><path d="M20 16H7M10.5 12.5 7 16l3.5 3.5"/></svg>',
+          metro: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="3.5" width="12" height="13" rx="3"/><path d="M6 11h12"/><circle cx="9.5" cy="13.8" r=".6"/><circle cx="14.5" cy="13.8" r=".6"/><path d="m8.5 20 2-3.5M15.5 20l-2-3.5"/></svg>',
           hakwon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h11a2 2 0 0 1 2 2V19H7a2 2 0 0 1-2-2z"/><path d="M5 17a2 2 0 0 1 2-2h11"/><path d="M9 8.5h5"/></svg>',
           sanggwon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5 5.5 4.5h13L20 9.5"/><path d="M4 9.5c0 1.4 1.1 2.3 2.7 2.3 1.4 0 2.6-.9 2.6-2.3 0 1.4 1.1 2.3 2.7 2.3s2.7-.9 2.7-2.3c0 1.4 1.2 2.3 2.6 2.3 1.6 0 2.7-.9 2.7-2.3"/><path d="M5.5 12v7.5h13V12M10 19.5v-4h4v4"/></svg>',
           compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 20.5h17"/><path d="M4.5 16l5-5.5 4 3 6-7"/><path d="M4.5 18.5l5-3 4 1.5 6-4" opacity=".55"/></svg>',
@@ -25821,7 +25928,7 @@ const originalBase64 = event.target.result;
             card.id = "msCard";
             card.setAttribute("role", "toolbar");
             card.setAttribute("aria-label", "지도 측정");
-            [["ruler", "거리", "두 점 사이 직선거리"], ["radius", "반경", "중심과 반경으로 원 그리기"], ["gangnam", "강남", "강남역까지 거리 비교(지점 1·2·3) 켜기/끄기"], ["compare", "단지비교", "단지 비교 패널 켜기/끄기 — 지도 마커를 끌어 넣기"], ["commute", "생활이동", "수도권 생활이동(commute) 화면 켜기/끄기"], ["school", "학군", "학군 장표(schoolPage) 화면 켜기/끄기"], ["sanggwon", "상권", "상권 밀집 구역(상가정보 기준) 켜기/끄기"], ["hakwon", "학원가", "학원가 밀집 구역(입시·교과·외국어 학원 기준) 켜기/끄기"], ["top10", "TOP10", "기간별 TOP10 지도(top10) 화면 켜기/끄기"], ["clear", "지우기", "측정 모두 지우기"]].forEach(([k, t, tip]) => {
+            [["ruler", "거리", "두 점 사이 직선거리"], ["radius", "반경", "중심과 반경으로 원 그리기"], ["gangnam", "강남", "강남역까지 거리 비교(지점 1·2·3) 켜기/끄기"], ["compare", "단지비교", "단지 비교 패널 켜기/끄기 — 지도 마커를 끌어 넣기"], ["commute", "생활이동", "수도권 생활이동(commute) 화면 켜기/끄기"], ["metro", "지하철", "지하철 노선 고르기 — 역에 마우스를 올리면 강남·여의도·시청 소요시간"], ["school", "학군", "학군 장표(schoolPage) 화면 켜기/끄기"], ["sanggwon", "상권", "상권 밀집 구역(상가정보 기준) 켜기/끄기"], ["hakwon", "학원가", "학원가 밀집 구역(입시·교과·외국어 학원 기준) 켜기/끄기"], ["supply", "공급", "홍급지도(입주 공급 물량 지도) 화면 켜기/끄기"], ["top10", "TOP10", "기간별 TOP10 지도(top10) 화면 켜기/끄기"], ["clear", "지우기", "측정 모두 지우기"]].forEach(([k, t, tip]) => {
               const b = document.createElement("button");
               b.type = "button";
               b.dataset.ms = k;
@@ -25848,8 +25955,10 @@ const originalBase64 = event.target.result;
                 if (!window.__cmpIsOpen?.() && window.__gnOn) window.__gnToggle?.();
                 return window.__cmpToggle?.(); // 단지 비교 패널(__cmpInit)
               }
+              if (k === "metro") return window.__metroToggle?.(); // 지하철 노선 창(옛 레이어 [교통] 에서 옮김, 2026-11-11)
               if (k === "school") return window.__schoolToggle?.(); // 학군 장표(schoolPage.html iframe)
               if (k === "sanggwon" || k === "hakwon") return window.__sgToggle?.(k); // 상권·학원가 밀집 폴리곤(sanggwon/*.json)
+              if (k === "supply") return window.__supplyToggle?.(); // 홍급지도(supply.html iframe, 학군과 같은 방식)
               if (k === "commute") return window.__commuteToggle?.(); // 수도권 생활이동(commute/ iframe, 학군과 같은 방식)
               if (k === "top10") return window.__top10Toggle?.(); // 기간별 TOP10 지도(top10.html iframe, 학군과 같은 방식)
               if (S.mode === k) return stop(); // 켜진 도구를 다시 누르면 취소
@@ -25870,7 +25979,9 @@ const originalBase64 = event.target.result;
             else if (k === "compare") b.classList.toggle("on", !!window.__cmpIsOpen?.());
             else if (k === "school") b.classList.toggle("on", !!window.__schoolIsOpen?.());
             else if (k === "top10") b.classList.toggle("on", !!window.__top10IsOpen?.());
+            else if (k === "supply") b.classList.toggle("on", !!window.__supplyIsOpen?.());
             else if (k === "commute") b.classList.toggle("on", !!window.__commuteIsOpen?.());
+            else if (k === "metro") b.classList.toggle("on", !!window.__metroIsOn?.());
             else if (k === "sanggwon" || k === "hakwon") b.classList.toggle("on", !!window.__sgIsOn?.(k));
             else b.classList.toggle("on", S.mode === k);
           });
@@ -30201,8 +30312,8 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             addEventListener("resize", schoolPlace);
             addEventListener("scroll", schoolPlace, { passive: true });
           }
-          if (!SC.loaded) { SC.frame.src = "schoolPage.html"; SC.loaded = true; }
-          window.__top10Close?.(); window.__commuteClose?.();   // 학군·TOP10·생활이동은 한 번에 하나만
+          if (!SC.loaded) { SC.frame.src = "schoolPage.html?v=20261111"; SC.loaded = true; }
+          window.__top10Close?.(); window.__commuteClose?.(); window.__supplyClose?.();   // 학군·TOP10·생활이동·공급은 한 번에 하나만
           SC.open = true; SC.el.classList.add("on"); schoolPlace(); window.__msSyncCard?.();
         };
         window.__schoolClose = function () { SC.open = false; SC.el?.classList.remove("on"); window.__msSyncCard?.(); };
@@ -30229,12 +30340,39 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             T10.el = el; T10.frame = fr;
           }
           if (!T10.loaded) { T10.frame.src = "top10.html"; T10.loaded = true; }
-          window.__schoolClose?.(); window.__commuteClose?.();   // 학군·TOP10·생활이동은 한 번에 하나만
+          window.__schoolClose?.(); window.__commuteClose?.(); window.__supplyClose?.();   // 학군·TOP10·생활이동·공급은 한 번에 하나만
           T10.open = true; T10.el.classList.add("on"); window.__msSyncCard?.();
         };
         window.__top10Close = function () { T10.open = false; T10.el?.classList.remove("on"); window.__msSyncCard?.(); };
         window.__top10IsOpen = () => T10.open;
         window.__top10Toggle = () => (T10.open ? window.__top10Close() : window.__top10Open());
+
+        // 홍급지도(supply.html) — TOP10 과 같은 방식(지도 영역 전체를 덮는 iframe, 처음 열 때만 불러옴). 2026-11-11 사용자: 학원가 아래 [공급] 단추.
+        const SP = { el: null, open: false, loaded: false };
+        window.__supplyOpen = function () {
+          if (!SP.el) {
+            const st = document.createElement("style");
+            st.textContent = "#supplyDock{position:fixed;left:0;right:0;top:0;bottom:0;z-index:1000003;display:none;flex-direction:column;background:#fff}#supplyDock.on{display:flex}" +
+              "#supplyDock .cd-head{display:flex;align-items:center;gap:8px;padding:3px 10px;border-bottom:1px solid #e7dccb;flex:none;font-size:13px;background:#fffdf8}" +
+              "#supplyDock .cd-title{font-weight:800;color:#2b2622;margin-right:auto}" +
+              "#supplyDock .cd-btn{border:1px solid #cbbda5;background:#fff;color:#2b2622;border-radius:6px;padding:3px 9px;font-size:12px;cursor:pointer;margin:0}" +
+              "#supplyDock iframe{flex:1 1 auto;min-height:0;width:100%;border:0}";
+            document.head.appendChild(st);
+            const el = document.createElement("div"); el.id = "supplyDock";
+            el.innerHTML = '<div class="cd-head"><span class="cd-title">🏗 홍급지도</span><button type="button" class="cd-btn cd-new">새 탭</button><button type="button" class="cd-btn cd-x">닫기</button></div>';
+            const fr = document.createElement("iframe"); fr.title = "홍급지도"; el.appendChild(fr);
+            document.body.appendChild(el);
+            el.querySelector(".cd-x").onclick = () => window.__supplyClose();
+            el.querySelector(".cd-new").onclick = () => window.open("supply.html", "_blank");
+            SP.el = el; SP.frame = fr;
+          }
+          if (!SP.loaded) { SP.frame.src = "supply.html"; SP.loaded = true; }
+          window.__schoolClose?.(); window.__top10Close?.(); window.__commuteClose?.();
+          SP.open = true; SP.el.classList.add("on"); window.__msSyncCard?.();
+        };
+        window.__supplyClose = function () { SP.open = false; SP.el?.classList.remove("on"); window.__msSyncCard?.(); };
+        window.__supplyIsOpen = () => SP.open;
+        window.__supplyToggle = () => (SP.open ? window.__supplyClose() : window.__supplyOpen());
 
         // 수도권 생활이동(commute/index.html) — TOP10 과 같은 방식(지도 영역 전체를 덮는 iframe, 처음 열 때만 불러옴).
         const CM = { el: null, open: false, loaded: false };
@@ -30256,7 +30394,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             CM.el = el; CM.frame = fr;
           }
           if (!CM.loaded) { CM.frame.src = "commute/index.html"; CM.loaded = true; }
-          window.__schoolClose?.(); window.__top10Close?.();
+          window.__schoolClose?.(); window.__top10Close?.(); window.__supplyClose?.();
           CM.open = true; CM.el.classList.add("on"); window.__msSyncCard?.();
         };
         window.__commuteClose = function () { CM.open = false; CM.el?.classList.remove("on"); window.__msSyncCard?.(); };
@@ -30295,7 +30433,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         function sgTipHide() { sgTipOn = false; if (sgTipEl) sgTipEl.style.display = "none"; }
         window.addEventListener("pointermove", (e) => { sgMx = e.clientX; sgMy = e.clientY; if (sgTipOn) sgTipPlace(); }, true);
         window.addEventListener("pointerdown", (e) => { sgMx = e.clientX; sgMy = e.clientY; sgTipHide(); }, true);
-        let sgIw = null, sgT = 0, sgLis = null, sgHidden = false;   // sgHidden: 설정창 접힘(상권/학원가 단추를 누르면 다시 펼침)
+        let sgIw = null, sgT = 0, sgLis = null, sgOpen = null;   // sgOpen: 설정창이 열려 있는 레이어 키(없으면 닫힘). 켜면 그 레이어 창이 열리고, 단추 옆 ⚙ 로 열고 닫는다
         function sgClear(L) {
           L.polys.forEach((o) => o.setMap(null));
           L.marks.forEach((o) => o.setMap(null));
@@ -30308,17 +30446,18 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           const z = m.getZoom(), lv = z >= SG_ZOOM_FINE ? "f" : "c";
           const D = L.d[lv];
           if (!D) return;
+          const RED = L.d.f ? L.d.f.red : D.red;   // 빨강 기준은 줌과 상관없이 세밀판 값 하나(2026-11-11: 줌에 따라 색이 바뀌지 않게)
           // 범례: 현재 단계의 빨강/초록 진한색 기준 점포 수
           const lg = document.querySelector('#sgPanel [data-k="' + key + '"] .sgLg');
           if (lg) {
             const sw = (c) => '<i style="display:inline-block;width:11px;height:11px;border-radius:2px;background:' + c + ';border:1px solid #111;vertical-align:-1px;margin-right:3px"></i>';
-            lg.innerHTML = sw(L.lo) + '&lt;' + D.red.toLocaleString() + ' &nbsp;' + sw(L.hi) + '≥' + D.red.toLocaleString();
+            lg.innerHTML = sw(L.lo) + '&lt;' + RED.toLocaleString() + ' &nbsp;' + sw(L.hi) + '≥' + RED.toLocaleString();
           }
           const b = m.getBounds(), sw = b.getSW(), ne = b.getNE();
           const showAll = z >= 13, showLbl = z >= 11;
           let k = 0;
           for (const p of D.p) {
-            const big = p[0] >= D.red;
+            const big = p[0] >= RED;
             if (z < 10 && !big) continue;
             if (p[0] < L.min) break;                             // 내림차순이라 이후는 모두 미만
             if (k > 900) break;                                 // p 는 점포 수 내림차순
@@ -30353,7 +30492,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           const L = SG[key];
           if (L.d.f && L.d.c) return true;
           try {
-            const [f, c] = await Promise.all([fetch("sanggwon/" + key + ".json?v=3"), fetch("sanggwon/" + key + "_c.json?v=3")]);
+            const [f, c] = await Promise.all([fetch("sanggwon/" + key + ".json?v=6"), fetch("sanggwon/" + key + "_c.json?v=6")]);
             if (!f.ok || !c.ok) throw new Error(f.status + "/" + c.status);
             L.d.f = await f.json(); L.d.c = await c.json();
             return true;
@@ -30374,12 +30513,6 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           if (!el) {
             el = document.createElement("div"); el.id = "sgPanel";
             el.style.cssText = "position:fixed;left:12px;bottom:90px;z-index:10060;background:#fff;border:1px solid #cbd5e1;border-radius:8px;padding:6px 10px;box-shadow:0 2px 8px rgba(0,0,0,.2);font:12px/1.4 'Malgun Gothic',sans-serif;color:#111;display:none";
-            // 접기/펼치기 단추(접으면 이 단추만 남는다). 상태는 이 브라우저에 기억.
-            const hd = document.createElement("div"); hd.style.cssText = "display:flex;justify-content:flex-end";
-            const hb = document.createElement("button"); hb.type = "button"; hb.id = "sgHideBtn";
-            hb.style.cssText = "border:0;background:#eef2f7;border-radius:4px;padding:1px 7px;font:11px/1.5 'Malgun Gothic',sans-serif;color:#374151;cursor:pointer";
-            hb.addEventListener("click", () => { sgHidden = true; sgPanel(); });
-            hd.appendChild(hb); el.appendChild(hd);
             for (const key of Object.keys(SG)) {
               const row = document.createElement("div"); row.dataset.k = key; row.style.cssText = "display:none;margin:4px 0";
               row.innerHTML = '<div style="display:flex;align-items:center;gap:6px;white-space:nowrap"><b style="min-width:42px">' + SG[key].name + '</b>최소 <input type="number" min="0" step="10" inputmode="numeric" style="width:64px;padding:2px 4px;border:1px solid #cbd5e1;border-radius:4px;font:inherit"> 개</div>'
@@ -30395,29 +30528,28 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             document.body.appendChild(el);
           }
           let any = false;
-          el.querySelectorAll("[data-k]").forEach((r) => { const on = SG[r.dataset.k].on; r.style.display = on ? "block" : "none"; if (on) any = true; });
-          const hb = document.getElementById("sgHideBtn");
-          if (hb) hb.textContent = "접기 ▴";
-          el.style.display = any && !sgHidden ? "block" : "none";   // 접으면 통째로 숨김(단추도 없음)
-          sgPlace();
+          if (sgOpen && !SG[sgOpen].on) sgOpen = null;
+          el.querySelectorAll("[data-k]").forEach((r) => { const show = r.dataset.k === sgOpen; r.style.display = show ? "block" : "none"; if (show) any = true; });
+          el.style.display = any ? "block" : "none";   // 닫으면 통째로 숨김
+          sgPlace(); sgGearSync();
         }
         // 패널을 상권/학원가 단추 오른쪽 옆에 붙인다(단추를 가리지 않게). 단추를 못 찾으면 왼쪽 아래.
         function sgPlace() {
           const el = document.getElementById("sgPanel");
           if (!el || el.style.display === "none") return;
-          const bt = document.querySelector('[data-ms="hakwon"]') || document.querySelector('[data-ms="sanggwon"]');
+          const bt = document.querySelector('#msCard [data-ms="' + sgOpen + '"]');
           if (!bt) { el.style.left = "12px"; el.style.top = ""; el.style.bottom = "90px"; return; }
           const r = bt.getBoundingClientRect();
           el.style.bottom = "";
-          el.style.left = Math.round(r.right + 8) + "px";
+          el.style.left = Math.round(r.right + 36) + "px";   // 단추 옆 ⚙(24px) 를 가리지 않게
           const h = el.offsetHeight || 120;
           el.style.top = Math.max(8, Math.min(Math.round(r.bottom - h), window.innerHeight - h - 8)) + "px";
         }
         window.addEventListener("resize", sgPlace);
         function sgToggle(key) {
           const L = SG[key];
-          if (L.on) { L.on = false; sgClear(L); sgPanel(); window.__msSyncCard?.(); return; }   // 끌 때는 접힘 상태 유지
-          sgHidden = false;                                          // off → on 이 되는 순간 설정창을 다시 보인다
+          if (L.on) { L.on = false; sgClear(L); if (sgOpen === key) sgOpen = null; sgPanel(); window.__msSyncCard?.(); return; }
+          // 켜도 설정창은 열지 않는다 — 단추 옆 ⚙ 를 눌러야 열린다
           sgStyle(); L.on = true; sgPanel(); window.__msSyncCard?.();
           sgLoad(key).then(() => {
             if (!L.on) return;
@@ -30425,6 +30557,27 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             sgDraw(key);
           });
         }
+        // 켜진 레이어마다 카드 단추 오른쪽에 작은 설정(⚙) 단추 — 그 레이어 설정창을 열고 닫는다(지하철과 같은 방식). 카드가 overflow:hidden 이라 body 직속 fixed.
+        function sgGearSync() {
+          for (const key of Object.keys(SG)) {
+            let g = document.getElementById("sgGear_" + key);
+            const b = document.querySelector('#msCard [data-ms="' + key + '"]');
+            if (!b || !b.offsetParent || !SG[key].on) { if (g) g.style.display = "none"; continue; }
+            if (!g) {
+              g = document.createElement("button");
+              g.id = "sgGear_" + key; g.type = "button"; g.title = SG[key].name + " 설정"; g.textContent = "⚙";
+              g.style.cssText = "position:fixed;z-index:10001;width:24px;height:24px;padding:0;margin:0;border:1px solid rgba(0,0,0,.18);border-radius:50%;background:#fff;color:#374151;font-size:14px;line-height:22px;text-align:center;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25);transform:none";
+              ["pointerdown", "mousedown", "touchstart", "dblclick", "contextmenu"].forEach((ev) => g.addEventListener(ev, (e) => e.stopPropagation()));
+              g.addEventListener("click", (e) => { e.stopPropagation(); sgOpen = sgOpen === key ? null : key; sgPanel(); });
+              document.body.appendChild(g);
+            }
+            const r = b.getBoundingClientRect();
+            g.style.display = "block";
+            g.style.left = Math.round(r.right + 5) + "px";
+            g.style.top = Math.round(r.top + (r.height - 24) / 2) + "px";
+          }
+        }
+        setInterval(sgGearSync, 500);
         window.__sgIsOn = (key) => !!SG[key]?.on;
         window.__sgToggle = sgToggle;
 
