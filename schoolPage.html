@@ -122,6 +122,7 @@
     <select id="selSido"></select><span id="sggBox"><button id="selSgg" type="button" title="시군구 여러 개 고르기"></button><div id="sggPop"></div></span>
     상위 <input id="topN" type="number" min="1" step="5" value="" placeholder="전체" style="width:46px">곳
     <label class="nobg" title="체크하면 고른 시군구 바깥을 흰 막으로 지우기"><input type="checkbox" id="chkNoBg">배경지우기</label>
+    <label class="nobg" title="체크하면 학원가 밀집 구역(입시·교과·외국어·음악·미술·예체능·태권도·컴퓨터 학원)을 지도에 표시"><input type="checkbox" id="chkHakwon">학원가</label>
   </div>
 </div>
 <div id="map"></div>
@@ -597,6 +598,66 @@ async function loadAdm(R) {
 // 배경지우기(2026-11-05 사용자) — 체크 = 고른 시군구 바깥 흰 막(0.82), 해제 = 흰 막 없음(0). localStorage sd:nobg3
 $("chkNoBg").checked = NOBG;
 $("chkNoBg").onchange = e => { NOBG = e.target.checked; store.set("sd:nobg3", NOBG); if (MASK) MASK.setOptions({ fillOpacity: maskOp() }); };
+
+// 학원가(2026-11-11 사용자) — 체크 = 학원가 밀집 폴리곤(파랑)+"N개" 라벨. 데이터 sanggwon/hakwon.json(줌 14↑ 세밀)·hakwon_c.json(크게), 홍부 지도의 학원가와 같은 자료. localStorage sd:hakwon
+const HK = { on: !!store.get("sd:hakwon", false), d: null, polys: [], marks: [], lis: null, t: 0, tip: null, mx: 0, my: 0 };
+function hkTip(html) {
+  if (!HK.tip) { HK.tip = document.createElement("div"); HK.tip.style.cssText = "position:fixed;z-index:10070;background:#fff;border:1px solid #94a3b8;border-radius:6px;padding:7px 10px;font:12px/1.55 'Malgun Gothic',sans-serif;color:#111;max-width:300px;box-shadow:0 2px 8px rgba(0,0,0,.25);pointer-events:none;display:none"; document.body.appendChild(HK.tip); }
+  if (html == null) { HK.tip.style.display = "none"; return; }
+  HK.tip.innerHTML = html; HK.tip.style.display = "block"; hkTipPos();
+}
+function hkTipPos() {
+  const t = HK.tip; if (!t || t.style.display === "none") return;
+  let x = HK.mx + 14, y = HK.my + 14;
+  if (x + t.offsetWidth > innerWidth - 6) x = Math.max(6, HK.mx - t.offsetWidth - 14);
+  if (y + t.offsetHeight > innerHeight - 6) y = Math.max(6, HK.my - t.offsetHeight - 14);
+  t.style.left = x + "px"; t.style.top = y + "px";
+}
+addEventListener("pointermove", e => { HK.mx = e.clientX; HK.my = e.clientY; hkTipPos(); }, true);
+addEventListener("pointerdown", e => { HK.mx = e.clientX; HK.my = e.clientY; hkTip(null); }, true);   // 아무 곳이나 누르면 닫힘(폴리곤을 누르면 click 이 다시 연다)
+function hkClear() { HK.polys.forEach(o => o.setMap(null)); HK.marks.forEach(o => o.setMap(null)); HK.polys = []; HK.marks = []; hkTip(null); }
+function hkDraw() {
+  hkClear();
+  if (!HK.on || !HK.d) return;
+  const z = map.getZoom(), D = z >= 14 ? HK.d.f : HK.d.c, b = map.getBounds(), big = z < 10;
+  let k = 0;
+  for (const p of D.p) {
+    if (k > 900) break;
+    const ring = p[4], lat = p[2], lng = p[1];
+    if (!b.hasLatLng(new naver.maps.LatLng(lat, lng))) {   // 라벨이 화면 밖이면 윤곽 일부만 걸쳐도 보이도록 윤곽 점 하나라도 안이면 그린다
+      let hit = false;
+      for (let i = 0; i < ring.length; i += 2) if (b.hasLatLng(new naver.maps.LatLng(ring[i + 1], ring[i]))) { hit = true; break; }
+      if (!hit) continue;
+    }
+    if (big && p[0] < D.red) continue;
+    k++;
+    const hi = p[0] >= D.red, path = [];
+    for (let i = 0; i < ring.length; i += 2) path.push(new naver.maps.LatLng(ring[i + 1], ring[i]));
+    const poly = new naver.maps.Polygon({ map, paths: [path], clickable: true, zIndex: 2, strokeColor: hi ? "#1d4ed8" : "#2563eb", strokeWeight: 1, strokeOpacity: .9, fillColor: hi ? "#1d4ed8" : "#5aa9ff", fillOpacity: hi ? .5 : .38 });
+    const html = "<b>학원가 " + p[0].toLocaleString() + "개</b>" + (p[5] ? '<br><span style="color:#6b7280">대분류</span> ' + p[5] : "") + (p[6] ? '<br><span style="color:#6b7280">소분류</span> ' + p[6] : "");
+    naver.maps.Event.addListener(poly, "mouseover", () => hkTip(html));
+    naver.maps.Event.addListener(poly, "mouseout", () => hkTip(null));
+    naver.maps.Event.addListener(poly, "click", () => hkTip(html));
+    HK.polys.push(poly);
+    if (z >= 12) HK.marks.push(new naver.maps.Marker({ map, position: new naver.maps.LatLng(lat, lng), clickable: false, zIndex: 3,
+      icon: { content: '<div style="transform:translate(-50%,-50%);background:#1e3a8a;color:#fff;font:700 11px/1 Malgun Gothic,sans-serif;padding:3px 6px;border-radius:3px;white-space:nowrap;pointer-events:none;box-shadow:0 1px 3px rgba(0,0,0,.4)">' + p[0].toLocaleString() + '개</div>', anchor: new naver.maps.Point(0, 0) } }));
+  }
+}
+async function hkSet(on) {
+  HK.on = on; store.set("sd:hakwon", on);
+  if (!on) { hkClear(); return; }
+  if (!HK.d) {
+    try {
+      const [f, c] = await Promise.all([fetch("sanggwon/hakwon.json?v=3"), fetch("sanggwon/hakwon_c.json?v=3")]);
+      HK.d = { f: await f.json(), c: await c.json() };
+    } catch (e) { alert("학원가 자료를 불러오지 못했습니다"); $("chkHakwon").checked = false; HK.on = false; store.set("sd:hakwon", false); return; }
+  }
+  if (!HK.lis) HK.lis = naver.maps.Event.addListener(map, "idle", () => { clearTimeout(HK.t); HK.t = setTimeout(hkDraw, 150); });
+  hkDraw();
+}
+$("chkHakwon").checked = HK.on;
+$("chkHakwon").onchange = e => hkSet(e.target.checked);
+if (HK.on) hkSet(true);
 
 // ── 초등학교 누르면 학년별 학생 수 ──
 let AVG = { A43: 1, AHL: 1, TOT: 0 }, TOP = [];
