@@ -189,12 +189,10 @@ fetch(METRO_DATA_URL)
 
     // 급행 전체 선택/해제 — 글자에 지도와 같은 빨간 테두리를 둘러 그 자체가 범례가 되게 한다
     const exAllLabel = document.createElement('label');
-    exAllLabel.style.cssText = 'display:flex;align-items:center;gap:6px;margin:4px 0;';
+    exAllLabel.style.cssText = 'display:block;margin:4px 0;';   // 위 '전체 선택 / 해제' 와 같은 배치(체크박스 + 공백 + 글자)로 맞춰 글자 시작선이 같다
     const exAll = document.createElement('input');
     exAll.type = 'checkbox';
-    const exAllText = document.createElement('span');
-    exAllText.textContent = '급행 전체 선택 / 해제';
-    exAllText.style.cssText = 'display:inline-block;margin:2px 3px;padding:0 5px;border:2px solid #fff;border-radius:6px;box-shadow:0 0 0 2px #ff2424;line-height:1.4;';
+    const exAllText = document.createTextNode(' 급행 전체 선택 / 해제');
     exAllLabel.appendChild(exAll);
     exAllLabel.appendChild(exAllText);
     container.appendChild(exAllLabel);
@@ -251,7 +249,7 @@ fetch(METRO_DATA_URL)
         if (hasExpress(line)) {
           const wrap = document.createElement('span');
           wrap.style.cssText = 'margin-left:auto;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#555;';
-          wrap.title = lineId + ' 급행 정차역 ' + line.express.length + '곳을 빨간 테두리로 표시';
+          wrap.title = lineId + ' 급행 정차역 ' + line.express.length + "곳을 역 이름 옆 '급행' 글자로 표시";
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = expressOn.has(lineId);
@@ -305,6 +303,8 @@ fetch(METRO_DATA_URL)
 // · 급행 정차역은 블록 밖에 빨간 테두리
 // · 같은 이름이라도 600m 넘게 떨어지면 다른 역으로 본다 (5호선 양평 ↔ 경의중앙선 양평 53km)
 function updateMarkers(data) {
+  hoverLine = null;   // 다시 그리면 노선 강조 상태를 초기화 (폴리라인 설정도 기본값으로)
+  Object.values(lineLayers).forEach((arr) => arr.forEach((p) => { try { p.setOptions({ strokeOpacity: 0.9, strokeWeight: 4, zIndex: 3 }); } catch (e) {} }));
   markers.forEach(({ marker }) => marker.setMap(null));
   markers.length = 0;
   if (!data) return;
@@ -340,6 +340,9 @@ function updateMarkers(data) {
       let e = arr.find((x) => dist(x, { lat: la, lng: ln }) <= SAME_M);
       if (!e) { e = { lat: la, lng: ln, colors: [], lines: [], endLines: [], expLines: [] }; arr.push(e); }
       if (!e.lines.includes(id)) { e.colors.push(col); e.lines.push(id); }
+      // 마커 위치: 선택된 노선이 1개면 그 노선 자기 역 좌표, 2개 이상이면 노선별 좌표의 중간 지점 (홍부테스트와 동일, 2026-11-12)
+      if (!e.pts) e.pts = new Map();
+      if (!e.pts.has(id)) e.pts.set(id, [la, ln]);
       if (ends.has(s.name) && !e.endLines.some((b) => b.name === id)) e.endLines.push({ name: id, color: col });
       if (exSet.has(s.name) && !e.expLines.includes(id)) e.expLines.push(id);
     }));
@@ -347,27 +350,31 @@ function updateMarkers(data) {
 
   staMap.forEach((arr, name) => arr.forEach((e) => {
     const mkBadge = (c, lineName, abs) =>
-      '<div title="' + lineName + ' 종점 (' + name + ')" style="' + (abs ? 'position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;' : '') +
+      '<div data-metro-line="' + lineName + '" title="' + lineName + ' 종점 (' + name + ')" style="' + (abs ? 'position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;' : '') +
       'background:' + c + ';color:#fff;border:2px solid #fff;border-radius:999px;padding:0 9px;font-size:' + (STA_FONT - 4) + 'px;line-height:' + (STA_FONT + 1) +
       'px;font-weight:bold;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.3);text-shadow:0 1px 2px rgba(0,0,0,.4)">' + __metroShortName(lineName) + '</div>';
     const blocks = e.colors.map((c, i) => {
       const lineName = e.lines[i];
       const isEnd = (e.endLines || []).some((b) => b.name === lineName);
       const isExp = expressOn.has(lineName) && (e.expLines || []).includes(lineName);
-      if (!showStations) return isEnd ? mkBadge(c, lineName, false) : '';
-      // 급행 테두리는 블록 밖으로 3px 번지므로 아래 여백을 줘야 다음 블록에 가려지지 않는다
-      const expRing = isExp ? 'box-shadow:0 0 0 3px #ff2424,2px 2px 4px rgba(0,0,0,.35);margin-bottom:3px;' : '';
-      const block = '<div title="' + lineName + ' · ' + name + (isExp ? ' · 급행 정차' : '') + '" style="' + expRing +
+      // 급행은 빨간 테두리 대신 이름표 바깥 오른쪽의 빨간 알약 '급행' (홍부테스트와 동일, 2026-11-12). 역명 표기를 꺼도 남는다
+      const expTag = isExp ? '<div style="display:inline-flex;align-items:center;justify-content:center;background:#ff2424;color:#fff;border:2px solid #fff;border-radius:999px;padding:0 8px;font-size:' + (STA_FONT - 3) +
+        'px;line-height:' + (STA_FONT + 1) + 'px;font-weight:800;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.3);text-shadow:none">급행</div>' : '';
+      if (!showStations) return (isEnd || isExp) ? '<div data-metro-line="' + lineName + '" style="display:flex;align-items:center;justify-content:center;gap:3px">' + (isEnd ? mkBadge(c, lineName, false) : '') + expTag + '</div>' : '';
+      const block = '<div data-metro-line="' + lineName + '" title="' + lineName + ' · ' + name + (isExp ? ' · 급행 정차' : '') + '" style="' +
         'background:' + c + ';min-width:' + (STA_FONT * STA_MIN_CHARS) + 'px;text-align:center;padding:2px ' + STA_PAD_X +
         'px;border:2px solid #fff;border-radius:6px;font-size:' + STA_FONT + 'px;line-height:' + (STA_FONT + 4) +
-        'px;font-weight:bold;color:#fff;white-space:nowrap;' + (isExp ? '' : 'box-shadow:2px 2px 4px rgba(0,0,0,.35);') +
+        'px;font-weight:bold;color:#fff;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.35);' +
         'text-shadow:0 1px 2px rgba(0,0,0,.45)">' + name + '</div>';
-      if (!isEnd) return block;
+      if (!isEnd && !isExp) return block;
+      if (isExp) return '<div style="position:relative;display:inline-flex;align-items:center">' + block + '<div style="position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;display:flex;align-items:center;gap:3px">' + (isEnd ? mkBadge(c, lineName, false) : '') + expTag + '</div></div>';
       return '<div style="position:relative;display:inline-flex;align-items:center">' + block + mkBadge(c, lineName, true) + '</div>';
     }).join('');
     if (!blocks) return;
+    const __pp = [...(e.pts ? e.pts.values() : [[e.lat, e.lng]])];
+    const mLat = __pp.reduce((s, q) => s + q[0], 0) / __pp.length, mLng = __pp.reduce((s, q) => s + q[1], 0) / __pp.length;
     const marker = new naver.maps.Marker({
-      position: new naver.maps.LatLng(e.lat, e.lng),
+      position: new naver.maps.LatLng(mLat, mLng),
       map: map,
       clickable: false,
       zIndex: 4,
@@ -376,9 +383,105 @@ function updateMarkers(data) {
         anchor: new naver.maps.Point(0, 0)
       }
     });
-    markers.push({ marker, name });
+    markers.push({ marker, name, pts: e.pts ? new Map(e.pts) : null, mean: [mLat, mLng] });
   }));
 }
+
+// ── 노선 클릭으로 그 노선만 보기 (홍부테스트와 동일, 2026-11-12) ──────────────────
+// 노선을 누르면 그 노선만 남고 다른 노선·역명은 사라진다. 그 노선을 한 번 더 눌러야 풀린다(다른 곳을 눌러도 안 풀림).
+// 그때 환승역 이름표는 그 노선 자기 역 좌표로 옮겨 간다. 역명 블록을 눌렀으면 그 블록의 노선을 그대로 쓴다.
+let hoverLine = null;
+const HOVER_PX = 12;
+function applyMarkerHover(id) {
+  document.querySelectorAll('#map [data-metro-line]').forEach((el) => {
+    const par = el.parentElement;
+    const row = par && par.style && par.style.position === 'relative' ? par : el;
+    row.style.display = (!id || el.getAttribute('data-metro-line') === id) ? '' : 'none';
+  });
+}
+function applyLineHover(id) {
+  if (id === hoverLine) return;
+  hoverLine = id;
+  try { applyMarkerHover(id); } catch (e) {}
+  try {
+    markers.forEach((m) => {
+      const p = id && m.pts && m.pts.get(id);
+      const t = p || m.mean;
+      if (t) m.marker.setPosition(new naver.maps.LatLng(t[0], t[1]));
+    });
+  } catch (e) {}
+  Object.entries(lineLayers).forEach(([lid, arr]) => {
+    const cb = lineCheckboxes[lid];
+    if (!cb || !cb.checked) return;
+    const isHit = !!id && lid === id;
+    const opt = id ? { strokeOpacity: isHit ? 1 : 0, strokeWeight: isHit ? 5 : 4, zIndex: isHit ? 5 : 3 }
+                   : { strokeOpacity: 0.9, strokeWeight: 4, zIndex: 3 };
+    arr.forEach((p) => { try { p.setOptions(opt); } catch (e) {} });
+  });
+}
+function segDistSq(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  if (dx === 0 && dy === 0) return (px - x1) ** 2 + (py - y1) ** 2;
+  let t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const qx = x1 + t * dx, qy = y1 + t * dy;
+  return (px - qx) ** 2 + (py - qy) ** 2;
+}
+function lineAtClientPoint(cx, cy, onlyId) {
+  const mapEl = document.getElementById('map');
+  if (!mapEl || !map || !lastLoadedData) return null;
+  const r = mapEl.getBoundingClientRect();
+  const ox = cx - r.left, oy = cy - r.top;
+  if (ox < 0 || oy < 0 || ox > r.width || oy > r.height) return null;
+  const b = map.getBounds();
+  if (!b) return null;
+  const sw = b.getSW(), ne = b.getNE();
+  const mY = (la) => Math.log(Math.tan(Math.PI / 4 + (la * Math.PI / 180) / 2));
+  const mSW = mY(sw.lat()), mNE = mY(ne.lat()), lngRange = ne.lng() - sw.lng();
+  const toX = (lng) => ((lng - sw.lng()) / lngRange) * r.width;
+  const toY = (lat) => ((mNE - mY(lat)) / (mNE - mSW)) * r.height;
+  let best = null, bestD = HOVER_PX * HOVER_PX;
+  for (const line of lastLoadedData.DATA) {
+    const id = lineIdOf(line);
+    const cb = lineCheckboxes[id];
+    if (!cb || !cb.checked) continue;
+    if (onlyId && id !== onlyId) continue;
+    for (const nd of (line.node || [])) {
+      for (const path of (nd.NewVia || [])) {
+        let px = null, py = null;
+        for (let i = 0; i < path.length; i++) {
+          const x = toX(path[i][1]), y = toY(path[i][0]);
+          if (px !== null) {
+            const d = segDistSq(ox, oy, px, py, x, y);
+            if (d < bestD) { bestD = d; best = id; }
+          }
+          px = x; py = y;
+        }
+      }
+    }
+  }
+  return best;
+}
+(() => {
+  let down = null;
+  document.addEventListener('mousedown', (ev) => { down = { x: ev.clientX, y: ev.clientY }; }, true);
+  document.addEventListener('click', (ev) => {
+    if (!lastLoadedData) return;
+    if (ev.ctrlKey || ev.metaKey || ev.shiftKey || ev.altKey) return;
+    if (down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 5) return;   // 드래그였다
+    const mapEl = document.getElementById('map');
+    if (!mapEl || !mapEl.contains(ev.target)) return;
+    const blockEl = ev.target && ev.target.closest && ev.target.closest('[data-metro-line]');
+    const hitId = blockEl ? blockEl.getAttribute('data-metro-line') : lineAtClientPoint(ev.clientX, ev.clientY, hoverLine || undefined);
+    if (hoverLine) {
+      if (hitId === hoverLine) { applyLineHover(null); ev.stopPropagation(); }
+      return;
+    }
+    if (!hitId) return;
+    applyLineHover(hitId);
+    ev.stopPropagation();
+  }, true);
+})();
 
 // 역명 표기 토글 시 마커 갱신
 stationCheckbox.addEventListener('change', () => {

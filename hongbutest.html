@@ -12878,6 +12878,14 @@ const originalBase64 = event.target.result;
           if (id === __hoverLine) return;
           __hoverLine = id;
           try { __applyMarkerHover(id); } catch (e) {}
+          // 2026-11-12 사용자: 여러 노선을 켜 둔 채 한 노선만 눌러 그것만 보일 때도 그 노선 자기 위치에 와야 한다(평균 위치로 남던 문제)
+          try {
+            stationMarkers.forEach((mk) => {
+              const p = id && mk.__pts && mk.__pts.get(id);
+              const t = p || mk.__mean;
+              if (t) mk.setPosition(new naver.maps.LatLng(t[0], t[1]));
+            });
+          } catch (e) {}
           Object.entries(layers).forEach(([lid, L]) => {
             const on = selected.has(lid);
             if (!on) return;
@@ -13022,6 +13030,10 @@ const originalBase64 = event.target.result;
               let e = arr.find((x) => __stDist(x, st) <= SAME_M);
               if (!e) { e = { lat: st.lat, lng: st.lng, colors: [], lines: [], endLines: [], expLines: [] }; arr.push(e); }
               if (!e.colors.includes(col)) { e.colors.push(col); e.lines.push(id); }   // 같은 노선이 구간마다 반복 등장하므로 중복 제거
+              // 2026-11-12 사용자: 환승역 마커는 지나는 노선들 역 좌표의 **중간 지점**에 둔다(첫 노선 좌표만 쓰면 고속터미널 9호선과 120m 어긋남)
+              // 묶음 판정(__stDist)은 첫 좌표(e.lat/lng) 기준을 그대로 두고, 그리기 좌표만 (e.mLat, e.mLng) 로 따로 평균낸다
+              if (!e.pts) e.pts = new Map();
+              if (!e.pts.has(id)) e.pts.set(id, [st.lat, st.lng]);
               if (ends.has(st.name) && !e.endLines.some((b) => b.name === id)) e.endLines.push({ name: id, color: col });
               if (exSet.has(st.name) && !e.expLines.includes(id)) e.expLines.push(id);
             });
@@ -13036,17 +13048,23 @@ const originalBase64 = event.target.result;
               .map((c, i) => {
                 const lineName = e.lines[i];
                 const isEnd = (e.endLines || []).some((b) => b.name === lineName);
-                // 역명 표기를 꺼도 종점 배지는 남긴다(2026-09-22 사용자 요청) — 종점이 아닌 노선은 아무것도 그리지 않는다
-                if (!showStations) return isEnd ? mkBadge(c, lineName, false) : "";
-                // 급행 정차역은 블록 밖에 **빨간 테두리**를 하나 더 두른다(2026-09-22 사용자 지정 — 처음 노란색에서 변경).
-                // 노선색 배경과 흰 테두리는 그대로 두고 구분만 얹는다.
                 const isExp = expressOn.has(lineName) && (e.expLines || []).includes(lineName);
                 // ⚠ 테두리는 블록 **바깥**으로 3px 번져 나가는데 블록을 세로로 쌓으면 다음 블록이 그 위에 그려져
                 //   윗블록 테두리 아래쪽이 잘려 보인다(2026-09-22 사용자 보고, 이수 4호선). 아래 여백 3px 로 자리를 비운다.
-                const expRing = isExp ? "box-shadow:0 0 0 3px #ff2424,2px 2px 4px rgba(0,0,0,.35);margin-bottom:3px;" : "";
-                const block = `<div data-metro-line="${lineName}"${isExp ? ' title="급행 정차"' : ""} style="${expRing}background:${c};min-width:${STA_FONT * STA_MIN_CHARS}px;text-align:center;padding:2px ${STA_PAD_X}px;border:2px solid #fff;border-radius:6px;font-size:${STA_FONT}px;line-height:${STA_FONT + 4}px;font-weight:bold;color:#fff;white-space:nowrap;${isExp ? "" : "box-shadow:2px 2px 4px rgba(0,0,0,.35);"}text-shadow:0 1px 2px rgba(0,0,0,.45);pointer-events:auto;cursor:default">${name}</div>`;
+                // 2026-11-12 사용자 변경: 빨간 테두리 대신 역 이름 오른쪽에 작게 '급행' 글자를 붙인다(테두리 번짐·margin-bottom 불필요)
+                // (같은 날 재지시: 글자만이 아니라 빨간 원 안에 '급행')
+                // (3차: 옆으로 긴 빨간 알약 + 이름표 폭을 바꾸지 않도록 종점 배지처럼 **블록 밖 오른쪽에 흐름 밖으로** 둔다 — 급행 여부와 상관없이 역명 블록 길이가 같다)
+                const expTag = isExp ? `<div style="display:inline-flex;align-items:center;justify-content:center;background:#ff2424;color:#fff;border:2px solid #fff;border-radius:999px;padding:0 8px;font-size:${STA_FONT - 3}px;line-height:${STA_FONT + 1}px;font-weight:800;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.3);text-shadow:none;pointer-events:auto;cursor:default">급행</div>` : "";
+                // 역명 표기를 꺼도 종점 배지는 남긴다(2026-09-22 사용자 요청). 급행 알약도 역명 표기와 **분리**해 남긴다
+                // (2026-11-12 사용자: 역명을 끄면 급행도 같이 꺼지던 것 분리) — 종점 숫자 배지 → 급행 알약 순서, 둘 다 아니면 아무것도 그리지 않는다
+                if (!showStations) return (isEnd || isExp) ? `<div data-metro-line="${lineName}" style="display:flex;align-items:center;justify-content:center;gap:3px">${isEnd ? mkBadge(c, lineName, false) : ""}${expTag}</div>` : "";
+                const block = `<div data-metro-line="${lineName}"${isExp ? ' title="급행 정차"' : ""} style="background:${c};min-width:${STA_FONT * STA_MIN_CHARS}px;text-align:center;padding:2px ${STA_PAD_X}px;border:2px solid #fff;border-radius:6px;font-size:${STA_FONT}px;line-height:${STA_FONT + 4}px;font-weight:bold;color:#fff;white-space:nowrap;box-shadow:2px 2px 4px rgba(0,0,0,.35);text-shadow:0 1px 2px rgba(0,0,0,.45);pointer-events:auto;cursor:default">${name}</div>`;
                 // 이 역이 그 노선의 종점이면 **그 블록 오른쪽에** 노선명 배지를 붙인다(2026-09-22 사용자 요청 — 마커 아래가 아니라 옆)
-                if (!isEnd) return block;
+                if (!isEnd && !isExp) return block;
+                if (isExp) {
+                  // 종점 노선 숫자 배지 → 급행 알약 순서로 오른쪽에 나란히(2026-11-12 사용자: 급행이 제일 마지막) — 하나의 흐름 밖 묶음
+                  return `<div style="position:relative;display:inline-flex;align-items:center">${block}<div style="position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:3px;display:flex;align-items:center;gap:3px">${isEnd ? mkBadge(c, lineName, false) : ""}${expTag}</div></div>`;
+                }
                 // ⚠ 배지는 **흐름에서 빼서**(position:absolute) 붙인다. 인라인으로 두면 그 줄만 넓어지고,
                 //   바깥이 가운데 정렬이라 환승역에서 이름 블록 열이 배지 폭의 절반만큼 어긋난다
                 //   (2026-09-22 사용자 보고: 오금 3호선/5호선, 수서 GTX-A).
@@ -13054,12 +13072,18 @@ const originalBase64 = event.target.result;
               })
               .join("");
             if (!blocks) return;   // 역명 표기 OFF + 종점 아님 → 마커 없음
-            stationMarkers.push(new naver.maps.Marker({
-              position: new naver.maps.LatLng(e.lat, e.lng), map: window.map, clickable: false, zIndex: 4,
+            const __pp = [...(e.pts ? e.pts.values() : [[e.lat, e.lng]])];
+            const mLat = __pp.reduce((s, q) => s + q[0], 0) / __pp.length, mLng = __pp.reduce((s, q) => s + q[1], 0) / __pp.length;
+            const __mk = new naver.maps.Marker({
+              position: new naver.maps.LatLng(mLat, mLng), map: window.map, clickable: false, zIndex: 4,
               icon: { content: `<div data-mtn="${name}" data-mtl="${e.lines.join(", ")}" data-mtc="${e.colors.join(",")}" data-mtla="${e.lat}" data-mtlo="${e.lng}" style="transform:translate(-50%,-50%);display:inline-flex;flex-direction:column;align-items:center;gap:1px;pointer-events:auto">${blocks}</div>`, anchor: new naver.maps.Point(0, 0) },
-            }));
+            });
+            // 노선 하나만 눌러 보는 강조 상태에서는 그 노선 자기 역 좌표로 옮기기 위해 노선별 좌표와 평균 좌표를 달아 둔다
+            __mk.__pts = e.pts ? new Map(e.pts) : null; __mk.__mean = [mLat, mLng];
+            stationMarkers.push(__mk);
           }));
           window.__metroLinesReady = selected.size > 0;
+          try { __applyTileOp(); } catch (e) {}
           updateBtn();
           applyMode();
         }
@@ -13071,16 +13095,23 @@ const originalBase64 = event.target.result;
         const mtFmt = (m, tr) => m < 0 ? "-" : m === 0 ? "바로 앞" : (m >= 60 ? Math.floor(m / 60) + "시간 " + (m % 60 ? m % 60 + "분" : "") : m + "분") + (tr > 0 ? " <span style=\"color:#6b7280\">(환승 " + tr + ")</span>" : "");
         function mtPos() {
           if (!mtTip || mtTip.style.display === "none") return;
-          let x = mtX + 14, y = mtY + 14;
-          if (x + mtTip.offsetWidth > innerWidth - 6) x = Math.max(6, mtX - mtTip.offsetWidth - 14);
-          if (y + mtTip.offsetHeight > innerHeight - 6) y = Math.max(6, mtY - mtTip.offsetHeight - 14);
+          // 2026-11-12 사용자: 역 마커가 말풍선 한가운데에 오게 한다(화면 밖으로 나가면 안쪽으로 밀어 넣음)
+          // (정정: 마커를 가리지 않게 마커 오른쪽에 세로 가운데 맞춤, 오른쪽 자리가 없으면 왼쪽)
+          let cx = mtX, cy = mtY, rx = mtX + 6, lx = mtX - 6;
+          if (mtCur && mtCur.isConnected) { const b = mtCur.getBoundingClientRect(); if (b.width || b.height) { cy = b.top + b.height / 2; rx = b.right + 10; lx = b.left - 10; } }
+          const w = mtTip.offsetWidth, h = mtTip.offsetHeight;
+          let x = rx;
+          if (x + w > innerWidth - 6) x = lx - w;
+          let y = cy - h / 2;
+          x = Math.max(6, Math.min(x, innerWidth - w - 6));
+          y = Math.max(6, Math.min(y, innerHeight - h - 6));
           mtTip.style.left = x + "px"; mtTip.style.top = y + "px";
         }
         function mtHide() { mtCur = null; if (mtTip) mtTip.style.display = "none"; }
         async function mtShow(el) {
           mtCur = el;
           if (!mtData) {
-            if (!mtLoading) mtLoading = fetch("metroTime.json?v=2").then((r) => r.json()).catch(() => ({ s: {}, dest: [] }));
+            if (!mtLoading) mtLoading = fetch("metroTime.json?v=6").then((r) => r.json()).catch(() => ({ s: {}, dest: [] }));
             mtData = await mtLoading;
             if (mtCur !== el) return;
           }
@@ -13090,29 +13121,61 @@ const originalBase64 = event.target.result;
           const r = arr.map((a) => [Math.hypot((a[0] - la) * 111000, (a[1] - lo) * 88000), a]).sort((p, q) => p[0] - q[0])[0][1];
           if (!mtTip) {
             mtTip = document.createElement("div");
-            mtTip.style.cssText = "position:fixed;z-index:10070;width:236px;background:#fff;border-radius:12px;overflow:hidden;font:12px/1.4 'Malgun Gothic',sans-serif;color:#111;box-shadow:0 6px 22px rgba(15,23,42,.28),0 0 0 1px rgba(15,23,42,.08);pointer-events:none;display:none";
+            mtTip.style.cssText = "position:fixed;z-index:10070;width:404px;background:#fff;border-radius:12px;overflow:hidden;font:12px/1.4 'Malgun Gothic',sans-serif;color:#111;box-shadow:0 6px 22px rgba(15,23,42,.28),0 0 0 1px rgba(15,23,42,.08);pointer-events:none;display:none";
             document.body.appendChild(mtTip);
           }
           // 디자인(2026-11-11 사용자 "너무 밋밋"): 머리띠(역 이름 + 노선 배지) · 목적지별 큰 숫자 + 길이 막대 · 바닥 안내.
-          // 시간 색: 30분 이하 초록 · 50분 이하 주황 · 그 이상 빨강. 막대 길이는 90분을 가득 찬 것으로.
+          // 시간 색: 30분 이하 초록 · 60분 이하 주황 · 그 이상 빨강. 막대 길이는 90분을 가득 찬 것으로.
           const lines = (el.getAttribute("data-mtl") || "").split(", "), cols = (el.getAttribute("data-mtc") || "").split(",");
           const chips = lines.map((ln, i) => "<span style=\"display:inline-block;background:" + (cols[i] || "#64748b") + ";color:#fff;font-size:10px;font-weight:700;line-height:1;padding:3px 6px;border-radius:9px;margin:0 3px 3px 0\">" + ln + "</span>").join("");
-          const rows = mtData.dest.map((d, i) => {
-            const m = r[2 + i * 2], tr = r[3 + i * 2];
-            const c = m < 0 ? "#94a3b8" : m <= 30 ? "#16a34a" : m <= 50 ? "#d97706" : "#dc2626";
+          let rows = mtData.dest.map((d, i) => {
+            const m = r[2 + i * 2], tr = r[3 + i * 2], rt = r[2 + mtData.dest.length * 2 + i] || "";
+            const c = m < 0 ? "#94a3b8" : m <= 30 ? "#16a34a" : m <= 60 ? "#d97706" : "#dc2626";
             const big = m < 0 ? "-" : m === 0 ? "바로 앞" : m >= 60 ? Math.floor(m / 60) + "<small style=\"font-size:11px;font-weight:600\">시간</small> " + (m % 60 ? m % 60 + "<small style=\"font-size:11px;font-weight:600\">분</small>" : "") : m + "<small style=\"font-size:11px;font-weight:600\">분</small>";
             const pill = m <= 0 ? "" : tr > 0 ? "<span style=\"background:#eef2ff;color:#4f46e5;font-size:10px;font-weight:700;padding:2px 6px;border-radius:8px;margin-left:6px\">환승 " + tr + "</span>"
               : "";
             const w = m <= 0 ? 4 : Math.max(6, Math.min(100, Math.round(m / 90 * 100)));
-            return "<div style=\"padding:6px 14px 2px\"><div style=\"display:flex;align-items:baseline\"><span style=\"width:44px;color:#475569;font-weight:700\">" + d + "</span>"
-              + "<span style=\"font-size:18px;font-weight:800;color:" + c + ";letter-spacing:-.5px\">" + big + "</span>" + pill + "</div>"
-              + "<div style=\"height:4px;border-radius:2px;background:#eef1f5;margin:4px 0 2px 44px\"><div style=\"height:4px;border-radius:2px;width:" + w + "%;background:" + c + "\"></div></div></div>";
-          }).join("");
+            // 탄 지하철만(도보 제외): [4호선(이촌역)] → [1호선(서울역)] 노선 색 칩
+            // 출발역 자신의 노선(머리띠에 이미 있음)을 첫 칩에서 빼되, 급행(#f5383d)은 보여준다. 남는 칩이 없으면 칩 영역도 없앤다.
+            const rsg = rt ? rt.split(">").filter((sg, si, ar) => { const q = sg.split("@"); return !(si === 0 && ar.length > 1 && lines.includes(q[0]) && (q[2] || "").toLowerCase() !== "#f5383d"); }) : [];
+            const via = rsg.length ? "<div style=\"margin:7px 0 0;line-height:1.1\">" + rsg.map((sg, si, ar) => { const q = sg.split("@");
+            // 네이버가 급행에 붙이는 빨강(#f5383d)은 노선 고유색으로 바꾸고 이름에 '급행' 표시
+            if ((q[2] || "").toLowerCase() === "#f5383d") { q[2] = ({ "1호선": "#263c96", "9호선": "#d1a62c", "경의중앙선": "#7cc4a5", "수인분당선": "#EBA900" })[q[0]] || "#64748b"; q[0] += " 급행"; }
+            return "<div style=\"display:flex;align-items:center;justify-content:center;margin-bottom:5px\"><span class=\"mtchip\" style=\"box-sizing:border-box;width:148px;flex:none;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.3px;background:" + (q[2] || "#64748b") + ";color:#fff;font-size:11.5px;line-height:1.3;font-weight:700;padding:5px 8px;border-radius:12px;text-shadow:0 0 2px rgba(0,0,0,.35)\">" + q[0] + (q[1] && !(si === 0 && q[0].indexOf(" 급행") < 0 && q[1] === name.replace(/역$/, "")) ? "(" + q[1] + "역)" : "") + "</span>" + "</div>"; }).join("") + "</div>" : "";
+            // 표(table) 한 행의 두 칸: [이름 칸, 내용 칸] — 두 열 묶음이 같은 행 높이·같은 칸 폭으로 딱 맞는다
+            return ["<span style=\"color:#475569;font-weight:700\">" + d + "</span>",
+              "<div style=\"white-space:nowrap;display:grid;grid-template-columns:84px 50px;justify-content:center;align-items:baseline\"><span style=\"font-size:18px;font-weight:800;color:" + c + ";letter-spacing:-.5px;text-align:center\">" + big + "</span><span style=\"text-align:left\">" + pill + "</span></div>" + via];
+          });
+          // 2열(2026-11-12 사용자): 1열 강남·시청·여의도·광화문 / 2열 나머지(가산·판교·마곡·DMC). 목적지 이름으로 찾아 순서를 정한다.
+          const c1 = ["강남", "시청", "여의도", "광화문"].map((n) => mtData.dest.indexOf(n)).filter((k) => k >= 0);
+          const c2 = mtData.dest.map((_, k) => k).filter((k) => !c1.includes(k));
+          const tdN = "padding:12px 4px 12px;vertical-align:baseline;text-align:center;", tdC = "padding:12px 14px 12px;vertical-align:baseline;text-align:center;";
+          let tb = "<table style=\"border-collapse:collapse;table-layout:fixed;width:100%;border-spacing:0\"><colgroup><col style=\"width:56px\"><col class=\"mtcc\" style=\"width:156px\"><col style=\"width:56px\"><col class=\"mtcc\" style=\"width:156px\"></colgroup>";
+          for (let k = 0; k < Math.max(c1.length, c2.length); k++) {
+            const a = rows[c1[k]], b = rows[c2[k]];
+            tb += "<tr>" + (a ? "<td style=\"" + tdN + "\">" + a[0] + "</td><td style=\"" + tdC + "\">" + a[1] + "</td>" : "<td></td><td></td>")
+              + (b ? "<td style=\"" + tdN + "border-left:1px solid #eef1f5\">" + b[0] + "</td><td style=\"" + tdC + "\">" + b[1] + "</td>" : "<td style=\"border-left:1px solid #eef1f5\"></td><td></td>") + "</tr>";
+          }
+          rows = tb + "</table>";
           mtTip.innerHTML = "<div style=\"padding:10px 14px 6px;background:linear-gradient(180deg,#f8fafc,#fff);border-bottom:1px solid #eef1f5\">"
             + "<div style=\"font-size:15px;font-weight:800;color:#0f172a;margin-bottom:5px\">" + name + (name.endsWith("역") ? "" : "역") + "</div><div>" + chips + "</div></div>"
             + "<div style=\"padding:4px 0 6px\">" + rows + "</div>"
             + "<div style=\"padding:6px 14px 8px;background:#f8fafc;color:#94a3b8;font-size:10.5px;border-top:1px solid #eef1f5\">평일 오전 8시 출발 · 지하철+도보 최적경로</div>";
-          mtTip.style.display = "block"; mtPos();
+          mtTip.style.visibility = "hidden"; mtTip.style.width = "1200px"; mtTip.style.display = "block";
+          // 칩 폭은 이번 말풍선에서 가장 긴 글자에 맞춰 전부 같게(2026-11-12 사용자: 길이는 일치, 여백은 최소)
+          const cps = [...mtTip.querySelectorAll(".mtchip")];
+          let cw = 148;
+          if (cps.length) {
+            cps.forEach((x) => { x.style.width = "auto"; x.style.flex = "none"; x.style.overflow = "visible"; });
+            cw = Math.ceil(Math.max(...cps.map((x) => x.getBoundingClientRect().width))) + 16;
+            cps.forEach((x) => { x.style.width = cw + "px"; x.style.overflow = "hidden"; });
+          }
+          cw = Math.max(cw, 138);   // 시간 칸(84px)+환승 알약 칸(50px)이 들어갈 최소 폭
+          cps.forEach((x) => { x.style.width = cw + "px"; });
+          const cc = cw + 28;
+          mtTip.querySelectorAll(".mtcc").forEach((x) => { x.style.width = cc + "px"; });
+          mtTip.style.width = (56 * 2 + cc * 2) + "px"; mtTip.style.visibility = "";
+          mtPos();
         }
         document.addEventListener("mouseover", (e) => { const el = e.target.closest && e.target.closest("#map [data-mtn]"); if (el) { mtX = e.clientX; mtY = e.clientY; mtShow(el); } });
         document.addEventListener("mouseout", (e) => { const el = e.target.closest && e.target.closest("#map [data-mtn]"); if (el && !(e.relatedTarget && el.contains(e.relatedTarget))) mtHide(); });
@@ -13145,6 +13208,17 @@ const originalBase64 = event.target.result;
           label.appendChild(document.createTextNode(text));
           return { label, input };
         }
+        // 지도 투명도: 바탕 타일 이미지(/styles/basic/…, 버스정류장 타일 mt=bs 제외)에만 CSS 로 건다 — 새 타일에도 자동 적용.
+        // 지하철 노선이 하나도 선택되지 않았으면 해제해 지도를 원래대로 둔다(redraw 때마다 호출).
+        const TILE_OP_KEY = "hongbuMetroTileOpacity";
+        function __tileOpGet() { try { const v = parseInt(localStorage.getItem(TILE_OP_KEY), 10); return v >= 0 && v <= 100 ? v : 100; } catch (e) { return 100; } }
+        function __applyTileOp() {
+          let st = document.getElementById("metroTileOpacityCss");
+          const v = __tileOpGet();
+          if (selected.size === 0 || v >= 100) { if (st) st.remove(); return; }
+          if (!st) { st = document.createElement("style"); st.id = "metroTileOpacityCss"; document.head.appendChild(st); }
+          st.textContent = `#map img[src*="/styles/basic/"]:not([src*="mt=bs"]){opacity:${v / 100} !important}`;
+        }
         function buildPanel() {
           panel = document.createElement("div");
           panel.id = "metroLinesPanel";
@@ -13153,6 +13227,17 @@ const originalBase64 = event.target.result;
           head.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;font-weight:bold;";
           head.innerHTML = `<span>지하철 노선</span><button type="button" id="metroLinesClose" style="border:none;background:none;font-size:16px;cursor:pointer;line-height:1;padding:0 2px;">✕</button>`;
           panel.appendChild(head);
+          // 지도 투명도 슬라이더 (2026-11-12 사용자: 메트로홍 것을 가져옴) — 바탕 지도 타일만 흐리게 해 지하철 선·역명이 돋보이게 한다
+          const opWrap = document.createElement("div");
+          opWrap.style.cssText = "margin-bottom:6px;";
+          opWrap.innerHTML = `<div style="font-weight:bold;margin-bottom:3px;">지도 투명도</div>`;
+          const opIn = document.createElement("input");
+          opIn.type = "range"; opIn.min = 0; opIn.max = 100; opIn.value = __tileOpGet(); opIn.title = "지도 이미지 투명도";
+          opIn.style.cssText = "width:100%;margin:0;";
+          opIn.addEventListener("input", () => { try { localStorage.setItem(TILE_OP_KEY, String(opIn.value)); } catch (e) {} __applyTileOp(); });
+          ["pointerdown", "mousedown", "touchstart"].forEach((ev) => opIn.addEventListener(ev, (e2) => e2.stopPropagation()));
+          opWrap.appendChild(opIn);
+          panel.appendChild(opWrap);
           const all = mkCheck("전체 선택 / 해제", false, (v) => {
             data.DATA.forEach((l) => (v ? selected.add(lineIdOf(l)) : selected.delete(lineIdOf(l))));
             Object.entries(checks).forEach(([id, cb]) => (cb.checked = selected.has(id)));
@@ -13176,7 +13261,7 @@ const originalBase64 = event.target.result;
             if (!tn || tn.nodeType !== 3) return;
             const sp = document.createElement("span");
             sp.textContent = tn.textContent;
-            sp.style.cssText = "display:inline-block;margin:2px 3px;padding:0 5px;border:2px solid #fff;border-radius:6px;box-shadow:0 0 0 2px #ff2424;line-height:1.4;";
+            sp.style.cssText = "display:inline-block;margin:2px 0;line-height:1.4;";   // 2026-11-12: 빨간 링 범례 제거(지도도 '급행' 글자 표기로 변경)
             exAll.label.replaceChild(sp, tn);
           })();
           panel.appendChild(all.label);
@@ -13196,7 +13281,7 @@ const originalBase64 = event.target.result;
             if (hasExpress(line)) {
               const wrap = document.createElement("span");
               wrap.style.cssText = "margin-left:auto;display:inline-flex;align-items:center;gap:3px;font-size:11px;color:#555;";
-              wrap.title = `${id} 급행 정차역 ${line.express.length}곳을 빨간 테두리로 표시`;
+              wrap.title = `${id} 급행 정차역 ${line.express.length}곳을 역 이름 옆 '급행' 글자로 표시`;
               const cb = document.createElement("input");
               cb.type = "checkbox";
               cb.checked = expressOn.has(id);
