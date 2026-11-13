@@ -31,6 +31,19 @@ button:disabled { background:#999; cursor:wait; }
 .chip { padding:2px 8px; border:1px solid #d0d0d0; border-radius:12px; background:#fff; color:#333; font-weight:400; font-size:12px; }
 .chip.on { background:#333; color:#fff; border-color:#333; }
 #kbFindMsg { color:#555; }
+.dd { position:relative; display:inline-block; }
+.ddp { position:absolute; left:0; top:calc(100% + 4px); z-index:60; min-width:160px; max-height:320px; overflow:auto; background:#fff; border:1px solid #cbc5bb; border-radius:6px; box-shadow:0 4px 14px rgba(0,0,0,.18); padding:4px 0; }
+.ddp[hidden] { display:none; }
+.ddp label { display:flex; gap:6px; align-items:center; padding:3px 12px; white-space:nowrap; cursor:pointer; color:#333; }
+.ddp label:hover { background:#f6f4f0; }
+.ddp small { color:#8a847a; font-size:10.5px; }
+.ddp .gh { padding:4px 12px 2px; font-size:11px; font-weight:700; color:#8a847a; background:#faf9f7; }
+.pickbar { display:flex; flex-wrap:wrap; gap:6px 8px; align-items:center; margin-bottom:8px; padding:6px 8px; background:#fff; border:1px solid var(--line); border-radius:6px; font-size:12px; }
+.pickbar[hidden] { display:none; }
+.pickbar .pt { font-weight:700; color:#3d3a35; }
+.pickbar .pk { display:inline-flex; align-items:center; gap:4px; padding:2px 4px 2px 9px; border:1px solid #cbc5bb; border-radius:12px; background:#efede9; color:#3d3a35; }
+.pickbar .pk button { padding:0 6px; background:transparent; color:#8a847a; font-size:14px; line-height:1.2; border-radius:50%; }
+.pickbar .pk button:hover { background:#d9d4cb; color:#222; }
 /* [상세 숨기기]: 오른쪽 지역 상세 칸을 빼고 표를 전체 폭으로 */
 #kbGrid.nodet { grid-template-columns:minmax(0, 1fr); }
 #kbGrid.nodet .side { display:none; }
@@ -129,8 +142,15 @@ header .src a { color:#fff; font-weight:600; text-decoration:underline; text-und
     <label title="표 아래 최신·4주 평균·52주 누적·연속 주수 4줄"><input id="kbSums" type="checkbox" checked> 요약 줄</label>
     <label>지역 검색 <input id="kbFind" type="search" list="kbNames" placeholder="예: 분당구 (Enter=다음)" style="width:170px"></label>
     <datalist id="kbNames"></datalist><span id="kbFindMsg"></span>
+    <span class="dd"><button type="button" class="chip" id="ddSdBtn">시도 ▾</button><div class="ddp" id="ddSd" hidden></div></span>
+    <span class="dd"><button type="button" class="chip" id="ddSgBtn">시군구 ▾</button><div class="ddp" id="ddSg" hidden></div></span>
     <button id="kbDetToggle" class="chip" title="오른쪽 지역 상세 칸을 숨겨 표를 넓게 봅니다">상세 숨기기 ▸</button>
     <button id="kbXlsx" class="chip" hidden title="지금 보이는 표(지역 묶음·정렬·최근 N주)를 KB 엑셀과 같은 색 규칙으로 내려받습니다">⬇ 엑셀</button>
+  </div>
+  <!-- 선택한 시군구(있으면 그 지역만 표에 보인다) -->
+  <div class="pickbar" id="kbPickBar" hidden>
+    <span class="pt">선택한 시군구</span><span class="chips" id="kbPickChips"></span>
+    <button id="kbPickClear" class="chip" title="선택을 모두 지우고 전체를 봅니다">모두 삭제</button>
   </div>
   <div class="grid" id="kbGrid">
     <div class="card mxcard"><h2 id="mxTitle">지역별 주간 증감률</h2><div class="scroll"><table class="mx" id="mx"></table></div>
@@ -305,7 +325,12 @@ function renderKb() {
   sel.innerHTML = `<option value="${ALL}">전체 지역</option>` + KB.order.map(k => `<option value="${k}">${esc(KB.groups[k].name)}</option>`).join("");
   if (UI.kbGroup !== ALL && !KB.groups[UI.kbGroup]) UI.kbGroup = ALL;
   sel.value = UI.kbGroup; $("kbKind").value = UI.kbKind; $("kbWeeks").value = UI.kbWeeks;
-  const g = UI.kbGroup === ALL ? allGroup() : KB.groups[UI.kbGroup], kind = UI.kbKind, n = Math.max(4, Math.min(+UI.kbWeeks || KB_WEEKS_START, KB.dates.length));
+  // 시군구를 골랐으면 묶음과 상관없이 고른 지역 열만 보인다(없어진 코드는 걸러낸다)
+  const all = allGroup(), pickSet = new Set(UI.kbPick || []);
+  const picked = all.rows.filter(r => pickSet.has(r.code));
+  UI.kbPick = picked.map(r => r.code);
+  renderPicks(picked);
+  const g = picked.length ? {name:`선택 지역 ${picked.length}곳`, rows:picked} : UI.kbGroup === ALL ? all : KB.groups[UI.kbGroup], kind = UI.kbKind, n = Math.max(4, Math.min(+UI.kbWeeks || KB_WEEKS_START, KB.dates.length));
   // 이름 앞부분이 다른 행 이름의 접두면 묶음(예: 수원시 ⊃ 수원시 장안구)
   const names = g.rows.map(r => r.name);
   // 매매/전세(both)면 지역마다 [매매 | 전세] 두 칸. 정렬은 매매 기준.
@@ -597,6 +622,32 @@ function kbFind(next) {
   goToRegion(r.code);
   $("kbFindMsg").textContent = hits.length > 1 ? `${findState.i + 1}/${hits.length} — ${r.name} (Enter=다음)` : r.name;
 }
+// ── 시군구 다중 선택: 고른 지역만 표에 보인다. 개별 삭제(×)·모두 삭제 ──
+function renderPicks(picked) {
+  $("kbPickBar").hidden = !picked.length;
+  $("kbPickChips").innerHTML = picked.map(r => `<span class="pk">${esc(r.name)}<button data-code="${r.code}" title="${esc(r.name)} 빼기">×</button></span>`).join("");
+  $("kbGroup").disabled = !!picked.length;
+  renderDropdowns(picked);
+}
+function setPicks(codes) { UI.kbPick = codes; saveUI(); renderKb(); }
+// 시도·시군구 체크 목록(열려 있는 채로 다시 그려도 스크롤 위치를 지킨다).
+// 시도 칸 = 시도(전국·권역 포함) 열 자체를 고른다. 시군구 칸 = 시도를 체크했으면 그 시도의 시군구만, 아니면 전부(시도별 소제목).
+function renderDropdowns(picked) {
+  const rows = allGroup().rows, on = new Set(picked.map(r => r.code));
+  const sidos = rows.filter(r => !r.sd), sgs = rows.filter(r => r.sd);
+  const sdOn = new Set(sidos.filter(r => on.has(r.code)).map(r => r.name));
+  const sgShow = sdOn.size ? sgs.filter(r => sdOn.has(r.sd)) : sgs;
+  const chk = r => `<label><input type="checkbox" value="${r.code}"${on.has(r.code) ? " checked" : ""}>${esc(r.sg)}</label>`;
+  const fill = (id, html) => { const p = $(id), t = p.scrollTop; p.innerHTML = html; p.scrollTop = t; };
+  fill("ddSd", sidos.map(chk).join(""));
+  // 가나다순(같은 이름은 시도 순) — 이름이 겹치는 시군구(중구 등)를 구분하려고 시도를 옅게 덧붙인다
+  const byName = [...sgShow].sort((a, b) => a.sg.localeCompare(b.sg, "ko") || a.sd.localeCompare(b.sd, "ko"));
+  const html = byName.map(r => `<label><input type="checkbox" value="${r.code}"${on.has(r.code) ? " checked" : ""}>${esc(r.sg)} <small>${esc(r.sd)}</small></label>`).join("");
+  fill("ddSg", html ||`<div class="empty">시군구가 없습니다</div>`);
+  const n = sg => picked.filter(r => !!r.sd === sg).length;
+  $("ddSdBtn").textContent = `시도${n(false) ? ` (${n(false)})` : ""} ▾`;
+  $("ddSgBtn").textContent = `시군구${n(true) ? ` (${n(true)})` : ""} ▾`;
+}
 // 지역 선택 + 그 열로 이동(검색·상승 TOP 클릭 공용): 오른쪽 상세를 바꾸고, 고정 '주간' 열 오른쪽 끝에 그 지역 열을 딱 붙인다
 function goToRegion(code) {
   UI.kbSel = code; saveUI();
@@ -691,6 +742,21 @@ function renderKbDetail() {
   $("kbFind").onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); kbFind(true); } };
   // 목록에서 고르면(값이 지역명과 정확히 같아지면) 바로 이동
   $("kbFind").oninput = () => { if ([...$("kbNames").options].some(o => o.value === $("kbFind").value)) kbFind(false); };
+  // 시도·시군구 드롭다운: 단추로 열고 닫기(하나만 열림), 바깥을 누르면 닫기, 체크 = 그 지역 열 추가·해제
+  for (const id of ["ddSd", "ddSg"]) {
+    $(id + "Btn").onclick = e => { e.stopPropagation(); const p = $(id), open = p.hidden; $("ddSd").hidden = $("ddSg").hidden = true; p.hidden = !open; };
+    $(id).onclick = e => e.stopPropagation();
+    $(id).onchange = e => {
+      const c = e.target.value;
+      let cur = UI.kbPick || [];
+      // 시도 칸은 하나만: 다른 시도(전국·권역 포함)를 고르면 이전 것을 뺀다
+      if (id === "ddSd" && e.target.checked) { const sd = new Set(allGroup().rows.filter(r => !r.sd).map(r => r.code)); cur = cur.filter(x => !sd.has(x)); }
+      setPicks(e.target.checked ? [...cur.filter(x => x !== c), c] : cur.filter(x => x !== c));
+    };
+  }
+  document.addEventListener("click", () => { $("ddSd").hidden = $("ddSg").hidden = true; });
+  $("kbPickChips").onclick = e => { const b = e.target.closest("button[data-code]"); if (b) setPicks((UI.kbPick || []).filter(c => c !== b.dataset.code)); };
+  $("kbPickClear").onclick = () => setPicks([]);
   bindMxScroll();
   renderAll();   // 받기 전 "불러오는 중" 자리 표시
   refresh();
