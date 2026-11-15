@@ -10405,6 +10405,37 @@
       const SISE_METRO_SIDOS = ['부산시', '대구시', '광주시', '대전시', '울산시'];
       function __getTier(sigungu) { return SEOUL_TIER_MAP[sigungu] ?? 6; }
 
+      // 📈 시세 — 첫 클릭 때 그 단지의 시군구 한 묶음(/price_history_sgg, 큰 곳도 gzip 13KB)을 백그라운드로 받아 두고,
+      // 같은 시군구의 다른 단지는 서버 요청 없이 바로 그린다 (2026-11-15 사용자 "영통구 단지 하나를 누르면 영통구 전체를 미리 받아서 지연 없이").
+      const __sgByApt = new Map();      // 단지ID(문자열) → { data, ts }  (/price_history 와 같은 모양)
+      const __sgState = new Map();      // 시군구 코드 → 'loading' | 'done'(받은 시각) — 중복 요청 방지
+      const __SG_TTL = 30 * 60 * 1000;  // 서버 캐시 10분 + 하루 한 번 갱신 — 30분 지나면 다시 받는다
+      function __sgGet(apartmentId) {
+        const e = __sgByApt.get(String(apartmentId));
+        if (!e) return null;
+        if (Date.now() - e.ts > __SG_TTL) { __sgByApt.delete(String(apartmentId)); return null; }
+        return e.data;
+      }
+      function __sgPrefetch(code) {
+        if (!code) return;
+        const st = __sgState.get(code);
+        if (st === 'loading' || (typeof st === 'number' && Date.now() - st < __SG_TTL)) return;
+        __sgState.set(code, 'loading');
+        fetch(`${SISE_API_BASE}/price_history_sgg?code=${encodeURIComponent(code)}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((b) => {
+            if (!b || !b.complexes) { __sgState.delete(code); return; }
+            const ts = Date.now();
+            Object.keys(b.complexes).forEach((cid) => {
+              const c = b.complexes[cid];
+              __sgByApt.set(cid, { ts, data: { run_date: c.run_date, complex_name: c.complex_name, sido: c.sido,
+                sigungu: c.sigungu, rows: c.rows, count: c.rows.length } });
+            });
+            __sgState.set(code, ts);
+          })
+          .catch(() => { __sgState.delete(code); });
+      }
+
       async function showSisePrice(apartmentId) {
         const box = document.getElementById("sisePriceBox");
         if (!box) return;
@@ -10414,11 +10445,15 @@
           if (similarBox) similarBox.innerHTML = "";
           if (similarResultBox) similarResultBox.innerHTML = "";
         };
-        box.innerHTML = `<div style="padding:6px; color:#666; font-size:13px;">시세 조회 중…</div>`;
         __clearSimilarBoxes();
         try {
-          const res = await fetch(`${SISE_API_BASE}/price_history?complex_id=${encodeURIComponent(apartmentId)}`);
-          const data = await res.json();
+          let data = __sgGet(apartmentId); // 같은 시군구 묶음이 이미 와 있으면 요청 없이 바로
+          if (!data) {
+            box.innerHTML = `<div style="padding:6px; color:#666; font-size:13px;">시세 조회 중…</div>`;
+            const res = await fetch(`${SISE_API_BASE}/price_history?complex_id=${encodeURIComponent(apartmentId)}`);
+            data = await res.json();
+            if (data && data.sigungu_code) __sgPrefetch(data.sigungu_code); // 이 단지를 그린 뒤 시군구 전체를 백그라운드로
+          }
           if (!data || !data.count) {
             box.innerHTML = `<div style="padding:6px; color:#888; font-size:13px;">시세 데이터 없음</div>`;
             __scrollSiseIntoView();
