@@ -1,7 +1,7 @@
 /* hongbuRep.js — 대표 평형 말풍선 (공개용, git 미추적 시험판)
  * 2026-11-15 사용자 요청: 네이버식 말풍선처럼 단지마다 평형 하나만 표시 — 매매 호가(매)와 최근 실거래(실).
  *   전용 55~64 구간 / 79~85 구간 중 어느 구간의 '세대수 최다 평형'을 보일지 옵션으로 고른다. 색은 남색 한 가지.
- * 공개 기능: 시세보기 애드온과 무관하게 동작한다. 시세는 공개 경로 /pub/rep_price 에서 보이는 단지 몫만 모아 받는다.
+ * 공개 기능: 시세보기 애드온과 무관하게 동작한다. 시세는 사전 계산한 정적 파일 repPrice.json 한 개를 받아 쓴다.
  * 구성: hongbuRep.html(= hongbutest 사본) 맨 끝에서 이 파일을 불러온다. hongbutest.html·server/hongbuSise.js 는 손대지 않는다.
  * 동작: 마커 DOM(.apartment-marker-container)에 남색 클래스(hbrep-on)와 말풍선(.hbrep-bub)을 덧붙이고,
  *   CSS 로 연식·세대수 줄과 시세보기 가격표를 가린다. 대표 평형이 없는 단지(해당 구간 타입 없음)는 원래 마커 그대로 둔다.
@@ -28,9 +28,6 @@
     try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch (e) { /* 무시 */ }
   }
 
-  const BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-    ? 'http://localhost:7123' : 'https://sise-cloud.luciferhong.com';
-
   // ── 스타일 ───────────────────────────────────────────────────────────
   function injectStyles() {
     if (document.getElementById('hbRepStyle')) return;
@@ -53,66 +50,15 @@
     document.head.appendChild(st);
   }
 
-  // ── 대표 평형 고르기(타입정보만 쓴다 — 공개 데이터) ─────────────────
-  // 구간 안 전용면적(정수 내림)별 '평형 세대수'를 합쳐 최다 면적을 고른다.
-  // 같은 면적에 구조 다른 타입이 둘 이상이면 그중 세대수 큰 타입의 구조·방·욕실과 맞는 호가 행을 쓴다.
-  function pickType(aptId, bandKey) {
-    const band = BANDS[bandKey];
-    const detail = (typeof apartmentDetailData !== 'undefined' && apartmentDetailData) ? apartmentDetailData[aptId] : null;
-    const types = (detail && detail.타입정보) || [];
-    const groups = new Map();
-    types.forEach((t) => {
-      const fa = Math.floor(Number(t['전용면적']) || 0);
-      if (fa < band.lo || fa > band.hi) return;
-      const hh = Number(t['평형 세대수']) || 0;
-      const g = groups.get(fa) || { units: 0, top: null, topHh: -1 };
-      g.units += hh;
-      if (hh > g.topHh) { g.top = t; g.topHh = hh; }
-      groups.set(fa, g);
-    });
-    if (!groups.size) return null;
-    let bestFa = null, best = null;
-    groups.forEach((g, fa) => { if (!best || g.units > best.units) { best = g; bestFa = fa; } });
-    return { fa: bestFa, top: best.top || {} };
-  }
-
-  // ── 시세 받기: 보이는 단지 몫을 모아 한 번에(최대 100개), 15분 캐시 ──
-  const cache = new Map();      // id → { t, d } (d 는 서버 응답 또는 null=없음)
-  const inflight = new Set();
-  const want = new Set();
-  let cacheVer = 0, timer = 0, blockedUntil = 0;
-  const TTL = 15 * 60 * 1000;
-
-  function need(id) {
-    const c = cache.get(id);
-    if (c && Date.now() - c.t < (c.d ? TTL : 60 * 1000)) return;
-    if (inflight.has(id)) return;
-    want.add(id);
-    if (!timer) timer = setTimeout(flush, 200);
-  }
-  function flush() {
-    timer = 0;
-    if (Date.now() < blockedUntil) { if (want.size) timer = setTimeout(flush, 5000); return; }
-    const ids = Array.from(want).slice(0, 100);
-    ids.forEach((i) => { want.delete(i); inflight.add(i); });
-    if (!ids.length) return;
-    fetch(BASE + '/pub/rep_price?ids=' + ids.join(','))
-      .then((r) => {
-        if (r.status === 429) { blockedUntil = Date.now() + 60 * 1000; throw new Error('rate'); }
-        if (!r.ok) throw new Error('http ' + r.status);
-        return r.json();
-      })
-      .then((j) => {
-        const data = (j && j.data) || {};
-        ids.forEach((i) => cache.set(i, { t: Date.now(), d: data[i] || null }));
-      })
-      .catch(() => { ids.forEach((i) => cache.set(i, { t: Date.now(), d: null })); })
-      .then(() => {
-        ids.forEach((i) => inflight.delete(i));
-        cacheVer++;
-        if (want.size && !timer) timer = setTimeout(flush, 200);
-      });
-  }
+  // ── 사전 계산 시세: 루트 repPrice.json 한 파일(_tools/_build_rep_price.py 가 만든다) ──
+  // { 단지id: [소면적, 소호가, 소실거래, 대면적, 대호가, 대실거래] } — 면적 정수㎡, 가격 만원, 없으면 0.
+  // 대표 평형(구간 안 세대수 최다)은 만들 때 이미 골랐다. 시세 서버·터널을 거치지 않아 Pages 에서 바로 받는다.
+  let table = null, cacheVer = 0;
+  fetch('repPrice.json')
+    .then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+    .then((j) => { table = j; })
+    .catch(() => { table = {}; })
+    .then(() => { cacheVer++; });
 
   // 만원 → 억(소수 첫째 자리 버림, 시세보기와 같은 규칙). 정수면 소수점 없이.
   function fmtEok(v) {
@@ -120,27 +66,12 @@
     return (e % 1 === 0 ? e.toFixed(0) : e.toFixed(1)) + '억';
   }
 
-  // 단지 하나의 표시 값 — 시세가 아직 안 왔으면 pending.
   function repFor(aptId) {
-    const pt = pickType(aptId, state.band);
-    if (!pt) return null;
-    need(aptId);
-    const c = cache.get(aptId);
-    const out = { area: pt.fa, sale: 0, real: 0, ready: !!c };
-    const d = c && c.d;
-    if (d) {
-      const rows = (d.a && d.a[String(pt.fa)]) || [];
-      if (rows.length) {
-        const t = pt.top;
-        const row = rows.find((r) => String(r[0] || '').trim() === String(t['구조'] || '').trim()
-          && (Number(r[1]) || 0) === (Number(t['방 갯수']) || 0)
-          && (Number(r[2]) || 0) === (Number(t['화장실 갯수']) || 0)) || rows[0];
-        out.sale = Number(row[3]) || 0;
-      }
-      const rr = d.r && d.r[String(pt.fa)];
-      if (rr) out.real = Number(rr[0]) || 0;
-    }
-    return out;
+    if (!table) return null; // 아직 못 받았으면 원래 마커 그대로(받으면 다시 칠한다)
+    const r = table[aptId];
+    const o = state.band === 's' ? 0 : 3;
+    if (!r || !r[o]) return null; // 해당 구간 타입이 없는 단지는 원래 마커 그대로
+    return { area: r[o], sale: r[o + 1], real: r[o + 2], ready: true };
   }
 
   // ── 마커에 입히기 ────────────────────────────────────────────────────
