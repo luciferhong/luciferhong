@@ -54,11 +54,10 @@
   // { 단지id: [소면적, 소호가, 소실거래, 대면적, 대호가, 대실거래] } — 면적 정수㎡, 가격 만원, 없으면 0.
   // 대표 평형(구간 안 세대수 최다)은 만들 때 이미 골랐다. 시세 서버·터널을 거치지 않아 Pages 에서 바로 받는다.
   let table = null, cacheVer = 0;
-  fetch('repPrice.json')
-    .then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); })
+  (window.__repPriceP || fetch('repPrice.json').then((r) => { if (!r.ok) throw new Error('http ' + r.status); return r.json(); }))
     .then((j) => { table = j; })
     .catch(() => { table = {}; })
-    .then(() => { cacheVer++; });
+    .then(() => { cacheVer++; try { refreshAll(false); } catch (e) { /* 아직 지도 전이면 무시 */ } });
 
   // 만원 → 억(소수 첫째 자리 버림, 시세보기와 같은 규칙). 정수면 소수점 없이.
   function fmtEok(v) {
@@ -77,21 +76,42 @@
   // ── 마커에 입히기 ────────────────────────────────────────────────────
   function stamp() { return `${state.on}|${state.band}|${cacheVer}`; }
 
-  function paint(marker) {
-    const el = marker && marker.getIcon && marker.getIcon() && marker.getIcon().content;
+  function paintEl(el, id) {
     if (!el || !el.classList || !el.classList.contains('apartment-marker-container')) return;
     el.querySelectorAll(':scope > .hbrep-bub').forEach((n) => n.remove());
     el.classList.remove('hbrep-on');
     el.__hbRepStamp = stamp();
     if (!state.on) return;
-    const rep = repFor(String(marker.apartmentId));
+    const rep = repFor(String(id));
     if (!rep) return; // 해당 구간 타입이 없는 단지는 원래 마커 그대로
     const b = document.createElement('div');
     b.className = 'hbrep-bub';
-    b.innerHTML = `<div class="hbrep-a">${rep.area}㎡</div><div class="hbrep-p">매 <b>${rep.sale ? fmtEok(rep.sale) : (rep.ready ? '-' : '…')}</b></div>`
+    b.innerHTML = `<div class="hbrep-a">${rep.area}㎡</div><div class="hbrep-p">매 <b>${rep.sale ? fmtEok(rep.sale) : '-'}</b></div>`
       + (rep.real ? `<div class="hbrep-r">실 ${fmtEok(rep.real)}</div>` : '');
     el.appendChild(b);
     el.classList.add('hbrep-on');
+  }
+  function paint(marker) {
+    const el = marker && marker.getIcon && marker.getIcon() && marker.getIcon().content;
+    paintEl(el, marker && marker.apartmentId);
+  }
+
+  // 마커 DOM 이 지도에 붙는 순간 바로 칠한다(그리기 전에 끝나므로 가격이 뒤늦게 뜨지 않는다).
+  // 주기 훑기(600ms)는 메인 스레드가 바쁠 때 수 초씩 밀려서 보조로만 둔다.
+  function paintTree(node) {
+    if (!state.on || !table || node.nodeType !== 1) return;
+    if (node.classList.contains('apartment-marker-container')) {
+      if (node.__hbRepStamp !== stamp()) paintEl(node, node.dataset.aptId);
+    } else if (node.firstElementChild) {
+      node.querySelectorAll('.apartment-marker-container').forEach((el) => {
+        if (el.__hbRepStamp !== stamp()) paintEl(el, el.dataset.aptId);
+      });
+    }
+  }
+  function observeMarkers() {
+    new MutationObserver((list) => {
+      for (const m of list) m.addedNodes.forEach((n) => { try { paintTree(n); } catch (e) { /* 무시 */ } });
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   function refreshAll(force) {
@@ -131,6 +151,7 @@
   function start() {
     injectStyles();
     injectToolbar();
+    observeMarkers();
     const orig = window.createDefaultMarker;
     if (typeof orig === 'function') {
       window.createDefaultMarker = function () {
