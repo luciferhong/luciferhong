@@ -88,6 +88,7 @@ main{flex:1;display:flex;min-height:0}
   <span class="sep"></span>
   <button id="bFont" title="글자가 깨지면 한글 글꼴(.ttf) 직접 지정">글꼴 지정</button>
   <input id="fFont" type="file" accept=".ttf,.otf" hidden>
+  <button id="bJpg" disabled title="모든 쪽을 이미지(JPG)로 폴더에 저장">이미지 내보내기</button>
   <button id="bSave" class="pri" disabled>PDF 저장</button>
   <span id="status">PDF 파일을 열거나 끌어다 놓으세요</span>
 </header>
@@ -165,7 +166,7 @@ addEventListener('drop', async e => { $('#drop').style.display = 'none'; if(e.da
 function afterChange(){
   buildList();
   $('#empty').style.display = pages.length ? 'none' : 'block';
-  $('#bSave').disabled = !pages.length;
+  $('#bSave').disabled = !pages.length; $('#bJpg').disabled = !pages.length;
   renderMain();
   status(pages.length ? pages.length + '쪽' : 'PDF 파일을 열거나 끌어다 놓으세요');
 }
@@ -499,8 +500,8 @@ function hex(c){ const n = parseInt(c.slice(1), 16); return rgb(((n >> 16) & 255
 
 /* 가림 박스가 있는 쪽은 본문+주석을 한 장의 이미지로 구워 아래 글자를 완전히 없앤다 */
 function needFlat(pg){ return pg.annots.some(a => a.type === 'rect' || a.cover); }   // 가림 박스·결론 가림이 있으면 이미지로 구워 아래 내용을 지운다
-async function flattenPage(pg){
-  const {w, h} = dims(pg), S = 3;
+async function flattenPage(pg, S = 3, Q = .92){
+  const {w, h} = dims(pg);
   const c = document.createElement('canvas'); c.width = Math.round(w * S); c.height = Math.round(h * S);
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   if(pg.doc >= 0){
@@ -509,7 +510,7 @@ async function flattenPage(pg){
   }
   if(pg.annots.some(a => a.type === 'text')){ try{ await document.fonts.load('14px PdfKR'); }catch(e){} }
   for(const a of pg.annots){
-    if(a.type === 'rect'){ ctx.globalAlpha = opOf(a); ctx.fillStyle = a.color; ctx.fillRect(a.x * S, a.y * S, a.w * S, a.h * S); }
+    if(a.type === 'rect'){ ctx.globalAlpha = opOf(a); ctx.fillStyle = a.color; ctx.fillRect(a.x * S, a.y * S, a.w * S, a.h * S); ctx.globalAlpha = 1; }
     else if(a.type === 'hl'){ ctx.globalAlpha = opOf(a); ctx.fillStyle = a.color; ctx.fillRect(a.x * S, a.y * S, a.w * S, a.h * S); ctx.globalAlpha = 1; }
     else if(a.type === 'img'){
       const im = await new Promise(r => { const i = new Image(); i.onload = () => r(i); i.onerror = () => r(null); i.src = a.url; });
@@ -520,9 +521,48 @@ async function flattenPage(pg){
       a.text.split('\n').forEach((line, i) => ctx.fillText(line, a.x * S, (a.y + a.size * 1.0 + i * a.size * 1.2) * S));
     }
   }
-  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', .92));
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', Q));
   return new Uint8Array(await blob.arrayBuffer());
 }
+
+/* ---------- 이미지 내보내기: 모든 쪽(가림·입력 항목 포함)을 쪽마다 JPG 한 장으로, 고른 폴더에 만든다 ---------- */
+async function exportJpg(){
+  if(!pages.length) return;
+  const base = (docs[0] ? docs[0].name.replace(/\.pdf$/i, '') : 'document');
+  const pad = String(pages.length).length < 3 ? 3 : String(pages.length).length;
+  const nameOf = i => base + '_' + String(i + 1).padStart(pad, '0') + '.jpg';
+  let dir = null;
+  if(window.showDirectoryPicker){
+    try{ dir = await window.showDirectoryPicker({mode: 'readwrite'}); }
+    catch(e){ if(e && e.name === 'AbortError') return; dir = null; }
+  }
+  const btn = $('#bJpg'); btn.disabled = true;
+  try{
+    let zip = null;
+    if(!dir){
+      if(!window.JSZip) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'; s.onload = res; s.onerror = () => rej(new Error('JSZip 로드 실패')); document.head.appendChild(s); });
+      zip = new JSZip();
+    }
+    for(let i = 0; i < pages.length; i++){
+      status('이미지 만드는 중... ' + (i + 1) + ' / ' + pages.length);
+      const jpg = await flattenPage(pages[i], 2, .92);
+      if(dir){
+        const fh = await dir.getFileHandle(nameOf(i), {create: true});
+        const w = await fh.createWritable(); await w.write(jpg); await w.close();
+      }else zip.file(nameOf(i), jpg);
+    }
+    if(zip){
+      status('압축 중...');
+      const blob = await zip.generateAsync({type: 'blob'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = base + '_jpg.zip'; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      status('이미지 ' + pages.length + '장을 zip 으로 내려받았습니다(이 브라우저는 폴더 지정을 지원하지 않음)');
+    }else status('이미지 ' + pages.length + '장을 선택한 폴더에 저장했습니다 (' + base + '_001.jpg …)');
+  }catch(e){ alert('이미지 내보내기 실패: ' + e.message); status('이미지 내보내기 실패'); }
+  btn.disabled = !pages.length;
+}
+$('#bJpg').onclick = exportJpg;
 
 async function savePdf(){
   const btn = $('#bSave'); btn.disabled = true; status('저장 중...');
