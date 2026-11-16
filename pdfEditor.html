@@ -40,7 +40,12 @@ main{flex:1;display:flex;min-height:0}
 #area{flex:1;overflow:auto;padding:20px;text-align:center}
 #stage{position:relative;display:none;margin:0 auto;box-shadow:0 2px 14px rgba(0,0,0,.25);background:#fff;text-align:left}
 #cv{display:block}
-#ov{position:absolute;left:0;top:0;right:0;bottom:0;touch-action:none}
+#tl{position:absolute;left:0;top:0;right:0;bottom:0;overflow:hidden;line-height:1;text-align:initial}
+#tl span,#tl br{color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0% 0%}
+#tl ::selection{background:rgba(59,130,246,.35)}
+#ov{position:absolute;left:0;top:0;right:0;bottom:0;touch-action:none;pointer-events:none}
+#ov .ann{pointer-events:auto}
+#ov:not(.t-select){pointer-events:auto}   /* 선택 도구일 때만 빈 곳 클릭이 아래 글자 층으로 통과(글자 드래그 선택) */
 #ov.t-text{cursor:text}#ov.t-rect,#ov.t-hl,#ov.t-img{cursor:crosshair}
 .ann{position:absolute;user-select:none}
 .ann.text{font-family:'PdfKR','Malgun Gothic','Apple SD Gothic Neo',sans-serif;line-height:1.2;white-space:pre;min-width:1em;min-height:1.2em;cursor:move;outline:1px dashed transparent}
@@ -90,8 +95,8 @@ main{flex:1;display:flex;min-height:0}
 <main>
   <div id="side"><div id="pc" style="font-size:12px;color:var(--sub);margin-bottom:6px">0쪽</div><div id="list"></div></div>
   <div id="area">
-    <div id="empty"><b>PDF 편집기</b><br>왼쪽 쪽 목록에서 끌어 순서 변경 · ↺↻ 회전 · ⧉ 복제 · ✕ 삭제<br>위 도구로 글자 · 가림 박스 · 형광펜 · 이미지 넣기<br>여러 PDF를 열면 이어 붙고, 저장하면 한 파일로 합쳐집니다<br>모든 처리는 브라우저 안에서만 일어나며 파일은 어디로도 전송되지 않습니다</div>
-    <div id="stage"><canvas id="cv"></canvas><div id="ov"></div></div>
+    <div id="empty"><b>PDF 편집기</b><br>왼쪽 쪽 목록에서 끌어 순서 변경 · ↺↻ 회전 · ⧉ 복제 · ✕ 삭제<br>위 도구로 글자 · 가림 박스 · 형광펜 · 이미지 넣기<br>여러 PDF를 열면 이어 붙고, 저장하면 한 파일로 합쳐집니다<br>모든 처리는 브라우저 안에서만 일어나며 파일은 어디로도 전송되지 않습니다<br>저장·내보내기 없이 닫아도 이 브라우저에 임시 보관되어, 다시 열면 복구할 수 있습니다</div>
+    <div id="stage"><canvas id="cv"></canvas><div id="tl"></div><div id="ov"></div></div>
   </div>
 </main>
 <dialog id="dlgExport">
@@ -113,6 +118,7 @@ main{flex:1;display:flex;min-height:0}
     <div class="row end"><button type="button" id="cvCancel">취소</button><button type="button" id="cvOk" class="pri">적용</button></div>
   </form>
 </dialog>
+<div id="restoreBar" style="display:none;position:fixed;left:50%;top:76px;transform:translateX(-50%);z-index:3000;align-items:center;gap:12px;flex-wrap:wrap;background:var(--panel);color:var(--ink);border:2px solid var(--accent,#3b82f6);border-radius:12px;padding:12px 16px;box-shadow:0 8px 30px rgba(0,0,0,.45);max-width:92vw"><span id="rsInfo"></span><button id="rsOk" class="pri">복구</button><button id="rsNo">버리기</button></div>
 <div id="drop">여기에 PDF를 놓으세요</div>
 <script>
 'use strict';
@@ -121,7 +127,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 const FONT_URL = 'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf';
 const $ = s => document.querySelector(s);
 
-const docs = [];          // {name, bytes, js, lib}
+const docs = [];          // {name, bytes, js, lib, gid}
+let docGen = 0;
 let pages = [];           // {id, doc, idx, intrinsic, rot, baseW, baseH, annots, thumbs}
 const CSS_UNITS = 96 / 72;   // 100% = 1pt 를 1.333px 로 그림(Edge·Acrobat 의 100% 와 같은 크기)
 let cur = -1, tool = 'select', scale = CSS_UNITS, sel = null, drag = null, pendingImg = null, uid = 1;
@@ -137,7 +144,7 @@ async function addPdf(file){
   let js;
   try { js = await pdfjsLib.getDocument({data: bytes.slice()}).promise; }
   catch(e){ alert(file.name + ' 을(를) 열 수 없습니다(암호화되었거나 손상됨).\n' + e.message); return; }
-  docs.push({name: file.name, bytes, js, lib: null});
+  docs.push({name: file.name, bytes, js, lib: null, gid: ++docGen});
   const di = docs.length - 1;
   for(let i = 0; i < js.numPages; i++){
     const p = await js.getPage(i + 1);
@@ -148,6 +155,7 @@ async function addPdf(file){
 async function addFiles(files){
   const list = [...files].filter(f => /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name));
   if(!list.length) return;
+  if(restoreOpen) await discardRestore();   // 복구 안내를 무시하고 새 파일을 열면 이전 보관본은 버린 것으로 본다
   status('불러오는 중...');
   for(const f of list) await addPdf(f);
   if(cur < 0 && pages.length){ cur = 0; scale = Math.min(CSS_UNITS * 4, Math.max(CSS_UNITS * .25, fitScale(pages[0]))); }   // 처음 열 때는 화면 맞춤
@@ -274,12 +282,27 @@ $('#bBlank').onclick = () => {
 };
 $('#bClear').onclick = () => { if(pages.length && !confirm('열린 PDF와 편집 내용을 모두 지울까요?')) return; pages = []; docs.length = 0; cur = -1; sel = null; afterChange(); };
 
+/* 글자 층: 그림 위에 투명한 글자를 얹어 드래그 선택·복사·검색(Ctrl+F)이 되게 한다. 가림 박스·결론 가림이 있는 쪽은 아래 글자가 새지 않도록 만들지 않는다 */
+async function renderTL(pg, p, tok){
+  const tl = $('#tl');
+  if(needFlat(pg) || !pdfjsLib.renderTextLayer) return;
+  try{
+    const tc = await p.getTextContent();
+    if(tok !== mainTok) return;
+    const vp = p.getViewport({scale, rotation: pg.rot});
+    tl.innerHTML = ''; tl.style.setProperty('--scale-factor', vp.scale);
+    const t = pdfjsLib.renderTextLayer({textContentSource: tc, container: tl, viewport: vp, textDivs: []});
+    await t.promise;
+    if(tok !== mainTok) tl.innerHTML = '';
+  }catch(e){}
+}
 /* ---------- 본문 렌더 ---------- */
 let mainTask = null, mainTok = 0;
 async function renderMain(){
   const pg = pages[cur];
   if(!pg){ $('#stage').style.display = 'none'; return; }
   $('#stage').style.display = 'block';
+  $('#tl').innerHTML = '';
   const {w, h} = dims(pg), tok = ++mainTok;
   // 선명도: 화면 배율과 무관하게 최소 2배 해상도로 그리되, 캔버스가 너무 커지면(약 2500만 화소) 낮춘다
   // 화면 픽셀과 1:1 로 맞춘 캔버스(CSS 로 다시 늘리거나 줄이지 않음) + 큰 배율로 그린 뒤 고품질 축소 → Edge 뷰어 방식
@@ -298,6 +321,7 @@ async function renderMain(){
     if(mainTask){ try{ mainTask.cancel(); }catch(e){} }
     const p = await docs[pg.doc].js.getPage(pg.idx + 1);
     if(tok !== mainTok) return;
+    renderTL(pg, p, tok);
     const OW = DW * q, OH = DH * q;
     const off = document.createElement('canvas'); off.width = OW; off.height = OH;
     const octx = off.getContext('2d'); octx.fillStyle = '#fff'; octx.fillRect(0, 0, OW, OH);
@@ -341,6 +365,7 @@ function findA(id){ return curAnnots().find(a => String(a.id) === String(id)); }
 function drawOverlay(){
   const ov = $('#ov'); ov.innerHTML = '';
   curAnnots().forEach(a => ov.appendChild(makeEl(a)));
+  if(pages[cur] && needFlat(pages[cur])) $('#tl').innerHTML = '';   // 가림이 생기면 그 쪽의 글자 층은 바로 없앤다
   clearTimeout(thTimer); thTimer = setTimeout(refreshCurThumb, 300);
 }
 let thTimer = 0;
@@ -401,6 +426,7 @@ $('#fImg').onchange = async e => {
   setTool('img'); status('이미지를 넣을 위치를 클릭하세요');
 };
 
+$('#tl').addEventListener('pointerdown', () => { if(sel) select(null); });   // 글자 층(빈 곳)을 누르면 선택 해제
 $('#ov').addEventListener('pointerdown', e => {
   const pg = pages[cur]; if(!pg) return;
   const hit = e.target.closest('.ann'), pt = ptOf(e);
@@ -559,6 +585,7 @@ async function exportJpg(from, to){
       setTimeout(() => URL.revokeObjectURL(url), 10000);
       status('이미지 ' + (to - from + 1) + '장을 zip 으로 내려받았습니다(이 브라우저는 폴더 지정을 지원하지 않음)');
     }else status('이미지 ' + (to - from + 1) + '장(' + from + '~' + to + '쪽)을 선택한 폴더에 저장했습니다');
+    autoDone();
   }catch(e){ alert('이미지 내보내기 실패: ' + e.message); status('이미지 내보내기 실패'); }
   btn.disabled = !pages.length;
 }
@@ -625,6 +652,7 @@ async function savePdf(){
     const a = document.createElement('a'); a.href = url; a.download = base; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     status('저장 완료: ' + base + ' (' + (bytes.length / 1048576).toFixed(1) + 'MB)' + (flatCount ? ' · 가림 ' + flatCount + '쪽 이미지 변환됨' : ''));
+    autoDone();
   }catch(e){ alert('저장 실패: ' + e.message); status('저장 실패'); }
   btn.disabled = false;
 }
@@ -667,6 +695,89 @@ $('#cvOk').onclick = async () => {
   sel = null; afterChange();
   status('결론 가리기 적용: ' + from + '~' + to + '쪽');
 };
+
+/* ---------- 자동 보관 / 복구: 저장·내보내기 없이 창을 닫거나 새로고침해도 이 브라우저(IndexedDB)에 남겨 두었다가 되살린다 ---------- */
+const AUTO_DB = 'pdfEditorAuto', AUTO_STORE = 'kv';
+function autoDb(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(AUTO_DB, 1);
+    r.onupgradeneeded = () => { if(!r.result.objectStoreNames.contains(AUTO_STORE)) r.result.createObjectStore(AUTO_STORE); };
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+async function autoTx(fn){
+  const db = await autoDb();
+  try{
+    return await new Promise((res, rej) => {
+      const tx = db.transaction(AUTO_STORE, 'readwrite'), st = tx.objectStore(AUTO_STORE);
+      let out; fn(st, v => { out = v; });
+      tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error);
+    });
+  }finally{ db.close(); }
+}
+const autoPut = map => autoTx(st => { for(const k in map) st.put(map[k], k); });
+const autoClear = () => autoTx(st => st.clear());
+const autoGet = key => autoTx((st, set) => { const q = st.get(key); q.onsuccess = () => set(q.result); });
+
+let autoSig = '', autoDocSig = '', autoBusy = false, restoreOpen = true;
+const docSigNow = () => docs.map(d => d.gid + ':' + d.name + ':' + d.bytes.length).join('|');   // gid = 열 때마다 새 번호(같은 이름·크기의 다른 파일도 구분)
+const pagesForSave = () => pages.map(p => ({id: p.id, doc: p.doc, idx: p.idx, intrinsic: p.intrinsic, rot: p.rot, baseW: p.baseW, baseH: p.baseH,
+  annots: p.annots.map(a => { const c = {...a}; delete c.url; return c; })}));
+const sigNow = () => JSON.stringify(pages.map(p => [p.doc, p.idx, p.rot, p.annots.map(a => ({...a, bytes: a.bytes ? a.bytes.length : 0, url: 0}))])) + '#' + docSigNow();
+
+setInterval(async () => {
+  if(autoBusy || restoreOpen) return;
+  const sg = sigNow(); if(sg === autoSig) return;
+  autoBusy = true;
+  try{
+    if(!pages.length){ await autoClear(); autoDocSig = ''; }
+    else{
+      const put = {state: {savedAt: Date.now(), cur, pages: pagesForSave()}};
+      const ds = docSigNow();
+      if(ds !== autoDocSig) put.docs = docs.map(d => ({name: d.name, bytes: d.bytes}));
+      await autoPut(put); autoDocSig = ds;
+    }
+    autoSig = sg;
+  }catch(e){ /* 시크릿 창·공간 부족 등: 자동 보관만 못 할 뿐 작업에는 영향 없음 */ }
+  autoBusy = false;
+}, 2000);
+
+function autoDone(){ autoClear().then(() => { autoDocSig = ''; }).catch(() => {}); }   // PDF 저장·이미지 내보내기를 마치면 보관본은 지운다(이후 또 고치면 다시 보관)
+function hideRestore(){ $('#restoreBar').style.display = 'none'; restoreOpen = false; autoSig = sigNow(); }
+async function discardRestore(){ hideRestore(); try{ await autoClear(); }catch(e){} autoDocSig = ''; autoSig = ''; }
+async function doRestore(){
+  const btn = $('#rsOk'); btn.disabled = true; status('이전 작업을 복구하는 중...');
+  try{
+    const st = await autoGet('state'), ds = await autoGet('docs');
+    if(!st || !ds) throw new Error('보관된 작업이 없습니다');
+    const nd = [];
+    for(const d of ds) nd.push({name: d.name, bytes: d.bytes, js: await pdfjsLib.getDocument({data: d.bytes.slice()}).promise, lib: null, gid: ++docGen});
+    docs.length = 0; nd.forEach(d => docs.push(d));
+    let maxId = 0;
+    pages = st.pages.map(p => {
+      maxId = Math.max(maxId, p.id);
+      const annots = p.annots.map(a => { maxId = Math.max(maxId, +a.id || 0); if(a.type === 'img') a.url = URL.createObjectURL(new Blob([a.bytes], {type: 'image/png'})); return a; });
+      return {...p, annots, thumbs: {}};
+    });
+    uid = maxId + 1; sel = null; cur = Math.max(0, Math.min(st.cur || 0, pages.length - 1));
+    scale = Math.min(CSS_UNITS * 4, Math.max(CSS_UNITS * .25, fitScale(pages[cur])));
+    autoDocSig = docSigNow();
+    hideRestore(); afterChange(); status('이전 작업을 복구했습니다 (' + pages.length + '쪽)');
+  }catch(e){ alert('복구하지 못했습니다: ' + e.message); btn.disabled = false; status('복구 실패'); }
+}
+$('#rsOk').onclick = doRestore;
+$('#rsNo').onclick = () => { if(confirm('보관된 이전 작업을 지울까요? 되돌릴 수 없습니다.')) discardRestore(); };
+(async () => {   // 열자마자 이전 작업이 남아 있는지 확인
+  try{
+    const st = await autoGet('state');
+    if(st && st.pages && st.pages.length){
+      const d = new Date(st.savedAt), f = n => String(n).padStart(2, '0');
+      $('#rsInfo').textContent = '저장하지 않고 닫은 이전 작업이 있습니다 (' + st.pages.length + '쪽 · ' + (d.getMonth() + 1) + '/' + d.getDate() + ' ' + f(d.getHours()) + ':' + f(d.getMinutes()) + ' 보관)';
+      $('#restoreBar').style.display = 'flex'; return;
+    }
+  }catch(e){}
+  restoreOpen = false; autoSig = sigNow();
+})();
 setTool('select');
 </script>
 </body>
