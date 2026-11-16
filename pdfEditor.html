@@ -28,6 +28,11 @@ button.hlc.on{border-color:var(--ink);outline:2px solid var(--pri)}
 input[type=number]{width:60px;font:inherit;padding:4px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
 input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
 #status{color:var(--sub);margin-left:auto;font-size:13px}
+#busy{position:fixed;inset:0;z-index:2000000;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.4)}
+#busy.on{display:flex}
+#busy .box{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:22px 30px;min-width:280px;max-width:80vw;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#busy .spin{width:34px;height:34px;margin:0 auto 12px;border:4px solid var(--line);border-top-color:var(--pri);border-radius:50%;animation:busyspin 1s linear infinite}
+@keyframes busyspin{to{transform:rotate(360deg)}}
 main{flex:1;display:flex;min-height:0}
 #side{width:168px;flex:none;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:8px}
 .th{position:relative;border:2px solid transparent;border-radius:8px;padding:4px;margin-bottom:8px;cursor:pointer;text-align:center}
@@ -99,6 +104,16 @@ main{flex:1;display:flex;min-height:0}
     <div id="stage"><canvas id="cv"></canvas><div id="tl"></div><div id="ov"></div></div>
   </div>
 </main>
+<div id="busy"><div class="box"><div class="spin"></div><div id="busyTx"></div></div></div>
+<dialog id="dlgPw">
+  <form method="dialog" id="fPw">
+    <h3>암호가 필요한 PDF</h3>
+    <div class="row"><b id="pwName"></b></div>
+    <div class="row"><input id="pwIn" type="password" autocomplete="off" style="flex:1;min-width:220px"> <small id="pwErr" style="color:#e66"></small></div>
+    <div class="row"><small>암호는 저장하지 않으며, 맞으면 암호를 없앤 상태로 열어 편집·저장합니다.</small></div>
+    <div class="row end"><button type="button" id="pwNo">건너뛰기</button><button type="submit" id="pwOk" class="pri">열기</button></div>
+  </form>
+</dialog>
 <dialog id="dlgExport">
   <form method="dialog">
     <h3>이미지 내보내기</h3>
@@ -135,16 +150,76 @@ let cur = -1, tool = 'select', scale = CSS_UNITS, sel = null, drag = null, pendi
 const TOOL_COLOR = {text: '#000000', rect: '#ffffff', hl: '#ffe600'};
 const opOf = a => a.op != null ? a.op : (a.type === 'hl' ? .4 : 1);   // 불투명도 0~1
 
-function status(t){ $('#status').textContent = t; }
+function status(t){ $('#status').textContent = t; if($('#busy').classList.contains('on')) $('#busyTx').textContent = t; }
+// 오래 걸리는 작업(저장·내보내기·열기) 중에는 화면 가운데에 진행 상황을 띄우고 그동안 다른 조작을 막는다
+function busyOn(t){ $('#busyTx').textContent = t; $('#busy').classList.add('on'); }
+function busyOff(){ $('#busy').classList.remove('on'); }
 function dims(pg){ const s = pg.rot % 180 !== 0; return s ? {w: pg.baseH, h: pg.baseW} : {w: pg.baseW, h: pg.baseH}; }
 
+/* ---------- 암호 PDF: 암호 입력 + 암호 해제(qpdf, 암호 PDF 를 열 때만 내려받음) ---------- */
+function askPw(name, wrong){
+  return new Promise(res => {
+    const dlg = $('#dlgPw'); $('#pwName').textContent = name; $('#pwErr').textContent = wrong ? '암호가 맞지 않습니다' : ''; $('#pwIn').value = '';
+    dlg.returnValue = '';
+    const done = v => { dlg.removeEventListener('close', onClose); res(v); };
+    const onClose = () => done(dlg.returnValue === 'ok' ? $('#pwIn').value : null);
+    dlg.addEventListener('close', onClose);
+    dlg.showModal(); $('#pwIn').focus();
+  });
+}
+$('#fPw').addEventListener('submit', () => { $('#dlgPw').returnValue = 'ok'; });
+$('#pwNo').onclick = () => $('#dlgPw').close('no');
+const QPDF_BASE = 'https://cdn.jsdelivr.net/npm/@neslinesli93/qpdf-wasm@0.3.1/dist/';
+const QPDF_WORKER = 'importScripts("' + QPDF_BASE + 'qpdf.js");' +
+  'onmessage=async function(e){try{var m=await Module({locateFile:function(f){return "' + QPDF_BASE + '"+f},print:function(){},printErr:function(){}});' +
+  'm.FS.writeFile("/in.pdf",e.data.bytes);var rc;try{rc=m.callMain(["--password="+e.data.pw,"--decrypt","/in.pdf","/out.pdf"])}catch(x){rc=(x&&x.status!=null)?x.status:2}' +
+  'if(rc!==0&&rc!==3){postMessage({err:"암호가 맞지 않거나 지원하지 않는 방식입니다."});return}' +
+  'var o=m.FS.readFile("/out.pdf");postMessage({out:o},[o.buffer])}catch(x){postMessage({err:"암호 해제 모듈을 불러오지 못했습니다. 인터넷 연결을 확인하세요."})}};';
+// 화면이 멈추지 않도록 별도 작업 스레드에서 푼다
+function decryptPdf(bytes, pw){
+  return new Promise((ok, ng) => {
+    const url = URL.createObjectURL(new Blob([QPDF_WORKER], {type: 'text/javascript'}));
+    const w = new Worker(url);
+    const end = () => { w.terminate(); URL.revokeObjectURL(url); };
+    w.onmessage = e => { end(); e.data.err ? ng(new Error(e.data.err)) : ok(e.data.out); };
+    w.onerror = () => { end(); ng(new Error('암호 해제 모듈을 불러오지 못했습니다. 인터넷 연결을 확인하세요.')); };
+    w.postMessage({bytes: bytes.slice(), pw});
+  });
+}
+// 파일 끝부분(trailer)에 /Encrypt 가 있는지만 본다 — 통째로 해석하지 않아 큰 파일도 즉시 끝난다
+function hasEncrypt(bytes){
+  const tail = bytes.subarray(Math.max(0, bytes.length - 65536)), key = [47,69,110,99,114,121,112,116];
+  outer: for(let i = 0; i <= tail.length - key.length; i++){ for(let j = 0; j < key.length; j++) if(tail[i + j] !== key[j]) continue outer; return true; }
+  return false;
+}
+
+let warnedWorker = false;
 /* ---------- 불러오기 ---------- */
 async function addPdf(file){
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let js;
-  try { js = await pdfjsLib.getDocument({data: bytes.slice()}).promise; }
-  catch(e){ alert(file.name + ' 을(를) 열 수 없습니다(암호화되었거나 손상됨).\n' + e.message); return; }
-  docs.push({name: file.name, bytes, js, lib: null, gid: ++docGen});
+  let bytes = new Uint8Array(await file.arrayBuffer());
+  let js, pw = null, skipped = false;
+  const task = pdfjsLib.getDocument({data: bytes.slice()});
+  task.onPassword = async (update, reason) => {       // reason 2 = 틀린 암호
+    const p = await askPw(file.name, reason === 2);
+    if(p == null){ skipped = true; task.destroy(); return; }
+    pw = p; update(p);
+  };
+  try { js = await task.promise; }
+  catch(e){ if(!skipped) alert(file.name + ' 을(를) 열 수 없습니다(손상되었거나 지원하지 않는 형식).\n' + e.message); return; }
+  if(!(task._worker && task._worker._webWorker) && !warnedWorker){   // 작업 스레드를 못 불러오면 pdf.js 가 화면 스레드에서 직접 처리해 매우 느려진다
+    warnedWorker = true; console.warn('pdf.js 작업 스레드 사용 불가');
+    alert('PDF 처리용 작업 스레드를 불러오지 못해 화면에서 직접 처리합니다. 매우 느려지고 스크롤이 끊깁니다.\n\n인터넷 연결을 확인하고, 광고·보안 확장 프로그램이 cdnjs.cloudflare.com 을 막고 있지 않은지 확인한 뒤 새로고침하세요.');
+  }
+  let lib = null, needDec = pw !== null || hasEncrypt(bytes);   // 열기 암호 없이 편집 제한만 걸린 파일도 저장용 라이브러리가 못 읽어 같이 푼다
+  if(needDec){
+    status('암호 해제 중...');
+    try {
+      bytes = await decryptPdf(bytes, pw || '');
+      js.destroy(); lib = null;
+      js = await pdfjsLib.getDocument({data: bytes.slice()}).promise;
+    } catch(e){ alert(file.name + ' 의 암호를 풀지 못했습니다.\n' + (e.message || e)); return; }
+  }
+  docs.push({name: file.name, bytes, js, lib, gid: ++docGen});
   const di = docs.length - 1;
   for(let i = 0; i < js.numPages; i++){
     const p = await js.getPage(i + 1);
@@ -156,8 +231,8 @@ async function addFiles(files){
   const list = [...files].filter(f => /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name));
   if(!list.length) return;
   if(restoreOpen) await discardRestore();   // 복구 안내를 무시하고 새 파일을 열면 이전 보관본은 버린 것으로 본다
-  status('불러오는 중...');
-  for(const f of list) await addPdf(f);
+  status('불러오는 중...'); busyOn('불러오는 중...');
+  try{ for(const f of list) await addPdf(f); } finally { busyOff(); }
   if(cur < 0 && pages.length){ cur = 0; scale = Math.min(CSS_UNITS * 4, Math.max(CSS_UNITS * .25, fitScale(pages[0]))); }   // 처음 열 때는 화면 맞춤
   afterChange();
 }
@@ -182,7 +257,6 @@ function afterChange(){
 }
 
 /* ---------- 쪽 목록(썸네일) ---------- */
-let tq = Promise.resolve();
 // 썸네일: PDF 원본 그림(pg.thumbs, 캐시)에 넣은 글자·가림 박스·형광펜·이미지를 겹쳐 그려 보여준다
 async function paintThumb(pg, img, base){
   if(!pg.annots.length){ img.src = base; return; }
@@ -204,26 +278,69 @@ async function paintThumb(pg, img, base){
   if(img.isConnected) img.src = c.toDataURL('image/jpeg', .8);
 }
 function queueThumb(pg, img){
-  if(pg.thumbs[pg.rot]){ paintThumb(pg, img, pg.thumbs[pg.rot]); return; }
-  tq = tq.then(async () => {
-    const {w, h} = dims(pg), sc = 130 / w;
-    const c = document.createElement('canvas'); c.width = Math.round(w * sc); c.height = Math.round(h * sc);
-    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-    if(pg.doc >= 0){
-      try{ const p = await docs[pg.doc].js.getPage(pg.idx + 1); await p.render({canvasContext: ctx, viewport: p.getViewport({scale: sc, rotation: pg.rot})}).promise; }catch(e){}
-    }
-    pg.thumbs[pg.rot] = c.toDataURL('image/jpeg', .7);
-    await paintThumb(pg, img, pg.thumbs[pg.rot]);
-  });
+  if(pg.thumbs[pg.rot]){ paintThumb(pg, img, pg.thumbs[pg.rot]); img._done = true; return; }
+  const job = async () => {
+    if(!img.isConnected) return;   // 목록이 다시 만들어졌으면 이 그림은 버린다(새 목록이 다시 요청한다)
+    await new Promise(r => setTimeout(r));   // 화면 조작(스크롤)에 양보
+    await makeThumb(pg);
+    await paintThumb(pg, img, pg.thumbs[pg.rot]); img._done = true;
+  };
+  job.img = img; thJobs.push(job);
+  pumpThumbs();
 }
+// 쪽 하나의 원본 미리보기 그림을 만들어 pg.thumbs 에 넣는다
+async function makeThumb(pg){
+  const {w, h} = dims(pg), sc = 130 / w;
+  const c = document.createElement('canvas'); c.width = Math.round(w * sc); c.height = Math.round(h * sc);
+  const ctx = c.getContext('2d', {willReadFrequently: true}); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);   // 작은 그림에 이미지 조각이 수백 개라 GPU 로 그리면 읽어올 때 화면이 멈춘다 → CPU 캔버스가 절반 이하로 빠르다
+  if(pg.doc >= 0){
+    try{ const p = await (await thumbDoc(docs[pg.doc])).getPage(pg.idx + 1); await p.render({canvasContext: ctx, viewport: p.getViewport({scale: sc, rotation: pg.rot})}).promise; p.cleanup(); }catch(e){}   // cleanup: 쪽마다 쥐고 있는 그림 자원을 놓아준다(안 하면 수십 쪽 뒤부터 쪽당 10~28초로 느려진다)
+  }
+  pg.thumbs[pg.rot] = c.toDataURL('image/jpeg', .7);
+}
+// 미리보기는 눈에 보이는 쪽만, 최대 2쪽씩 그린다(전부 한꺼번에 그리면 화면이 굳어 스크롤이 안 된다)
+const thJobs = []; let thRun = 0, thRR = 0;
+// 미리보기 전용 pdf.js 사본 2개(각자 작업 스레드) — 한 작업 스레드가 쪽을 해석하는 속도가 한계라 나눠서 병렬로 돌린다. 큰 파일이 아니면 만들지 않는다
+function thumbDoc(d){
+  if(d.bytes.length < 3e6) return d.js;
+  if(!d.tj) d.tj = [d.js, pdfjsLib.getDocument({data: d.bytes.slice()}).promise];
+  return d.tj[(thRR++) % d.tj.length];
+}
+// 쪽 하나를 그리는 일이 화면 스레드를 0.1~0.5초 붙잡으므로, 스크롤하는 동안에는 새 일을 시작하지 않고 멈춘 뒤에 이어서 한다
+let thScrollAt = 0, thWait = 0;
+$('#side').addEventListener('scroll', () => { thScrollAt = performance.now(); }, {passive: true});
+function pumpThumbs(){
+  if(thWait) return;
+  const idle = performance.now() - thScrollAt;
+  if(idle < 150){ thWait = setTimeout(() => { thWait = 0; pumpThumbs(); }, 170 - idle); return; }
+  while(thRun < 2 && thJobs.length){
+    // 대기열은 들어온 순서가 아니라 '지금 화면 가운데에서 가까운 쪽'부터 처리한다(스크롤해서 내려간 곳이 먼저 그려지게)
+    const S = $('#side').getBoundingClientRect(), mid = (S.top + S.bottom) / 2;
+    let bi = 0, bd = Infinity;
+    thJobs.forEach((j, k) => { const r = j.img.getBoundingClientRect(), d = Math.abs((r.top + r.bottom) / 2 - mid); if(d < bd){ bd = d; bi = k; } });
+    const job = thJobs.splice(bi, 1)[0]; thRun++;
+    job().catch(() => {}).then(() => { thRun--; pumpThumbs(); });
+  }
+}
+let thObs = null;
 function buildList(){
   const L = $('#list'); L.innerHTML = '';
+  if(thObs) thObs.disconnect(); thJobs.length = 0;
+  // 스크롤하는 칸은 #list 가 아니라 #side 다. 보이는 쪽만 그리고, 스크롤로 벗어난 쪽의 대기 작업은 취소한다
+  thObs = new IntersectionObserver(ents => ents.forEach(en => {
+    const t = en.target;
+    if(en.isIntersecting){
+      if(t._done || thJobs.some(j => j.img === t)) return;
+      queueThumb(pages[+t.parentNode.dataset.i], t);
+    }else{
+      const k = thJobs.findIndex(j => j.img === t); if(k >= 0) thJobs.splice(k, 1);
+    }
+  }), {root: $('#side'), rootMargin: '900px 0px'});
   pages.forEach((pg, i) => {
     const it = document.createElement('div');
     it.className = 'th' + (i === cur ? ' on' : ''); it.draggable = true; it.dataset.i = i;
     it.innerHTML = '<img alt=""><div class="tn">' + (i + 1) + (pg.annots.length ? ' · 주석 ' + pg.annots.length : '') + '</div><div class="tb"><button data-a="l" title="왼쪽 회전">↺</button><button data-a="r" title="오른쪽 회전">↻</button><button data-a="d" title="복제">⧉</button><button data-a="x" title="삭제">✕</button></div>';
-    queueThumb(pg, it.querySelector('img'));
-    L.appendChild(it);
+    L.appendChild(it); thObs.observe(it.querySelector('img'));
   });
   $('#pc').textContent = pages.length + '쪽';
   updPager();
@@ -326,7 +443,7 @@ async function renderMain(){
     const off = document.createElement('canvas'); off.width = OW; off.height = OH;
     const octx = off.getContext('2d'); octx.fillStyle = '#fff'; octx.fillRect(0, 0, OW, OH);
     mainTask = p.render({canvasContext: octx, viewport: p.getViewport({scale: OW / w, rotation: pg.rot})});
-    try{ await mainTask.promise; }catch(e){ return; }
+    try{ await mainTask.promise; try{ p.cleanup(); }catch(e){} }catch(e){ return; }
     if(tok !== mainTok) return;
     if(q === 1){ ctx.drawImage(off, 0, 0, DW, DH); }
     else{
@@ -533,6 +650,7 @@ async function flattenPage(pg, S = 3, Q = .92){
   if(pg.doc >= 0){
     const p = await docs[pg.doc].js.getPage(pg.idx + 1);
     await p.render({canvasContext: ctx, viewport: p.getViewport({scale: S, rotation: pg.rot})}).promise;
+    try{ p.cleanup(); }catch(e){}
   }
   if(pg.annots.some(a => a.type === 'text')){ try{ await document.fonts.load('14px PdfKR'); }catch(e){} }
   for(const a of pg.annots){
@@ -562,7 +680,7 @@ async function exportJpg(from, to){
     try{ dir = await window.showDirectoryPicker({mode: 'readwrite'}); }
     catch(e){ if(e && e.name === 'AbortError') return; dir = null; }
   }
-  const btn = $('#bJpg'); btn.disabled = true;
+  const btn = $('#bJpg'); btn.disabled = true; busyOn('이미지 만드는 중...');
   try{
     let zip = null;
     if(!dir){
@@ -586,8 +704,8 @@ async function exportJpg(from, to){
       status('이미지 ' + (to - from + 1) + '장을 zip 으로 내려받았습니다(이 브라우저는 폴더 지정을 지원하지 않음)');
     }else status('이미지 ' + (to - from + 1) + '장(' + from + '~' + to + '쪽)을 선택한 폴더에 저장했습니다');
     autoDone();
-  }catch(e){ alert('이미지 내보내기 실패: ' + e.message); status('이미지 내보내기 실패'); }
-  btn.disabled = !pages.length;
+  }catch(e){ busyOff(); alert('이미지 내보내기 실패: ' + e.message); status('이미지 내보내기 실패'); }
+  busyOff(); btn.disabled = !pages.length;
 }
 $('#bJpg').onclick = () => {
   if(!pages.length) return;
@@ -603,12 +721,28 @@ $('#exOk').onclick = () => {   // 폴더 선택 창은 이 클릭 직후에 열�
 };
 
 async function savePdf(){
-  const btn = $('#bSave'); btn.disabled = true; status('저장 중...');
+  const btn = $('#bSave'); btn.disabled = true; status('저장 중...'); busyOn('저장 중...');
   try{
     const out = await PDFDocument.create(); out.registerFontkit(fontkit);
     const allText = pages.filter(p => !needFlat(p)).map(p => p.annots.filter(a => a.type === 'text').map(a => a.text).join('')).join('');
     const font = allText.trim() ? await getFont(out, allText) : null;
     let flatCount = 0;
+    // 같은 원본의 이어진 쪽은 한 번에 복사한다 — 쪽마다 따로 복사하면 공유 글꼴·이미지가 쪽 수만큼 중복 복사되어 느려지고 용량·메모리가 부풀어 오른다
+    const copied = new Map();
+    for(let i = 0; i < pages.length;){
+      const first = pages[i];
+      if(needFlat(first) || first.doc < 0){ i++; continue; }
+      const run = [first], seen = new Set([first.idx]);
+      let j = i + 1;
+      while(j < pages.length && pages[j].doc === first.doc && !needFlat(pages[j]) && !seen.has(pages[j].idx)){ run.push(pages[j]); seen.add(pages[j].idx); j++; }
+      const d = docs[first.doc];
+      status('쪽 복사 중... (' + (i + 1) + '/' + pages.length + ')');
+      await new Promise(r => setTimeout(r));   // 화면이 숨 쉴 틈
+      if(!d.lib) d.lib = await PDFDocument.load(d.bytes, {ignoreEncryption: true});
+      const cp = await out.copyPages(d.lib, run.map(p => p.idx));
+      run.forEach((p, k) => copied.set(p.id, cp[k]));
+      i = j;
+    }
     for(const pg of pages){
       if(needFlat(pg)){
         const {w, h} = dims(pg);
@@ -621,9 +755,7 @@ async function savePdf(){
       let page;
       if(pg.doc < 0) page = out.addPage([pg.baseW, pg.baseH]);
       else{
-        const d = docs[pg.doc];
-        if(!d.lib) d.lib = await PDFDocument.load(d.bytes, {ignoreEncryption: true});
-        [page] = await out.copyPages(d.lib, [pg.idx]); out.addPage(page);
+        page = copied.get(pg.id); out.addPage(page);
       }
       const T = (pg.intrinsic + pg.rot) % 360;
       if(pg.rot) page.setRotation(degrees(T));
@@ -646,15 +778,16 @@ async function savePdf(){
         }
       }
     }
-    const bytes = await out.save();
+    status('파일 만드는 중...');
+    const bytes = await out.save({objectsPerTick: 500});   // 기본값(50)은 쪽이 많을 때 쉬는 횟수가 너무 많아 10배 넘게 느리다
     const base = (docs[0] ? docs[0].name.replace(/\.pdf$/i, '') : 'document') + '_edit.pdf';
     const url = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));
     const a = document.createElement('a'); a.href = url; a.download = base; document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     status('저장 완료: ' + base + ' (' + (bytes.length / 1048576).toFixed(1) + 'MB)' + (flatCount ? ' · 가림 ' + flatCount + '쪽 이미지 변환됨' : ''));
     autoDone();
-  }catch(e){ alert('저장 실패: ' + e.message); status('저장 실패'); }
-  btn.disabled = false;
+  }catch(e){ busyOff(); alert('저장 실패: ' + e.message); status('저장 실패'); }
+  busyOff(); btn.disabled = false;
 }
 $('#bSave').onclick = savePdf;
 /* ---------- 결론 가리기: 쪽 범위의 제목 줄 아래를 단색/이미지로 덮는다(hide.html 과 같은 방식) ---------- */
