@@ -4133,6 +4133,7 @@
         <div class="tb-sec">
           <div class="tb-sec-t">기타</div>
           <button id="aptCntOpenBtn" type="button" onclick="__aptCntOpen()" title="시군구별 단지수·평형 상세 (aptCnt.html)" class="tb-item">🏢 단지 리스트</button>
+          <button id="kfOpenBtn" type="button" class="tb-item" title="고른 단지 마커만 남기고 나머지를 일시적으로 숨김">단지 남기기</button>
           <!-- ⚠ 시세 애드온(server/hongbuSise.js)의 **'시세보기' 체크박스만** 이리로 옮겨 온다
                (2026-10-01 사용자 정정: "체크박스는 도구 안으로, 체크되었을 때 펼쳐지는 메뉴들은
                 기존처럼 툴바에"). 애드온은 손대지 않았다 — 묶음은 예전처럼 툴바에 들어가고,
@@ -8877,7 +8878,7 @@
         // ✅ 최소 줌(14) 미만이면 마커가 표시되면 안 되므로, 화면에 남아있던 마커/클러스터를 제거하고 종료
         //    (기존에는 그냥 return 해서 줌아웃 시 이전 마커가 그대로 남아있는 문제가 있었음)
         //    [시세보기 훅] hongbuSise.js 로드 시 토글 ON이면 하한 13 (미로드 시 14 고정)
-        if (window.map.getZoom() < (window.__siseDbHook?.minZoom?.() ?? 14)) {
+        if (!window.__kfApplied && window.map.getZoom() < (window.__siseDbHook?.minZoom?.() ?? 14)) { // 단지 남기기 적용 중엔 줌 무관
           clearApartmentMarkersAndCluster();
           return;
         }
@@ -8927,7 +8928,9 @@
         // 단, 시세보기 매매가·투자금 필터가 켜져 있으면 정리하지 않고 전부(2026-10-04 사용자 지정) — 칸 대표가
         // 필터에 걸려 칸이 비거나 같은 칸의 다른 일치 단지가 숨는 것을 막는다. 개수는 시세보기 300개 상한이 막는다.
         // [줌 레벨 상관없이 전체 단지 표기](2026-10-05 사용자 요청) 가 켜져 있어도 정리하지 않는다
-        const filtered = (window.__siseDbHook?.hideFilterActive?.() || __aptShowAll()) ? filteredAll : __aptDeclutter(filteredAll);
+        const filtered = window.__kfApplied
+          ? __kfList(bounds)
+          : (window.__siseDbHook?.hideFilterActive?.() || __aptShowAll()) ? filteredAll : __aptDeclutter(filteredAll);
 
         // [시세보기 훅] 스냅샷 로드 트리거·300개 초과 가드 (hongbuSise.js 미로드 시 무동작)
         if (window.__siseDbHook?.beforeRender?.(filtered) === false) return;
@@ -11785,6 +11788,7 @@
 
       function showApartmentInfo(apartmentId, markerPosition) {
         event?.stopPropagation();
+        if (window.__kfIntercept && window.__kfIntercept(apartmentId)) return; // 단지 남기기 — 고르는 중이면 모달 대신 선택 토글
 
         apartmentId = String(apartmentId);
 
@@ -39508,5 +39512,83 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         window.__realAlert = { covered, loadCoverage, startSelect, stopSelect, finishSelect, enablePush, disablePush, testPush, openManage, openHistory, showPushPanel, linkTelegram, unlinkTelegram, checkHeadBell, openHeadBell, state: () => state, key: () => KEY };
       })();
     </script>
-  </body>
+  <!-- ===== 단지 남기기 (2026-11-17, 개발본 hongbuFocus) — 고른 단지 마커만 남기고 나머지를 일시적으로 숨김 ===== -->
+<style>
+  #kfBar{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:10070;background:#fff;border:2px solid #2D5DA7;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.3);padding:8px 12px;display:none;align-items:center;gap:8px;font-size:14px;font-weight:600;max-width:96vw;flex-wrap:wrap;justify-content:center}
+  #kfBar button{border:1px solid #888;background:#f5f5f5;border-radius:8px;padding:6px 12px;font-size:14px;cursor:pointer}
+  #kfBar button.kf-go{background:#2D5DA7;color:#fff;border-color:#2D5DA7}
+  #kfBar button.kf-off{background:#c62828;color:#fff;border-color:#c62828}
+  #kfBar button:disabled{opacity:.4;cursor:default}
+  body.kf-picking #map, body.kf-picking .apartment-marker-container{cursor:crosshair}
+</style>
+<div id="kfBar">
+  <span id="kfMsg"></span>
+  <button id="kfApply" type="button" class="kf-go">이것만 남기기</button>
+  <button id="kfClear" type="button">선택 비우기</button>
+  <button id="kfCancel" type="button">취소</button>
+  <button id="kfOff" type="button" class="kf-off">숨김 해제 · 추가 선택</button>
+</div>
+<style id="kfSelStyle"></style>
+<script>
+(function () {
+  const sel = new Set();         // 고른 단지 id(문자열)
+  let picking = false;
+  window.__kfApplied = false;
+  const $ = (id) => document.getElementById(id);
+  function bar() { return $("kfBar"); }
+  function paint() {
+    // 고른 단지 마커에 강조 테두리 — 마커가 다시 만들어져도 id 선택자라 자동 적용
+    const ids = picking ? [...sel] : []; // 고르는 동안만 강조 — 적용 뒤엔 숨긴다
+    $("kfSelStyle").textContent = ids.length
+      ? ids.map((i) => '.apartment-marker-container[data-apt-id="' + i + '"]').join(",") +
+        "{outline:4px solid #ff1744 !important;outline-offset:1px;}"
+      : "";
+  }
+  function ui() {
+    paint();
+    const b = bar();
+    b.style.display = picking || window.__kfApplied ? "flex" : "none";
+    $("kfMsg").textContent = picking
+      ? "남길 단지 마커를 눌러 고르세요 (" + sel.size + "개)"
+      : "고른 " + sel.size + "개 단지만 표시 중";
+    $("kfApply").style.display = picking ? "" : "none";
+    $("kfClear").style.display = picking ? "" : "none";
+    $("kfCancel").style.display = picking ? "" : "none";
+    $("kfOff").style.display = !picking && window.__kfApplied ? "" : "none";
+    $("kfApply").disabled = sel.size === 0;
+    document.body.classList.toggle("kf-picking", picking);
+  }
+  function redraw() { try { refreshApartmentMarkers(); } catch (e) {} }
+  window.__kfIntercept = function (id) {
+    if (!picking) return false;
+    id = String(id);
+    if (sel.has(id)) sel.delete(id); else sel.add(id);
+    paint(); ui();
+    return true;
+  };
+  window.__kfList = function (bounds) {
+    return __aptInBounds(bounds).filter((a) => sel.has(String(a.id)));
+  };
+  $("kfOpenBtn").addEventListener("click", () => {
+    try { $("tbToolsPanel").hidden = true; } catch (e) {}
+    picking = true; // 이미 적용 중이면 고른 목록을 이어서 고친다(숨긴 단지를 다시 보이려면 [숨김 해제])
+    ui();
+  });
+  $("kfApply").addEventListener("click", () => {
+    if (!sel.size) return;
+    picking = false; window.__kfApplied = true; paint(); ui(); redraw();
+  });
+  $("kfClear").addEventListener("click", () => { sel.clear(); paint(); ui(); });
+  $("kfCancel").addEventListener("click", () => {
+    picking = false;
+    if (!window.__kfApplied) { sel.clear(); paint(); }
+    ui();
+  });
+  $("kfOff").addEventListener("click", () => {
+    // 숨김만 풀고 고른 목록은 유지 — 다시 고르는 상태로 돌아가 단지를 더 고를 수 있다
+    window.__kfApplied = false; picking = true; paint(); ui(); redraw();
+  });
+})();
+</script>
+</body>
 </html>
