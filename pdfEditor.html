@@ -123,6 +123,7 @@ main{flex:1;display:flex;min-height:0}
     <h3>이미지 내보내기</h3>
     <div class="row">쪽 범위: <input id="exFrom" type="number" min="1" value="1"> 쪽 ~ <input id="exTo" type="number" min="1" value="1"> 쪽 <span id="exTot"></span></div>
     <div class="row"><small>선택한 쪽을 쪽마다 JPG 한 장으로 만들어 고른 폴더에 저장합니다. 가림·글자 등 넣은 항목이 모두 반영됩니다.</small></div>
+    <div class="row">해상도: <select id="exScale"><option value="2">보통 (2배)</option><option value="3">높음 (3배)</option><option value="4" selected>매우 높음 (4배, 권장)</option><option value="6">최고 (6배, 용량·시간 큼)</option></select></div>
     <div class="row end"><button type="button" id="exCancel">취소</button><button type="button" id="exOk" class="pri">폴더 선택 후 내보내기</button></div>
   </form>
 </dialog>
@@ -154,6 +155,7 @@ let cur = -1, tool = 'select', scale = CSS_UNITS, sel = null, drag = null, pendi
 const TOOL_COLOR = {text: '#000000', rect: '#ffffff', hl: '#ffe600'};
 const opOf = a => a.op != null ? a.op : (a.type === 'hl' ? .4 : 1);   // 불투명도 0~1
 
+function doneNotice(m){ setTimeout(() => alert(m), 100); }   // 작업 표시(busy)가 걷힌 뒤 완료 알림
 function status(t){ $('#status').textContent = t; if($('#busy').classList.contains('on')) $('#busyTx').textContent = t; }
 // 오래 걸리는 작업(저장·내보내기·열기) 중에는 화면 가운데에 진행 상황을 띄우고 그동안 다른 조작을 막는다
 function busyOn(t){ $('#busyTx').textContent = t; $('#busy').classList.add('on'); }
@@ -688,6 +690,7 @@ function hex(c){ const n = parseInt(c.slice(1), 16); return rgb(((n >> 16) & 255
 function needFlat(pg){ return pg.annots.some(a => a.type === 'rect' || a.cover); }   // 가림 박스·결론 가림이 있으면 이미지로 구워 아래 내용을 지운다
 async function flattenPage(pg, S = 3, Q = .92){
   const {w, h} = dims(pg);
+  S = Math.min(S, Math.sqrt(40e6 / (w * h)));   // 캔버스 한계(약 4천만 화소)를 넘지 않게 배율을 낮춘다
   const c = document.createElement('canvas'); c.width = Math.round(w * S); c.height = Math.round(h * S);
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
   if(pg.doc >= 0){
@@ -713,7 +716,7 @@ async function flattenPage(pg, S = 3, Q = .92){
 }
 
 /* ---------- 이미지 내보내기: 모든 쪽(가림·입력 항목 포함)을 쪽마다 JPG 한 장으로, 고른 폴더에 만든다 ---------- */
-async function exportJpg(from, to){
+async function exportJpg(from, to, S = 4){
   if(!pages.length) return;
   const base = (docs[0] ? docs[0].name.replace(/\.pdf$/i, '') : 'document');
   const pad = String(pages.length).length < 3 ? 3 : String(pages.length).length;
@@ -732,7 +735,7 @@ async function exportJpg(from, to){
     }
     for(let i = from - 1; i < to; i++){
       status('이미지 만드는 중... ' + (i - from + 2) + ' / ' + (to - from + 1));
-      const jpg = await flattenPage(pages[i], 2, .92);
+      const jpg = await flattenPage(pages[i], S, .95);
       if(dir){
         const fh = await dir.getFileHandle(nameOf(i), {create: true});
         const w = await fh.createWritable(); await w.write(jpg); await w.close();
@@ -747,6 +750,7 @@ async function exportJpg(from, to){
       status('이미지 ' + (to - from + 1) + '장을 zip 으로 내려받았습니다(이 브라우저는 폴더 지정을 지원하지 않음)');
     }else status('이미지 ' + (to - from + 1) + '장(' + from + '~' + to + '쪽)을 선택한 폴더에 저장했습니다');
     autoDone();
+    doneNotice('이미지 내보내기가 완료되었습니다. ' + (to - from + 1) + '장(' + from + '~' + to + '쪽)' + (zip ? ' — zip 으로 내려받았습니다.' : ' — 선택한 폴더 "' + (dir.name || '') + '" 에 저장했습니다.'));
   }catch(e){ busyOff(); alert('이미지 내보내기 실패: ' + e.message); status('이미지 내보내기 실패'); }
   busyOff(); btn.disabled = !pages.length;
 }
@@ -760,10 +764,17 @@ $('#exCancel').onclick = () => $('#dlgExport').close();
 $('#exOk').onclick = () => {   // 폴더 선택 창은 이 클릭 직후에 열어야 브라우저가 허용한다
   const from = Math.max(1, +$('#exFrom').value || 1), to = Math.min(pages.length, +$('#exTo').value || pages.length);
   if(from > to){ alert('시작 쪽이 끝 쪽보다 클 수 없습니다.'); return; }
-  $('#dlgExport').close(); exportJpg(from, to);
+  $('#dlgExport').close(); exportJpg(from, to, parseFloat($('#exScale').value) || 4);
 };
 
 async function savePdf(){
+  // 저장 위치·이름을 묻는다 — 클릭 직후(사용자 동작 안)에 띄워야 브라우저가 허용한다. 미지원 브라우저는 예전처럼 내려받기
+  let fh = null;
+  if(window.showSaveFilePicker){
+    try{
+      fh = await window.showSaveFilePicker({suggestedName: (docs[0] ? docs[0].name.replace(/\.pdf$/i, '') : 'document') + '_edit.pdf', types: [{description: 'PDF', accept: {'application/pdf': ['.pdf']}}]});
+    }catch(e){ if(e && e.name === 'AbortError') return; fh = null; }
+  }
   const btn = $('#bSave'); btn.disabled = true; status('저장 중...'); busyOn('저장 중...');
   try{
     const out = await PDFDocument.create(); out.registerFontkit(fontkit);
@@ -823,12 +834,18 @@ async function savePdf(){
     }
     status('파일 만드는 중...');
     const bytes = await out.save({objectsPerTick: 500});   // 기본값(50)은 쪽이 많을 때 쉬는 횟수가 너무 많아 10배 넘게 느리다
-    const base = (docs[0] ? docs[0].name.replace(/\.pdf$/i, '') : 'document') + '_edit.pdf';
-    const url = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));
-    const a = document.createElement('a'); a.href = url; a.download = base; document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    let base = (docs[0] ? docs[0].name.replace(/\.pdf$/i, '') : 'document') + '_edit.pdf';
+    if(fh){
+      const w = await fh.createWritable(); await w.write(bytes); await w.close();
+      base = fh.name;
+    }else{
+      const url = URL.createObjectURL(new Blob([bytes], {type: 'application/pdf'}));
+      const a = document.createElement('a'); a.href = url; a.download = base; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    }
     status('저장 완료: ' + base + ' (' + (bytes.length / 1048576).toFixed(1) + 'MB)' + (flatCount ? ' · 가림 ' + flatCount + '쪽 이미지 변환됨' : ''));
     autoDone();
+    doneNotice('PDF 저장이 완료되었습니다. ' + base + ' (' + (bytes.length / 1048576).toFixed(1) + 'MB)');
   }catch(e){ busyOff(); alert('저장 실패: ' + e.message); status('저장 실패'); }
   busyOff(); btn.disabled = false;
 }
