@@ -36,7 +36,9 @@ input[type=color]{width:34px;height:30px;padding:0;border:1px solid var(--line);
 main{flex:1;display:flex;min-height:0}
 #side{width:168px;flex:none;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:8px}
 .th{position:relative;border:2px solid transparent;border-radius:8px;padding:4px;margin-bottom:8px;cursor:pointer;text-align:center}
+.th{user-select:none}
 .th.on{border-color:var(--pri)}
+.th.ms{background:rgba(59,130,246,.22);border-style:dashed;border-color:var(--pri)}
 .th.over{border-top-color:var(--danger)}
 .th img{width:100%;display:block;background:#fff;border:1px solid var(--line);min-height:60px}
 .th .tn{font-size:12px;color:var(--sub);margin-top:2px}
@@ -74,10 +76,12 @@ main{flex:1;display:flex;min-height:0}
   <label class="btn" title="지금 작업을 닫고 새 PDF 를 연다">PDF 열기<input id="fOpen" type="file" accept="application/pdf" multiple hidden></label>
   <label class="btn" title="지금 작업 뒤에 PDF 를 이어 붙인다">PDF 추가<input id="fPdf" type="file" accept="application/pdf" multiple hidden></label>
   <button id="bBlank" title="현재 쪽 뒤에 같은 크기의 빈 쪽 추가">빈 쪽 추가</button>
+  <button id="bUndo" title="되돌리기 (Ctrl+Z) — 쪽 삭제·복제·회전·순서 변경·입력 항목 편집을 한 단계씩 되돌립니다" disabled>↶ 되돌리기</button>
+  <button id="bRedo" title="다시 실행 (Ctrl+Y 또는 Ctrl+Shift+Z)" disabled>↷ 다시</button>
   <button id="bClear">전체 비우기</button>
   <button id="bCover" title="결론 부분을 쪽 범위로 한 번에 가립니다(제목 줄 아래를 단색 또는 이미지로 덮음)">결론 가리기</button>
   <span class="sep"></span>
-  <button data-tool="select" class="on" title="선택·이동 (Esc)">선택</button>
+  <!-- 선택 단추 숨김(불필요, 필요하면 주석 해제): <button data-tool="select" class="on" title="선택·이동 (Esc)">선택</button> -->
   <button data-tool="text" title="클릭한 곳에 글자 넣기">글자</button>
   <button data-tool="rect" title="드래그해서 색 박스(가리기) — 색은 오른쪽에서 지정. 저장 시 그 쪽은 이미지로 변환되어 아래 내용이 완전히 지워집니다">가림 박스</button>
   <span class="hls" title="드래그해서 형광펜 — 색을 누르면 바로 그 색으로 시작">형광펜
@@ -237,11 +241,13 @@ async function addFiles(files){
   afterChange();
 }
 $('#fPdf').onchange = async e => { await addFiles(e.target.files); e.target.value = ''; };   // 추가: 뒤에 이어 붙임
+$('#fOpen').addEventListener('click', e => {   // 파일 선택 창을 띄우기 전에 먼저 묻는다(취소하면 선택 창이 뜨지 않음)
+  if(pages.length && !confirm('지금 열린 PDF 와 편집 내용을 닫고 새로 열까요?')) e.preventDefault();
+});
 $('#fOpen').onchange = async e => {   // 열기: 기존 작업을 비우고 새로 시작
   const fs = [...e.target.files]; e.target.value = '';
   if(!fs.length) return;
-  if(pages.length && !confirm('지금 열린 PDF 와 편집 내용을 닫고 새로 열까요?')) return;
-  pages = []; docs.length = 0; cur = -1; sel = null;
+  pages = []; docs.length = 0; cur = -1; sel = null; msel.clear(); undoReset();
   await addFiles(fs);
 };
 addEventListener('dragover', e => { if(dragIdx < 0 && e.dataTransfer && [...e.dataTransfer.types].includes('Files')){ e.preventDefault(); $('#drop').style.display = 'flex'; } });   // 쪽 순서 바꾸는 드래그(dragIdx>=0)에는 안내를 띄우지 않는다
@@ -254,6 +260,7 @@ function afterChange(){
   $('#bSave').disabled = !pages.length; $('#bJpg').disabled = !pages.length;
   renderMain();
   status(pages.length ? pages.length + '쪽' : 'PDF 파일을 열거나 끌어다 놓으세요');
+  undoCheck();
 }
 
 /* ---------- 쪽 목록(썸네일) ---------- */
@@ -338,7 +345,7 @@ function buildList(){
   }), {root: $('#side'), rootMargin: '900px 0px'});
   pages.forEach((pg, i) => {
     const it = document.createElement('div');
-    it.className = 'th' + (i === cur ? ' on' : ''); it.draggable = true; it.dataset.i = i;
+    it.className = 'th' + (i === cur ? ' on' : '') + (msel.has(pg.id) ? ' ms' : ''); it.draggable = true; it.dataset.i = i;
     it.innerHTML = '<img alt=""><div class="tn">' + (i + 1) + (pg.annots.length ? ' · 주석 ' + pg.annots.length : '') + '</div><div class="tb"><button data-a="l" title="왼쪽 회전">↺</button><button data-a="r" title="오른쪽 회전">↻</button><button data-a="d" title="복제">⧉</button><button data-a="x" title="삭제">✕</button></div>';
     L.appendChild(it); thObs.observe(it.querySelector('img'));
   });
@@ -361,21 +368,55 @@ $('#pgGo').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDe
 $('#pgGo').addEventListener('change', goPage);
 $('#pgGo').addEventListener('focus', e => e.target.select());
 let dragIdx = -1;
+// 여러 쪽 선택: Ctrl(맥은 ⌘)+클릭 = 하나씩 더하거나 빼기, Shift+클릭 = 기준 쪽부터 범위. 선택한 쪽 위의 ↺↻⧉✕·끌어 옮기기는 선택한 쪽 전체에 적용된다
+const msel = new Set(); let msAnchor = -1;
+function refreshMs(){ document.querySelectorAll('#list .th').forEach(el => { const pg = pages[+el.dataset.i]; el.classList.toggle('ms', !!pg && msel.has(pg.id)); }); }
+function targetsOf(i){ return (msel.size > 1 && msel.has(pages[i].id)) ? pages.map((p, k) => k).filter(k => msel.has(pages[k].id)) : [i]; }
 $('#list').addEventListener('click', e => {
   const it = e.target.closest('.th'); if(!it) return;
   const i = +it.dataset.i, b = e.target.closest('button');
-  if(!b){ selectPage(i); return; }
-  const a = b.dataset.a;
-  if(a === 'l' || a === 'r') rotatePage(i, a === 'r' ? 90 : -90);
-  else if(a === 'd'){ const o = pages[i]; pages.splice(i + 1, 0, {...o, id: uid++, annots: o.annots.map(x => ({...x, id: uid++})), thumbs: {...o.thumbs}}); afterChange(); }
-  else if(a === 'x'){ pages.splice(i, 1); if(cur >= pages.length) cur = pages.length - 1; if(i < cur) cur--; sel = null; afterChange(); }
+  if(!b){
+    if(e.ctrlKey || e.metaKey){
+      if(!msel.size && pages[cur]){ msel.add(pages[cur].id); msAnchor = cur; }   // 처음 Ctrl 클릭이면 지금 보던 쪽도 선택에 넣는다
+      const id = pages[i].id; if(msel.has(id)) msel.delete(id); else msel.add(id);
+      msAnchor = i; refreshMs(); return;
+    }
+    if(e.shiftKey){
+      const a0 = msAnchor >= 0 ? msAnchor : Math.max(cur, 0), lo = Math.min(a0, i), hi = Math.max(a0, i);
+      msel.clear(); for(let k = lo; k <= hi; k++) msel.add(pages[k].id);
+      refreshMs(); return;
+    }
+    msel.clear(); msAnchor = i; selectPage(i); return;
+  }
+  const a = b.dataset.a, T = targetsOf(i);
+  if(a === 'l' || a === 'r') rotatePages(T, a === 'r' ? 90 : -90);
+  else if(a === 'd'){
+    for(let k = T.length - 1; k >= 0; k--){ const j = T[k], o = pages[j]; pages.splice(j + 1, 0, {...o, id: uid++, annots: o.annots.map(x => ({...x, id: uid++})), thumbs: {...o.thumbs}}); }
+    msel.clear(); afterChange();
+  }
+  else if(a === 'x'){
+    const curId = pages[cur] && pages[cur].id, first = T[0], gone = new Set(T.map(k => pages[k].id));
+    pages = pages.filter(p => !gone.has(p.id)); msel.clear();
+    cur = pages.length ? Math.max(0, pages.findIndex(p => p.id === curId)) : -1;
+    if(cur >= 0 && pages[cur] && curId != null && !pages.some(p => p.id === curId)) cur = Math.min(first, pages.length - 1);   // 보던 쪽이 지워졌으면 그 자리의 다음 쪽
+    sel = null; afterChange();
+  }
 });
 $('#list').addEventListener('dragstart', e => { const it = e.target.closest('.th'); if(it){ dragIdx = +it.dataset.i; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'p'); } });
 $('#list').addEventListener('dragover', e => { if(dragIdx < 0) return; e.preventDefault(); document.querySelectorAll('.th.over').forEach(x => x.classList.remove('over')); const it = e.target.closest('.th'); if(it) it.classList.add('over'); });
 $('#list').addEventListener('drop', e => {
   if(dragIdx < 0) return; e.preventDefault(); e.stopPropagation();
   const it = e.target.closest('.th'); const to = it ? +it.dataset.i : pages.length - 1;
-  if(to !== dragIdx){
+  const grp = targetsOf(dragIdx);
+  if(grp.length > 1){   // 여러 쪽을 선택한 채 끌면 한 덩어리로(현재 순서 유지) 놓은 자리로 옮긴다
+    const tgt = pages[to];
+    if(tgt && !msel.has(tgt.id)){
+      const curId = pages[cur] && pages[cur].id, moved = grp.map(k => pages[k]), down = dragIdx < to;
+      pages = pages.filter(p => !msel.has(p.id));
+      const ti = pages.indexOf(tgt); pages.splice(down ? ti + 1 : ti, 0, ...moved);
+      cur = pages.findIndex(p => p.id === curId);
+    }
+  }else if(to !== dragIdx){
     const curId = pages[cur] && pages[cur].id;
     const [m] = pages.splice(dragIdx, 1); pages.splice(to, 0, m);
     cur = pages.findIndex(p => p.id === curId);
@@ -384,10 +425,11 @@ $('#list').addEventListener('drop', e => {
 });
 $('#list').addEventListener('dragend', () => { dragIdx = -1; document.querySelectorAll('.th.over').forEach(x => x.classList.remove('over')); });
 
-function rotatePage(i, d){
-  const pg = pages[i];
-  if(pg.annots.length){ alert('주석이 있는 쪽은 회전할 수 없습니다.\n먼저 회전한 뒤 주석을 넣거나, 주석을 지우고 회전하세요.'); return; }
-  pg.rot = (pg.rot + d + 360) % 360; afterChange();
+function rotatePages(idxs, d){
+  const ok = idxs.filter(i => !pages[i].annots.length), skip = idxs.length - ok.length;
+  ok.forEach(i => { pages[i].rot = (pages[i].rot + d + 360) % 360; });
+  if(skip) alert(idxs.length === 1 ? '주석이 있는 쪽은 회전할 수 없습니다.\n먼저 회전한 뒤 주석을 넣거나, 주석을 지우고 회전하세요.' : '주석이 있는 ' + skip + '쪽은 회전하지 않았습니다.\n(주석이 있는 쪽은 회전할 수 없습니다)');
+  if(ok.length) afterChange();
 }
 function selectPage(i){ cur = i; sel = null; buildList(); renderMain(); }
 $('#bBlank').onclick = () => {
@@ -397,7 +439,7 @@ $('#bBlank').onclick = () => {
   pages.splice(at, 0, {id: uid++, doc: -1, idx: 0, intrinsic: 0, rot: 0, baseW: d.w, baseH: d.h, annots: [], thumbs: {}});
   cur = at; afterChange();
 };
-$('#bClear').onclick = () => { if(pages.length && !confirm('열린 PDF와 편집 내용을 모두 지울까요?')) return; pages = []; docs.length = 0; cur = -1; sel = null; afterChange(); };
+$('#bClear').onclick = () => { if(pages.length && !confirm('열린 PDF와 편집 내용을 모두 지울까요?')) return; pages = []; docs.length = 0; cur = -1; sel = null; msel.clear(); undoReset(); afterChange(); };
 
 /* 글자 층: 그림 위에 투명한 글자를 얹어 드래그 선택·복사·검색(Ctrl+F)이 되게 한다. 가림 박스·결론 가림이 있는 쪽은 아래 글자가 새지 않도록 만들지 않는다 */
 async function renderTL(pg, p, tok){
@@ -525,7 +567,7 @@ function setTool(t){
   if(TOOL_COLOR[t]) $('#color').value = TOOL_COLOR[t];
   if(t !== 'hl') document.querySelectorAll('.hlc').forEach(b => b.classList.remove('on'));
 }
-document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool === tool ? 'select' : b.dataset.tool));   // 켜진 도구를 다시 누르면 끄고 선택 상태로 돌아간다(선택 단추 대신)
 // 형광펜 자주 쓰는 5색: 누르면 형광펜 도구로 바꾸고 그 색을 바로 쓴다
 document.querySelectorAll('.hlc').forEach(b => b.onclick = () => {
   setTool('hl'); $('#color').value = b.dataset.hl;
@@ -615,7 +657,8 @@ $('#bDel').onclick = () => {   // 현재 쪽에 넣은 글자·가림 박스·�
 };
 addEventListener('keydown', e => {
   const ae = document.activeElement;
-  if(ae && (ae.isContentEditable || ae.tagName === 'INPUT')) return;
+  if(ae && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+  if((e.ctrlKey || e.metaKey) && !e.altKey && /^[zy]$/i.test(e.key)){ e.preventDefault(); if(e.key.toLowerCase() === 'y' || e.shiftKey) redoDo(); else undoDo(); return; }
   if(e.key === 'Delete' || e.key === 'Backspace'){ delSel(); e.preventDefault(); }
   else if(e.key === 'Escape'){ setTool('select'); pendingImg = null; select(null); }
 });
@@ -918,6 +961,44 @@ $('#cvOk').onclick = async () => {
 let restoreOpen = false;
 function autoDone(){}
 async function discardRestore(){}
+/* ---------- 되돌리기 / 다시 실행 ----------
+   쪽·입력 항목의 구조를 '바뀔 때마다' 통째로 찍어 두고(최대 50단계) 한 단계씩 되돌린다. 바뀜은 afterChange 와 화면 조작(눌렀을 때·뗀 뒤 0.35초)에서 감지한다.
+   파일을 새로 열거나 전체 비우기를 하면 기록을 비운다(열어 둔 문서 번호가 달라지므로). 저장한 파일 내용은 영향받지 않는다 */
+const undoStack = [], redoStack = [];
+let lastSnap = null, undoBusy = false, undoTimer = 0;
+const undoSig = () => JSON.stringify(pages.map(p => [p.id, p.doc, p.idx, p.rot, p.annots.map(a => ({...a, bytes: a.bytes ? a.bytes.length : 0, url: 0}))]));
+const clonePages = ps => ps.map(p => ({...p, annots: p.annots.map(a => ({...a}))}));
+function snapNow(sg){ return {cur, pages: clonePages(pages), sig: sg}; }
+function updUndoBtn(){ $('#bUndo').disabled = !undoStack.length; $('#bRedo').disabled = !redoStack.length; }
+function undoReset(){ undoStack.length = 0; redoStack.length = 0; lastSnap = null; updUndoBtn(); }
+function undoCheck(){
+  if(undoBusy) return;
+  const sg = undoSig();
+  if(!lastSnap){ lastSnap = snapNow(sg); return; }
+  if(sg === lastSnap.sig) return;
+  undoStack.push(lastSnap); if(undoStack.length > 50) undoStack.shift();
+  redoStack.length = 0;
+  lastSnap = snapNow(sg); updUndoBtn();
+}
+function undoApply(s){
+  undoBusy = true;
+  pages = clonePages(s.pages); msel.clear(); sel = null;
+  cur = pages.length ? Math.max(0, Math.min(s.cur, pages.length - 1)) : -1;
+  afterChange();
+  lastSnap = s; undoBusy = false; updUndoBtn();
+}
+function undoDo(){
+  undoCheck();   // 아직 감지되지 않은 마지막 변경이 있으면 먼저 기록에 넣는다
+  const s = undoStack.pop(); if(!s) return;
+  redoStack.push(lastSnap); undoApply(s); status('되돌렸습니다');
+}
+function redoDo(){
+  const s = redoStack.pop(); if(!s) return;
+  undoStack.push(lastSnap); undoApply(s); status('다시 실행했습니다');
+}
+$('#bUndo').onclick = undoDo; $('#bRedo').onclick = redoDo;
+addEventListener('pointerdown', () => undoCheck(), true);
+['pointerup', 'keyup', 'input', 'focusout'].forEach(t => addEventListener(t, () => { clearTimeout(undoTimer); undoTimer = setTimeout(undoCheck, 350); }, true));
 setTool('select');
 </script>
 </body>
