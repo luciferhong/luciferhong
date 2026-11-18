@@ -778,7 +778,20 @@ async function savePdf(){
   }
   const btn = $('#bSave'); btn.disabled = true; status('저장 중...'); busyOn('저장 중...');
   try{
-    const out = await PDFDocument.create(); out.registerFontkit(fontkit);
+    // 원본 데이터(책갈피·쪽 번호 표기·양식·메타정보·태그 구조 등)를 그대로 보존하려면 새 문서에 쪽만 복사하지 않고 원본 문서를 바탕으로 저장한다.
+    // 단, pdf-lib 는 안 쓰는 쪽을 정리하지 못한다 → 원본 쪽을 지웠을 때는 용량이 그대로이고, 가림 쪽은 아래 원본 내용이 파일에 남는다.
+    // 그래서 원본 쪽을 하나도 지우지 않았고 가림(이미지 변환) 쪽도 없을 때만 이 방식을 쓴다(아니면 예전처럼 쪽만 새 문서에 복사).
+    const bd = pages.find(p => p.doc >= 0), baseIdx = bd ? bd.doc : -1;
+    let out = null, baseOrig = null; const baseUsed = new Set();
+    if(baseIdx >= 0 && !pages.some(needFlat)){
+      const used = new Set(pages.filter(p => p.doc === baseIdx).map(p => p.idx));
+      try{
+        const b = await PDFDocument.load(docs[baseIdx].bytes, {ignoreEncryption: true, throwOnInvalidObject: false});
+        if(!b.isEncrypted && used.size === b.getPageCount()){ out = b; baseOrig = b.getPages(); }
+      }catch(e){ out = null; }
+    }
+    if(!out) out = await PDFDocument.create();
+    out.registerFontkit(fontkit);
     const allText = pages.filter(p => !needFlat(p)).map(p => p.annots.filter(a => a.type === 'text').map(a => a.text).join('')).join('');
     const font = allText.trim() ? await getFont(out, allText) : null;
     let flatCount = 0;
@@ -787,9 +800,11 @@ async function savePdf(){
     for(let i = 0; i < pages.length;){
       const first = pages[i];
       if(needFlat(first) || first.doc < 0){ i++; continue; }
+      const isBase = p => baseOrig && p.doc === baseIdx && !baseUsed.has(p.idx);   // 원본 문서의 쪽을 처음 쓰는 경우는 복사 없이 그 쪽 그대로 쓴다
+      if(isBase(first)){ copied.set(first.id, baseOrig[first.idx]); baseUsed.add(first.idx); i++; continue; }
       const run = [first], seen = new Set([first.idx]);
       let j = i + 1;
-      while(j < pages.length && pages[j].doc === first.doc && !needFlat(pages[j]) && !seen.has(pages[j].idx)){ run.push(pages[j]); seen.add(pages[j].idx); j++; }
+      while(j < pages.length && pages[j].doc === first.doc && !needFlat(pages[j]) && !seen.has(pages[j].idx) && !isBase(pages[j])){ run.push(pages[j]); seen.add(pages[j].idx); j++; }
       const d = docs[first.doc];
       status('쪽 복사 중... (' + (i + 1) + '/' + pages.length + ')');
       await new Promise(r => setTimeout(r));   // 화면이 숨 쉴 틈
@@ -798,6 +813,7 @@ async function savePdf(){
       run.forEach((p, k) => copied.set(p.id, cp[k]));
       i = j;
     }
+    if(baseOrig){ for(let k = out.getPageCount() - 1; k >= 0; k--) out.removePage(k); }   // 원본 쪽을 모두 빼고 아래에서 원하는 순서로 다시 넣는다(문서 정보는 그대로)
     for(const pg of pages){
       if(needFlat(pg)){
         const {w, h} = dims(pg);
