@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>단체문자 연락처 묶음</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1c1f26; --sub:#6b7280; --line:#e2e5ea; --pri:#2563eb; --ok:#16a34a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1e2127; --text:#e8eaee; --sub:#9aa1ad; --line:#2f343c; --pri:#5b8def; --ok:#34d399; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,"Malgun Gothic",sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; }
+  h1 { font-size:20px; margin:4px 0 12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  textarea { width:100%; height:180px; resize:vertical; border:1px solid var(--line); border-radius:8px; padding:10px; background:var(--bg); color:var(--text); font:14px/1.4 Consolas,monospace; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  label { color:var(--sub); font-size:14px; }
+  input[type=number] { width:70px; padding:6px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); }
+  button { border:0; border-radius:8px; padding:8px 14px; background:var(--pri); color:#fff; font-size:14px; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--pri); border:1px solid var(--pri); }
+  button.done { background:var(--ok); }
+  .stat { color:var(--sub); font-size:14px; margin:4px 0 12px; }
+  .grp-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+  .grp-head b { font-size:15px; }
+  .grp-head span { color:var(--sub); font-size:13px; margin-left:6px; }
+  .out { width:100%; height:84px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>단체문자 연락처 묶음</h1>
+  <div class="card">
+    <textarea id="src" placeholder="연락처를 여기에 붙여넣기 (엑셀 열 복사 그대로)"></textarea>
+    <div class="row">
+      <label>묶음당 <input type="number" id="size" value="30" min="1"> 개</label>
+      <label><input type="checkbox" id="dedupe" checked> 중복 제거</label>
+      <label><input type="checkbox" id="hyphen" checked> 하이픈(-) 유지</label>
+      <button class="ghost" id="clear">지우기</button>
+    </div>
+  </div>
+  <div class="stat" id="stat"></div>
+  <div id="groups"></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const PHONE = /0\d{1,2}[-.\s]?\d{3,4}[-.\s]?\d{4}/g;
+
+function normalize(raw, keepHyphen) {
+  const d = raw.replace(/\D/g, '');
+  if (!keepHyphen) return d;
+  if (d.length === 11) return d.replace(/(\d{3})(\d{4})(\d{4})/, '$1-$2-$3');
+  if (d.length === 10) return d.startsWith('02')
+    ? d.replace(/(\d{2})(\d{4})(\d{4})/, '$1-$2-$3')
+    : d.replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3');
+  return d.replace(/(\d{2,3})(\d{3,4})(\d{4})$/, '$1-$2-$3');
+}
+
+function render() {
+  const text = $('src').value;
+  const size = Math.max(1, parseInt($('size').value) || 30);
+  const keep = $('hyphen').checked;
+  let nums = [];
+  text.split(/\r?\n/).forEach(line => {
+    (line.match(PHONE) || []).forEach(m => nums.push(normalize(m, keep)));
+  });
+  const total = nums.length;
+  if ($('dedupe').checked) nums = [...new Set(nums)];
+  const dup = total - nums.length;
+
+  const box = $('groups');
+  box.innerHTML = '';
+  if (!nums.length) { $('stat').textContent = text.trim() ? '전화번호를 찾지 못했습니다.' : ''; return; }
+
+  const n = Math.ceil(nums.length / size);
+  $('stat').textContent = `총 ${nums.length}개 → ${size}개씩 ${n}개 묶음` + (dup ? ` (중복 ${dup}개 제거)` : '');
+
+  for (let i = 0; i < n; i++) {
+    const part = nums.slice(i * size, (i + 1) * size);
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<div class="grp-head"><div><b>묶음 ${i + 1}</b><span>${part.length}개</span></div><button>복사</button></div><textarea class="out" readonly></textarea>`;
+    const ta = card.querySelector('textarea');
+    ta.value = part.join(',');
+    const btn = card.querySelector('button');
+    btn.onclick = async () => {
+      try { await navigator.clipboard.writeText(ta.value); }
+      catch (e) { ta.select(); document.execCommand('copy'); }
+      btn.textContent = '복사됨 ✓'; btn.classList.add('done');
+      setTimeout(() => { btn.textContent = '복사'; btn.classList.remove('done'); }, 1500);
+    };
+    ta.onclick = () => ta.select();
+    box.appendChild(card);
+  }
+}
+
+['input', 'change'].forEach(ev => {
+  $('src').addEventListener(ev, render);
+  $('size').addEventListener(ev, render);
+  $('dedupe').addEventListener(ev, render);
+  $('hyphen').addEventListener(ev, render);
+});
+$('clear').onclick = () => { $('src').value = ''; render(); $('src').focus(); };
+</script>
+</body>
+</html>
