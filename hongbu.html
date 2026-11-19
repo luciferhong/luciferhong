@@ -1308,6 +1308,16 @@
         pointer-events: none; /* 카드 사이 빈틈은 지도가 받는다 */
       }
       #gnPanel[hidden] { display: none; }
+      #gnPanel .gn-row { display: flex; align-items: stretch; gap: 8px; max-width: 1100px; }
+      #gnPanel .gn-row .gn-cards { flex: 1 1 auto; min-width: 0; }
+      #gnPanel .gn-cmpgo {
+        flex: 0 0 auto; align-self: center; margin: 0; padding: 8px 12px; border: 0; border-radius: 10px;
+        background: #2d5da7; color: #fff; font-size: 13px; font-weight: 700; line-height: 1.35; cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); pointer-events: auto; transform: none;
+      }
+      #gnPanel .gn-cmpgo:hover { background: #244b88; color: #fff; transform: none; }
+      #gnPanel .gn-cmpgo:disabled { background: #9aa5b5; cursor: default; }
+      @media (max-width: 700px) { #gnPanel .gn-row { flex-direction: column; } #gnPanel .gn-cmpgo { align-self: flex-start; padding: 5px 10px; } #gnPanel .gn-cmpgo br { display: none; } }
       #gnPanel .gn-cards {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4008,6 +4018,9 @@
             <label><input type="checkbox" id="toggleRouteMemo" checked />경로</label>
             <label><input type="checkbox" id="togglePolygonMemo" checked />면적그리기</label>
           </div>
+          <div class="tb-row">
+            <label title="불러온 시세지도Ver2 시세를 마커 아래에 평형별 가로 표로 표시(줌 15 이상)"><input type="checkbox" id="toggleSv2Rows" />시세지도Ver2 시세</label>
+          </div>
           <!-- 실거래 알림 단지 (2026-10-13, 2026-10-16 hongbutest 에 합침) — 켤 때만 등록 단지 마커에 🔔 배지. 기본 꺼짐.
                저장·복원은 uiState(collectUIState 가 input[id] 를 다 모은다)·'레이어 전부 끄기'·배지 수가 저절로 따라온다. 동작은 __realAlertInit -->
           <div class="tb-row">
@@ -4078,6 +4091,7 @@
           <div class="tb-sec-t">시세지도Ver2</div>
           <button id="siseVer2ImportBtn" type="button" class="tb-item">파일 불러오기</button>
           <button id="siseVer2DriveImportBtn" type="button" class="tb-item">구글드라이브에서 불러오기</button>
+          <div style="font-size:11px;color:#64748b;margin:2px 0;">시세 표시는 [레이어] → 내 기록 → '시세지도Ver2 시세'에서 체크하세요.</div>
           <button id="siseVer2ResetBtn" type="button" class="tb-item tb-danger">시세 데이터 초기화</button>
         </div>
         <div class="tb-sec">
@@ -4657,6 +4671,8 @@
                   const clearRequest = store.clear(); // ✅ 전체 삭제
 
                   clearRequest.onsuccess = function () {
+                    window.__sv2.rows = new Map();
+                    if (document.getElementById("toggleSv2Rows")?.checked) __sv2Redraw();
                     alert("✅ 시세지도Ver2 데이터가 초기화되었습니다.");
                   };
 
@@ -8443,6 +8459,8 @@
           applyMemoIconLazy(String(apartment.id), markerElement);
         })(); // ✅ 마커 클릭 시 가로 길이 확장 → 3초 후 다시 축소
 
+        try { __sv2AppendRows(markerElement, apartment.id); } catch (e) {} // 시세지도Ver2 가로 시세표(체크 시)
+
         // 단지 좌표 = 마커 정중앙(2026-10-28 사용자 요청). 예전 (10, 30) 은 아래 줄 왼쪽 끝이라 상자가 좌표 오른쪽 위로 뻗었다.
         //   마커 = 폭 95(85 + 좌우 패딩 5) × 높이 40(두 줄 × [줄높이 16 + 위아래 패딩 2]). 호버로 늘어날 때는 기준점 그대로.
         const marker = new naver.maps.Marker({
@@ -8923,6 +8941,7 @@
       })();
 
       function updateMarkers(bounds) {
+        try { __sv2ApplyZoom(); } catch (e) {}
         const showApartments = document.getElementById("toggleApartments").checked;
         if (!showApartments) {
           Object.values(apartmentMarkers).forEach((marker) => {
@@ -26586,7 +26605,7 @@ const originalBase64 = event.target.result;
           p = document.createElement("div");
           p.id = "gnPanel";
           p.hidden = true;
-          let h = '<div class="gn-cards">';
+          let h = '<div class="gn-row"><div class="gn-cards">';
           for (let i = 0; i < 3; i++) {
             h +=
               '<div class="gn-card" data-i="' + i + '" style="--c:' + COLORS[i] + '">' +
@@ -26595,10 +26614,17 @@ const originalBase64 = event.target.result;
               '<input type="search" class="gn-in" placeholder="아파트명 검색…" autocomplete="off" enterkeyhint="search">' +
               '<div class="gn-sel"></div></div>';
           }
-          h += '</div><div class="gn-sum" hidden></div>';
+          h += '</div><button type="button" class="gn-cmpgo" disabled title="고른 단지를 우측 단지비교창에 넣어 엽니다">선택 단지<br>단지비교 보기</button></div>';
+          h += '<div class="gn-sum" hidden></div>';
           h += cmpBoxHtml("fold");
           p.innerHTML = h;
           stop(p, STOP_EVS);
+          // 강남km 는 켠 채로 두고 우측 비교창만 열어 고른 단지를 넣는다(2026-11-19 사용자 지정)
+          p.querySelector(".gn-cmpgo").addEventListener("click", () => {
+            const list = G.sel.filter((s) => s && s.id != null).map((s) => ({ id: s.id, name: s.name }));
+            if (!list.length) return;
+            window.__cmpAddMany?.(list);
+          });
           cmpSetup(p.querySelector(".gn-cmp"), cmpRender, window.innerWidth <= 700); // 폰은 지도를 덮지 않게 접힌 채로
           cmpPanelDrag(p.querySelector(".gn-cmp"));
           p.querySelectorAll(".gn-card").forEach((card) => {
@@ -26646,6 +26672,8 @@ const originalBase64 = event.target.result;
               sel.title = "";
             }
           });
+          const go = p.querySelector(".gn-cmpgo");
+          if (go) go.disabled = !G.sel.some((s) => s && s.id != null);
           const sum = p.querySelector(".gn-sum");
           const ds = G.sel.map((s) => (s ? kmTo(s.lat, s.lng) : null));
           const valid = ds.filter((d) => d != null);
@@ -27821,8 +27849,9 @@ const originalBase64 = event.target.result;
               });
 
               transaction.oncomplete = function () {
-                alert("✅ 시세 데이터를 성공적으로 가져왔습니다.");
                 db.close(); // ✅ DB 연결 정리
+                __sv2Reload().then(() => { if (document.getElementById("toggleSv2Rows")?.checked) __sv2Redraw(); });
+                alert("✅ 시세 데이터를 성공적으로 가져왔습니다.");
                 // ❗ 시세지도 활성화 상태일 경우, 마커 다시 그리기
               };
 
@@ -27835,6 +27864,150 @@ const originalBase64 = event.target.result;
               console.error("❌ Failed to initialize hongbu DB:", error);
             });
       }
+
+      // ── 시세지도Ver2 가로 시세표 (마커 아래 평형별 한 줄: 84) 35.0/10.4) ──────────────────────
+      // 가져온 importSiseVer2 를 메모리(id → 행)로 올려 두고, '마커에 시세 표시'를 켜면 단지 마커 아래에 붙인다.
+      // 색은 시세지도의 금액대 색(드라이브 sise/_settings.json 의 chartColor)을 가져오기 때 함께 받아 쓴다.
+      // 줌 15 미만에서는 body 클래스로 숨긴다(마커가 빽빽해 겹침).
+      window.__sv2 = { rows: new Map(), colors: null, loaded: false };
+      (function () {
+        try { const c = JSON.parse(localStorage.getItem("hongbuSv2PriceColor") || "null"); if (Array.isArray(c) && c.length) window.__sv2.colors = c; } catch (e) {}
+        const st = document.createElement("style");
+        st.textContent =
+          ".sv2-rows{position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:5px;width:max-content;min-width:100%;" +
+          "display:grid;grid-template-columns:auto auto auto auto auto;row-gap:3px;pointer-events:none;}" +
+          ".sv2-rows>div{display:grid;grid-column:1/-1;grid-template-columns:subgrid;column-gap:3px;white-space:nowrap;padding:1px 3px;" +
+          "line-height:14px;font-size:11px;font-weight:bold;font-variant-numeric:tabular-nums;border-radius:3px;box-shadow:1px 2px 3px rgba(0,0,0,.3);}" +
+          "body.sv2-lowzoom .sv2-rows{display:none;}";
+        document.head.appendChild(st);
+      })();
+      function __sv2ExtractPrice(text) { // siseVer2 parsePriceDataFromTable 의 extractPrice 와 같은 규칙
+        if (!text || !String(text).trim()) return NaN;
+        const inB = String(text).match(/\(([^)]*)\)/);
+        if (inB && inB[1]) { const n = parseFloat(inB[1].replace(/[^\d.]/g, "")); if (!isNaN(n)) return n; }
+        const cleaned = String(text).replace(/\([^)]*\)/g, "").trim();
+        if (!cleaned) return NaN;
+        return parseFloat(cleaned.replace(/[^\d.]/g, ""));
+      }
+      function __sv2ParseText(text) {
+        const out = [];
+        String(text || "").split("\n").forEach((line) => {
+          const c = line.split("\t");
+          if (c.length < 2) return;
+          const maemae = __sv2ExtractPrice(c[1]);
+          if (isNaN(maemae)) return;
+          out.push({ pyeong: (c[0] || "").trim(), maemae, maemaeD: (c[1] || "").trim(), jeonse: __sv2ExtractPrice(c[2]), jeonseD: (c[2] || "").trim(), etc: (c[3] || "").trim() });
+        });
+        return out;
+      }
+      function __sv2Color(price) { // siseVer2 getColorByPrice 와 같은 규칙
+        const fb = ["#000000", "#454648", "#474C4F", "#FF0000", "#FF6600", "#FFFF00", "#92D050", "#00B050", "#00B0F0", "#0070C0", "#000099", "#7030A0", "#CC3399", "#FF66CC"];
+        const s = window.__sv2.colors;
+        const f = Math.floor(price);
+        if (Array.isArray(s) && s.length) {
+          const exact = s.find((p) => p.price === f);
+          if (exact) return { bg: exact.bgColor, text: exact.textColor };
+          const sorted = [...s].sort((a, b) => a.price - b.price);
+          if (f < sorted[0].price) return { bg: sorted[0].bgColor, text: sorted[0].textColor };
+          for (let i = sorted.length - 1; i >= 0; i--) if (sorted[i].price <= f) return { bg: sorted[i].bgColor, text: sorted[i].textColor };
+        }
+        return { bg: fb[Math.min(Math.max(f - 3, 0), fb.length - 1)], text: "#ffffff" };
+      }
+      function __sv2Fmt(disp, v) {
+        if (v === undefined || v === null || isNaN(v)) return "-";
+        if (disp) return String(disp).replace(/(\d+\.?\d*)/g, (m) => parseFloat(m).toFixed(1));
+        return Number(v).toFixed(1);
+      }
+      function __sv2AppendRows(markerElement, aptId) {
+        if (!document.getElementById("toggleSv2Rows")?.checked) return;
+        const rows = window.__sv2.rows.get(String(aptId));
+        if (!rows || !rows.length) return;
+        const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        const cell = (t, al) => `<span style="text-align:${al};white-space:nowrap">${esc(t)}</span>`;
+        const box = document.createElement("div");
+        box.className = "sv2-rows";
+        rows.forEach((d) => {
+          const col = __sv2Color(d.maemae);
+          const row = document.createElement("div");
+          row.style.background = col.bg;
+          row.style.color = col.text;
+          row.innerHTML = cell(d.pyeong + ")", "right") + cell(__sv2Fmt(d.maemaeD, d.maemae), "right") + cell("/", "center") + cell(__sv2Fmt(d.jeonseD, d.jeonse), "left") + cell(d.etc ? "/" + d.etc : "", "left");
+          box.appendChild(row);
+        });
+        markerElement.appendChild(box);
+      }
+      function __sv2ApplyZoom() {
+        const z = window.map && window.map.getZoom ? window.map.getZoom() : 99;
+        document.body.classList.toggle("sv2-lowzoom", z < 15);
+      }
+      // importSiseVer2 → 메모리. 끝나면 마커를 다시 그린다(체크 상태일 때)
+      function __sv2Reload() {
+        return initIndexedDB().then((db) => {
+          if (!db.objectStoreNames.contains("importSiseVer2")) { db.close(); return; }
+          return new Promise((resolve) => {
+            const req = db.transaction(["importSiseVer2"], "readonly").objectStore("importSiseVer2").getAll();
+            req.onsuccess = () => {
+              const m = new Map();
+              (req.result || []).forEach((it) => {
+                const idType = String(it.idType || "");
+                const id = String(it.id != null ? it.id : idType.split("-")[0]);
+                const type = it.type || idType.split("-")[1] || "시세1";
+                if (type !== "시세1") return;
+                const parsed = __sv2ParseText(it.text);
+                if (parsed.length) m.set(id, parsed);
+              });
+              window.__sv2.rows = m;
+              window.__sv2.loaded = true;
+              db.close();
+              resolve();
+            };
+            req.onerror = () => { db.close(); resolve(); };
+          });
+        }).catch((e) => console.warn("시세지도Ver2 시세 적재 실패:", e));
+      }
+      function __sv2Redraw() {
+        if (!window.map || typeof window.map.getBounds !== "function") return; // 지도 생성 전
+        Object.values(apartmentMarkers).forEach((marker) => { if (marker instanceof naver.maps.Marker) marker.setMap(null); });
+        apartmentMarkers = {};
+        __aptMarkerPoolFlush();
+        updateMarkers(window.map.getBounds());
+      }
+      // 드라이브 sise/_settings.json 의 금액대 색만 받는다(연식 색은 쓰지 않음)
+      async function __sv2LoadColorsFromDrive(siseFolderId) {
+        try {
+          const r = await gapi.client.drive.files.list({
+            q: `name='_settings.json' and '${siseFolderId}' in parents and trashed=false`,
+            fields: "files(id)",
+            pageSize: 1,
+          });
+          const f = (r.result.files || [])[0];
+          if (!f) return;
+          const j = await __driveReadSggFile(f.id);
+          const s = j && j.chartColor && j.chartColor.settings;
+          if (Array.isArray(s) && s.length) {
+            window.__sv2.colors = s;
+            try { localStorage.setItem("hongbuSv2PriceColor", JSON.stringify(s)); } catch (e) {}
+          }
+        } catch (e) { console.warn("시세지도Ver2 금액대 색 가져오기 실패:", e); }
+      }
+      document.getElementById("toggleSv2Rows").addEventListener("change", async (e) => {
+        try { localStorage.setItem("hongbuSv2Rows", e.target.checked ? "1" : "0"); } catch (_) {}
+        if (e.target.checked && !window.__sv2.loaded) await __sv2Reload();
+        __sv2Redraw();
+      });
+      try {
+        if (localStorage.getItem("hongbuSv2Rows") === "1") {
+          document.getElementById("toggleSv2Rows").checked = true;
+          // 지도가 아직 없을 수 있다 — 준비될 때까지 0.5초 간격(최대 20회)으로 기다렸다가 한 번 다시 그린다
+          __sv2Reload().then(() => {
+            let n = 0;
+            const t = setInterval(() => {
+              if (window.map && typeof window.map.getBounds === "function") { clearInterval(t); try { __sv2Redraw(); } catch (e) {} }
+              else if (++n >= 20) clearInterval(t);
+            }, 500);
+          });
+        }
+      } catch (_) {}
 
       // ☁️ 드라이브에서 siseVer2 시세 가져오기 — HongbuMemo/sise/{sgg5}_{시도}_{시군구}_sise.json 을
       // 시군구 선택 패널로 골라서 가져온다 (siseVer2 동기화 패널과 동일 개념)
@@ -27857,6 +28030,7 @@ const originalBase64 = event.target.result;
           const siseFolder = (folderResp.result.files || [])[0];
           const regions = [];
           if (siseFolder) {
+            await __sv2LoadColorsFromDrive(siseFolder.id); // 금액대 색 (실패해도 계속)
             const listResp = await gapi.client.drive.files.list({
               q: `'${siseFolder.id}' in parents and trashed=false`,
               fields: "files(id,name)",
@@ -30562,6 +30736,22 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           window.__msSyncCard?.();
         };
         window.__cmpClose = function () { C.open = false; C.el?.classList.remove("on"); document.body.classList.remove("cmp-open"); window.__msSyncCard?.(); };
+        // 단지 여러 개를 넣어 연다(강남km 의 [선택 단지 단지비교 보기]). iframe 이 아직 안 떠 있으면 뜰 때까지 기다린다.
+        window.__cmpAddMany = function (list) {
+          window.__cmpOpen();
+          // 비교 화면을 매번 새로 불러온다 — 불러올 때 고른 단지는 비워진다(최근 비교 목록으로만 남음). 이렇게 하면 캐시된 옛 화면이어도 확실히 비워진다.
+          let done = false;
+          const fill = () => {
+            if (done) return;
+            const w = C.frame?.contentWindow;
+            if (!(w && w.cmpAdd && /[?&]r=/.test(w.location.search))) return;   // 방금 새로 연 화면일 때만
+            done = true;
+            try { list.forEach((d) => w.cmpAdd(d.id, d.name)); } catch (_) {}
+          };
+          C.frame.addEventListener("load", fill);
+          C.frame.src = "siseCompare.html?embed=1&r=" + Date.now();
+          C.loaded = true;
+        };
         window.__cmpIsOpen = () => C.open;
         window.__cmpToggle = () => (C.open ? window.__cmpClose() : window.__cmpOpen());
         addEventListener("resize", place);

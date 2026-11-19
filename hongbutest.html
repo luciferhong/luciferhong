@@ -1308,6 +1308,16 @@
         pointer-events: none; /* 카드 사이 빈틈은 지도가 받는다 */
       }
       #gnPanel[hidden] { display: none; }
+      #gnPanel .gn-row { display: flex; align-items: stretch; gap: 8px; max-width: 1100px; }
+      #gnPanel .gn-row .gn-cards { flex: 1 1 auto; min-width: 0; }
+      #gnPanel .gn-cmpgo {
+        flex: 0 0 auto; align-self: center; margin: 0; padding: 8px 12px; border: 0; border-radius: 10px;
+        background: #2d5da7; color: #fff; font-size: 13px; font-weight: 700; line-height: 1.35; cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); pointer-events: auto; transform: none;
+      }
+      #gnPanel .gn-cmpgo:hover { background: #244b88; color: #fff; transform: none; }
+      #gnPanel .gn-cmpgo:disabled { background: #9aa5b5; cursor: default; }
+      @media (max-width: 700px) { #gnPanel .gn-row { flex-direction: column; } #gnPanel .gn-cmpgo { align-self: flex-start; padding: 5px 10px; } #gnPanel .gn-cmpgo br { display: none; } }
       #gnPanel .gn-cards {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -26595,7 +26605,7 @@ const originalBase64 = event.target.result;
           p = document.createElement("div");
           p.id = "gnPanel";
           p.hidden = true;
-          let h = '<div class="gn-cards">';
+          let h = '<div class="gn-row"><div class="gn-cards">';
           for (let i = 0; i < 3; i++) {
             h +=
               '<div class="gn-card" data-i="' + i + '" style="--c:' + COLORS[i] + '">' +
@@ -26604,10 +26614,17 @@ const originalBase64 = event.target.result;
               '<input type="search" class="gn-in" placeholder="아파트명 검색…" autocomplete="off" enterkeyhint="search">' +
               '<div class="gn-sel"></div></div>';
           }
-          h += '</div><div class="gn-sum" hidden></div>';
+          h += '</div><button type="button" class="gn-cmpgo" disabled title="고른 단지를 우측 단지비교창에 넣어 엽니다">선택 단지<br>단지비교 보기</button></div>';
+          h += '<div class="gn-sum" hidden></div>';
           h += cmpBoxHtml("fold");
           p.innerHTML = h;
           stop(p, STOP_EVS);
+          // 강남km 는 켠 채로 두고 우측 비교창만 열어 고른 단지를 넣는다(2026-11-19 사용자 지정)
+          p.querySelector(".gn-cmpgo").addEventListener("click", () => {
+            const list = G.sel.filter((s) => s && s.id != null).map((s) => ({ id: s.id, name: s.name }));
+            if (!list.length) return;
+            window.__cmpAddMany?.(list);
+          });
           cmpSetup(p.querySelector(".gn-cmp"), cmpRender, window.innerWidth <= 700); // 폰은 지도를 덮지 않게 접힌 채로
           cmpPanelDrag(p.querySelector(".gn-cmp"));
           p.querySelectorAll(".gn-card").forEach((card) => {
@@ -26655,6 +26672,8 @@ const originalBase64 = event.target.result;
               sel.title = "";
             }
           });
+          const go = p.querySelector(".gn-cmpgo");
+          if (go) go.disabled = !G.sel.some((s) => s && s.id != null);
           const sum = p.querySelector(".gn-sum");
           const ds = G.sel.map((s) => (s ? kmTo(s.lat, s.lng) : null));
           const valid = ds.filter((d) => d != null);
@@ -30717,6 +30736,22 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           window.__msSyncCard?.();
         };
         window.__cmpClose = function () { C.open = false; C.el?.classList.remove("on"); document.body.classList.remove("cmp-open"); window.__msSyncCard?.(); };
+        // 단지 여러 개를 넣어 연다(강남km 의 [선택 단지 단지비교 보기]). iframe 이 아직 안 떠 있으면 뜰 때까지 기다린다.
+        window.__cmpAddMany = function (list) {
+          window.__cmpOpen();
+          // 비교 화면을 매번 새로 불러온다 — 불러올 때 고른 단지는 비워진다(최근 비교 목록으로만 남음). 이렇게 하면 캐시된 옛 화면이어도 확실히 비워진다.
+          let done = false;
+          const fill = () => {
+            if (done) return;
+            const w = C.frame?.contentWindow;
+            if (!(w && w.cmpAdd && /[?&]r=/.test(w.location.search))) return;   // 방금 새로 연 화면일 때만
+            done = true;
+            try { list.forEach((d) => w.cmpAdd(d.id, d.name)); } catch (_) {}
+          };
+          C.frame.addEventListener("load", fill);
+          C.frame.src = "siseCompare.html?embed=1&r=" + Date.now();
+          C.loaded = true;
+        };
         window.__cmpIsOpen = () => C.open;
         window.__cmpToggle = () => (C.open ? window.__cmpClose() : window.__cmpOpen());
         addEventListener("resize", place);
