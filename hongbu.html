@@ -34519,7 +34519,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             p.textContent = __ljState.why;
             p.style.color = "#9a5b1f";
           } else {
-            p.textContent = "아직 기록한 매물이 없습니다.\n아래 ＋ 버튼으로 시작하세요.";
+            p.textContent = "아직 기록한 매물이 없습니다.\n아래 ＋ 새 매물 기록으로 시작하세요.";
           }
           body.appendChild(p);
         }
@@ -34559,7 +34559,8 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         bDel.className = "lj-btn dng";
         bDel.textContent = "🗑 구글시트 삭제";
         bDel.onclick = () => __ljDeleteSheet();
-        foot.appendChild(bNew);
+        // 시트가 없거나 못 읽었으면 기록할 곳이 없다 — 새 매물 단추를 숨긴다 (2026-11-20 사용자 지적)
+        if (made) foot.appendChild(bNew);
         // 시트가 이미 있으면 그 배치 하나만 보여 준다 — 없을 때만 둘 중 고르게 한다
         if (made) {
           const h = (__ljState.layout || __LJ_LAY_V) === __LJ_LAY_H;
@@ -36493,11 +36494,20 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         } catch (e) {
           const msg = e?.result?.error?.message || e?.message || "";
           if (!/parse range|Unable to parse|단지정보/i.test(msg)) throw e;
-          const res = await gapi.client.sheets.spreadsheets.values.get({
-            spreadsheetId: sid,
-            range: "'매물'!A1:ZZ5000",
-            valueRenderOption: "UNFORMATTED_VALUE",
-          });
+          let res;
+          try {
+            res = await gapi.client.sheets.spreadsheets.values.get({
+              spreadsheetId: sid,
+              range: "'매물'!A1:ZZ5000",
+              valueRenderOption: "UNFORMATTED_VALUE",
+            });
+          } catch (e2) {
+            // '매물' 탭 자체가 없다 = 만들다 만 시트(탭 이름 바꾸기 전에 중단) 또는 탭 이름을 바꾼 시트 (2026-11-20)
+            const m2 = e2?.result?.error?.message || e2?.message || "";
+            if (/parse range|Unable to parse/i.test(m2) && /매물/.test(m2))
+              throw new Error("시트에 '매물' 탭이 없습니다(만들다 만 시트) — 📄 구글시트 생성을 눌러 다시 만드세요");
+            throw e2;
+          }
           vals = res.result.values || [];
         }
         if (!vals.length) return { cols: [], noId: 0, all: [], noPhotoRow: true, layout: __LJ_LAY_V, picks };
