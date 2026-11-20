@@ -33459,6 +33459,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
             //   다른 시군구 것이면 비운다 — 남겨 두면 엉뚱한 시트에 쓴다.
             if (__ljState.sidSgg5 !== String(ctx?.sgg5 || "")) { __ljState.sid = ""; __ljState.sidSgg5 = ""; }
             __ljState.why = "시트를 읽지 못했습니다 — " + (e?.result?.error?.message || e?.message || e);
+            __ljState.noTab = false;
           }
           return [];
         }
@@ -33472,6 +33473,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           __ljState.layout = r.layout || __LJ_LAY_V; // 이 시군구 시트의 배치(세로형/가로형)
           __ljState.headAt = r.headAt ?? 1;          // 항목명이 있는 줄(매물은 그 다음부터)
           __ljState.why = r.why || "";
+          __ljState.noTab = !!r.noTab; // 시트 파일은 있는데 '매물' 탭이 없음
         }
         return (r.recs || []).filter((x) => String(x.aptId) === String(aptId));
       }
@@ -34540,7 +34542,9 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
              · 시트 있음 → `구글시트 보기({그 배치})` 하나만 — 한 시군구에 시트는 하나다
            예전에는 둘 다 "보기" 라 **없는 것을 '보기' 하라고 말하는 셈**이었고, 만든 직후에는
            '준비 완료 — 시트 열기' 단추까지 따로 띄워서 같은 일을 하는 단추가 둘이 됐다. */
-        const made = !!__ljState.sid;
+        // 읽기가 실패해 sid 를 비웠어도, 이번 세션에 이름까지 확인한 시트가 있으면 "있다" (2026-11-20 —
+        // 파일은 있는데 '생성' 으로 나오고, 눌러 보면 기존 시트가 잡히던 어긋남)
+        const made = !!(__ljState.sid || __ljSheetIdCached(ctx.sgg5));
         const bView = document.createElement("button");
         bView.type = "button";
         bView.className = "lj-btn";
@@ -34560,7 +34564,26 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         bDel.textContent = "🗑 구글시트 삭제";
         bDel.onclick = () => __ljDeleteSheet();
         // 시트가 없거나 못 읽었으면 기록할 곳이 없다 — 새 매물 단추를 숨긴다 (2026-11-20 사용자 지적)
-        if (made) foot.appendChild(bNew);
+        if (made && !__ljState.noTab) foot.appendChild(bNew);
+        if (made && __ljState.noTab) {
+          // 시트 파일은 있는데 '매물' 탭이 없다 — 보기(열어서 확인) + 탭 만들기(배치 고름) + 삭제 (2026-11-20)
+          const bOpen = document.createElement("button");
+          bOpen.type = "button";
+          bOpen.className = "lj-btn";
+          bOpen.textContent = "📄 구글시트 보기";
+          bOpen.onclick = () => window.open(`https://docs.google.com/spreadsheets/d/${__ljState.sid}/edit`, "_blank");
+          foot.appendChild(bOpen);
+          for (const [lay, nm] of [[__LJ_LAY_V, "세로형"], [__LJ_LAY_H, "가로형"]]) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "lj-btn pri";
+            b.textContent = `📄 매물 탭 만들기(${nm})`;
+            b.title = "이 시트의 첫 탭 이름을 '매물'로 바꾸고 틀을 새로 씁니다. 데이터를 되살리는 기능이 아닙니다.";
+            b.onclick = () => __ljMakeMainTab(lay);
+            foot.appendChild(b);
+          }
+          foot.appendChild(bDel);
+        } else
         // 시트가 이미 있으면 그 배치 하나만 보여 준다 — 없을 때만 둘 중 고르게 한다
         if (made) {
           const h = (__ljState.layout || __LJ_LAY_V) === __LJ_LAY_H;
@@ -36504,8 +36527,11 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
           } catch (e2) {
             // '매물' 탭 자체가 없다 = 만들다 만 시트(탭 이름 바꾸기 전에 중단) 또는 탭 이름을 바꾼 시트 (2026-11-20)
             const m2 = e2?.result?.error?.message || e2?.message || "";
-            if (/parse range|Unable to parse/i.test(m2) && /매물/.test(m2))
-              throw new Error("시트에 '매물' 탭이 없습니다(만들다 만 시트) — 📄 구글시트 생성을 눌러 다시 만드세요");
+            if (/parse range|Unable to parse/i.test(m2) && /매물/.test(m2)) {
+              const ne = new Error("시트에 '매물' 탭이 없습니다");
+              ne.noTab = true; // __ljReadRegionRaw 가 알아보고 시트는 있다고 돌려준다
+              throw ne;
+            }
             throw e2;
           }
           vals = res.result.values || [];
@@ -36970,7 +36996,13 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
         //   `'매물'!1:23` 처럼 **행만 지정하면 모든 열**이 오고, values.get 은 값이 있는 데까지만
         //   돌려주므로 열이 100개든 300개든 비용이 같다 (2026-09-28: 배지 한 번에 5초 걸리던 원인).
         let got = specP && sid === specSid ? await specP : undefined;
-        if (got === undefined) got = await __ljReadSheetAll(sid);
+        if (got === undefined) {
+          try { got = await __ljReadSheetAll(sid); } catch (e) {
+            // 시트 파일은 있는데 '매물' 탭이 없다(만들다 만 시트·탭 이름 변경) — "읽기 실패"가 아니라 "시트는 있음" (2026-11-20)
+            if (e?.noTab) return { sid, recs: [], noTab: true, why: "시트에 '매물' 탭이 없습니다 — 아래 매물 탭 만들기로 채우세요" };
+            throw e;
+          }
+        }
         if (got === null) return { sid, recs: [], why: "시트 배치를 알아볼 수 없습니다" };
         const read = got.all;
         const lay = got.layout || __LJ_LAY_V;
@@ -37682,6 +37714,30 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
 
       // lay 를 주면 **없을 때 그 배치로 만든다**. 이미 있으면 그 시트의 배치가 이긴다
       // (둘을 같이 둘 수 없으므로, 바꾸려면 지우고 다시 만들어야 한다 — 2026-09-29 사용자 확정).
+      // 시트 파일은 있는데 '매물' 탭이 없을 때 — 첫 탭을 '매물'로 바꾸고 틀을 새로 쓴다 (2026-11-20)
+      async function __ljMakeMainTab(lay) {
+        const ctx = __ljState.ctx;
+        if (!ctx?.sgg5) return;
+        if (!confirm("이 시트의 첫 탭 이름을 '매물'로 바꾸고 틀을 새로 씁니다.\n첫 탭에 직접 적어 둔 내용이 있으면 사라집니다.\n(데이터를 되살리는 기능이 아닙니다.)\n\n계속할까요?")) return;
+        const foot = __ljPanelEl()?.querySelector("#ljFoot");
+        let prog = null;
+        if (foot) {
+          foot.innerHTML = "";
+          prog = document.createElement("button");
+          prog.type = "button";
+          prog.className = "lj-btn";
+          prog.disabled = true;
+          foot.appendChild(prog);
+        }
+        const setB = (t) => { if (prog) prog.textContent = t; };
+        try {
+          await __ljRetry(() => __ljCreateSheet(ctx, setB, lay), "매물 탭 만들기", setB);
+        } catch (e) {
+          console.error("[lj] 매물 탭 만들기 실패:", e);
+          alert("매물 탭을 만들지 못했습니다.\n" + (e?.result?.error?.message || e?.message || String(e)));
+        }
+        await __ljRenderList(true).catch(() => {});
+      }
       async function __ljViewSheet(lay) {
         const ctx = __ljState.ctx;
         if (!ctx?.sgg5) { alert("이 단지의 시군구를 알 수 없습니다."); return; }
