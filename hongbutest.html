@@ -217,7 +217,7 @@
       #hbSnowToast.show { opacity: 1; transform: translate(-50%, 0); }
       h1.hb-winter #mapleDeco { filter: none; }
       /* ⛄ 클릭: 눈사람 행진 (#mapleFall 안, 함박눈과 함께) */
-      #mapleFall .hb-march { top: calc(100vh - 100px); font-size: 64px; animation: hbMarch 4.2s linear both; z-index: 2; }
+      #mapleFall .hb-march { z-index: 2; }
       #mapleFall .hb-march-in { position: static; display: inline-block; animation: hbHop 0.5s ease-in-out infinite; }
       #mapleFall .hb-trail { animation: hbTrail 1.2s ease-out both; }
       /* 새하얀 솜뭉치 눈송이 — 가장자리는 부드럽게, 옅은 푸른 그림자로 밝은 지도 위에서도 보이게 */
@@ -226,8 +226,9 @@
         background: radial-gradient(circle at 40% 38%, #fff 0%, #fff 55%, rgba(255, 255, 255, 0.85) 75%, rgba(255, 255, 255, 0) 100%);
         filter: drop-shadow(0 0 3px rgba(90, 140, 190, 0.55));
       }
-      @keyframes hbMarch { 0% { left: -90px; } 100% { left: calc(100vw + 90px); } }
-      @keyframes hbHop { 0%, 100% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(-34px) rotate(8deg); } }
+      @keyframes hbMarch { 0% { left: -120px; } 100% { left: calc(100vw + 120px); } }
+      @keyframes hbMarchL { 0% { left: calc(100vw + 120px); } 100% { left: -120px; } }
+      @keyframes hbHop { 0%, 100% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(calc(var(--hop, 34px) * -1)) rotate(8deg); } }
       @keyframes hbTrail { 0% { opacity: 0.9; transform: translateY(0); } 100% { opacity: 0; transform: translateY(24px); } }
       .h1-icon {
         width: 38px;
@@ -4081,9 +4082,10 @@
         }
         // 자연스러운 함박눈: 화면 전체 캔버스에 눈이 하나씩 시간차로 생겨 바람에 살랑이며 내린다.
         // 멀리(작고 느리고 흐린)·가까이(크고 빠르고 또렷한) 눈이 섞여 깊이감이 생기고, 세기가 서서히 올랐다 가라앉는다.
-        var bsCv = null, bsRun = false;
+        var bsCv = null, bsRun = false, bsT0 = 0;
         function bigSnow() {
-          if (bsRun) return;
+          if (bsRun) { bsT0 = Math.max(bsT0, performance.now() - 1500); return; } // 내리는 중에 또 누르면 한창 내리던 때로 되감아 5.5초 더
+
           if (!bsCv) {
             bsCv = document.createElement("canvas");
             bsCv.setAttribute("aria-hidden", "true");
@@ -4096,32 +4098,34 @@
           bsCv.width = w * dp; bsCv.height = h * dp;
           c.setTransform(dp, 0, 0, dp, 0, 0);
           // 부드러운 솜뭉치 스프라이트 한 장(푸른 기 도는 옅은 테두리로 밝은 지도에서도 보임)
+          // 밝은 지도에서도 보이게: 새하얀 알맹이 둘레에 푸른 기 도는 그림자 테두리
           var sp = document.createElement("canvas"); sp.width = sp.height = 64;
-          var sc = sp.getContext("2d"), g = sc.createRadialGradient(32, 32, 0, 32, 32, 30);
-          g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.45, "rgba(255,255,255,0.95)");
-          g.addColorStop(0.8, "rgba(235,245,255,0.45)"); g.addColorStop(1, "rgba(235,245,255,0)");
-          sc.fillStyle = g; sc.beginPath(); sc.arc(32, 32, 30, 0, 6.2832); sc.fill();
-          var DUR = 9000, fl = [], t0 = performance.now(), last = t0, acc = 0;
-          function power(t) { // 0→1 서서히, 중간 유지, 서서히 0
-            if (t < 2000) return t / 2000;
-            if (t < 6500) return 1;
-            return Math.max(0, 1 - (t - 6500) / (DUR - 6500));
-          }
-          function spawn() {
+          var sc = sp.getContext("2d");
+          sc.shadowColor = "rgba(40,90,150,0.85)"; sc.shadowBlur = 9;
+          var g = sc.createRadialGradient(32, 32, 0, 32, 32, 17);
+          g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.7, "rgba(255,255,255,1)"); g.addColorStop(1, "rgba(250,253,255,0.95)");
+          sc.fillStyle = g; sc.beginPath(); sc.arc(32, 32, 16, 0, 6.2832); sc.fill();
+          var DUR = 7000, fl = [], last = performance.now(), acc = 0;
+          bsT0 = last;
+          // 시작하자마자 화면 전체에 이미 눈이 내리고 있게 미리 흩뿌려 두고, 끝은 전체가 한꺼번에 서서히 옅어진다
+          // (위에서만 새로 생기고 멈추면 눈 띠가 아래로 쓸려 내려가는 게 보여 부자연스러웠다)
+          function spawn(anywhere) {
             var z = Math.pow(Math.random(), 1.6); // 작은(먼) 눈이 더 많다
             fl.push({
-              x: rnd(-60, w + 60), y: rnd(-40, -4), z: z,
-              r: 1.6 + z * 7.5, vy: 35 + z * 120 + rnd(-8, 8),
+              x: rnd(-60, w + 60), y: anywhere ? rnd(-20, h) : rnd(-40, -4), z: z,
+              r: 5 + z * 15, vy: (h + 40) / (1.8 - z * 0.9) * 0.25 * rnd(0.95, 1.05), // 먼 눈 ≈7초·가까운 눈 ≈3.6초에 화면 통과
               ph: rnd(0, 6.28), sw: rnd(0.5, 1.4), amp: 6 + z * 26,
-              a: 0.45 + z * 0.5
+              a: 0.75 + z * 0.25
             });
           }
+          for (var k = 0; k < 110; k++) spawn(true);
           (function loop(now) {
-            var dt = Math.min((now - last) / 1000, 0.05), el = now - t0; last = now;
-            var p = power(el);
-            if (el < DUR) { acc += dt * 6 * p; while (acc >= 1) { if (fl.length < 40) spawn(); acc -= 1; } } // 화면에 동시에 최대 40개
-            // 바람: 천천히 방향이 바뀌는 흐름 + 가끔 센 돌풍
-            var wind = Math.sin(el / 1700) * 22 + Math.sin(el / 530) * 9 + (Math.sin(el / 3100) > 0.85 ? 45 : 0);
+            var dt = Math.min((now - last) / 1000, 0.05), el = now - bsT0; last = now;
+            if (el < DUR) { acc += dt * 20 * Math.min(1, (DUR - el) / 2000); while (acc >= 1) { if (fl.length < 140) spawn(false); acc -= 1; } }
+            var gm = el < 500 ? el / 500 : (el > DUR - 2000 ? Math.max(0, (DUR - el) / 2000) : 1); // 전체 투명도: 처음 0.5초 나타나고 마지막 2초 사라짐
+            // 바람: 천천히 방향이 바뀌는 흐름(돌풍도 부드럽게 오르내림)
+            var gust = Math.max(0, Math.sin(el / 2300)); gust = gust * gust * gust * 35;
+            var wind = Math.sin(el / 1700) * 22 + Math.sin(el / 530) * 9 + gust;
             c.clearRect(0, 0, w, h);
             for (var i = fl.length - 1; i >= 0; i--) {
               var f = fl[i];
@@ -4129,20 +4133,18 @@
               f.y += f.vy * dt;
               f.x += (wind * (0.4 + f.z) + Math.cos(f.ph) * f.amp * f.sw * 0.5) * dt;
               if (f.y - f.r > h) { fl.splice(i, 1); continue; }
-              c.globalAlpha = f.a;
+              c.globalAlpha = f.a * gm;
               var d = f.r * 2;
               c.drawImage(sp, f.x - f.r, f.y - f.r, d, d);
             }
             c.globalAlpha = 1;
-            if (el < DUR || fl.length) requestAnimationFrame(loop);
+            if (el < DUR) requestAnimationFrame(loop);
             else { c.clearRect(0, 0, w, h); bsRun = false; }
-          })(t0);
+          })(last);
         }
         // ⛄ 클릭 → 함박눈이 쏟아지는 동안 눈사람이 화면 아래를 통통 뛰며 행진
-        var marching = false;
-        function march() {
-          if (marching) return;
-          marching = true;
+        // 눈사람 한 마리 — 크기·속도·방향을 받아 지나가게 한다
+        function marchOne(size, dur, rev) {
           var box = document.getElementById("mapleFall");
           if (!box) {
             box = document.createElement("div");
@@ -4152,23 +4154,40 @@
           }
           var w = document.createElement("span");
           w.className = "hb-march";
+          w.style.fontSize = size + "px";
+          w.style.top = "calc(100vh - " + (size + 36) + "px)";
+          w.style.animation = (rev ? "hbMarchL " : "hbMarch ") + dur + "s linear both";
           var inner = document.createElement("span");
           inner.className = "hb-march-in";
+          inner.style.animationDuration = rnd(0.42, 0.62) + "s";
+          inner.style.animationDelay = "-" + rnd(0, 0.5) + "s"; // 눈사람마다 뛰는 박자가 다르게
+          inner.style.setProperty("--hop", Math.round(size * 0.5) + "px");
           inner.textContent = "⛄";
           w.appendChild(inner);
           box.appendChild(w);
           var t = setInterval(function () {
             var b = w.getBoundingClientRect();
-            if (b.left > window.innerWidth) return;
+            if (b.left > window.innerWidth || b.right < 0) return;
             var s = document.createElement("span");
             s.className = "hb-trail hb-flake";
-            s.style.left = b.left + 10 + "px";
+            s.style.left = b.left + b.width / 2 + "px";
             s.style.top = window.innerHeight - 50 + "px";
             s.style.width = s.style.height = rnd(8, 16) + "px";
             box.appendChild(s);
             setTimeout(function () { s.remove(); }, 1300);
-          }, 90);
-          setTimeout(function () { clearInterval(t); w.remove(); marching = false; }, 4400);
+          }, 110);
+          setTimeout(function () { clearInterval(t); w.remove(); }, dur * 1000 + 200);
+        }
+        // 눈사람 3~5마리가 무작위 간격(0.3~1.8초)을 두고 차례로 지나간다. 가끔은 반대 방향.
+        function march() {
+          var n = 3 + Math.floor(Math.random() * 3), at = 0;
+          for (var i = 0; i < n; i++) {
+            (function () {
+              var size = Math.round(rnd(44, 84)), dur = rnd(3.4, 5.4), rev = Math.random() < 0.3;
+              setTimeout(function () { marchOne(size, dur, rev); }, at * 1000);
+            })();
+            at += rnd(0.3, 1.8);
+          }
         }
         if (deco) deco.addEventListener("click", function () {
           if (!hdr.classList.contains("hb-winter")) return;
