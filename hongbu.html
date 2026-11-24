@@ -27,6 +27,11 @@
         try { on = localStorage.getItem("hongbu_force_pc") === "1"; if (on) localStorage.removeItem("hongbu_force_pc"); } catch (e) {}
         window.__forcePc = on;
         if (on) document.documentElement.classList.add("force-pc");
+        // 2026-11-24 사용자: PC 에서도 같은 방식으로 '모바일 화면' 한 번 보기 — force-pc 의 반대(터치 기기 규칙을 PC 에도 적용)
+        var mob = false;
+        try { mob = localStorage.getItem("hongbu_force_mobile") === "1"; if (mob) localStorage.removeItem("hongbu_force_mobile"); } catch (e) {}
+        window.__forceMobile = mob && !on;
+        if (window.__forceMobile) document.documentElement.classList.add("force-mobile");
       })();
       // 대중교통 비교표·지도에 그리기 표시 여부(2026-11-02 사용자 지정 — 네이버 차단 위험을 줄인다).
       // 저장은 파일 끝 스크립트에서 하므로, 그 전에 불려도 맞도록 주소를 먼저 본다.
@@ -1289,6 +1294,9 @@
         :where(html:not(.force-pc)) .nv-pc-dest { display: none !important; }   /* 길찾기 강남·시청·여의도역 단추는 PC 전용(2026-11-11 사용자) */
         :where(html:not(.force-pc)) #msCard button:is([data-ms="radius"], [data-ms="gangnam"], [data-ms="clear"], [data-ms="school"], [data-ms="top10"], [data-ms="commute"], [data-ms="metro"], [data-ms="supply"]) { display: none !important; }   /* 학군·TOP10 은 PC 전용(2026-11-05 사용자), 지하철·공급도 PC 전용(2026-11-11 사용자) */
       }
+      /* 2026-11-24 사용자: 'PC 판정이 잘못됐을 때'의 비상 스위치 — force-mobile 이면 위 터치 규칙을 PC 판정 기기에도 적용 */
+      :where(html.force-mobile) .nv-pc-dest { display: none !important; }
+      :where(html.force-mobile) #msCard button:is([data-ms="radius"], [data-ms="gangnam"], [data-ms="clear"], [data-ms="school"], [data-ms="top10"], [data-ms="commute"], [data-ms="metro"], [data-ms="supply"]) { display: none !important; }
       /* 레이어 › 기타 › '사이드 메뉴 보기'(#toggleSideMenu, 기본 켜짐)를 끄면 카드째 숨긴다. uiState_v1 복원은 change 를
          일으키지 않으므로 JS 대신 :has() 로 체크 상태를 바로 따른다. */
       html:has(#toggleSideMenu:not(:checked)) #msCard { display: none !important; }
@@ -2249,7 +2257,7 @@
       /* 폭을 고정하면 차트·표가 모달보다 넓어 가려진다 — 시세이력 탭만 가로 스크롤을 연다(clip 은 스크롤이 안 생긴다) */
       #apartmentInfo.sise-hist-active { overflow-x: auto; }
       @media (min-width: 1281px) and (pointer: fine) {
-        #apartmentInfo {
+        :where(html:not(.force-mobile)) #apartmentInfo {
           width: 400px;
           max-width: 400px;
           border-radius: 0;
@@ -2263,15 +2271,15 @@
       /* PC 도킹(폭 400px): 표 8열을 패널 폭에 맞추고 세로 스크롤바 자리를 예약해
          세대수(마지막 열)가 잘리거나 스크롤바에 가리지 않게 함. 모바일은 미적용. */
       @media (min-width: 1281px) and (pointer: fine) {
-        #apartmentInfo {
+        :where(html:not(.force-mobile)) #apartmentInfo {
           scrollbar-gutter: stable;
         }
-        #apartmentInfo table {
+        :where(html:not(.force-mobile)) #apartmentInfo table {
           width: 100%;
           table-layout: fixed;
         }
-        #apartmentInfo th,
-        #apartmentInfo td {
+        :where(html:not(.force-mobile)) #apartmentInfo th,
+        :where(html:not(.force-mobile)) #apartmentInfo td {
           padding: 4px 2px;
           white-space: normal;
           word-break: keep-all;
@@ -2554,6 +2562,10 @@
           line-height: 1.6 !important;
         }
       }
+      /* force-mobile: 터치 묶음과 같은 내용(하나를 고치면 다른 쪽도) */
+      :where(html.force-mobile) .only-pc { display: none !important; }
+      :where(html.force-mobile) #controls .tb-panel label.only-pc { display: none !important; }
+      :where(html.force-mobile) #noteText { font-size: 15px !important; padding: 12px !important; line-height: 1.6 !important; }
       @media (max-width: 1280px) {
         .only-pc {
           display: none !important;
@@ -3583,16 +3595,39 @@
         //   뒤에 그려지므로 document 위임. 판정 자체는 <head> 의 __forcePc → CSS :where(html.force-pc) 묶음·__isPcDock 이 본다.
         (function () {
           let last = 0;
+          // 2026-11-24 사용자: [도구] 패널에 PC 화면/모바일 화면 전환 단추(#tbScreenModeBtn) — 머리글 더블탭과 같은 동작
+          // 기기 자체가 PC 로 판정되는가(마우스 + 넓은 창) — PC 판정이 잘못된 기기에서 모바일로 강제하려는 용도(2026-11-24 사용자)
+          const devicePc = () => window.matchMedia("(min-width: 1281px) and (pointer: fine)").matches;
+          const toggle = () => {
+            let msg, key = null;
+            if (window.__forceMobile) { msg = "🖥️ 기기 기준 화면으로 돌아갑니다"; }
+            else if (window.__forcePc) { msg = "📱 기기 기준 화면으로 돌아갑니다"; }
+            else if (devicePc()) { key = "hongbu_force_mobile"; msg = "📱 모바일 화면으로 봅니다 (새로고침하면 원래 화면으로 돌아갑니다)"; }
+            else { key = "hongbu_force_pc"; msg = "🖥️ PC 화면으로 봅니다 (새로고침하면 원래 화면으로 돌아갑니다)"; }
+            try { if (key) localStorage.setItem(key, "1"); } catch (_) {} // 표시는 읽자마자 지워지므로 되돌릴 때는 아무것도 안 쓰고 새로고침
+            showToast(msg);
+            setTimeout(() => location.reload(), 900);
+          };
+          window.__toggleScreenMode = toggle;
           document.addEventListener("click", (e) => {
-            if (!e.target || !e.target.closest || !e.target.closest(".h1-title")) return;
+            if (!e.target || !e.target.closest) return;
+            if (e.target.closest("#tbScreenModeBtn")) { toggle(); return; }
+            if (!e.target.closest(".h1-title")) return;
             const now = Date.now();
             if (now - last > 400) { last = now; return; }
             last = 0;
-            const on = !window.__forcePc;
-            try { if (on) localStorage.setItem("hongbu_force_pc", "1"); else localStorage.removeItem("hongbu_force_pc"); } catch (_) {}
-            showToast(on ? "🖥️ PC 화면으로 봅니다 (새로고침하면 원래 화면으로 돌아갑니다)" : "📱 기기 기준 화면으로 돌아갑니다");
-            setTimeout(() => location.reload(), 900);
+            toggle();
           });
+          // 단추 글자: PC 화면이 켜져 있으면 '모바일 모드로', 아니면 'PC 모드로'. 진짜 PC(마우스+넓은 창)는 이미 PC 라 누를 수 없다.
+          const sync = () => {
+            const b = document.getElementById("tbScreenModeBtn");
+            if (!b) return;
+            const pc = window.__forcePc || (!window.__forceMobile && devicePc());
+            b.textContent = pc ? "📱 모바일 모드로" : "🖥️ PC 모드로"; // 짧게 — 길면 폰에서 단추를 벗어난다(2026-11-24 사용자)
+            b.title = pc ? "현재 PC 모드 — 누르면 모바일 모드로 바꿉니다" : "현재 모바일 모드 — 누르면 PC 모드로 바꿉니다";
+          };
+          document.addEventListener("DOMContentLoaded", sync);
+          if (document.readyState !== "loading") sync();
         })();
 
         btnShow?.addEventListener("click", () => {
@@ -4120,6 +4155,10 @@
             <button type="button" class="tb-item" onclick="window.open('memoBackup.html', '_blank')">메모 파일 백업</button>
             <button type="button" class="tb-item" onclick="restoreMemoDB()">메모 파일 복원</button>
           </div>
+        </div>
+        <div class="tb-sec">
+          <div class="tb-sec-t">모드</div>
+          <button id="tbScreenModeBtn" type="button" class="tb-item" title="PC 모드와 모바일 모드를 서로 바꿉니다(새로고침하면 기기 기준으로 복귀)">🖥️ PC 모드로 전환</button>
         </div>
         <div class="tb-sec">
           <div class="tb-sec-t">링크</div>
@@ -11113,7 +11152,7 @@
           // PC(마우스/트랙패드 = pointer:fine): 새 탭으로 열어 지도 화면 유지.
           // 터치 기기: window.open(_blank)이 iOS에서 유니버설 링크로 앱 열려도 빈 탭이
           //   남으므로 현재 탭 이동(앱 설치 시 iOS가 가로채 지도 탭 보존).
-          if (window.__forcePc || (window.matchMedia && window.matchMedia("(pointer: fine)").matches)) {
+          if (window.__forcePc || (!window.__forceMobile && window.matchMedia && window.matchMedia("(pointer: fine)").matches)) {
             window.open(url, "_blank", "noopener");
           } else if (/Android/i.test(navigator.userAgent)) {
             // 안드로이드: 앱이 이미 켜져 있으면 https 링크를 받아도 이전 단지 화면에 머문다 (2026-11-03 사용자 보고).
@@ -11561,6 +11600,7 @@
       // PC 도킹 판정(레이아웃 CSS와 동일 조건)
       function __isPcDock() {
         // 숨은 'PC 화면'(머리글 더블클릭)이면 터치 조건은 빼고 폭만 본다(CSS 의 :where(html.force-pc) 묶음과 짝)
+        if (window.__forceMobile) return false; // 숨은 '모바일 화면'이면 PC 도킹 안 함
         return window.matchMedia(window.__forcePc ? "(min-width: 1281px)" : "(min-width: 1281px) and (pointer: fine)").matches;
       }
       // PC 지도 높이(px): 컨트롤바 실제 높이에 맞춰 화면 바닥까지 채움(고정 150px 예약 제거).
@@ -11611,7 +11651,7 @@
           const vv = window.visualViewport;
           const vh = Math.round((vv && vv.height) || window.innerHeight || 0);
           let touch = true;
-          try { touch = !window.__forcePc && window.matchMedia("(pointer: coarse)").matches; } catch (e) {}
+          try { touch = !window.__forcePc && (!!window.__forceMobile || window.matchMedia("(pointer: coarse)").matches); } catch (e) {}
           if (vh > 200) {
             // ⚠ 패널은 content-box(전역 box-sizing 규칙이 없다) — max-height 는 내용 영역만
             //   제한하고 상하 패딩·테두리가 그 위에 더 붙는다. 그냥 넣으면 그만큼 화면 밖으로
@@ -17920,7 +17960,7 @@ const originalBase64 = event.target.result;
             }
             // (2026-10-08) 모바일에서 지도를 옮기다 터치로 인식돼 편집창이 자꾸 뜬다(사용자 보고) →
             // 도구 > 면적 그리기 '모바일에서 수정막기'(기본 체크)가 켜져 있으면 터치 기기에선 팔레트를 띄우지 않는다
-            if (window.matchMedia?.("(pointer: coarse)").matches && document.getElementById("togglePolyMobileLock")?.checked) return;
+            if ((window.__forceMobile || window.matchMedia?.("(pointer: coarse)").matches) && document.getElementById("togglePolyMobileLock")?.checked) return;
             // 클릭 위치를 지도 컨테이너 좌상단 기준 픽셀로 변환
             const mapEl = document.getElementById("map");
             let px = null, py = null;
@@ -27437,7 +27477,7 @@ const originalBase64 = event.target.result;
         }
 
         const isTouch = () => {
-          try { return window.matchMedia("(pointer: coarse)").matches; } catch (_) { return "ontouchstart" in window; }
+          try { return !!window.__forceMobile || window.matchMedia("(pointer: coarse)").matches; } catch (_) { return "ontouchstart" in window; }
         };
         function bind() {
           G.listeners.forEach((l) => { try { naver.maps.Event.removeListener(l); } catch (_) {} });
@@ -30550,7 +30590,7 @@ const originalBase64 = event.target.result;
 /* 실거래 탭이면 모달 폭을 키운다(2026-10-29 사용자 "모바일에서 실거래 창이 너무 작다") — 모달은 width:auto 라
    단지정보를 숨기면 iframe 기본 폭(300px)으로 쪼그라들었다. 화면 94%(최대 560px). PC 왼쪽 도킹(400px)은 그대로 */
 #apartmentInfo.rt-active{width:calc(min(94vw,380px) + 22px) !important;max-width:94vw !important;box-sizing:border-box}
-@media (min-width:1281px) and (pointer:fine){#apartmentInfo.rt-active{width:422px !important;max-width:422px !important}}
+@media (min-width:1281px) and (pointer:fine){:where(html:not(.force-mobile)) #apartmentInfo.rt-active{width:422px !important;max-width:422px !important}}
 @media (min-width:1281px){:where(html.force-pc) #apartmentInfo.rt-active{width:422px !important;max-width:422px !important}}`;
         document.head.appendChild(st);
       })();
@@ -32936,7 +32976,7 @@ body.cmp-open #map [data-apt-id],body.cmp-open #map [data-apt-id] *{-webkit-user
       const FLOAT_BTN_JITTER = 14;                     // 길게 누르는 동안 허용하는 손가락 흔들림(px)
 
       function __isTouchDevice() {
-        try { return window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window; } catch (e) { return false; }
+        try { return !!window.__forceMobile || window.matchMedia("(pointer: coarse)").matches || "ontouchstart" in window; } catch (e) { return false; }
       }
       // ⚠ 추적 중지 단추는 평소 `display:none` 이라 offsetLeft/Top 이 0 이다(그대로 쓰면 옮긴 뒤 좌상단에 나타난다).
       //   CSS 에 적힌 값을 읽는 getComputedStyle 로 원래 자리를 잡는다.
