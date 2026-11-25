@@ -123,6 +123,19 @@ header .src { margin-left:auto; font-size:11px; color:#e6edf5; cursor:help; whit
 header .src a { color:#fff; font-weight:600; text-decoration:underline; text-underline-offset:2px; }
 .notice { margin:0 0 6px; font-size:11.5px; color:#6b6b6b; }
 .notice a { color:#3d5f8a; font-weight:600; }
+/* 지수 차트 창 */
+#chBg { position:fixed; inset:0; z-index:1000; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; }
+#chBg[hidden] { display:none; }
+#chBox { width:min(1100px, 96vw); max-height:94vh; overflow:auto; background:#fff; border-radius:8px; padding:12px 14px; box-shadow:0 8px 30px rgba(0,0,0,.3); }
+#chBox .top { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+#chBox .top h2 { margin:0; font-size:16px; flex:1; }
+#chBox .top button { background:transparent; color:#555; font-size:20px; padding:0 8px; }
+#chBox .ctl { display:flex; flex-wrap:wrap; gap:6px 12px; align-items:center; font-size:12px; color:#555; margin-bottom:6px; }
+#chBox .pk { display:inline-flex; align-items:center; gap:4px; padding:2px 4px 2px 9px; border:1px solid #cbc5bb; border-radius:12px; background:#efede9; color:#3d3a35; }
+#chBox .pk i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+#chBox .pk button { padding:0 6px; background:transparent; color:#8a847a; font-size:14px; line-height:1.2; }
+#chWrap { position:relative; height:min(520px, 62vh); }
+#chMsg { margin-top:6px; font-size:11.5px; color:#777; }
 </style>
 </head>
 <body>
@@ -149,6 +162,7 @@ header .src a { color:#fff; font-weight:600; text-decoration:underline; text-und
       <span class="dd"><button type="button" class="chip" id="ddSgBtn">시군구 ▾</button><div class="ddp" id="ddSg" hidden></div></span>
     </span>
     <button id="kbDetToggle" class="chip" title="오른쪽 지역 상세 칸을 숨겨 표를 넓게 봅니다">상세 숨기기 ▸</button>
+    <button id="kbChart" class="chip" title="시군구와 매매·전세를 골라 지수(시작 주=100) 차트를 봅니다">📈 차트</button>
     <button id="kbXlsx" class="chip" hidden title="지금 보이는 표(지역 묶음·정렬·최근 N주)를 KB 엑셀과 같은 색 규칙으로 내려받습니다">⬇ 엑셀</button>
   </div>
   <!-- 선택한 시군구(있으면 그 지역만 표에 보인다) -->
@@ -167,6 +181,21 @@ header .src a { color:#fff; font-weight:600; text-decoration:underline; text-und
     </div>
   </div>
 </section>
+
+<div id="chBg" hidden>
+  <div id="chBox">
+    <div class="top"><h2>지수 차트</h2><button id="chClose" title="닫기">×</button></div>
+    <div class="ctl">
+      <label>값 <select id="chKind"><option value="sale">매매</option><option value="rent">전세</option></select></label>
+      <label>기간 <select id="chSpan"><option value="52">1년</option><option value="156">3년</option><option value="260">5년</option><option value="520">10년</option><option value="all" selected>전체</option></select></label>
+      <span class="dd"><button type="button" class="chip" id="chAdd">＋ 지역 추가</button>
+        <div class="ddp" id="chPanel" hidden style="min-width:220px"><div style="padding:4px 8px"><input id="chFind" type="search" placeholder="지역 검색" style="width:100%"></div><div id="chList" style="max-height:240px;overflow:auto"></div></div></span>
+      <span id="chChips" class="chips"></span>
+    </div>
+    <div id="chWrap"><canvas id="chCv"></canvas></div>
+    <div id="chMsg"></div>
+  </div>
+</div>
 
 <script>
 // KB 주간 시계열 — 공개 서비스 페이지. 개인 정보를 넣지 말 것.
@@ -719,6 +748,67 @@ function renderKbDetail() {
   $("tiles").innerHTML = tiles.map(t => `<div class="tile"><div class="k">${t[0]}</div><div class="v ${t[2]}">${t[1]}</div><div class="s">${t[3]}</div></div>`).join("");
 }
 
+// ── 지수 차트 ──
+// KB 는 주간 증감률만 준다 → 고른 기간 첫 주를 100 으로 두고 주간 증감률을 복리로 이어 붙여 지수를 만든다.
+// 빈 칸(null)은 선을 끊는다. 기간이 길어 과거가 필요하면 ensureOld 로 받는다.
+const CH_COLORS = ["#d9480f", "#1c5fd1", "#2f9e44", "#9c36b5", "#e8a200", "#0c8599", "#c2255c", "#5c5f66"];
+let chCodes = [], chInst = null, chLoading = null;
+function loadChartJs() {
+  if (window.Chart) return Promise.resolve();
+  return chLoading ||= new Promise((ok, no) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js";
+    s.onload = ok; s.onerror = () => { chLoading = null; no(new Error("차트 라이브러리를 불러오지 못했습니다")); };
+    document.head.appendChild(s);
+  });
+}
+// KB 가격지수 기준 = 2026.1.12 = 100.0 (KB 주간시계열 엑셀 3.매매지수·4.전세지수 머리 표기). 그 주를 100 으로 두고
+// 주간 증감률을 앞뒤로 이어 붙인다: 이후 = 직전 × (1+r), 이전 = 다음 ÷ (1+다음 주 r). 빈 칸에서는 끊는다.
+// 기준 주에 값이 없는 신설 지역은 자료가 시작되는 첫 주를 100 으로 둔다(chBaseFallback 에 기록).
+const CH_BASE = "20260112";
+function chIndex(arr, from) {
+  const L = arr.length, idx = Array(L).fill(null);
+  let b = KB.dates.indexOf(CH_BASE);
+  if (b < 0 || arr[b] == null) { b = arr.findIndex(v => v != null); chBaseFallback = true; }
+  if (b >= 0) {
+    idx[b] = 100;
+    for (let i = b + 1; i < L && arr[i] != null; i++) idx[i] = idx[i - 1] * (1 + arr[i] / 100);
+    for (let i = b - 1; i >= 0 && arr[i + 1] != null; i--) idx[i] = idx[i + 1] / (1 + arr[i + 1] / 100);
+  }
+  return idx.slice(from).map(v => v == null ? null : +v.toFixed(2));
+}
+let chBaseFallback = false;
+async function drawChart() {
+  if (!KB) return;
+  const kind = $("chKind").value, spanV = $("chSpan").value;
+  const rows = allGroup().rows, byCode = Object.fromEntries(rows.map(r => [r.code, r]));
+  chCodes = chCodes.filter(c => byCode[c]);
+  $("chChips").innerHTML = chCodes.map((c, i) => `<span class="pk"><i style="background:${CH_COLORS[i % 8]}"></i>${esc(byCode[c].name)}<button data-code="${c}" title="빼기">×</button></span>`).join("");
+  const want = spanV === "all" ? 99999 : +spanV;
+  if (want + 1 > KB.dates.length && !KB.full) { $("chMsg").textContent = "과거 데이터를 가져오는 중입니다…"; await ensureOld(); }
+  const L = KB.dates.length, from = Math.max(0, L - 1 - want);
+  try { await loadChartJs(); } catch (e) { $("chMsg").textContent = e.message; return; }
+  const labels = KB.dates.slice(from).map(fmtDate);
+  chBaseFallback = false;
+  const datasets = chCodes.map((c, i) => ({label:byCode[c].name, data:chIndex(byCode[c][kind], from), borderColor:CH_COLORS[i % 8], backgroundColor:CH_COLORS[i % 8],
+    borderWidth:2, pointRadius:0, pointHoverRadius:4, tension:0, spanGaps:false}));
+  if (chInst) chInst.destroy();
+  chInst = new Chart($("chCv"), {type:"line", data:{labels, datasets}, options:{
+    responsive:true, maintainAspectRatio:false, animation:false, interaction:{mode:"index", intersect:false},
+    plugins:{legend:{position:"top"}, tooltip:{callbacks:{label: c => `${c.dataset.label}: ${c.parsed.y?.toFixed(2) ?? "-"}`}}},
+    scales:{x:{ticks:{maxTicksLimit:12, maxRotation:0}}, y:{title:{display:true, text:`${kind === "sale" ? "매매" : "전세"} 지수 (2026.1.12 = 100)`}}}}});
+  $("chMsg").textContent = chCodes.length ? "KB 가격지수와 같은 기준(2026.1.12=100)으로, KB 주간 증감률을 이어 계산한 값입니다(반올림 때문에 KB 공식 지수와 소수 둘째 자리 이하가 다를 수 있음)." +
+    (chBaseFallback ? " 기준 주에 자료가 없는 지역은 자료가 시작된 첫 주를 100 으로 둡니다." : "") : "위에서 시군구를 추가하세요.";
+}
+function openChart() {
+  if (!KB) return;
+  const rows = allGroup().rows;
+  $("chSpan").value = "all"; $("chPanel").hidden = true; $("chFind").value = "";
+  chCodes = [];   // 열 때는 아무 지역도 선택하지 않는다
+  $("chKind").value = UI.kbKind === "rent" ? "rent" : "sale";
+  $("chBg").hidden = false; drawChart();
+}
+
 (async function init() {
   try { const s = JSON.parse(localStorage.getItem(UI_KEY) || "null"); if (s) UI = Object.assign(UI, s); } catch (e) {}
   UI.kbWeeks = KB_WEEKS_START;
@@ -761,6 +851,27 @@ function renderKbDetail() {
   document.addEventListener("click", () => { $("ddSd").hidden = $("ddSg").hidden = true; });
   $("kbPickChips").onclick = e => { const b = e.target.closest("button[data-code]"); if (b) setPicks((UI.kbPick || []).filter(c => c !== b.dataset.code)); };
   $("kbPickClear").onclick = () => setPicks([]);
+  $("kbChart").onclick = openChart;
+  $("chClose").onclick = () => { $("chBg").hidden = true; };
+  $("chBg").onclick = e => { if (e.target === $("chBg")) $("chBg").hidden = true; };
+  document.addEventListener("keydown", e => { if (e.key === "Escape") $("chBg").hidden = true; });
+  $("chKind").onchange = $("chSpan").onchange = drawChart;
+  // ＋ 지역 추가: 검색 + 체크 목록(여러 곳을 계속 체크할 수 있게 열어 둔다)
+  const fillList = () => {
+    const q = $("chFind").value.trim(), on = new Set(chCodes);
+    $("chList").innerHTML = allGroup().rows.filter(r => !q || r.name.includes(q))
+      .map(r => `<label><input type="checkbox" value="${r.code}"${on.has(r.code) ? " checked" : ""}>${esc(r.name)}</label>`).join("") || `<div class="empty">없습니다</div>`;
+  };
+  $("chAdd").onclick = e => { e.stopPropagation(); $("chPanel").hidden = !$("chPanel").hidden; if (!$("chPanel").hidden) { fillList(); $("chFind").focus(); } };
+  $("chPanel").onclick = e => e.stopPropagation();
+  $("chBox").addEventListener("click", () => { $("chPanel").hidden = true; });
+  $("chFind").oninput = fillList;
+  $("chList").onchange = e => {
+    const c = e.target.value;
+    chCodes = e.target.checked ? [...chCodes.filter(x => x !== c), c] : chCodes.filter(x => x !== c);
+    drawChart();
+  };
+  $("chChips").onclick = e => { const b = e.target.closest("button[data-code]"); if (b) { chCodes = chCodes.filter(c => c !== b.dataset.code); drawChart(); } };
   bindMxScroll();
   renderAll();   // 받기 전 "불러오는 중" 자리 표시
   refresh();
