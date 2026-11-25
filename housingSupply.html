@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[루시퍼홍] 아파트 인허가·착공·준공·미분양</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1f2933; --sub:#6b7785; --line:#e3e7ec; --permit:#3b82f6; --start:#f59e0b; --done:#10b981; --unsold:#ef4444; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 'Malgun Gothic','Apple SD Gothic Neo',sans-serif; }
+  .wrap { max-width:1180px; margin:0 auto; padding:14px; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  .sub { color:var(--sub); font-size:12px; margin-bottom:10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px; }
+  .ctl { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:flex-end; }
+  .ctl label { font-size:12px; color:var(--sub); display:flex; flex-direction:column; gap:2px; white-space:nowrap; }
+  select, input[type=month], button { font:inherit; height:32px; padding:0 8px; border:1px solid #cbd2d9; border-radius:6px; background:#fff; }
+  button { cursor:pointer; } button.on { background:#1f2933; color:#fff; border-color:#1f2933; }
+  .presets { display:flex; gap:4px; align-items:flex-end; }
+  .chartbox { position:relative; height:360px; } .chartbox.sm { height:280px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-bottom:12px; }
+  .kpi { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 12px; border-left:4px solid var(--c); }
+  .kpi .t { font-size:12px; color:var(--sub); } .kpi .v { font-size:22px; font-weight:700; } .kpi .d { font-size:12px; color:var(--sub); }
+  .up { color:#dc2626; } .dn { color:#2563eb; }
+  h2 { font-size:15px; margin:0 0 8px; } .note { color:var(--sub); font-size:12px; margin-top:6px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { padding:5px 8px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; } th { background:#f1f3f6; position:sticky; top:0; cursor:pointer; user-select:none; }
+  tr.row:hover { background:#f3f8ff; cursor:pointer; } tr.sel { background:#e7f0ff; font-weight:600; }
+  .scroll { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; } @media (max-width:860px){ .grid2 { grid-template-columns:1fr; } }
+  #msg { color:#dc2626; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>[루시퍼홍] 아파트 인허가 · 착공 · 준공 · 미분양</h1>
+  <div class="sub" id="built">불러오는 중…</div>
+
+  <div class="card">
+    <div class="ctl">
+      <label>시도<select id="selSido"></select></label>
+      <label title="시군구는 미분양에만 적용됩니다">시군구(미분양)<select id="selSgg"></select></label>
+      <label>집계<select id="selUnit"><option value="M">월</option><option value="Q">분기</option><option value="Y">년</option></select></label>
+      <label>시작<input type="month" id="from"></label>
+      <label>끝<input type="month" id="to"></label>
+      <div class="presets">
+        <button data-y="3">3년</button><button data-y="5">5년</button><button data-y="10">10년</button><button data-y="0">전체</button>
+      </div>
+    </div>
+    <div class="note" id="scopeNote"></div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <h2 id="mainTitle">공급 흐름과 미분양</h2>
+    <div class="chartbox"><canvas id="cMain"></canvas></div>
+    <div class="note">막대 = 기간 합계(인허가·착공·준공, 왼쪽 축) · 선 = 기간 말 미분양 잔량(오른쪽 축). 인허가는 2013-01, 착공은 2011-01, 준공은 2010-08, 미분양은 2007-01부터.</div>
+  </div>
+
+  <div class="card">
+    <h2 id="gridTitle">월별 표</h2>
+    <div class="scroll"><table id="tGrid"></table></div>
+    <div class="note" id="gridNote"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>미분양 구성 (준공후 · 준공전)</h2>
+      <div class="chartbox sm"><canvas id="cType"></canvas></div>
+      <div class="note">준공후 미분양 = 사용검사 이후에도 안 팔린 물량(공사완료후 미분양현황). 준공전 = 총 미분양 − 준공후. 월말 잔량.</div>
+    </div>
+    <div class="card">
+      <h2 id="sggTitle">시군구별 미분양</h2>
+      <div class="scroll"><table id="tSgg"></table></div>
+      <div class="note">행을 누르면 해당 시군구 차트로 바뀝니다. 머리글을 누르면 정렬.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>시도 비교 (최근월 기준)</h2>
+    <div class="scroll"><table id="tSido"></table></div>
+    <div class="note">인허가·착공·준공 = 각 통계의 최근 12개월 누적(합계). 미분양 = 최근월 잔량. 행을 누르면 그 시도로 이동.</div>
+  </div>
+
+  <div class="card note" id="foot"></div>
+</div>
+
+<script>
+const NAMES_SIDO = ['전국','수도권','지방','서울','인천','경기','부산','대구','대전','울산','세종','광주','전남','전남광주','강원','충북','충남','전북','경북','경남','제주'];
+const SUDOGWON = ['서울','인천','경기'];
+const SIDO17 = ['서울','인천','경기','부산','대구','대전','울산','세종','강원','충북','충남','전북','경북','경남','제주'];
+let D = null, charts = {}, state = { sido:'전국', sgg:'' , sortKey:null, sortDir:-1 };
+const $ = id => document.getElementById(id);
+const fmt = v => v==null ? '-' : Number(v).toLocaleString('ko-KR');
+const qOf = m => m.slice(0,4) + '-Q' + Math.ceil(+m.slice(5,7)/3);
+
+function ser(ds, key){ return D[ds].series[key]; }
+// 흐름 지표(인허가·착공·준공) 지역 합성: 전남광주 = 광주+전남(개편 전) 또는 전남광주(개편 후)
+function flowSeries(ds, sido){
+  const months = D[ds].months, S = D[ds].series, n = months.length;
+  const get = k => (S[k] || []).map(c => c ? c[0] : null);
+  const add = (a, b) => a.map((v,i) => (v==null && b[i]==null) ? null : (v||0) + (b[i]||0));
+  const nul = () => new Array(n).fill(null);
+  if (sido === '전국' || sido === '수도권' || sido === '지방') return get(sido);
+  if (sido === '전남광주') { const g = get('광주'), j = get('전남'), c = get('전남광주'); return months.map((_,i) => c[i]!=null ? c[i] : ((g[i]==null&&j[i]==null)?null:(g[i]||0)+(j[i]||0))); }
+  return get(sido).length ? get(sido) : nul();
+}
+// 미분양 월말 잔량 [총 미분양, 준공후]
+function unsoldSeries(sido, sgg, sggSido){
+  const U = D.unsold, S = U.series, n = U.months.length;
+  const zero = () => U.months.map(() => new Array(2).fill(null));
+  const sum = (arrs) => { const out = zero(); arrs.forEach(a => a && a.forEach((c,i) => c.forEach((v,j) => { if (v!=null) out[i][j] = (out[i][j]||0) + v; }))); return out; };
+  if (sgg) return S[(sggSido || sido) + '|' + sgg] || zero();
+  if (sido === '전국') return S['전국|계'] || sum(SIDO17.concat(['광주','전남','전남광주']).map(s => S[s+'|계']));
+  if (sido === '수도권') return sum(SUDOGWON.map(s => S[s+'|계']));
+  if (sido === '지방') return sum(SIDO17.filter(s => !SUDOGWON.includes(s)).concat(['광주','전남','전남광주']).map(s => S[s+'|계']));
+  if (sido === '전남광주') return sum(['광주','전남','전남광주'].map(s => S[s+'|계']));
+  return S[sido + '|계'] || zero();
+}
+function sggList(sido){
+  const S = D.unsold.series, out = [];
+  const sidos = sido === '전남광주' ? ['광주','전남','전남광주'] : [sido];
+  for (const k of Object.keys(S)) { const [a, b] = k.split('|'); if (sidos.includes(a) && b !== '계') out.push({ key:k, sido:a, name: sido==='전남광주' ? a+' '+b : b }); }
+  return out;
+}
+
+function bucket(m, unit){ return unit==='M' ? m : unit==='Q' ? qOf(m) : m.slice(0,4); }
+function aggregate(months, values, unit, mode){ // mode 'sum' | 'last'
+  const keys = [], map = new Map();
+  months.forEach((m,i) => { const b = bucket(m, unit); if (!map.has(b)) { map.set(b, []); keys.push(b); } map.get(b).push(values[i]); });
+  return { keys, vals: keys.map(k => { const a = map.get(k); if (mode==='last') { for (let i=a.length-1;i>=0;i--) if (a[i]!=null) return a[i]; return null; } return a.every(v => v==null) ? null : a.reduce((s,v) => s+(v||0), 0); }) };
+}
+function alignTo(months, srcMonths, vals){ const idx = new Map(srcMonths.map((m,i) => [m,i])); return months.map(m => idx.has(m) ? vals[idx.get(m)] : null); }
+
+function lastIdx(arr){ for (let i=arr.length-1;i>=0;i--) if (arr[i]!=null) return i; return -1; }
+
+function render(){
+  const { sido, sgg } = state, unit = $('selUnit').value, f = $('from').value, t = $('to').value;
+  const U = D.unsold;
+  let months = U.months.filter(m => (!f || m >= f) && (!t || m <= t));
+  const flow = { permit: flowSeries('permitM', sido), start: flowSeries('start', sido), done: flowSeries('done', sido) };
+  const fm = { permit: D.permitM.months, start: D.start.months, done: D.done.months };
+  const us = unsoldSeries(sido, sgg, state.sggSido);
+  const usTot = us.map(c => c[0]);
+  const place = sgg ? `${sido} ${sgg}` : sido;
+  $('mainTitle').textContent = `${place} — 아파트 공급 흐름과 미분양`;
+  $('scopeNote').textContent = sgg ? `※ 인허가·착공·준공은 시도 단위(통계누리가 시군구 자료를 공표하지 않음)라 '${sido}' 전체 값입니다. 미분양만 '${sgg}' 값입니다.` : '';
+
+  const lbl = aggregate(months, months.map(()=>0), unit, 'sum').keys;
+  const ag = (src, vals, mode) => { const al = alignTo(months, src, vals); return aggregate(months, al, unit, mode).vals; };
+  const dPermit = ag(fm.permit, flow.permit, 'sum'), dStart = ag(fm.start, flow.start, 'sum'), dDone = ag(fm.done, flow.done, 'sum');
+  const dUn = ag(U.months, usTot, 'last');
+
+  draw('cMain', 'bar', lbl, [
+    { type:'bar', label:'인허가', data:dPermit, backgroundColor:'#3b82f6', yAxisID:'y', order:2 },
+    { type:'bar', label:'착공', data:dStart, backgroundColor:'#f59e0b', yAxisID:'y', order:2 },
+    { type:'bar', label:'준공', data:dDone, backgroundColor:'#10b981', yAxisID:'y', order:2 },
+    { type:'line', label:'총 미분양(잔량, 준공후 포함)', data:dUn, borderColor:'#ef4444', backgroundColor:'#ef4444', yAxisID:'y1', pointRadius: lbl.length>80?0:2, tension:.2, spanGaps:true, order:1 },
+    { type:'line', label:'└ 준공후 미분양(총 미분양의 일부)', data:ag(U.months, us.map(c => c[1]), 'last'), borderColor:'#7f1d1d', backgroundColor:'#7f1d1d', borderDash:[5,4], yAxisID:'y1', pointRadius:0, tension:.2, spanGaps:true, order:1 }
+  ], { y:{ position:'left', title:{display:true,text:'호'}, beginAtZero:true }, y1:{ position:'right', title:{display:true,text:'미분양(호)'}, beginAtZero:true, grid:{drawOnChartArea:false} } });
+
+  const dDoneAft = ag(U.months, us.map(c => c[1]), 'last');
+  const dBefore = ag(U.months, us.map(c => (c[0]==null ? null : c[0] - (c[1]||0))), 'last');
+  draw('cType', 'bar', lbl, [
+    { label:'준공후', data:dDoneAft, backgroundColor:'#b91c1c' },
+    { label:'준공전', data:dBefore, backgroundColor:'#fca5a5' }
+  ], { x:{ stacked:true }, y:{ stacked:true, beginAtZero:true } });
+
+  renderGrid(months, flow, fm, us, place);
+  renderKpis(flow, fm, us, place);
+  renderSgg();
+  renderSido();
+}
+
+// 그리드 — 상단 집계 주기(월·분기·연)에 맞춰 선택 기간을 묶어 보여준다(최근이 위). 흐름은 합계, 미분양은 기간 말 잔량.
+function renderGrid(months, flow, fm, us, place){
+  const unit = $('selUnit').value, uname = { M:'월', Q:'분기', Y:'년' }[unit];
+  const ag = (src, vals, mode) => aggregate(months, alignTo(months, src, vals), unit, mode);
+  const lbl = ag(fm.permit, flow.permit, 'sum').keys;
+  const p = ag(fm.permit, flow.permit, 'sum').vals, s = ag(fm.start, flow.start, 'sum').vals, d = ag(fm.done, flow.done, 'sum').vals;
+  const t0 = ag(D.unsold.months, us.map(c => c[0]), 'last').vals, t1 = ag(D.unsold.months, us.map(c => c[1]), 'last').vals;
+  const sgg = !!state.sgg, suf = sgg ? `(${state.sido})` : '';
+  const heads = [uname, '인허가'+suf, '착공'+suf, '준공'+suf, '총 미분양', '└ 준공후', '미분양 전' + (unit==='M' ? '월' : unit==='Q' ? '분기' : '년') + '比'];
+  let h = '<tr>' + heads.map(x => `<th style="cursor:default">${x}</th>`).join('') + '</tr>';
+  for (let i = lbl.length-1; i >= 0; i--) {
+    h += `<tr><td>${lbl[i]}</td><td>${fmt(p[i])}</td><td>${fmt(s[i])}</td><td>${fmt(d[i])}</td><td>${fmt(t0[i])}</td><td>${fmt(t1[i])}</td><td>${i>0 ? chg(t0[i], t0[i-1]) : '-'}</td></tr>`;
+  }
+  $('tGrid').innerHTML = h;
+  $('gridTitle').textContent = `${place} — ${uname}별 표`;
+  const base = unit==='M' ? '그 달' : unit==='Q' ? '그 분기' : '그 해';
+  $('gridNote').textContent = (sgg ? `인허가·착공·준공은 시도 단위(${state.sido} 전체) 값이고, 미분양만 ${state.sgg} 값입니다. ` : '') + `인허가·착공·준공 = ${base} 합계 호수, 미분양 = 기간 말 잔량. 단위: 호. 선택한 기간만 표시됩니다.`;
+}
+function renderKpis(flow, fm, us, place){
+  const U = D.unsold, li = lastIdx(us.map(c => c[0]));
+  const cards = [];
+  if (li >= 0) {
+    const cur = us[li][0], prev = li>0 ? us[li-1][0] : null, yago = li>=12 ? us[li-12][0] : null;
+    cards.push(kpi('총 미분양(' + U.months[li] + ')', cur, '#ef4444', delta(cur, prev, '전월'), delta(cur, yago, '전년동월')));
+    const c2 = us[li][1], p2 = li>0 ? us[li-1][1] : null, y2 = li>=12 ? us[li-12][1] : null;
+    if (c2 != null) cards.push(kpi('└ 준공후 미분양(' + U.months[li] + ')', c2, '#7f1d1d', delta(c2, p2, '전월'), delta(c2, y2, '전년동월')));
+  }
+  const names = { permit:'인허가', start:'착공', done:'준공' }, colors = { permit:'#3b82f6', start:'#f59e0b', done:'#10b981' };
+  for (const k of ['permit','start','done']) {
+    const arr = flow[k], i = lastIdx(arr); if (i < 0) continue;
+    const m = fm[k][i], y = m.slice(0,4);
+    const ytd = arr.reduce((s,v,j) => fm[k][j].slice(0,4)===y && fm[k][j] <= m ? s+(v||0) : s, 0);
+    const ytdPrev = arr.reduce((s,v,j) => fm[k][j].slice(0,4)===String(+y-1) && fm[k][j].slice(5) <= m.slice(5) ? s+(v||0) : s, 0);
+    cards.push(kpi(`${names[k]}(${y}년 ${+m.slice(5,7)}월까지 누계)`, ytd, colors[k], delta(ytd, ytdPrev, '전년 같은 기간'), `최근월 ${m} ${fmt(arr[i])}호`));
+  }
+  $('kpis').innerHTML = cards.join('');
+}
+function delta(c, p, label){ if (c==null || p==null || p===0) return `${label} -`; const d = c-p, r = d/p*100; return `${label} <span class="${d>0?'up':'dn'}">${d>0?'▲':'▼'} ${fmt(Math.abs(d))} (${r.toFixed(1)}%)</span>`; }
+function kpi(t, v, c, d1, d2){ return `<div class="kpi" style="--c:${c}"><div class="t">${t}</div><div class="v">${fmt(v)}</div><div class="d">${d1}</div><div class="d">${d2||''}</div></div>`; }
+
+function sortRows(rows, cols){
+  if (state.sortKey == null) return rows;
+  const k = state.sortKey; return rows.slice().sort((a,b) => (k===0 ? (a.cells[0] < b.cells[0] ? -1 : 1) : ((a.cells[k]??-1e12) - (b.cells[k]??-1e12))) * (k===0 ? -state.sortDir : state.sortDir));
+}
+function tableHtml(id, heads, rows, onclickName, selKey){
+  const sorted = sortRows(rows, heads);
+  return `<tr>${heads.map((h,i) => `<th data-t="${id}" data-i="${i}">${h}${state.sortKey===i && state.tbl===id ? (state.sortDir>0?' ▲':' ▼') : ''}</th>`).join('')}</tr>` +
+    sorted.map(r => `<tr class="row ${r.key===selKey?'sel':''}" data-t="${id}" data-k="${r.key}">${r.cells.map((c,i) => i===0 ? `<td>${c}</td>` : `<td>${typeof c==='string'?c:fmt(c)}</td>`).join('')}</tr>`).join('');
+}
+function chg(c, p){ if (c==null || p==null) return '-'; const d = c-p; return `<span class="${d>0?'up':d<0?'dn':''}">${d>0?'+':''}${fmt(d)}</span>`; }
+
+function renderSgg(){
+  const { sido } = state; const U = D.unsold;
+  const list = (['전국','수도권','지방'].includes(sido)) ? [] : sggList(sido);
+  $('sggTitle').textContent = list.length ? `${sido} 시군구별 미분양` : '시군구별 미분양';
+  if (!list.length) { $('tSgg').innerHTML = '<tr><td style="padding:14px;color:#6b7785">시도를 선택하면 시군구 표가 나옵니다.</td></tr>'; return; }
+  const rows = list.map(o => {
+    const s = D.unsold.series[o.key], li = lastIdx(s.map(c=>c[0])); if (li < 0) return { key:o.key, cells:[o.name,null,null,'-','-'] };
+    const c = s[li], prev = li>0 ? s[li-1][0] : null, ya = li>=12 ? s[li-12][0] : null;
+    return { key:o.key, cells:[o.name, c[0], c[1], chg(c[0],prev), chg(c[0],ya)], raw: o };
+  }).filter(r => r.cells[1] != null);
+  $('tSgg').innerHTML = tableHtml('sgg', ['시군구 ('+U.months[U.months.length-1]+')','미분양','준공후','전월比','전년동월比'], rows, null, (state.sggSido || state.sido) + '|' + state.sgg);
+}
+function renderSido(){
+  const cur = state.sido;
+  const rows = ['전국','수도권','지방'].concat(['서울','인천','경기','부산','대구','대전','울산','세종','광주','전남','전남광주','강원','충북','충남','전북','경북','경남','제주']).map(s => {
+    const us = unsoldSeries(s, ''), li = lastIdx(us.map(c=>c[0])); if (li < 0) return null;
+    const y12 = (ds) => { const a = flowSeries(ds, s), i = lastIdx(a); if (i < 0) return null; let sum = 0, n = 0; for (let j=i;j>i-12&&j>=0;j--) { sum += a[j]||0; n++; } return n ? sum : null; };
+    return { key:s, cells:[s, us[li][0], us[li][1], chg(us[li][0], li>0?us[li-1][0]:null), chg(us[li][0], li>=12?us[li-12][0]:null), y12('permitM'), y12('start'), y12('done')] };
+  }).filter(Boolean);
+  $('tSido').innerHTML = tableHtml('sido', ['시도','미분양','준공후','전월比','전년동월比','인허가(최근 12개월 누적)','착공(최근 12개월 누적)','준공(최근 12개월 누적)'], rows, null, cur);
+}
+
+function draw(id, type, labels, datasets, scales){
+  const ctx = $(id); if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(ctx, { type, data:{ labels, datasets }, options:{ responsive:true, maintainAspectRatio:false, interaction:{ mode:'index', intersect:false },
+    scales: Object.assign({ x:{ ticks:{ maxTicksLimit:14, autoSkip:true } } }, scales), plugins:{ legend:{ position:'bottom' }, tooltip:{ callbacks:{ label:c => `${c.dataset.label}: ${fmt(c.parsed.y)}호` } } } } });
+}
+
+function fillSido(){
+  $('selSido').innerHTML = NAMES_SIDO.map(s => `<option>${s}</option>`).join('');
+  $('selSido').value = state.sido;
+}
+function fillSgg(){
+  const sido = state.sido, list = (['전국','수도권','지방'].includes(sido)) ? [] : sggList(sido);
+  $('selSgg').innerHTML = `<option value="">${list.length ? '시도 전체' : '(시도 선택 시)'}</option>` + list.map(o => `<option value="${o.key.split('|')[1]}" data-s="${o.sido}">${o.name}</option>`).join('');
+  $('selSgg').disabled = !list.length; $('selSgg').value = state.sgg || '';
+}
+function setPreset(y){
+  const M = D.unsold.months, last = M[M.length-1];
+  $('to').value = last;
+  $('from').value = y ? (+last.slice(0,4)-y) + '-' + last.slice(5) : M[0];
+}
+
+async function init(){
+  try { D = await (await fetch('https://sise-cloud.luciferhong.com/pub/molit_housing', { cache:'no-store' })).json(); } catch(e) { $('built').textContent = ''; $('msg').textContent = '데이터를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.'; return; }
+  $('built').textContent = `국토교통부 통계누리 · 수집 ${D.built} · 미분양 ${D.unsold.months.slice(-1)[0]} · 착공 ${D.start.months.slice(-1)[0]} · 준공 ${D.done.months.slice(-1)[0]} · 인허가 ${D.permitM.months.slice(-1)[0]}`;
+  $('foot').innerHTML = '대상은 <b>아파트</b>입니다. 인허가·착공·준공은 통계누리가 <b>시도 단위까지만</b> 공표해 시군구 값이 없습니다. 미분양은 시군구 단위로 공표되지만 통계 자체에 주택유형 구분이 없습니다(분양승인 받은 민간 주택 — 사실상 아파트 중심). 2026-07 행정구역 개편으로 광주·전남은 \'전남광주\'로 합쳐 공표됩니다. 최근월은 잠정치입니다.<br>' + D.note;
+  fillSido(); fillSgg(); setPreset(0); render();
+  $('selSido').onchange = e => { state.sido = e.target.value; state.sgg = ''; state.sggSido = ''; fillSgg(); render(); };
+  $('selSgg').onchange = e => { const o = e.target.selectedOptions[0]; state.sgg = e.target.value; state.sggSido = o && o.dataset.s; render(); };
+  ['selUnit','from','to'].forEach(id => $(id).onchange = render);
+  document.querySelectorAll('.presets button').forEach(b => b.onclick = () => { setPreset(+b.dataset.y); render(); });
+  document.addEventListener('click', e => {
+    const th = e.target.closest('th[data-t]');
+    if (th) { const i = +th.dataset.i; state.sortDir = (state.sortKey===i && state.tbl===th.dataset.t) ? -state.sortDir : -1; state.sortKey = i; state.tbl = th.dataset.t; renderSgg(); renderSido(); return; }
+    const tr = e.target.closest('tr.row'); if (!tr) return;
+    if (tr.dataset.t === 'sido') { state.sido = tr.dataset.k; state.sgg = ''; state.sggSido = ''; $('selSido').value = state.sido; fillSgg(); render(); window.scrollTo({ top:0, behavior:'smooth' }); }
+    else if (tr.dataset.t === 'sgg') { const [a, b] = tr.dataset.k.split('|'); state.sggSido = a; state.sgg = b; if (state.sido === '전남광주' && a !== '전남광주') { /* 합산 보기 유지 */ } fillSgg(); $('selSgg').value = b; render(); }
+  });
+}
+init();
+</script>
+</body>
+</html>
