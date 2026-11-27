@@ -442,7 +442,7 @@ function initMapTab(D,SA){
     document.body.classList.toggle('widemode',n==='n');  // 시도별 탭은 화면 폭 전체를 쓴다
     bC.className=n==='c'?'on':'';bM.className=n==='m'?'on':'';bA.className=n==='a'?'on':'';bN.className=n==='n'?'on':'';};
   bC.onclick=()=>show('c');
-  bN.onclick=()=>{show('n');initNat();};
+  bN.onclick=()=>{show('n');initNat();if(window.__natShown)window.__natShown();};
   bA.onclick=()=>{show('a');initAllTab();};
   bM.onclick=()=>{
     show('m');
@@ -451,6 +451,15 @@ function initMapTab(D,SA){
       map=new naver.maps.Map('map',{center:new naver.maps.LatLng(37.46,126.99),zoom:11,
         size:new naver.maps.Size(window.innerWidth,window.innerHeight)});  // 숨겨져 있다 켜질 때 폭이 작게 잡히는 것 방지
       window.addEventListener('resize',()=>{if(map)map.setSize(new naver.maps.Size(window.innerWidth,window.innerHeight));});
+      // 처음부터 카드·점 전체(내용)의 가운데가 화면 정가운데 오게 지도 중심을 잡는다(카드는 점에서 픽셀 거리로 놓이므로 줌 11 의 투영으로 계산, 그리기 전이라 깜빡임 없음)
+      try{
+        const pr=map.getProjection(); let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+        const add=(x,y,hw,hh)=>{x0=Math.min(x0,x-hw);y0=Math.min(y0,y-hh);x1=Math.max(x1,x+hw);y1=Math.max(y1,y+hh);};
+        for(const k in CFG){const c=CFG[k], o=pr.fromCoordToOffset(new naver.maps.LatLng(c.ll[0],c.ll[1])), f=OFS[k]||c.d;
+          add(o.x,o.y,6,6); add(o.x+f[0],o.y+f[1],114,78);}
+        const o=pr.fromCoordToOffset(new naver.maps.LatLng(37.5795,126.8895)); add(o.x,o.y,6,6);   // 마포 두 번째 점(상암)
+        map.setCenter(pr.fromOffsetToCoord(new naver.maps.Point((x0+x1)/2,(y0+y1)/2)));
+      }catch(e){}
       draw();
       paintGu(map,D,SA);   // 카드에 들어간 시군구를 종사자수 단계 색으로 칠한다
     }
@@ -806,6 +815,8 @@ function initAllTab(){
     fitFont(); naver.maps.Event.addListener(map,'idle',layout);
     document.getElementById('aLeg').onclick=()=>document.getElementById('aLeg').classList.toggle('hid');
     render(true);
+    map.setZoom(map.getZoom()+1,false);   // 처음 로드할 때만 맞춤 줌보다 한 칸 확대(시도를 바꿀 때는 그대로 맞춤)
+    layout();
   }).catch(e=>{box.textContent='불러오기 실패: '+e;});
 }
 </script>
@@ -864,10 +875,13 @@ function initNat(){
     cs.onchange=()=>drawDet();
     const arw=document.getElementById('nArw'); arw.onchange=()=>drawDet();
     const trend=document.getElementById('nTrend'); trend.onchange=()=>drawDet();
+    let needRe=false; window.__natShown=()=>{if(sd.value)drawDet();};   // 탭을 다시 열 때 폭을 새로 재서 그린다
     function drawDet(){
       dch.forEach(c=>c.destroy()); dch=[];
       const v=sd.value; nAll.style.display=v?'none':''; nDet.style.display=v?'':'none';
       if(!v)return;
+      if(!document.getElementById('nB1').parentNode.clientWidth){needRe=true;return;}   // 탭이 숨겨져 폭이 0 이면 그리지 않고 다시 보일 때 그린다(안 그러면 최소 폭 900 으로 작게 그려짐)
+      needRe=false;
       const oneCity=cs.value;   // 시를 골랐으면 그 시의 구만
       const last=Y[Y.length-1];
       // 구가 있는 시(수원·성남·용인·고양·안산)는 시 한 줄 대신 구별 줄로 — 구별 연봉은 국세청 표에 없어 '-'
