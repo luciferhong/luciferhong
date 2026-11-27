@@ -113,6 +113,7 @@
         <input type="range" id="aSc" min="0.6" max="2.6" step="0.05" value="1.4" style="width:100px;cursor:pointer">
         <button id="aScP" style="width:20px;height:20px;padding:0;cursor:pointer">+</button>
         <span id="aScL" style="min-width:34px;color:#555">1.40x</span></span>
+      <label style="white-space:nowrap;margin-left:6px" title="수원·성남·용인·고양·안산은 구별 종사자수·500인을 따로 보여줍니다(연봉은 구별 자료가 없어 시 전체 값)"><input type="checkbox" id="aGu"> 구 분리</label>
       <span id="aPal" style="white-space:nowrap;display:inline-flex;align-items:center;gap:3px;margin-left:6px">🎨 이름색
         <input type="color" id="aCol" value="#243551" style="width:26px;height:22px;padding:0;border:1px solid #888;cursor:pointer"></span>
       <span class="desc">· 라벨 = 시군구 이름 / <b style="color:#b30000">소재지</b> · <b style="color:#0a58ca">주소지</b> (만원). 라벨은 확대하면 나타납니다(보이는 지역이 40곳 이하면 줌 9, 아니면 10부터). 마우스를 올리면 상세.
@@ -564,11 +565,15 @@ function initAllTab(){
   const box=document.getElementById('mapAll');
   if(typeof naver==='undefined'||!naver.maps){box.textContent='네이버 지도 로드 실패';return;}
   box.textContent='불러오는 중…';
-  Promise.all([fetch('bizSalaryAll.json').then(r=>r.json()),fetch('./sig_wgs84_30m.geojson').then(r=>r.json()),fetch('bizNation.json').then(r=>r.json()).catch(()=>null)]).then(([S,G,NB])=>{
+  Promise.all([fetch('bizSalaryAll.json').then(r=>r.json()),fetch('./sig_wgs84_30m.geojson').then(r=>r.json()),fetch('bizNation.json').then(r=>r.json()).catch(()=>null),fetch('bizGu.json').then(r=>r.json()).catch(()=>null)]).then(([S,G,NB,GU2])=>{
     S.work_years=cutY(S.work_years); S.home_years=cutY(S.home_years);
     box.textContent='';
-    const map=new naver.maps.Map('mapAll',{center:new naver.maps.LatLng(37.5,127.0),zoom:10,size:new naver.maps.Size(window.innerWidth,window.innerHeight)});
-    window.addEventListener('resize',()=>map.setSize(new naver.maps.Size(window.innerWidth,window.innerHeight)));
+    // 상단(제목·탭·도구줄) 아래부터만 지도를 둔다 — 상단 영역 뒤로 지도가 비치지 않게. 도구줄이 줄바꿈되면 높이가 바뀌므로 창 크기마다 다시 잰다
+    const subBar=document.querySelector('#paneAll > .sub');
+    const boxSize=()=>{const t=Math.ceil(subBar.getBoundingClientRect().bottom)+2; box.style.top=t+'px'; box.style.height=(window.innerHeight-t)+'px';
+      return new naver.maps.Size(window.innerWidth,window.innerHeight-t);};
+    const map=new naver.maps.Map('mapAll',{center:new naver.maps.LatLng(37.5,127.0),zoom:10,size:boxSize()});
+    window.addEventListener('resize',()=>map.setSize(boxSize()));
     const mode=document.getElementById('aMode'), yr=document.getElementById('aYr'), tip=document.getElementById('aTip');
     const selSido=document.getElementById('aSido');
     S.work_years.forEach(y=>yr.add(new Option(y+'년',y))); yr.value=MAXY;
@@ -582,7 +587,33 @@ function initAllTab(){
       const k=uk(u); const a=geoms[k]||(geoms[k]=[]); const b=bb[k]||(bb[k]=[999,999,-999,-999]);
       gs.forEach(rings=>{a.push(rings);rings[0].forEach(p=>{b[0]=Math.min(b[0],p[0]);b[1]=Math.min(b[1],p[1]);b[2]=Math.max(b[2],p[0]);b[3]=Math.max(b[3],p[1]);});});
     });
-    const units=S.rows.filter(u=>geoms[uk(u)]);
+    const baseUnits=S.rows.filter(u=>geoms[uk(u)]);
+    // '구 분리': 구가 있는 시(bizGu.json)는 구별 경계·종사자수·500인으로 나눈다. 연봉은 구별 자료가 없어 시 전체 값을 그대로 쓴다
+    const guUnits=[], guCity=new Set();
+    if(GU2){
+      const fByNm={}; G.features.forEach(f=>{fByNm[String(f.properties.sgg_nm).replace(/\s/g,'')]=f;});
+      baseUnits.forEach(u=>{
+        const gs=GU2.rows.filter(g=>g.city===u.name&&u.sido===GU2.sido); if(!gs.length)return;
+        const sub=[];
+        gs.forEach(g=>{
+          let f=fByNm[u.name+g.name]; if(!f){f=fByNm[g.name]; if(f&&!u.codes.includes(String(f.properties.sgg_cd)))f=null;}   // 용인·고양은 경계 파일에 시 이름 없이 '처인구' 로 들어 있다
+          if(!f)return;
+          const su={sido:u.sido,name:u.name.replace('시','')+' '+g.name,codes:[String(f.properties.sgg_cd)],work:u.work,home:u.home,gu:g,city:u.name};
+          const c=f.geometry.type==='MultiPolygon'?f.geometry.coordinates:[f.geometry.coordinates];
+          const k=uk(su); geoms[k]=c; const b=bb[k]=[999,999,-999,-999];
+          c.forEach(rings=>rings[0].forEach(p=>{b[0]=Math.min(b[0],p[0]);b[1]=Math.min(b[1],p[1]);b[2]=Math.max(b[2],p[0]);b[3]=Math.max(b[3],p[1]);}));
+          sub.push(su);
+        });
+        if(sub.length===gs.length){guCity.add(u.name);guUnits.push(...sub);}
+      });
+    }
+    let units=baseUnits;
+    const gChk=document.getElementById('aGu');
+    if(!guUnits.length)gChk.parentNode.style.display='none';
+    gChk.checked=guUnits.length>0;   // 기본값은 분리(저장된 선택이 있으면 그것을 따름)
+    try{const s=localStorage.getItem('bizGuSplit'); if(s!==null)gChk.checked=s==='1'&&guUnits.length>0;}catch(e){}
+    const setUnits=()=>{units=gChk.checked?baseUnits.filter(u=>!(u.sido===GU2.sido&&guCity.has(u.name))).concat(guUnits):baseUnits;};
+    setUnits();
     const SIDO_ORDER=['서울','경기','인천','부산','대구','대전','광주','울산','세종','강원','충북','충남','전북','전남','경북','경남','제주'];
     const sidos=SIDO_ORDER.filter(s=>units.some(u=>u.sido===s));
     sidos.forEach(s=>selSido.add(new Option(s,s))); selSido.value='서울';
@@ -592,7 +623,7 @@ function initAllTab(){
     const nbMap={}; if(NB)NB.rows.forEach(r=>nbMap[r.sido+'|'+r.name]=r);
     const nbAlias={'인천|미추홀구(남구)':'인천|미추홀구'};
     const nbOf=u=>{
-      const r=nbMap[nbAlias[uk(u)]||uk(u)]; if(!r)return null;
+      const r=u.gu?{w:u.gu.w,b:u.gu.b}:nbMap[nbAlias[uk(u)]||uk(u)]; if(!r)return null;
       const ys=Object.keys(r.w).sort(); let y=null; ys.forEach(v=>{if(v<=yr.value)y=v;}); if(!y)y=ys[0];
       return {y,w:r.w[y],b:r.b[y]};
     };
@@ -611,6 +642,7 @@ function initAllTab(){
         +'<br><span style="color:#0a58ca">주소지 '+fm(h)+'만</span>'+(b?' <small>('+b[1].toLocaleString()+'명)</small>':'')
         +(w!=null&&h!=null?'<br>차이 '+(w-h>0?'+':'')+(w-h).toLocaleString()+'만':'');
       const nb=nbOf(u);
+      if(u.gu)tip.innerHTML+='<br><small>※ 연봉은 '+u.city+' 전체 값(구별 자료 없음)</small>';
       if(nb)tip.innerHTML+='<br>종사자 '+man(nb.w)+'만명 · 500인 '+fm(nb.b)+'개 <small>('+nb.y+'년 기준)</small>';
       tip.style.display='block';
     }
@@ -673,7 +705,7 @@ function initAllTab(){
         o.polys.forEach(p=>{p.setOptions({fillColor:fill});if(!p.getMap())p.setMap(map);});
         o.polys.lines.forEach(p=>{if(!p.getMap())p.setMap(map);});
         if(o.stamp!==yr.value){o.stamp=yr.value; const nb=nbOf(u);
-          o.html='<div class="al"><span class="nm">'+u.name+'</span>'+(nb?'<div class="rw n"><i>종사자</i><span><b>'+man(nb.w)+'</b><u>만명</u></span></div><div class="rw n"><i>500인</i><span><b>'+fm(nb.b)+'</b><u>개</u></span></div>':'')+'<div class="rw w"><i>소재지</i><span><b>'+fm(val(u,'work'))+'</b><u>만</u></span></div><div class="rw h"><i>주소지</i><span><b>'+fm(val(u,'home'))+'</b><u>만</u></span></div>'+'</div>';
+          o.html='<div class="al"><span class="nm">'+u.name+'</span>'+(nb?'<div class="rw n"><i>종사자</i><span><b>'+man(nb.w)+'</b><u>만명</u></span></div><div class="rw n"><i>500인</i><span><b>'+fm(nb.b)+'</b><u>개</u></span></div>':'')+'<div class="rw w"><i>소재지</i><span><b>'+fm(val(u,'work'))+'</b><u>만</u></span></div><div class="rw h"><i>주소지</i><span><b>'+fm(val(u,'home'))+'</b><u>만</u></span></div>'+(u.gu?'<div class="rw" style="justify-content:center;font-size:.7em;color:#777">연봉은 '+u.city+' 전체</div>':'')+'</div>';
           o.mk.setIcon({content:o.html,anchor:new naver.maps.Point(0,0)});}
       });
       if(fit&&want.length){
@@ -715,6 +747,7 @@ function initAllTab(){
       });
     }
     selSido.onchange=()=>render(true);
+    gChk.onchange=()=>{try{localStorage.setItem('bizGuSplit',gChk.checked?'1':'0');}catch(e){} setUnits(); render(false);};
     mode.onchange=()=>render(false);
     yr.onchange=()=>render(false);
     const sc=document.getElementById('aSc'), scL=document.getElementById('aScL');
