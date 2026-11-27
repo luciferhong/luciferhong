@@ -25,6 +25,7 @@
   tr.hl td,tr.hl th{background:#fff0f6}
   .up{color:#d6336c;font-weight:600}.dn{color:#1c7ed6;font-weight:600}.flat{color:#555}
   .grp{background:#dfe6f5}
+  tr.sep td{border-bottom:3px solid #333}   /* 종사자·사업체·연봉 묶음이 끝나는 행의 굵은 구분선 */
   .note{font-size:11px;color:#777;margin-top:8px;line-height:1.5}
   .tabs{margin:-8px 0 10px -8px;padding:8px;width:fit-content;background:#fffe;border-radius:4px;box-shadow:0 1px 5px #0005}   /* 네 탭 모두 같은 상자(테두리 그림자) */
   .tabs button:focus{outline:none}
@@ -378,15 +379,22 @@ function buildBiz(ids,rows,Y,cfg){
   const spans=[];rows.forEach(r=>{const l=spans[spans.length-1];if(l&&l.g===r.group)l.n++;else spans.push({g:r.group,n:1});});
   spans.forEach(s=>h+='<th class="grp" colspan="'+s.n+'">'+s.g+'</th>');
   h+='</tr><tr>'+rows.map(r=>'<th>'+r.name+'</th>').join('')+'</tr>';
-  const line=(label,fn,cls)=>'<tr><td class="lbl">'+label+'</td>'+rows.map(r=>'<td'+(cls?' class="'+cls(r)+'"':'')+'>'+fn(r)+'</td>').join('')+'</tr>';
+  const line=(label,fn,cls,sep)=>'<tr'+(sep?' class="sep"':'')+'><td class="lbl">'+label+'</td>'+rows.map(r=>'<td'+(cls?' class="'+cls(r)+'"':'')+'>'+fn(r)+'</td>').join('')+'</tr>';
   const sgn=n=>(n>0?'+':'')+fmt(n);
   Y.forEach(y=>h+=line('종사자수 '+y,r=>fmt(r.workers[y])));
   h+=line('증감 '+first+'→'+last+' (명)',r=>sgn(r.workers[last]-r.workers[first]),r=>pct(r)>=TH?'up':pct(r)<=-TH?'dn':'flat');
-  h+=line('증감률 (%)',r=>(pct(r)>0?'+':'')+pct(r).toFixed(1)+'%',r=>pct(r)>=TH?'up':pct(r)<=-TH?'dn':'flat');
+  h+=line('증감률 (%)',r=>(pct(r)>0?'+':'')+pct(r).toFixed(1)+'%',r=>pct(r)>=TH?'up':pct(r)<=-TH?'dn':'flat',true);
   Y.forEach(y=>h+=line('500인 이상 사업체 '+y,r=>fmt(r.big500[y])));
-  h+=line('500인↑ 증감 ('+first+'→'+last+')',r=>sgn(r.big500[last]-r.big500[first]));
+  h+=line('500인↑ 증감 ('+first+'→'+last+')',r=>sgn(r.big500[last]-r.big500[first]),null,true);
   Y.forEach(y=>h+=line('평균연봉 '+y+' (만원)',r=>fmt(avg(r,y))));
-  h+=line('종사자 중 대기업 집중도 (종사자÷500인↑, 천 명)',r=>(r.workers[last]/r.big500[last]/1000).toFixed(1));
+  const apd=r=>{const a=avg(r,first),b=avg(r,last);return a==null||b==null?null:{d:b-a,p:(b/a-1)*100};};
+  // 평균연봉 증감은 대부분 +10% 를 넘어 전부 칠해지므로, 증감률 상위 4곳(AP_TOP)만 진하게 칠한다
+  const AP_TOP=4;
+  const apv=rows.map(r=>apd(r)).filter(x=>x).map(x=>x.p).sort((a,b)=>b-a);
+  const apThr=apv.length?apv[Math.min(AP_TOP,apv.length)-1]:Infinity;
+  const apCls=r=>{const x=apd(r);return x&&x.p>=apThr?'up':'flat';};
+  h+=line('평균연봉 증감 '+first+'→'+last+' (만원)',r=>{const x=apd(r);return x?sgn(x.d):'-';},apCls);
+  h+=line('평균연봉 증감률 (%) · 상위 '+AP_TOP+'곳 강조',r=>{const x=apd(r);return x?(x.p>0?'+':'')+x.p.toFixed(1)+'%':'-';},apCls,true);
   t.innerHTML=h;
   return charts;
 }
