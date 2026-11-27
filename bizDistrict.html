@@ -19,6 +19,8 @@
   table{border-collapse:collapse;width:100%;font-size:12px;min-width:1000px}
   th,td{border:1px solid #d7dbe3;padding:4px 6px;text-align:right;white-space:nowrap}
   th{background:#eef1f7;text-align:center;font-weight:600}
+  #nt{width:auto;min-width:0}   /* 3번 탭 시군구 표: 머리글은 줄바꿈해서 열을 데이터 폭에 맞춘다 */
+  #nt th{white-space:normal;line-height:1.3;padding:4px 5px}
   td.lbl{text-align:left;background:#f7f8fb;font-weight:600}
   tr.hl td,tr.hl th{background:#fff0f6}
   .up{color:#d6336c;font-weight:600}.dn{color:#1c7ed6;font-weight:600}.flat{color:#555}
@@ -102,7 +104,16 @@
       <div id="nB2" style="position:relative;height:320px;margin-top:6px"><canvas id="nc2"></canvas></div>
       <div id="nB3" style="position:relative;height:320px;margin-top:6px"><canvas id="nc3"></canvas></div>
       <div id="nB4" style="position:relative;height:320px;margin-top:6px"><canvas id="nc4"></canvas></div></div>
-      <div class="tblwrap"><table id="nt"></table></div>
+      <label id="nLastW" style="margin-left:14px;font-size:13px;color:#333;cursor:pointer"><input type="checkbox" id="nLast" checked> 최근 연도만 보기</label>
+      <div class="tblwrap" style="margin-top:6px"><table id="nt"></table></div>
+      <div class="note" style="font-size:12px;color:#555;line-height:1.7">
+        <b>주석 · 소득 지표 읽는 법</b><br>
+        · <b>원천징수지 기준 연봉</b>: 일하는 곳(회사 소재지) 기준 1인 평균 연봉. <b>주소지 기준 연봉</b>: 사는 곳 기준. 두 값의 차이가 크면 출퇴근으로 드나드는 사람이 많은 지역입니다.<br>
+        · <b>종합소득</b>: 종합소득세 신고자(사업·임대·프리랜서·금융·연금 소득이 있는 사람)의 1인 평균 소득(만원, 경비 공제 후). 월급만 받는 직장인은 대부분 빠지므로 "사업·자산 소득이 있는 사람이 얼마나 버는가"를 봅니다. 신고자가 적은 지역은 몇 명만으로도 평균이 크게 움직입니다.<br>
+        · <b>지역가입자 세대당 월평균 건보료</b>: 직장가입자·피부양자가 아닌 지역가입 세대가 내는 보험료(지역보험료 연 합계 ÷ 지역가입 세대수 ÷ 12, 원). 소득뿐 아니라 재산(집·땅·자동차)도 반영되므로 "소득+재산 부담 능력"에 가깝습니다. 직장가입자의 보험료는 들어 있지 않습니다.<br>
+        · <b>순위</b>: 2023년 값이 높을수록 1위이고, 선택한 시도가 아니라 전국 시군구 전체 기준입니다(구가 있는 시는 시 한 줄로 합산해 전국 229개).<br>
+        · <b>두 순위를 함께 볼 때</b>: 종합소득 순위가 건보료 순위보다 높으면 소득에 비해 재산·보험료 부담이 작은 지역(젊은 고소득 자영업·전문직, 임차 비중이 높은 지역)이거나 고소득자 대부분이 직장가입자인 지역일 수 있습니다. 반대로 건보료 순위가 더 높으면 소득보다 재산이 두드러지는 지역(자가 보유·은퇴 자산가 중심)일 수 있습니다. 어디까지나 해석의 단서이며 원인을 단정하는 근거는 아닙니다.
+      </div>
     </div>
   </div>
   <div id="paneAll" style="display:none">
@@ -303,6 +314,66 @@ function buildBiz(ids,rows,Y,cfg){
 
   // 표
   const t=document.getElementById(ids.t); let h='';
+  if(cfg.tblByRow){   // 행 = 지역, 열 = 지표 묶음 × 연도 (전국 시도별 탭의 시군구 표)
+   const lo=document.getElementById('nLast');   // '최근 연도만 보기' 체크박스
+   const drawT=()=>{
+    let h='';
+    const YT=lo&&lo.checked?[last]:Y;
+    const hm=cfg.home&&cfg.home.rows, n=YT.length;
+    const nm0=s=>String(s).replace(/\(.*\)/,'').replace(/\s/g,'');
+    const hv=(i,y)=>{const m=hm&&hm.find(x=>nm0(x.name)===nm0(rows[i].name));return m&&m.home&&m.home[y]?m.home[y][0]:null;};
+    const ng=!!cfg.noGrp;   // 시도 하나만 보는 표는 업무지구 열 없이 시군구만
+    const cls=r=>pct(r)>=TH?'up':pct(r)<=-TH?'dn':'flat';
+    const sgn2=v=>(v>0?'+':'')+fmt(v);
+    // 소득 묶음: [행1 묶음 이름, 행2 지표 이름, 칸 값 함수(r,i,y)]
+    const ins=(i,y,k)=>{const m=hm&&hm.find(x=>nm0(x.name)===nm0(rows[i].name));return m&&m.ins&&m.ins[y]?m.ins[y][k]:null;};
+    const jong=(i,y,k)=>{const m=hm&&hm.find(x=>nm0(x.name)===nm0(rows[i].name));return m&&m.jong&&m.jong[y]?m.jong[y][k]:null;};
+    const yr=YT.length===1?last:first+'~'+last;
+    const inc=[
+      ['원천징수지 기준 소득('+yr+')',[['1인 평균연봉 (만원)',(r,i,y)=>avg(r,y)]]],
+      ...(hm?[
+        ['주소지 기준 소득('+yr+')',[['1인 평균연봉 (만원)',(r,i,y)=>hv(i,y)]]],
+        ['종합소득('+yr+')',[
+          ['신고인원 (명)',(r,i,y)=>jong(i,y,1)],
+          ['종합소득금액 (백만원)',(r,i,y)=>jong(i,y,2)],
+          ['1인 평균 종합소득 (만원)',(r,i,y)=>jong(i,y,0)],
+          ['월소득 (종합, 만원)',(r,i,y)=>{const v=jong(i,y,0);return v==null?null:Math.round(v/12);},
+            {lab:'종합소득 순위',all:x=>x.jong&&x.jong[last]?x.jong[last][0]:null,my:i=>jong(i,last,0)}]]],
+        ['건강보험료('+yr+')',[
+          ['지역가입자 세대당 월평균 (원)',(r,i,y)=>ins(i,y,1),
+            {lab:'지역건보료 순위',all:x=>x.ins&&x.ins[last]?x.ins[last][1]:null,my:i=>ins(i,last,1)}]]]
+      ]:[])];
+    // 순위(최근 연도, 전국 시군구 기준, 높을수록 1위)
+    inc.forEach(g=>g[1].forEach(s=>{const k=s[2];if(!k)return;
+      const av=(cfg.home&&cfg.home.all||[]).map(k.all).filter(w=>w!=null);
+      k.n=av.length; k.rk=rows.map((r,i)=>{const v=k.my(i);return v==null?null:1+av.filter(w=>w>v).length;});}));
+    const yh=YT.map(y=>'<th>'+y+'</th>').join('');
+    const gw=g=>g[1].reduce((a,s)=>a+n+(s[2]?1:0),0);
+    h+='<tr>'+(ng?'':'<th rowspan="3">업무지구</th>')+'<th rowspan="3">시군구</th>'
+      +'<th colspan="'+n+'" rowspan="2" class="grp">종사자수 (명)</th><th colspan="2" rowspan="2" class="grp">증감 '+first+'→'+last+'</th>'
+      +'<th colspan="'+n+'" rowspan="2" class="grp">500인 이상 사업체 (개)</th><th rowspan="3" class="grp">500인↑ 증감</th>'
+      +inc.map(g=>'<th colspan="'+gw(g)+'" class="grp">'+g[0]+'</th>').join('')
+      +'</tr><tr>'
+      +inc.map(g=>g[1].map(s=>'<th colspan="'+n+'">'+s[0]+'</th>'+(s[2]?'<th rowspan="2" class="grp">'+s[2].lab+' ('+last+')</th>':'')).join('')).join('')+'</tr><tr>'
+      +yh+'<th>증감(명)</th><th>증감률</th>'+yh+inc.map(g=>g[1].map(()=>yh).join('')).join('')+'</tr>';
+    const gs={};rows.forEach(r=>gs[r.group]=(gs[r.group]||0)+1);const seen={};
+    rows.forEach((r,i)=>{
+      h+='<tr>'+(ng||seen[r.group]?'':'<td class="lbl grp" rowspan="'+gs[r.group]+'" style="text-align:center">'+r.group+'</td>')+'<td class="lbl">'+r.name+'</td>';
+      seen[r.group]=1;
+      YT.forEach(y=>h+='<td>'+fmt(r.workers[y])+'</td>');
+      h+='<td class="'+cls(r)+'">'+sgn2(r.workers[last]-r.workers[first])+'</td><td class="'+cls(r)+'">'+(pct(r)>0?'+':'')+pct(r).toFixed(1)+'%</td>';
+      YT.forEach(y=>h+='<td>'+fmt(r.big500[y])+'</td>');
+      h+='<td>'+sgn2(r.big500[last]-r.big500[first])+'</td>';
+      inc.forEach(g=>g[1].forEach(s=>{YT.forEach(y=>h+='<td>'+fmt(s[1](r,i,y))+'</td>');
+        if(s[2])h+='<td>'+(s[2].rk[i]==null?'-':s[2].rk[i]+'위')+'</td>';}));
+      h+='</tr>';
+    });
+    t.innerHTML=h;
+   };
+   drawT();
+   if(lo)lo.onchange=drawT;
+    return charts;
+  }
   h+='<tr><th rowspan="2">구분</th>';
   const spans=[];rows.forEach(r=>{const l=spans[spans.length-1];if(l&&l.g===r.group)l.n++;else spans.push({g:r.group,n:1});});
   spans.forEach(s=>h+='<th class="grp" colspan="'+s.n+'">'+s.g+'</th>');
@@ -908,8 +979,8 @@ function initNat(){
       const sVals=rr.map(r=>r.pay&&r.payN&&r.payN[sLast]?r.pay[sLast]*100/r.payN[sLast]:0).concat(hRows.map(r=>r.home[sLast]?r.home[sLast][0]:0));
       const sMax=Math.max(1000,Math.ceil(Math.max(...sVals)*1.04/1000)*1000);
       ['nB3','nB4'].forEach(i=>document.getElementById(i).style.height=trend.checked?'320px':'460px');   // 막대 하나짜리는 높이를 키워 차이가 잘 보이게
-      dch=buildBiz({c:'nc1',c2:'nc2',c3:'nc3',c4:'nc4',t:'nt'},rr,Y,{m:[nice(mxOf((r,y)=>r.workers[y])*1.35),nice(mxOf((r,y)=>r.big500[y])*1.35),nice(Math.max(ma,mh)*1.35)],s:[undefined,undefined,undefined],noGrp:true,fixW:parseInt(wpx),arrows:arw.checked,sortEach:true,salY:SA?SA.home_years:null,salSingle:!trend.checked,salMax:sMax,salStep:sMax<=10000?1000:2000,
-        home:hRows.length?{rows:hRows,Y:hy,m:nice(Math.max(ma,mh)*1.35),s:undefined,sort:true}:null});
+      dch=buildBiz({c:'nc1',c2:'nc2',c3:'nc3',c4:'nc4',t:'nt'},rr,Y,{m:[nice(mxOf((r,y)=>r.workers[y])*1.35),nice(mxOf((r,y)=>r.big500[y])*1.35),nice(Math.max(ma,mh)*1.35)],s:[undefined,undefined,undefined],noGrp:true,tblByRow:true,fixW:parseInt(wpx),arrows:arw.checked,sortEach:true,salY:SA?SA.home_years:null,salSingle:!trend.checked,salMax:sMax,salStep:sMax<=10000?1000:2000,
+        home:hRows.length?{rows:hRows,all:SA.rows,Y:hy,m:nice(Math.max(ma,mh)*1.35),s:undefined,sort:true}:null});
       document.getElementById('nB3').style.display=oneCity?'none':'';
       document.getElementById('nB4').style.display=(oneCity||!hRows.length)?'none':'';   // 시를 고르면 연봉 차트는 숨김(구별 자료 없음)
     }
@@ -965,6 +1036,8 @@ function initNat(){
       XLSX.writeFile(build(tb,nm),'업무지구_'+nm+'_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'.xlsx');
     };
     tb.parentNode.parentNode.insertBefore(b,tb.parentNode);
+    const lw=id==='nt'?document.getElementById('nLastW'):null;
+    if(lw)b.after(lw);   // '최근 연도만 보기' 체크박스를 엑셀 단추 오른쪽에 나란히
   });
 })();
 </script>
