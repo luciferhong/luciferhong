@@ -69,7 +69,7 @@
   .card .sb{margin-top:4px;padding-top:3px;border-top:1px dashed #d62828;font-size:12px}
   .card .sb div{display:flex;justify-content:space-between;gap:10px;padding:0 8px}
   .card .sb b{font-size:12px}
-  svg.ln{position:absolute;left:0;top:0;overflow:visible}
+  svg.ln{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 </style>
 <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=9t8y33hyq8"></script>
 </head>
@@ -308,7 +308,7 @@ function initMapTab(D){
   // 카드 끌어서 옮기기: 점에서 카드까지의 거리(dx,dy)를 그룹별로 localStorage 에 저장. 카드를 두 번 누르면 그 카드만 처음 자리로.
   let OFS={}; try{OFS=JSON.parse(localStorage.getItem('bizCardOfs')||'{}')||{};}catch(e){}
   const saveOfs=()=>{try{localStorage.setItem('bizCardOfs',JSON.stringify(OFS));}catch(e){}};
-  let drag=null;
+  let drag=null, lastTap={k:null,t:0};
   document.addEventListener('pointerdown',e=>{
     const cd=e.target.closest&&e.target.closest('.card[data-k]'); if(!cd||!map)return;
     const mw=cd.closest('.mw'), ln=mw&&mw.querySelector('line'); if(!ln)return;
@@ -324,7 +324,14 @@ function initMapTab(D){
   },true);
   const endDrag=e=>{
     if(!drag)return; const d=drag; drag=null; d.cd.style.cursor='';
-    if(!d.moved)return;
+    const net=Math.abs(parseFloat(d.cd.style.left)-d.l)+Math.abs(parseFloat(d.cd.style.top)-d.t);
+    if(!d.moved||net<=6){   // 거의 안 움직인 것은 '누름' — 제자리로 돌리고, 짧은 간격으로 두 번 누르면 그 카드 위치 초기화
+      d.cd.style.left=d.l+'px'; d.cd.style.top=d.t+'px'; d.ln.setAttribute('x2',d.x2); d.ln.setAttribute('y2',d.y2);
+      const now=Date.now();
+      if(lastTap.k===d.k&&now-lastTap.t<500){lastTap={k:null,t:0}; delete OFS[d.k]; saveOfs(); draw();}
+      else lastTap={k:d.k,t:now};
+      return;
+    }
     const c=CFG[d.k], b=OFS[d.k]||c.d;
     OFS[d.k]=[b[0]+(parseFloat(d.cd.style.left)-d.l), b[1]+(parseFloat(d.cd.style.top)-d.t)];
     saveOfs(); draw();
